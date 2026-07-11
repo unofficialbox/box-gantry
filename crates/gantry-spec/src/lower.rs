@@ -28,7 +28,7 @@ use indexmap::IndexMap;
 
 use crate::error::IngestError;
 use crate::ingest::{Document, SpecSet};
-use crate::raw::{RawAdditionalProperties, RawSchema};
+use crate::raw::{RawAdditionalProperties, RawOperation, RawParameter, RawSchema};
 
 /// Bound on `allOf`/`$ref` chain walks; a real chain is 2–3 deep, so
 /// hitting this means a reference cycle (loud error, not a hang).
@@ -60,6 +60,15 @@ pub struct LoweringStats {
     /// value unshaped. Explicit holes, watched so they only change
     /// deliberately.
     pub json_value_sites: usize,
+    pub operations: usize,
+    /// Operations whose success carries no body (e.g. 204).
+    pub empty_responses: usize,
+    /// Operations returning raw bytes (downloads, thumbnails).
+    pub binary_responses: usize,
+    /// Operations returning non-JSON text (the authorize page).
+    pub text_responses: usize,
+    /// Operations whose success is a redirect.
+    pub redirect_responses: usize,
 }
 
 /// Lower every document of the set into one typed [`ir::Program`].
@@ -69,6 +78,7 @@ pub struct LoweringStats {
 /// the base spec (G-9).
 pub fn lower(set: &SpecSet) -> Result<Lowering, IngestError> {
     let mut arena: Vec<Option<ir::Decl>> = Vec::new();
+    let mut operations: Vec<ir::Operation> = Vec::new();
     let mut stats = LoweringStats::default();
     for (index, doc) in set.documents.iter().enumerate() {
         let module = module_for(doc, index == 0)?;
@@ -76,6 +86,7 @@ pub fn lower(set: &SpecSet) -> Result<Lowering, IngestError> {
             doc,
             module,
             arena: &mut arena,
+            operations: &mut operations,
             stats: &mut stats,
             ids: IndexMap::new(),
             used_names: HashSet::new(),
@@ -87,7 +98,7 @@ pub fn lower(set: &SpecSet) -> Result<Lowering, IngestError> {
         .map(|slot| slot.expect("every predeclared schema is filled by lower_document"))
         .collect();
     Ok(Lowering {
-        program: ir::Program { decls },
+        program: ir::Program { decls, operations },
         stats,
     })
 }
@@ -115,6 +126,7 @@ struct DocLowerer<'a> {
     doc: &'a Document,
     module: ir::ModulePath,
     arena: &'a mut Vec<Option<ir::Decl>>,
+    operations: &'a mut Vec<ir::Operation>,
     stats: &'a mut LoweringStats,
     /// Named schema → predeclared id (so references resolve even through
     /// cycles).
@@ -140,6 +152,12 @@ impl<'a> DocLowerer<'a> {
             let decl = self.decl(&location, name, kind)?;
             let id = self.ids[name];
             self.arena[id.0 as usize] = Some(decl);
+        }
+        for (path_key, item) in &doc.paths {
+            for (method, op) in item.operations() {
+                let lowered = self.lower_operation(path_key, method, op)?;
+                self.operations.push(lowered);
+            }
         }
         Ok(())
     }
@@ -541,6 +559,401 @@ impl<'a> DocLowerer<'a> {
         Ok(id)
     }
 
+    /// Lower one operation (FR-1.3: base-URL mapping, binary responses,
+    /// media classification — all decided here, structurally).
+    fn lower_operation(
+        &mut self,
+        path_key: &str,
+        method: &'static str,
+        op: &'a RawOperation,
+    ) -> Result<ir::Operation, IngestError> {
+        let doc = self.doc;
+        let location = format!("paths[{path_key:?}].{method}");
+
+        // `#variation` splits into structured data (D-104); the `#` never
+        // reaches an identifier.
+        let raw_id = op
+            .operation_id
+            .as_deref()
+            .expect("operationId presence is validated at ingestion");
+        let (base_id, variation) = match raw_id.split_once('#') {
+            Some((base, variation)) => (base, Some(variation)),
+            None => (raw_id, None),
+        };
+        // Versioned documents suffix their operationIds with `_v2025.0`.
+        // That is version plumbing, not part of the name: the operation
+        // already carries its api_version. Strip the *matching* suffix; a
+        // mismatched version marker is a spec inconsistency and fails.
+        let own_suffix = format!("_v{}", doc.api_version);
+        let base_id = base_id.strip_suffix(&own_suffix).unwrap_or(base_id);
+        if let Some(index) = base_id.rfind("_v")
+            && base_id[index + 2..]
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == '.')
+            && base_id[index + 2..].contains('.')
+        {
+            return Err(self.unsupported(
+                &location,
+                &format!(
+                    "operationId {raw_id:?} carries version marker {:?} but the document \
+                     declares version {:?}",
+                    &base_id[index..],
+                    doc.api_version
+                ),
+            ));
+        }
+        let name = identifier(doc, &location, base_id)?;
+        let variation = variation
+            .map(|v| identifier(doc, &location, v))
+            .transpose()?;
+        let manager = identifier(
+            doc,
+            &location,
+            op.box_tag
+                .as_deref()
+                .expect("x-box-tag presence is validated at ingestion"),
+        )?;
+        // Seed for synthesized declarations belonging to this operation.
+        let owner = {
+            let mut owner = pascal(base_id);
+            if let Some(v) = &variation {
+                owner.push_str(&pascal(v.as_str()));
+            }
+            owner
+        };
+
+        let params = self.lower_params(&location, &owner, op)?;
+        let path = self.lower_path(&location, path_key, &params)?;
+        let request = self.lower_request_body(&location, &owner, op)?;
+        let response = self.lower_response(&location, &owner, op)?;
+        let base_url = self.lower_base_url(&location, op)?;
+
+        let method = match method {
+            "get" => ir::HttpMethod::Get,
+            "put" => ir::HttpMethod::Put,
+            "post" => ir::HttpMethod::Post,
+            "delete" => ir::HttpMethod::Delete,
+            "options" => ir::HttpMethod::Options,
+            "head" => ir::HttpMethod::Head,
+            "patch" => ir::HttpMethod::Patch,
+            "trace" => ir::HttpMethod::Trace,
+            other => unreachable!("RawPathItem::operations only yields method keys, got {other:?}"),
+        };
+
+        self.stats.operations += 1;
+        match &response {
+            ir::ResponseShape::None => self.stats.empty_responses += 1,
+            ir::ResponseShape::Binary => self.stats.binary_responses += 1,
+            ir::ResponseShape::Text => self.stats.text_responses += 1,
+            ir::ResponseShape::Redirect => self.stats.redirect_responses += 1,
+            ir::ResponseShape::Json(_) => {}
+        }
+
+        Ok(ir::Operation {
+            name,
+            variation,
+            manager,
+            api_version: Some(ir::ApiVersion(doc.api_version.clone())),
+            method,
+            base_url,
+            path,
+            params,
+            request,
+            response,
+            deprecated: op.deprecated,
+        })
+    }
+
+    fn lower_params(
+        &mut self,
+        location: &str,
+        owner: &str,
+        op: &'a RawOperation,
+    ) -> Result<Vec<ir::Param>, IngestError> {
+        let doc = self.doc;
+        let mut params = Vec::with_capacity(op.parameters.len());
+        for (index, raw_param) in op.parameters.iter().enumerate() {
+            let param_location = format!("{location}.parameters[{index}]");
+            let resolved: &'a RawParameter = if let Some(reference) = &raw_param.reference {
+                let name = reference
+                    .strip_prefix("#/components/parameters/")
+                    .ok_or_else(|| self.unresolved(&param_location, reference))?;
+                doc.parameters
+                    .get(name)
+                    .ok_or_else(|| self.unresolved(&param_location, reference))?
+            } else {
+                raw_param
+            };
+            let Some(wire_name) = resolved.name.as_deref().filter(|n| !n.is_empty()) else {
+                return Err(self.unsupported(&param_location, "parameter has no name"));
+            };
+            let param_kind = match resolved.location.as_deref() {
+                Some("query") => ir::ParamLocation::Query,
+                Some("path") => ir::ParamLocation::Path,
+                Some("header") => ir::ParamLocation::Header,
+                other => {
+                    return Err(self.unsupported(
+                        &param_location,
+                        &format!("unsupported parameter location {other:?}"),
+                    ));
+                }
+            };
+            if param_kind == ir::ParamLocation::Path && !resolved.required {
+                return Err(self.unsupported(&param_location, "path parameter not marked required"));
+            }
+            let Some(schema) = &resolved.schema else {
+                return Err(self.unsupported(&param_location, "parameter has no schema"));
+            };
+            let mut ty = self.lower_type(
+                &format!("{param_location}.schema"),
+                &synth_name(owner, wire_name),
+                schema,
+            )?;
+            if !resolved.required {
+                ty = ir::Type::Optional(Box::new(ty));
+            }
+            params.push(ir::Param {
+                name: identifier(doc, &param_location, wire_name)?,
+                wire_name: wire_name.to_string(),
+                location: param_kind,
+                ty,
+            });
+        }
+        Ok(params)
+    }
+
+    /// Parse the path template into structured segments (FR-2.2). Any
+    /// `#variation` fragment on the path key is spec-authoring plumbing,
+    /// not part of the request path.
+    fn lower_path(
+        &self,
+        location: &str,
+        path_key: &str,
+        params: &[ir::Param],
+    ) -> Result<Vec<ir::PathSegment>, IngestError> {
+        let template = path_key
+            .split_once('#')
+            .map_or(path_key, |(template, _)| template);
+        let mut segments = Vec::new();
+        for segment in template.split('/').filter(|s| !s.is_empty()) {
+            let parts = self.parse_segment(location, segment, params)?;
+            segments.push(match parts.as_slice() {
+                [ir::PathPart::Literal(text)] => ir::PathSegment::Literal(text.clone()),
+                [ir::PathPart::Parameter(name)] => ir::PathSegment::Parameter(name.clone()),
+                _ => ir::PathSegment::Composite(parts),
+            });
+        }
+        Ok(segments)
+    }
+
+    /// Scan one segment into literal/parameter parts (the real spec has
+    /// mixed segments such as `thumbnail.{extension}`). Every placeholder
+    /// must be backed by a declared path parameter.
+    fn parse_segment(
+        &self,
+        location: &str,
+        segment: &str,
+        params: &[ir::Param],
+    ) -> Result<Vec<ir::PathPart>, IngestError> {
+        let mut parts = Vec::new();
+        let mut rest = segment;
+        while let Some(open) = rest.find('{') {
+            if open > 0 {
+                parts.push(ir::PathPart::Literal(rest[..open].to_string()));
+            }
+            let after = &rest[open + 1..];
+            let Some(close) = after.find('}') else {
+                return Err(self.unsupported(
+                    location,
+                    &format!("unbalanced braces in path segment {segment:?}"),
+                ));
+            };
+            let param_name = &after[..close];
+            if !params
+                .iter()
+                .any(|p| p.location == ir::ParamLocation::Path && p.wire_name == param_name)
+            {
+                return Err(self.unsupported(
+                    location,
+                    &format!("path parameter {{{param_name}}} has no declaration"),
+                ));
+            }
+            parts.push(ir::PathPart::Parameter(identifier(
+                self.doc, location, param_name,
+            )?));
+            rest = &after[close + 1..];
+        }
+        if rest.contains('}') {
+            return Err(self.unsupported(
+                location,
+                &format!("unbalanced braces in path segment {segment:?}"),
+            ));
+        }
+        if !rest.is_empty() {
+            parts.push(ir::PathPart::Literal(rest.to_string()));
+        }
+        Ok(parts)
+    }
+
+    fn lower_request_body(
+        &mut self,
+        location: &str,
+        owner: &str,
+        op: &'a RawOperation,
+    ) -> Result<Option<ir::RequestBody>, IngestError> {
+        let Some(body) = &op.request_body else {
+            return Ok(None);
+        };
+        let body_location = format!("{location}.requestBody");
+        let mut content = body.content.iter();
+        let Some((media_key, media)) = content.next() else {
+            return Err(self.unsupported(&body_location, "requestBody has no content"));
+        };
+        if content.next().is_some() {
+            return Err(
+                self.unsupported(&body_location, "requestBody declares multiple media types")
+            );
+        }
+        let media_kind = match media_key.as_str() {
+            "application/json" => ir::RequestMedia::Json,
+            "application/json-patch+json" => ir::RequestMedia::JsonPatch,
+            "application/x-www-form-urlencoded" => ir::RequestMedia::UrlEncoded,
+            "multipart/form-data" => ir::RequestMedia::Multipart,
+            "application/octet-stream" => ir::RequestMedia::OctetStream,
+            other => {
+                return Err(self.unsupported(
+                    &body_location,
+                    &format!("unsupported request media type {other:?}"),
+                ));
+            }
+        };
+        let mut ty = match &media.schema {
+            Some(schema) => self.lower_type(
+                &format!("{body_location}.content[{media_key:?}]"),
+                &format!("{owner}RequestBody"),
+                schema,
+            )?,
+            None => {
+                self.stats.json_value_sites += 1;
+                ir::Type::JsonValue
+            }
+        };
+        if !body.required {
+            ty = ir::Type::Optional(Box::new(ty));
+        }
+        Ok(Some(ir::RequestBody {
+            media: media_kind,
+            ty,
+        }))
+    }
+
+    /// Classify the success responses (D-106): ascending status order, the
+    /// first content-bearing 2xx/3xx decides the shape; every media of
+    /// that response must classify identically; a content-free 302 makes
+    /// the operation a redirect; otherwise the success is body-less.
+    fn lower_response(
+        &mut self,
+        location: &str,
+        owner: &str,
+        op: &'a RawOperation,
+    ) -> Result<ir::ResponseShape, IngestError> {
+        let mut codes: Vec<(&String, &crate::raw::RawResponse)> = op.responses.iter().collect();
+        codes.sort_by(|(a, _), (b, _)| a.cmp(b));
+        let mut saw_redirect = false;
+        for (code, response) in codes {
+            if code == "default" {
+                continue;
+            }
+            let Ok(number) = code.parse::<u16>() else {
+                return Err(self.unsupported(
+                    location,
+                    &format!("unparseable response status code {code:?}"),
+                ));
+            };
+            if !(200..400).contains(&number) {
+                continue;
+            }
+            if number == 302 {
+                saw_redirect = true;
+            }
+            if response.content.is_empty() {
+                continue;
+            }
+            let response_location = format!("{location}.responses.{code}");
+            let mut shape: Option<ir::ResponseShape> = None;
+            for (media_key, media) in &response.content {
+                let classified = match media_key.as_str() {
+                    "application/json" => {
+                        let ty = match &media.schema {
+                            Some(schema) => self.lower_type(
+                                &format!("{response_location}.content[{media_key:?}]"),
+                                &format!("{owner}Response"),
+                                schema,
+                            )?,
+                            None => {
+                                self.stats.json_value_sites += 1;
+                                ir::Type::JsonValue
+                            }
+                        };
+                        ir::ResponseShape::Json(ty)
+                    }
+                    "application/octet-stream" => ir::ResponseShape::Binary,
+                    key if key.starts_with("image/") => ir::ResponseShape::Binary,
+                    "text/html" => ir::ResponseShape::Text,
+                    other => {
+                        return Err(self.unsupported(
+                            &response_location,
+                            &format!("unsupported response media type {other:?}"),
+                        ));
+                    }
+                };
+                match &shape {
+                    None => shape = Some(classified),
+                    Some(previous) if *previous == classified => {}
+                    Some(previous) => {
+                        return Err(self.unsupported(
+                            &response_location,
+                            &format!(
+                                "response mixes content classes ({previous:?} vs {classified:?})"
+                            ),
+                        ));
+                    }
+                }
+            }
+            return Ok(shape.expect("content loop ran at least once"));
+        }
+        Ok(if saw_redirect {
+            ir::ResponseShape::Redirect
+        } else {
+            ir::ResponseShape::None
+        })
+    }
+
+    /// The D-106 base-URL mapping (the G-2 quirk): spec `servers` URLs map
+    /// to the closed [`ir::BaseUrl`] set; anything else is a loud error.
+    fn lower_base_url(
+        &self,
+        location: &str,
+        op: &'a RawOperation,
+    ) -> Result<ir::BaseUrl, IngestError> {
+        match op.servers.as_slice() {
+            [] => Ok(ir::BaseUrl::Api),
+            [server] => match server.url.as_str() {
+                "https://api.box.com/2.0" => Ok(ir::BaseUrl::Api),
+                "https://api.box.com" => Ok(ir::BaseUrl::ApiRoot),
+                "https://upload.box.com/api/2.0" => Ok(ir::BaseUrl::Upload),
+                "https://{box-upload-server}/api/2.0" => Ok(ir::BaseUrl::UploadSession),
+                "https://account.box.com/api/oauth2" => Ok(ir::BaseUrl::OAuthAuthorize),
+                "https://dl.boxcloud.com/2.0" => Ok(ir::BaseUrl::Download),
+                other => Err(self.unsupported(
+                    location,
+                    &format!("unknown server URL {other:?} (extend the D-106 mapping)"),
+                )),
+            },
+            _ => Err(self.unsupported(location, "multiple operation-level servers")),
+        }
+    }
+
     fn resolve_ref(&self, location: &str, reference: &str) -> Result<ir::DeclId, IngestError> {
         let name = self.ref_name(location, reference)?;
         self.ids
@@ -583,14 +996,21 @@ impl<'a> DocLowerer<'a> {
 /// `Owner` + PascalCase(property): `File` + `shared_link` → `FileSharedLink`.
 fn synth_name(owner: &str, property: &str) -> String {
     let mut name = String::from(owner);
-    for part in property.split(['_', '-']) {
+    name.push_str(&pascal(property));
+    name
+}
+
+/// PascalCase from snake/kebab case: `get_files_id` → `GetFilesId`.
+fn pascal(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for part in text.split(['_', '-']) {
         let mut chars = part.chars();
         if let Some(first) = chars.next() {
-            name.extend(first.to_uppercase());
-            name.push_str(chars.as_str());
+            out.extend(first.to_uppercase());
+            out.push_str(chars.as_str());
         }
     }
-    name
+    out
 }
 
 fn is_object(raw: &RawSchema) -> bool {

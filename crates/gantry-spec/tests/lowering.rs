@@ -12,7 +12,14 @@ fn lower_schemas(schemas: serde_json::Value) -> Result<Lowering, IngestError> {
         "info": { "title": "Box Platform API", "version": "2024.0" },
         "paths": {
             "/files/{file_id}": {
-                "get": { "operationId": "get_files_id", "x-box-tag": "files" }
+                "get": {
+                    "operationId": "get_files_id",
+                    "x-box-tag": "files",
+                    "parameters": [
+                        { "name": "file_id", "in": "path", "required": true,
+                          "schema": { "type": "string" } }
+                    ]
+                }
             }
         },
         "components": { "schemas": schemas }
@@ -275,4 +282,215 @@ fn versioned_documents_get_their_own_module() {
         })
         .collect();
     assert_eq!(modules, ["schemas", "schemas::v2025_0"]);
+}
+
+/// Wrap `paths` (and optional shared parameters) in a minimal document.
+fn lower_paths(
+    paths: serde_json::Value,
+    parameters: serde_json::Value,
+) -> Result<Lowering, IngestError> {
+    let spec = serde_json::json!({
+        "openapi": "3.0.2",
+        "info": { "title": "Box Platform API", "version": "2025.0" },
+        "paths": paths,
+        "components": { "schemas": {}, "parameters": parameters }
+    });
+    let dir = std::env::temp_dir().join(format!(
+        "gantry-op-test-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("spec.json");
+    std::fs::write(&file, serde_json::to_string_pretty(&spec).unwrap()).unwrap();
+    gantry_spec::lower(&SpecSet::load(&[file])?)
+}
+
+#[test]
+fn variation_and_version_suffix_become_structure() {
+    let lowering = lower_paths(
+        serde_json::json!({
+            "/oauth2/token": {
+                "post": {
+                    "operationId": "post_oauth2_token_v2025.0", "x-box-tag": "authorization",
+                    "responses": { "200": { "content": { "application/json": {} } } }
+                }
+            },
+            "/oauth2/token#refresh": {
+                "post": {
+                    "operationId": "post_oauth2_token#refresh", "x-box-tag": "authorization",
+                    "servers": [ { "url": "https://api.box.com" } ],
+                    "responses": { "204": {} }
+                }
+            }
+        }),
+        serde_json::json!({}),
+    )
+    .unwrap();
+    let ops = &lowering.program.operations;
+    assert_eq!(ops.len(), 2);
+    // `_v2025.0` stripped (the document already carries the version);
+    // `#refresh` split into structured variation data.
+    assert_eq!(ops[0].name.as_str(), "post_oauth2_token");
+    assert_eq!(ops[0].variation, None);
+    assert_eq!(ops[0].base_url, ir::BaseUrl::Api);
+    assert_eq!(ops[1].name.as_str(), "post_oauth2_token");
+    assert_eq!(ops[1].variation.as_ref().unwrap().as_str(), "refresh");
+    assert_eq!(ops[1].base_url, ir::BaseUrl::ApiRoot);
+    // The `#` fragment is not part of the request path.
+    assert_eq!(
+        ops[1].path,
+        vec![
+            ir::PathSegment::Literal("oauth2".into()),
+            ir::PathSegment::Literal("token".into())
+        ]
+    );
+    assert_eq!(ops[1].response, ir::ResponseShape::None);
+}
+
+#[test]
+fn params_resolve_including_component_refs() {
+    let lowering = lower_paths(
+        serde_json::json!({
+            "/files/{file_id}": {
+                "get": {
+                    "operationId": "get_files_id", "x-box-tag": "files",
+                    "parameters": [
+                        { "name": "file_id", "in": "path", "required": true,
+                          "schema": { "type": "string" } },
+                        { "name": "fields", "in": "query",
+                          "schema": { "type": "array", "items": { "type": "string" } } },
+                        { "$ref": "#/components/parameters/boxapi" }
+                    ],
+                    "responses": { "200": { "content": { "application/json": {
+                        "schema": { "type": "object", "properties": { "id": { "type": "string" } } }
+                    } } } }
+                }
+            }
+        }),
+        serde_json::json!({
+            "boxapi": { "name": "boxapi", "in": "header", "schema": { "type": "string" } }
+        }),
+    )
+    .unwrap();
+    let op = &lowering.program.operations[0];
+    let kinds: Vec<(&str, ir::ParamLocation)> = op
+        .params
+        .iter()
+        .map(|p| (p.wire_name.as_str(), p.location))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("file_id", ir::ParamLocation::Path),
+            ("fields", ir::ParamLocation::Query),
+            ("boxapi", ir::ParamLocation::Header)
+        ]
+    );
+    // Path params are bare; optional query params wrap in Optional.
+    assert_eq!(op.params[0].ty, ir::Type::String);
+    assert_eq!(
+        op.params[1].ty,
+        ir::Type::Optional(Box::new(ir::Type::List(Box::new(ir::Type::String))))
+    );
+    assert_eq!(
+        op.path,
+        vec![
+            ir::PathSegment::Literal("files".into()),
+            ir::PathSegment::Parameter(ir::Identifier::new("file_id").unwrap())
+        ]
+    );
+}
+
+#[test]
+fn composite_path_segments_parse_into_parts() {
+    let lowering = lower_paths(
+        serde_json::json!({
+            "/files/{file_id}/thumbnail.{extension}": {
+                "get": {
+                    "operationId": "get_files_id_thumbnail_id", "x-box-tag": "files",
+                    "parameters": [
+                        { "name": "file_id", "in": "path", "required": true,
+                          "schema": { "type": "string" } },
+                        { "name": "extension", "in": "path", "required": true,
+                          "schema": { "type": "string" } }
+                    ],
+                    "responses": {
+                        "200": { "content": { "image/png": {} } },
+                        "202": {},
+                        "302": {}
+                    }
+                }
+            }
+        }),
+        serde_json::json!({}),
+    )
+    .unwrap();
+    let op = &lowering.program.operations[0];
+    assert_eq!(
+        op.path[2],
+        ir::PathSegment::Composite(vec![
+            ir::PathPart::Literal("thumbnail.".into()),
+            ir::PathPart::Parameter(ir::Identifier::new("extension").unwrap())
+        ])
+    );
+    // 200 image/png beats the content-free 202/302: binary download.
+    assert_eq!(op.response, ir::ResponseShape::Binary);
+}
+
+#[test]
+fn redirect_only_success_is_a_redirect() {
+    let lowering = lower_paths(
+        serde_json::json!({
+            "/gone": {
+                "get": {
+                    "operationId": "get_gone", "x-box-tag": "files",
+                    "responses": { "302": {} }
+                }
+            }
+        }),
+        serde_json::json!({}),
+    )
+    .unwrap();
+    assert_eq!(
+        lowering.program.operations[0].response,
+        ir::ResponseShape::Redirect
+    );
+}
+
+#[test]
+fn undeclared_path_parameter_fails_loudly() {
+    let err = lower_paths(
+        serde_json::json!({
+            "/files/{file_id}": {
+                "get": {
+                    "operationId": "get_files_id", "x-box-tag": "files",
+                    "responses": { "204": {} }
+                }
+            }
+        }),
+        serde_json::json!({}),
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("{file_id}") && err.to_string().contains("no declaration"),
+        "{err}"
+    );
+}
+
+#[test]
+fn mismatched_version_marker_fails_loudly() {
+    let err = lower_paths(
+        serde_json::json!({
+            "/widgets": {
+                "get": {
+                    "operationId": "get_widgets_v2099.0", "x-box-tag": "widgets",
+                    "responses": { "204": {} }
+                }
+            }
+        }),
+        serde_json::json!({}),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("version marker"), "{err}");
 }

@@ -187,12 +187,14 @@ effort.
 4. ~~Typed schema model in `gantry-spec`: `$ref` graph, `oneOf`/`allOf`,
    open enums — lowered into the IR `Program`.~~ ✅ (D-105; schemas done —
    parameters and request/response bodies still open)
-5. Operations into the IR: parameters, request/response bodies, binary
-   responses, base-URL mapping (FR-1.3 remainder).
-6. Naming rules in the ingestion layer (FR-1.2): operation naming incl.
-   `#variation` translation, manager/schema naming, casing; tri-state
-   null-vs-absent optionality decision (D-105 consequence).
-7. Review the drafted IR node set against assessment §4 and record it as a
-   decision once operations exercise it.
-8. Schedule the M3.5 Apex spike for the first week the IR can express a
-   full manager.
+5. ~~Operations into the IR: parameters, request/response bodies, binary
+   responses, base-URL mapping (FR-1.3 remainder).~~ ✅ (D-106; all 336
+   real operations lower with classified shapes)
+6. Remaining naming rules in the ingestion layer (FR-1.2): idiomatic
+   operation/manager/schema naming and casing policy (`#variation` and
+   version-suffix translation are done); tri-state null-vs-absent
+   optionality decision (D-105 consequence).
+7. Semantic pass (FR-3) over the now-complete Program: every ref bound,
+   every type well-formed — then freeze the IR node set as a decision.
+8. Schedule the M3.5 Apex spike — the IR can now express a full manager,
+   so the spike is unblocked.

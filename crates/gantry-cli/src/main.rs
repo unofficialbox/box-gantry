@@ -111,6 +111,20 @@ fn check(specs: &[PathBuf]) -> ExitCode {
         holes = stats.json_value_sites,
     );
     println!(
+        "ok  IR: {ops} operations — {json} JSON, {empty} body-less, {binary} binary, \
+         {redirect} redirect, {text} text",
+        ops = stats.operations,
+        json = stats.operations
+            - stats.empty_responses
+            - stats.binary_responses
+            - stats.redirect_responses
+            - stats.text_responses,
+        empty = stats.empty_responses,
+        binary = stats.binary_responses,
+        redirect = stats.redirect_responses,
+        text = stats.text_responses,
+    );
+    println!(
         "ok  spec set: {docs} document(s), {total_ops} operations, {total_schemas} schemas",
         docs = set.documents.len(),
     );

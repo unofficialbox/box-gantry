@@ -27,6 +27,9 @@ pub struct RawInfo {
 pub struct RawComponents {
     #[serde(default)]
     pub schemas: IndexMap<String, RawSchema>,
+    /// Shared parameters referenced as `#/components/parameters/Name`.
+    #[serde(default)]
+    pub parameters: IndexMap<String, RawParameter>,
 }
 
 /// One schema node, covering every shape the vendored Box specs use:
@@ -113,4 +116,51 @@ pub struct RawOperation {
     pub deprecated: bool,
     #[serde(rename = "x-stability-level")]
     pub stability_level: Option<String>,
+    #[serde(default)]
+    pub parameters: Vec<RawParameter>,
+    #[serde(rename = "requestBody")]
+    pub request_body: Option<RawRequestBody>,
+    #[serde(default)]
+    pub responses: IndexMap<String, RawResponse>,
+    /// Operation-level base-URL override (the G-2 quirk).
+    #[serde(default)]
+    pub servers: Vec<RawServer>,
+}
+
+/// A parameter — inline, or a `$ref` into `components.parameters` (in
+/// which case every other field is `None`/default).
+#[derive(Debug, Deserialize)]
+pub struct RawParameter {
+    #[serde(rename = "$ref")]
+    pub reference: Option<String>,
+    pub name: Option<String>,
+    #[serde(rename = "in")]
+    pub location: Option<String>,
+    #[serde(default)]
+    pub required: bool,
+    pub schema: Option<RawSchema>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RawRequestBody {
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub content: IndexMap<String, RawMediaType>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RawMediaType {
+    pub schema: Option<RawSchema>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RawResponse {
+    #[serde(default)]
+    pub content: IndexMap<String, RawMediaType>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RawServer {
+    pub url: String,
 }

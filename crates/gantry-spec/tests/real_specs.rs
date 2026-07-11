@@ -49,13 +49,42 @@ fn the_full_real_spec_set_ingests() {
     // pinned so growth and free-form holes only change deliberately (NF-1,
     // VR-6 lineage).
     let lowering = gantry_spec::lower(&set).expect("the vendored Box specs must lower");
-    assert_eq!(lowering.program.decls.len(), 967);
+    assert_eq!(lowering.program.decls.len(), 1332);
     let stats = &lowering.stats;
     assert_eq!(
         (stats.structs, stats.unions, stats.discriminated_unions),
-        (550, 43, 23)
+        (736, 46, 23)
     );
-    assert_eq!((stats.enums, stats.aliases), (372, 2));
-    assert_eq!(stats.synthesized, 559);
-    assert_eq!(stats.json_value_sites, 20);
+    assert_eq!((stats.enums, stats.aliases), (548, 2));
+    assert_eq!(stats.synthesized, 924);
+    assert_eq!(stats.json_value_sites, 26);
+
+    // Operations: every one lowered, with classified success shapes.
+    assert_eq!(lowering.program.operations.len(), 336);
+    assert_eq!(stats.operations, 336);
+    assert_eq!(
+        (
+            stats.empty_responses,
+            stats.binary_responses,
+            stats.text_responses,
+            stats.redirect_responses
+        ),
+        (56, 4, 1, 0)
+    );
+    // Nineteen `#variation` ids became structured variations (D-104).
+    let variations = lowering
+        .program
+        .operations
+        .iter()
+        .filter(|op| op.variation.is_some())
+        .count();
+    assert_eq!(variations, 19);
+    // The base-URL quirk (G-2): non-default servers map to the closed set.
+    let non_default = lowering
+        .program
+        .operations
+        .iter()
+        .filter(|op| op.base_url != gantry_ir::BaseUrl::Api)
+        .count();
+    assert_eq!(non_default, 14);
 }

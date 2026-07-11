@@ -193,6 +193,131 @@ pub enum Extensibility {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ApiVersion(pub String);
 
+/// The closed set of HTTP methods OpenAPI 3.x defines (FR-2.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HttpMethod {
+    Get,
+    Put,
+    Post,
+    Delete,
+    Options,
+    Head,
+    Patch,
+    Trace,
+}
+
+/// The Box base-URL classes an operation can target (G-2). The mapping
+/// from spec `servers` URLs to these classes is fixed at ingestion
+/// (D-106); an unknown URL is a loud error, never a pass-through string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaseUrl {
+    /// `https://api.box.com/2.0` — the default.
+    Api,
+    /// `https://api.box.com` — OAuth2 token/revoke endpoints.
+    ApiRoot,
+    /// `https://upload.box.com/api/2.0` — multipart uploads.
+    Upload,
+    /// `https://{box-upload-server}/api/2.0` — the session-provided host
+    /// for chunked-upload parts.
+    UploadSession,
+    /// `https://account.box.com/api/oauth2` — the authorize web page.
+    OAuthAuthorize,
+    /// `https://dl.boxcloud.com/2.0` — direct downloads.
+    Download,
+}
+
+/// One segment of a request path — structure, not a template string to
+/// re-parse (FR-2.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathSegment {
+    Literal(String),
+    /// Filled from the path parameter with the same name (validated at
+    /// ingestion).
+    Parameter(Identifier),
+    /// A segment mixing literal text and parameters, e.g. the real spec's
+    /// `thumbnail.{extension}`.
+    Composite(Vec<PathPart>),
+}
+
+/// One piece of a [`PathSegment::Composite`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathPart {
+    Literal(String),
+    Parameter(Identifier),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamLocation {
+    Path,
+    Query,
+    Header,
+}
+
+/// One operation parameter. Optionality is in the type (FR-2.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Param {
+    pub name: Identifier,
+    /// The wire name (query key / header name), kept apart from the
+    /// identifier just like struct fields.
+    pub wire_name: String,
+    pub location: ParamLocation,
+    pub ty: Type,
+}
+
+/// The closed set of request media the Box specs use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestMedia {
+    Json,
+    /// `application/json-patch+json` (metadata updates).
+    JsonPatch,
+    UrlEncoded,
+    Multipart,
+    OctetStream,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestBody {
+    pub media: RequestMedia,
+    /// `Optional<…>` when the spec marks the body itself as not required.
+    pub ty: Type,
+}
+
+/// What a successful call yields — classified at ingestion, never
+/// re-derived from status-code strings by backends (FR-2.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResponseShape {
+    /// Success carries no body (e.g. 204).
+    None,
+    Json(Type),
+    /// Raw bytes (downloads, thumbnails) — streamed where the platform
+    /// allows (FR-7.4).
+    Binary,
+    /// Textual non-JSON content (the authorize page).
+    Text,
+    /// Success is a redirect; the result is the `Location` URL.
+    Redirect,
+}
+
+/// One API operation, fully resolved (FR-2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Operation {
+    /// The base operation name; any `#variation` suffix from the spec's
+    /// `operationId` is split into [`Operation::variation`] — `#` never
+    /// reaches an identifier.
+    pub name: Identifier,
+    pub variation: Option<Identifier>,
+    /// Manager grouping key (from `x-box-tag`, D-104; FR-7.1).
+    pub manager: Identifier,
+    pub api_version: Option<ApiVersion>,
+    pub method: HttpMethod,
+    pub base_url: BaseUrl,
+    pub path: Vec<PathSegment>,
+    pub params: Vec<Param>,
+    pub request: Option<RequestBody>,
+    pub response: ResponseShape,
+    pub deprecated: bool,
+}
+
 /// A verified program: the only thing a backend ever receives (FR-3.2).
 ///
 /// All `DeclId`s index into `decls`; the arena is append-only during
@@ -200,6 +325,7 @@ pub struct ApiVersion(pub String);
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Program {
     pub decls: Vec<Decl>,
+    pub operations: Vec<Operation>,
 }
 
 impl Program {

@@ -127,3 +127,39 @@ conventions structurally, once:
 20 JsonValue sites), pinned in `tests/real_specs.rs`. The null-vs-absent
 tri-state currently collapses into `Optional` — revisit before Go
 serializer work (PLAN.md).
+
+## D-106 — Operation-lowering conventions for the Box specs
+
+**Status:** accepted · 2026-07-11
+
+**Context:** Lowering the 336 real operations surfaced more unformalized
+conventions, each caught by a loud ingestion error rather than observed
+in broken output: versioned documents suffix `operationId`s with
+`_v2025.0`; path keys carry `#variation` fragments; one path segment
+mixes literal and parameter text (`thumbnail.{extension}`); operations
+override the base URL with six distinct `servers` values; success
+responses vary from body-less 204s to binary downloads with 202/302
+siblings.
+
+**Decision:**
+- **Names**: the `_v{version}` suffix is stripped when it matches the
+  document's declared version (a mismatched marker fails); `#variation`
+  splits into a structured `variation` field; `#` fragments on path keys
+  are authoring plumbing, excluded from the request path.
+- **Paths**: templates parse into structured segments
+  (literal / parameter / composite); every placeholder must be backed by
+  a declared, required path parameter.
+- **Base URLs** (the G-2 quirk): spec `servers` URLs map to a closed
+  six-value `BaseUrl` enum (Api, ApiRoot, Upload, UploadSession,
+  OAuthAuthorize, Download); an unknown URL fails ingestion.
+- **Bodies**: exactly one media type per request body, from the closed
+  set {json, json-patch, url-encoded, multipart, octet-stream}.
+- **Responses**: ascending status order, the first content-bearing
+  2xx/3xx decides the shape (Json/Binary/Text); all media of that
+  response must classify identically; a content-free 302 makes the
+  operation a Redirect; otherwise the success is body-less.
+
+**Consequences:** All 336 operations lower (275 JSON, 56 body-less,
+4 binary, 1 text, 0 redirect-only; 19 variations; 14 non-default base
+URLs), pinned in `tests/real_specs.rs`. Program totals grow to 1,332
+declarations / 26 JsonValue sites with parameter and body synthesis.
