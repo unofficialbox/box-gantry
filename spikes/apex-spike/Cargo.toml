@@ -1,0 +1,18 @@
+[package]
+name = "apex-spike"
+description = "M3.5 throwaway Apex lowering spike — pressure-tests the IR against the extreme target (PLAN.md, D-103)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gantry-ir.workspace = true
+gantry-manifest.workspace = true
+gantry-sema.workspace = true
+
+[dev-dependencies]
+gantry-spec.workspace = true
+
+[lints]
+workspace = true

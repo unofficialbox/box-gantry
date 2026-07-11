@@ -199,6 +199,9 @@ effort.
    findings, engine-bug vs spec-error classes drive FR-8.3 exit codes;
    manager index as the queryable analysis product — 85 managers on the
    real spec set)
-8. Freeze the IR node set as a decision; then the M3.5 Apex spike (now
-   unblocked — the IR expresses full managers).
-9. M2 remainder: manifest freeze + runtime contract format (FR-4, FR-5).
+8. ~~Freeze the IR node set as a decision~~ ✅ (D-107) ~~; then the M3.5
+   Apex spike~~ ✅ (D-108: 85/85 managers lower, zero IR changes forced;
+   name-length + tri-state findings feed the naming layer)
+9. M2 remainder: manifest freeze + runtime contract format (FR-4, FR-5);
+   FR-1.2 naming/casing layer (shorten synthesized names — D-108 finding
+   2 — and decide the tri-state, D-105/D-108 finding 3).
