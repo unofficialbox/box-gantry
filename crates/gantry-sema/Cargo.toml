@@ -1,0 +1,10 @@
+[package]
+name = "gantry-sema"
+description = "Semantic analysis: one pass, complete type environment (FR-3)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

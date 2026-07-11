@@ -1,0 +1,47 @@
+//! The vendored real Box specs must always ingest cleanly — the earliest
+//! form of the "generate the real spec" primary CI signal (VR-1.1 lineage).
+
+use std::path::PathBuf;
+
+use gantry_spec::SpecSet;
+
+fn fixture(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/specs")
+        .join(name)
+}
+
+#[test]
+fn the_full_real_spec_set_ingests() {
+    let set = SpecSet::load(&[
+        fixture("openapi.json"),
+        fixture("openapi-v2025.0.json"),
+        fixture("openapi-v2026.0.json"),
+    ])
+    .expect("the vendored Box specs must ingest without errors");
+
+    let versions: Vec<&str> = set
+        .documents
+        .iter()
+        .map(|d| d.api_version.as_str())
+        .collect();
+    assert_eq!(versions, ["2024.0", "2025.0", "2026.0"]);
+
+    let base = &set.documents[0];
+    // Counts as of the vendored snapshot (see fixtures/specs/README.md).
+    // If a spec refresh changes them, updating these numbers is the
+    // deliberate, reviewed act the determinism rules want (FR-6.2, VR-6).
+    assert_eq!(base.operations.len(), 296);
+    assert_eq!(base.schema_names.len(), 305);
+    assert_eq!(base.managers().len(), 73);
+
+    assert_eq!(set.documents[1].operations.len(), 37);
+    assert_eq!(set.documents[2].operations.len(), 3);
+
+    // Every operation everywhere is grouped and identified.
+    for doc in &set.documents {
+        for op in &doc.operations {
+            assert!(!op.id.is_empty() && !op.manager.is_empty());
+        }
+    }
+}

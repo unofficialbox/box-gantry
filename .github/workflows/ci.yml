@@ -1,0 +1,36 @@
+# The primary CI signal (PLAN.md, verification cadence). The toolchain is
+# pinned by rust-toolchain.toml (NF-6); rustup respects it automatically.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+      - name: Check the real Box specs (ingestion must be loud-clean)
+        run: >
+          cargo run -p gantry-cli -- check
+          fixtures/specs/openapi.json
+          fixtures/specs/openapi-v2025.0.json
+          fixtures/specs/openapi-v2026.0.json

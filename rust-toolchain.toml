@@ -1,0 +1,4 @@
+# NF-6: reproducible from clean checkout — the toolchain is pinned.
+[toolchain]
+channel = "1.94.1"
+components = ["rustfmt", "clippy"]

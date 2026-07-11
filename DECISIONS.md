@@ -66,3 +66,27 @@ containers) that Apex lowers away; manifest axes for generics, callout
 limits, and coverage mandates exist from M2; the spike's IR pressure is
 reviewed explicitly so Apex limitations never silently reshape the IR
 (assessment §8).
+
+## D-104 — `x-box-tag` is the manager grouping key; `tags` is display-only
+
+**Status:** accepted · 2026-07-11
+
+**Context:** Manager grouping (FR-7.1) needs a machine-readable key on
+every operation. The vendored real specs show `tags` is a display concern:
+at least one operation (`get_enterprise_configurations_id_v2025.0`) has no
+`tags` at all but does carry `x-box-tag`. Every operation in all three
+documents (base 2024.0, 2025.0, 2026.0) carries a non-empty `x-box-tag`,
+and `operationId` is unique per document.
+
+**Decision:** Ingestion groups operations by `x-box-tag` and treats a
+missing/empty `x-box-tag` or `operationId` as a loud ingestion error
+(FR-1.4) — an operation that cannot be grouped or named must fail the run,
+never be skipped (NF-1). `tags` is not consumed.
+
+**Consequences:** `gantry-spec` validates both invariants on every load;
+the real-spec integration test pins the current counts (296/37/3
+operations, 73 managers in base). `operationId`s carrying the
+`#variation` suffix (19 in the base spec) are a spec-authoring convention
+that the naming layer (FR-1.2) must translate into structured variation
+data — the `#` never survives into an IR identifier ([`Identifier`]
+rejects it).
