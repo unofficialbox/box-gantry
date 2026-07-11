@@ -194,7 +194,11 @@ effort.
    operation/manager/schema naming and casing policy (`#variation` and
    version-suffix translation are done); tri-state null-vs-absent
    optionality decision (D-105 consequence).
-7. Semantic pass (FR-3) over the now-complete Program: every ref bound,
-   every type well-formed — then freeze the IR node set as a decision.
-8. Schedule the M3.5 Apex spike — the IR can now express a full manager,
-   so the spike is unblocked.
+7. ~~Semantic pass (FR-3) over the now-complete Program: every ref bound,
+   every type well-formed.~~ ✅ (`gantry-sema`: one pass, collects all
+   findings, engine-bug vs spec-error classes drive FR-8.3 exit codes;
+   manager index as the queryable analysis product — 85 managers on the
+   real spec set)
+8. Freeze the IR node set as a decision; then the M3.5 Apex spike (now
+   unblocked — the IR expresses full managers).
+9. M2 remainder: manifest freeze + runtime contract format (FR-4, FR-5).

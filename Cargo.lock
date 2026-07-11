@@ -113,6 +113,7 @@ name = "gantry-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "gantry-sema",
  "gantry-spec",
 ]
 
@@ -131,12 +132,17 @@ version = "0.1.0"
 [[package]]
 name = "gantry-sema"
 version = "0.1.0"
+dependencies = [
+ "gantry-ir",
+ "thiserror",
+]
 
 [[package]]
 name = "gantry-spec"
 version = "0.1.0"
 dependencies = [
  "gantry-ir",
+ "gantry-sema",
  "indexmap",
  "serde",
  "serde_json",

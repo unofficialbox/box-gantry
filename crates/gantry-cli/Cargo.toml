@@ -11,6 +11,7 @@ name = "gantry"
 path = "src/main.rs"
 
 [dependencies]
+gantry-sema.workspace = true
 gantry-spec.workspace = true
 clap.workspace = true
 
