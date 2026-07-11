@@ -163,3 +163,63 @@ siblings.
 4 binary, 1 text, 0 redirect-only; 19 variations; 14 non-default base
 URLs), pinned in `tests/real_specs.rs`. Program totals grow to 1,332
 declarations / 26 JsonValue sites with parameter and body synthesis.
+
+## D-107 — The IR node set is frozen as the v1 baseline
+
+**Status:** accepted · 2026-07-11
+
+**Context:** The IR (FR-2) now expresses the complete real Box surface:
+1,332 declarations and 336 operations lower from the three vendored
+documents, the semantic pass verifies the whole program, and the M3.5
+Apex spike lowers all 85 managers through exhaustive matches with no
+escape hatches.
+
+**Decision:** The node set as of this record — `Type` (11 kinds incl.
+`Optional`, `JsonValue`), `DeclKind` (Struct/Union/Enum/Alias),
+`Operation` with `Param`/`RequestBody`/`ResponseShape`/`PathSegment`
+(incl. `Composite`)/`BaseUrl`/`HttpMethod`, and the closed enums behind
+them — is the v1 baseline. Adding or changing a node kind now requires a
+decision record, and the compiler enumerates every lowering the change
+breaks (FR-2.1, NF-4).
+
+**Consequences:** Backends and feature synthesis can build against a
+stable surface. The known open item is deliberate: the null-vs-absent
+tri-state (D-105, reconfirmed by D-108) may add one axis to optionality
+before Go serializer work — that change will get its own record.
+
+## D-108 — M3.5 Apex spike findings
+
+**Status:** accepted · 2026-07-11
+
+**Context:** PLAN.md M3.5: a timeboxed, throwaway Apex lowering
+(`spikes/apex-spike`) run against the full real spec set to surface any
+IR changes the extreme target forces, months before the real Apex
+backend (assessment §8 primary risk). The spike consumes only manifest
+axes (flat namespace + 40-char identifier limit, no user generics,
+buffered streaming) — never the language name.
+
+**Findings (spike run: 85/85 managers lower; 4,678 identifiers minted;
+719 KB of throwaway source; deterministic across runs):**
+1. **The IR held — zero node changes forced.** Every node kind lowers
+   through exhaustive matches; the assessment §8 risk did not
+   materialize at this depth.
+2. **Name-length pressure is real: 337 identifiers exceed 40 chars**
+   (synthesized request-body/response names). The real backend needs the
+   deterministic abbreviation scheme the spike prototyped (prefix +
+   FNV-hash suffix), and the FR-1.2 naming layer should shorten
+   synthesized names before mangling ever triggers.
+3. **Optionality erases in Apex** (every reference is nullable) — the
+   D-105 null-vs-absent tri-state matters on the Apex side too; resolve
+   before serializer work.
+4. **The identifier/wire-name split (FR-2.2) paid off**: Apex reserved
+   words (`limit`, `group`, `date`…) appear as Box wire names and mangle
+   safely without touching serialization.
+5. **49 discriminated unions** get `JSON.deserializeUntyped` dispatch
+   (TR-Apex.4 shape confirmed); structural unions erase to `Object`, a
+   manifest-accepted loss.
+6. **66 paged operations** get per-type page classes — TR-Apex.2's
+   no-user-generics lowering works without a shared `Page<T>`.
+
+**Consequences:** The spike stays in the workspace so its exhaustive
+matches keep proving IR-totality for Apex in CI; it is retired when the
+real backend lands (M4). Its output is never shipped.
