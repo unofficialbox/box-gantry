@@ -92,6 +92,17 @@ pub const V1: RuntimeContract = RuntimeContract {
                        acquiring or refreshing through the pluggable token store as needed.",
         },
         ContractFn {
+            name: "base_url",
+            params: &[("name", ContractType::String)],
+            ret: Some(ContractType::String),
+            fallible: false,
+            takes_context: false,
+            behavior: "The configured base URL for a D-106 class (\"api\", \"api_root\", \
+                       \"upload\", \"upload_session\", \"oauth_authorize\", \"download\"), \
+                       without a trailing slash. Runtime configuration may override any of \
+                       them (custom deployments).",
+        },
+        ContractFn {
             name: "new_request",
             params: &[
                 ("method", ContractType::String),
@@ -136,6 +147,18 @@ pub const V1: RuntimeContract = RuntimeContract {
             fallible: false,
             takes_context: false,
             behavior: "Return the request with the serialized JSON body and content type set.",
+        },
+        ContractFn {
+            name: "with_form_body",
+            params: &[
+                ("request", ContractType::Request),
+                ("form", ContractType::Bytes),
+            ],
+            ret: Some(ContractType::Request),
+            fallible: false,
+            takes_context: false,
+            behavior: "Return the request with an application/x-www-form-urlencoded body \
+                       (the OAuth2 token endpoints).",
         },
         ContractFn {
             name: "with_stream_body",

@@ -216,8 +216,14 @@ effort.
     clean on the full real spec, in tests and CI. The loop caught four
     real defects on first contact (`User--Mini` names, `$`-prefixed
     metadata keys, `:append` custom methods, union-field padding).
-12. M3 continues: managers + client (FR-7.1), URL/query building against
-    the runtime contract, pagination (`iter.Seq2`, TR-Go.4), the
-    serialization package incl. the BG-1 tri-state wrapper and a real
-    `Date` type; per-node lowering fixtures (VR-2); round-trip tests
-    (VR-4); determinism double-generate in CI (VR-5).
+12. ~~M3: managers + client (FR-7.1), URL/query building against the
+    runtime contract.~~ ✅ All 85 managers + the client entry point
+    generate and compile against the contract stubs (FR-5.2/5.3 closed
+    loop): structured-path URL building, typed query/header conversion
+    (incl. JSON-in-query for `mdfilters`-class params), JSON / stream /
+    multipart / form bodies, response decoding per shape. `gantry
+    verify` covers the whole 92-file SDK tree in CI.
+13. M3 continues: pagination (`iter.Seq2`, TR-Go.4), the serialization
+    package (BG-1 tri-state wrapper, real `Date` type), `With*` client
+    decorators, generated tests + docs (FR-7.7/7.8); per-node lowering
+    fixtures (VR-2); round-trip tests (VR-4).

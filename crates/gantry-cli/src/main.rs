@@ -84,7 +84,10 @@ fn generate_files(
         ExitCode::from(exit_codes::SPEC_ERROR)
     })?;
     match gantry_sema::analyze(&lowering.program) {
-        Ok(analysis) => Ok(gantry_backend_go::generate_models(&analysis)),
+        Ok(analysis) => gantry_backend_go::generate(&analysis).map_err(|err| {
+            eprintln!("error: {err}");
+            ExitCode::from(exit_codes::ENGINE_BUG)
+        }),
         Err(errors) => {
             let engine_bug = errors.iter().any(gantry_sema::SemaError::is_engine_bug);
             for error in &errors {
