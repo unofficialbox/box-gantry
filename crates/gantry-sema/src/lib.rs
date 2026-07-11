@@ -38,6 +38,15 @@ pub enum SemaError {
     )]
     DoubleOptional { context: String },
 
+    #[error(
+        "{context}: {detail} — optionality wrappers must nest canonically \
+         (Optional<Nullable<T>>, D-110) — engine bug"
+    )]
+    BadNullability {
+        context: String,
+        detail: &'static str,
+    },
+
     #[error("duplicate declaration name {name:?} in module {module:?}")]
     DuplicateDeclName { module: String, name: String },
 
@@ -71,7 +80,9 @@ impl SemaError {
     /// the spec, is at fault (exit-code class: engine bug, FR-8.3).
     pub fn is_engine_bug(&self) -> bool {
         match self {
-            Self::DanglingRef { .. } | Self::DoubleOptional { .. } => true,
+            Self::DanglingRef { .. }
+            | Self::DoubleOptional { .. }
+            | Self::BadNullability { .. } => true,
             Self::DuplicateDeclName { .. }
             | Self::DuplicateWireName { .. }
             | Self::EmptyUnion { .. }
@@ -120,7 +131,7 @@ pub fn analyze(program: &ir::Program) -> Result<Analysis<'_>, Vec<SemaError>> {
                             wire_name: field.wire_name.clone(),
                         });
                     }
-                    check_type(program, &context, &field.ty, false, &mut errors);
+                    check_type(program, &context, &field.ty, Wrapper::None, &mut errors);
                 }
             }
             ir::DeclKind::Union(u) => {
@@ -143,7 +154,7 @@ pub fn analyze(program: &ir::Program) -> Result<Analysis<'_>, Vec<SemaError>> {
                     }
                 }
                 for variant in &u.variants {
-                    check_type(program, &context, &variant.ty, false, &mut errors);
+                    check_type(program, &context, &variant.ty, Wrapper::None, &mut errors);
                 }
             }
             ir::DeclKind::Enum(e) => {
@@ -153,7 +164,9 @@ pub fn analyze(program: &ir::Program) -> Result<Analysis<'_>, Vec<SemaError>> {
                     });
                 }
             }
-            ir::DeclKind::Alias(ty) => check_type(program, &context, ty, false, &mut errors),
+            ir::DeclKind::Alias(ty) => {
+                check_type(program, &context, ty, Wrapper::None, &mut errors)
+            }
         }
     }
 
@@ -188,13 +201,15 @@ pub fn analyze(program: &ir::Program) -> Result<Analysis<'_>, Vec<SemaError>> {
                     wire_name: param.wire_name.clone(),
                 });
             }
-            check_type(program, &context, &param.ty, false, &mut errors);
+            check_type(program, &context, &param.ty, Wrapper::None, &mut errors);
         }
         if let Some(body) = &op.request {
-            check_type(program, &context, &body.ty, false, &mut errors);
+            check_type(program, &context, &body.ty, Wrapper::None, &mut errors);
         }
         match &op.response {
-            ir::ResponseShape::Json(ty) => check_type(program, &context, ty, false, &mut errors),
+            ir::ResponseShape::Json(ty) => {
+                check_type(program, &context, ty, Wrapper::None, &mut errors)
+            }
             ir::ResponseShape::None
             | ir::ResponseShape::Binary
             | ir::ResponseShape::Text
@@ -214,26 +229,49 @@ pub fn analyze(program: &ir::Program) -> Result<Analysis<'_>, Vec<SemaError>> {
     }
 }
 
-/// Walk a type: every `DeclId` must be in bounds, and `Optional` must
-/// never directly wrap `Optional`.
+/// What optionality wrapper we are directly inside of, for canonical
+/// nesting checks (D-110: only `Optional<Nullable<T>>` may stack).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Wrapper {
+    None,
+    Optional,
+    Nullable,
+}
+
+/// Walk a type: every `DeclId` must be in bounds, and optionality
+/// wrappers must nest canonically.
 fn check_type(
     program: &ir::Program,
     context: &str,
     ty: &ir::Type,
-    inside_optional: bool,
+    wrapper: Wrapper,
     errors: &mut Vec<SemaError>,
 ) {
     match ty {
         ir::Type::Optional(inner) => {
-            if inside_optional {
-                errors.push(SemaError::DoubleOptional {
+            match wrapper {
+                Wrapper::Optional => errors.push(SemaError::DoubleOptional {
                     context: context.to_string(),
+                }),
+                Wrapper::Nullable => errors.push(SemaError::BadNullability {
+                    context: context.to_string(),
+                    detail: "Nullable<Optional<…>> (Optional must be outermost)",
+                }),
+                Wrapper::None => {}
+            }
+            check_type(program, context, inner, Wrapper::Optional, errors);
+        }
+        ir::Type::Nullable(inner) => {
+            if wrapper == Wrapper::Nullable {
+                errors.push(SemaError::BadNullability {
+                    context: context.to_string(),
+                    detail: "Nullable<Nullable<…>>",
                 });
             }
-            check_type(program, context, inner, true, errors);
+            check_type(program, context, inner, Wrapper::Nullable, errors);
         }
         ir::Type::List(inner) | ir::Type::Map(inner) => {
-            check_type(program, context, inner, false, errors);
+            check_type(program, context, inner, Wrapper::None, errors);
         }
         ir::Type::Decl(id) => {
             if id.0 as usize >= program.decls.len() {
@@ -436,5 +474,48 @@ mod tests {
         let analysis = analyze(&program).unwrap();
         assert_eq!(analysis.managers.len(), 1);
         assert_eq!(analysis.managers["files"], vec![0, 1]);
+    }
+
+    #[test]
+    fn nullability_must_nest_canonically() {
+        let field = |name: &str, ty: ir::Type| ir::Field {
+            name: ident(name),
+            wire_name: name.into(),
+            ty,
+        };
+        let program = program_with(vec![decl(
+            "Bad",
+            ir::DeclKind::Struct(ir::StructDecl {
+                fields: vec![
+                    field(
+                        "double_null",
+                        ir::Type::Nullable(Box::new(ir::Type::Nullable(Box::new(
+                            ir::Type::String,
+                        )))),
+                    ),
+                    field(
+                        "inverted",
+                        ir::Type::Nullable(Box::new(ir::Type::Optional(Box::new(
+                            ir::Type::String,
+                        )))),
+                    ),
+                    field(
+                        "canonical",
+                        ir::Type::Optional(Box::new(ir::Type::Nullable(Box::new(
+                            ir::Type::String,
+                        )))),
+                    ),
+                ],
+            }),
+        )]);
+        let errors = analyze(&program).unwrap_err();
+        // Two engine bugs; the canonical field contributes none.
+        assert_eq!(errors.len(), 2);
+        assert!(errors.iter().all(SemaError::is_engine_bug));
+        assert!(
+            errors
+                .iter()
+                .all(|e| matches!(e, SemaError::BadNullability { .. }))
+        );
     }
 }

@@ -292,10 +292,10 @@ impl Spike<'_> {
 
     fn apex_type(&mut self, ty: &ir::Type) -> String {
         match ty {
-            // Every Apex reference is nullable: optionality erases at the
-            // type level and lives in null-ness (the D-105 tri-state
-            // pressure, felt here too).
-            ir::Type::Optional(inner) => self.apex_type(inner),
+            // Every Apex reference is nullable: both tri-state wrappers
+            // (D-110) erase at the type level; absent-vs-null lives in
+            // the serializer, not the type.
+            ir::Type::Optional(inner) | ir::Type::Nullable(inner) => self.apex_type(inner),
             ir::Type::List(inner) => format!("List<{}>", self.apex_type(inner)),
             ir::Type::Map(inner) => format!("Map<String, {}>", self.apex_type(inner)),
             ir::Type::Bool => "Boolean".to_string(),
@@ -337,7 +337,10 @@ impl Spike<'_> {
 
 fn collect_type_refs(ty: &ir::Type, stack: &mut Vec<ir::DeclId>) {
     match ty {
-        ir::Type::Optional(inner) | ir::Type::List(inner) | ir::Type::Map(inner) => {
+        ir::Type::Optional(inner)
+        | ir::Type::Nullable(inner)
+        | ir::Type::List(inner)
+        | ir::Type::Map(inner) => {
             collect_type_refs(inner, stack);
         }
         ir::Type::Decl(id) => stack.push(*id),

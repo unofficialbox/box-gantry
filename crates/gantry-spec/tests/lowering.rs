@@ -70,10 +70,15 @@ fn wrapper_idiom_is_a_reference_not_a_new_type() {
     .unwrap();
     let folder = struct_decl(find(&lowering.program, "Folder"));
     let parent = &folder.fields[0];
-    // nullable came from the annotation part; the type is the referenced
-    // decl, not a synthesized wrapper.
-    let ir::Type::Optional(inner) = &parent.ty else {
+    // The full tri-state (D-110): the key may be absent (not required)
+    // AND the value may be an explicit null (annotation-part nullable) —
+    // canonically Optional<Nullable<T>>. The type is the referenced decl,
+    // not a synthesized wrapper.
+    let ir::Type::Optional(nullable) = &parent.ty else {
         panic!("parent must be optional: {:?}", parent.ty)
+    };
+    let ir::Type::Nullable(inner) = &**nullable else {
+        panic!("parent must be nullable: {nullable:?}")
     };
     let ir::Type::Decl(id) = **inner else {
         panic!("parent must reference FolderMini: {inner:?}")
@@ -202,6 +207,15 @@ fn enums_are_open_and_null_entries_encode_nullability() {
     assert_eq!(decl.values, ["editor", "viewer"]);
     assert_eq!(decl.extensibility, ir::Extensibility::Open);
     assert_eq!(lowering.stats.synthesized, 1);
+    // The null entry marks the field nullable (D-110); required keeps it
+    // from also being Optional.
+    let thing = struct_decl(find(&lowering.program, "Thing"));
+    assert!(
+        matches!(&thing.fields[0].ty, ir::Type::Nullable(inner)
+            if matches!(**inner, ir::Type::Decl(_))),
+        "role must be Nullable(Decl): {:?}",
+        thing.fields[0].ty
+    );
 }
 
 #[test]
