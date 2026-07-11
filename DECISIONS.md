@@ -223,3 +223,71 @@ buffered streaming) — never the language name.
 **Consequences:** The spike stays in the workspace so its exhaustive
 matches keep proving IR-totality for Apex in CI; it is retired when the
 real backend lands (M4). Its output is never shipped.
+
+## D-109 — Go manifest frozen; runtime contract v1 drafted, stubs rendered from data
+
+**Status:** accepted · 2026-07-11
+
+**Context:** M2 requires the capability manifests (FR-4) and the
+machine-readable runtime contract (FR-5). The Apex spike (D-108) already
+consumed the Apex manifest's axes; the Go backend (M3) is next and needs
+a stable manifest plus the runtime surface generated code will call.
+
+**Decision:**
+- The **Go manifest is frozen**: hierarchical modules, full generics,
+  `(T, error)`, sync with `context.Context` threading, streaming
+  supported, no platform limits or coverage mandates. Apex and Rust
+  manifests remain drafts until their backends consume them (M4/M5).
+- The **runtime contract v1** (`gantry-contract::V1`) declares the
+  hand-written surface as data — name, params, return, fallibility,
+  context threading, and a behavior clause per function: `fetch` (the
+  retrying network layer), `access_token`, request builders
+  (headers/query/json/stream/multipart bodies), and response accessors
+  (bytes/stream/header/status). Draft until the Go backend consumes it
+  (M3); frozen then.
+- **Stubs are rendered from the contract data itself** (FR-5.2 by
+  construction — stub and declaration cannot drift), keyed off manifest
+  axes only (FR-4.2). Every stub panics loudly when called (NF-1):
+  a stub silently returning zero values would hide missing wiring.
+- The FR-5.3 gate is real from day one: tests compile the rendered Go
+  package with `go build` + `go vet` and assert gofmt-cleanliness
+  (G-17), locally when a Go toolchain exists (skipping loudly otherwise)
+  and always in CI (Go 1.23 pinned).
+
+**Consequences:** The Go backend can generate calls against a checked
+surface; the real `box-go-sdk`-style runtime implements the same
+contract (TR-Go.7). Serialization stays out of the contract by design:
+models serialize via struct tags (TR-Go.2), and union/enum helpers are
+generated, not hand-written.
+
+## D-110 — Null-vs-absent is structural: `Optional<Nullable<T>>`
+
+**Status:** accepted · 2026-07-11
+
+**Context:** D-105 collapsed `nullable` and not-required into one
+`Optional` wrapper and flagged the tri-state for revisit before Go
+serializer work; the Apex spike (D-108) confirmed the pressure from the
+second target. Box APIs use an explicit JSON `null` to clear fields on
+update — absent and null are different requests. This is the first IR
+change under the D-107 freeze process.
+
+**Decision:**
+- `Type::Nullable(T)` joins the IR: *the wire value may be an explicit
+  `null`*. `Type::Optional(T)` now means exactly *the key may be absent*.
+- Canonical nesting is `Optional<Nullable<T>>`; sema rejects
+  `Nullable<Nullable>`, `Nullable<Optional>`, and `Optional<Optional>`
+  as engine bugs (new `BadNullability` finding, exit-code class 5).
+- Lowering derives both axes structurally: `nullable` (direct or via
+  annotation parts) → `Nullable`; not-required → `Optional`; an enum
+  value list containing `null` also marks its property `Nullable`.
+- Alongside (D-108 finding 2): synthesized request-body names shorten
+  from `{Op}RequestBody…` to `{Op}Body…`, cutting over-limit Apex
+  identifiers from 337 to 295.
+
+**Consequences:** Go can lower `Optional` to omit-when-nil and
+`Nullable` to serialize-explicit-null (the D-004-class distinction),
+Rust to `Option`/double-`Option` or a tri-state enum, while Apex erases
+both at the type level and handles the difference in serializers. The
+compiler enumerated every lowering the new kind touched (sema, spike) —
+the D-107 process working as intended. Program decl counts are
+unchanged; the real spec set verifies with the new wrappers in place.

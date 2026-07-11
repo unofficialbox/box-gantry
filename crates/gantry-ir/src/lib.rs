@@ -101,9 +101,15 @@ pub enum Type {
     DateTime,
     /// Raw binary content, streamed where the platform allows (FR-7.4).
     Binary,
-    /// The optionality constructor (FR-2.3): present-or-absent, lowered per
-    /// target. Never encoded as a marker inside a name string.
+    /// The optionality constructor (FR-2.3): the value **may be absent
+    /// from the wire entirely**. Lowered per target; never encoded as a
+    /// marker inside a name string.
     Optional(Box<Type>),
+    /// The value **may be JSON `null` on the wire** — distinct from
+    /// absent: Box APIs use an explicit `null` to clear a field on
+    /// update (D-110). Canonical nesting is `Optional<Nullable<T>>`;
+    /// sema rejects every other combination.
+    Nullable(Box<Type>),
     List(Box<Type>),
     /// String-keyed map with homogeneous values.
     Map(Box<Type>),

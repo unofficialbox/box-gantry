@@ -253,9 +253,13 @@ impl<'a> DocLowerer<'a> {
             if values.iter().all(serde_json::Value::is_number) {
                 return self.primitive(location, raw);
             }
+            let has_null = values.iter().any(serde_json::Value::is_null);
             let decl = self.lower_enum(location, values)?;
             let id = self.synthesize(location, owner, ir::DeclKind::Enum(decl))?;
-            return Ok(ir::Type::Decl(id));
+            // A `null` entry in the value list is the spec's way of
+            // saying the field may be explicitly null (D-105, D-110).
+            let ty = ir::Type::Decl(id);
+            return Ok(if has_null { nullable(ty) } else { ty });
         }
         // The reference-wrapper idiom in type position: one structural
         // `allOf` part plus annotations is that part's type. (Annotation
@@ -357,11 +361,14 @@ impl<'a> DocLowerer<'a> {
             let prop_location = format!("{location}.properties.{wire_name}");
             let name = identifier(self.doc, &prop_location, &wire_name)?;
             let mut ty = self.lower_type(&prop_location, &synth_name(owner, &wire_name), prop)?;
-            // Optionality is structural (FR-2.3). `nullable` and
-            // not-required both collapse to Optional for now; the
-            // null-vs-absent tri-state is revisited before serializer work
-            // (PLAN.md next steps).
-            if !required.contains(&wire_name) || effective_nullable(prop) {
+            // The tri-state is structural (FR-2.3, D-110): `nullable`
+            // means the wire value may be an explicit `null` (Box uses it
+            // to clear fields); not-required means the key may be absent.
+            // Canonical nesting: Optional<Nullable<T>>.
+            if effective_nullable(prop) {
+                ty = nullable(ty);
+            }
+            if !required.contains(&wire_name) {
                 ty = ir::Type::Optional(Box::new(ty));
             }
             fields.push(ir::Field {
@@ -830,7 +837,10 @@ impl<'a> DocLowerer<'a> {
         let mut ty = match &media.schema {
             Some(schema) => self.lower_type(
                 &format!("{body_location}.content[{media_key:?}]"),
-                &format!("{owner}RequestBody"),
+                // "Body", not "RequestBody": synthesized names must stay
+                // short — 337 identifiers blew Apex's 40-char limit before
+                // this (D-108 finding 2, D-110).
+                &format!("{owner}Body"),
                 schema,
             )?,
             None => {
@@ -1031,6 +1041,16 @@ fn is_annotation_only(part: &RawSchema) -> bool {
         && part.all_of.is_empty()
         && part.any_of.is_empty()
         && part.enumeration.is_none()
+}
+
+/// Wrap in `Nullable` unless already wrapped (an enum-null marker and a
+/// `nullable: true` on the same property must not double-wrap).
+fn nullable(ty: ir::Type) -> ir::Type {
+    if matches!(ty, ir::Type::Nullable(_)) {
+        ty
+    } else {
+        ir::Type::Nullable(Box::new(ty))
+    }
 }
 
 /// A property is nullable if it says so directly or through an
