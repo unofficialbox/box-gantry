@@ -136,6 +136,7 @@ version = "0.1.0"
 name = "gantry-spec"
 version = "0.1.0"
 dependencies = [
+ "gantry-ir",
  "indexmap",
  "serde",
  "serde_json",

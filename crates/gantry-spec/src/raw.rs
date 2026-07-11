@@ -25,10 +25,49 @@ pub struct RawInfo {
 
 #[derive(Debug, Default, Deserialize)]
 pub struct RawComponents {
-    /// Schemas are held as raw JSON for now; the typed schema model is the
-    /// next M1 increment.
     #[serde(default)]
-    pub schemas: IndexMap<String, serde_json::Value>,
+    pub schemas: IndexMap<String, RawSchema>,
+}
+
+/// One schema node, covering every shape the vendored Box specs use:
+/// plain objects, `allOf` composition (base + extension), `oneOf`/`anyOf`
+/// unions, string enums, arrays, maps (`additionalProperties`), `$ref`s,
+/// and `nullable`. Anything this model cannot classify is a loud lowering
+/// error (NF-1), never a pass-through.
+#[derive(Debug, Deserialize)]
+pub struct RawSchema {
+    #[serde(rename = "$ref")]
+    pub reference: Option<String>,
+    #[serde(rename = "type")]
+    pub schema_type: Option<String>,
+    pub format: Option<String>,
+    #[serde(default)]
+    pub nullable: bool,
+    #[serde(default)]
+    pub properties: IndexMap<String, RawSchema>,
+    #[serde(default)]
+    pub required: Vec<String>,
+    pub items: Option<Box<RawSchema>>,
+    #[serde(rename = "additionalProperties")]
+    pub additional_properties: Option<RawAdditionalProperties>,
+    #[serde(rename = "oneOf", default)]
+    pub one_of: Vec<RawSchema>,
+    #[serde(rename = "allOf", default)]
+    pub all_of: Vec<RawSchema>,
+    #[serde(rename = "anyOf", default)]
+    pub any_of: Vec<RawSchema>,
+    /// Values are raw JSON: real specs mix in `null` to signal nullability,
+    /// and non-string enums must be classified deliberately.
+    #[serde(rename = "enum")]
+    pub enumeration: Option<Vec<serde_json::Value>>,
+}
+
+/// `additionalProperties` is either a boolean or a schema.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum RawAdditionalProperties {
+    Bool(bool),
+    Schema(Box<RawSchema>),
 }
 
 #[derive(Debug, Deserialize)]

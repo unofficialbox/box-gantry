@@ -109,6 +109,11 @@ pub enum Type {
     Map(Box<Type>),
     /// A resolved reference to a named declaration (FR-2.4).
     Decl(DeclId),
+    /// A schema-less JSON value (the spec says nothing about its shape).
+    /// Lowered to each target's raw-JSON type; contents round-trip
+    /// untouched. This is an explicit, deliberate hole — never a silent
+    /// fallback for shapes the lowering failed to classify (NF-1).
+    JsonValue,
 }
 
 /// A named declaration.

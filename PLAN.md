@@ -74,7 +74,11 @@ rules) — multi-document version-aware loading, `operationId`/`x-box-tag`
 invariants (D-104), JSON-path error reporting, `gantry check` over the
 full real spec set green in CI; IR core drafted (identifier hygiene,
 optionality constructor, rich unions, module concept, decl arena);
-capability-manifest axes drafted for all three targets.
+capability-manifest axes drafted for all three targets. Typed schema
+model + lowering into the IR (D-105): the full real spec set lowers to
+967 declarations with pinned stats — `allOf` wrapper/composition split,
+`type`-const discriminator inference, open enums, synthesized inline
+decls, versioned modules (`schemas::v2025_0`).
 
 Multi-document, version-aware ingestion with naming rules inside the
 ingestion layer (FR-1.2 — the `PostFolders` lesson); Box quirks represented
@@ -180,12 +184,15 @@ effort.
    `fixtures/specs/`.~~ ✅
 3. ~~Begin `gantry-spec` ingestion against the vendored base spec,
    loud-fail first (FR-1.4 before FR-1.1 breadth).~~ ✅ (first slice)
-4. Typed schema model in `gantry-spec`: parameters, request/response
-   bodies, `$ref` graph, `oneOf`/`allOf`, extensible-enum markers
-   (FR-1.3) — then lower into the IR `Program`.
-5. Naming rules in the ingestion layer (FR-1.2): operation naming incl.
-   `#variation` translation, manager/schema naming, casing.
-6. Review the drafted IR node set against assessment §4 and record it as a
-   decision once the schema model exercises it.
-7. Schedule the M3.5 Apex spike for the first week the IR can express a
+4. ~~Typed schema model in `gantry-spec`: `$ref` graph, `oneOf`/`allOf`,
+   open enums — lowered into the IR `Program`.~~ ✅ (D-105; schemas done —
+   parameters and request/response bodies still open)
+5. Operations into the IR: parameters, request/response bodies, binary
+   responses, base-URL mapping (FR-1.3 remainder).
+6. Naming rules in the ingestion layer (FR-1.2): operation naming incl.
+   `#variation` translation, manager/schema naming, casing; tri-state
+   null-vs-absent optionality decision (D-105 consequence).
+7. Review the drafted IR node set against assessment §4 and record it as a
+   decision once operations exercise it.
+8. Schedule the M3.5 Apex spike for the first week the IR can express a
    full manager.

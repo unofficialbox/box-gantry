@@ -90,3 +90,40 @@ operations, 73 managers in base). `operationId`s carrying the
 that the naming layer (FR-1.2) must translate into structured variation
 data — the `#` never survives into an IR identifier ([`Identifier`]
 rejects it).
+
+## D-105 — Schema-lowering conventions for the Box specs
+
+**Status:** accepted · 2026-07-11
+
+**Context:** The Box OpenAPI documents rely on conventions the OpenAPI
+spec doesn't formalize. Surveyed on the vendored set: `allOf` is used
+both as composition (2–3 structural parts) and as a reference wrapper
+(one structural `$ref` + annotation-only parts carrying
+description/example/`nullable` — 8 sites put `nullable` in the
+annotation part); no union declares an OpenAPI `discriminator`, but most
+variants carry a single-valued `type` property; enums have no
+extensibility markers; 60 properties are inline anonymous objects.
+
+**Decision:** The lowering (in `gantry-spec::lower`) fixes these
+conventions structurally, once:
+- `allOf` parts split into structural vs annotation-only. One structural
+  part + nothing own = reference passthrough (annotation `nullable` still
+  read); several structural parts = flattened composition, later parts
+  overriding; zero structural parts = explicit `JsonValue` hole.
+- Unions are discriminated on `"type"` iff every variant carries a
+  distinct single-valued `type` constant (walked through `allOf`
+  chains); otherwise structural, with no half-inferred values.
+- String enums are **open** (unknown values round-trip); `null` entries
+  encode nullability, not a value; all-numeric enums lower to their base
+  numeric type.
+- Inline anonymous shapes get synthesized decls named
+  `Owner` + PascalCase(property), disambiguated with numeric suffixes,
+  deterministically.
+- Anything unclassifiable is a loud error with file + schema location;
+  `JsonValue` sites are counted and pinned in tests, never silent.
+
+**Consequences:** The full real spec set lowers to 967 declarations
+(550 structs, 43 unions / 23 discriminated, 372 enums, 559 synthesized,
+20 JsonValue sites), pinned in `tests/real_specs.rs`. The null-vs-absent
+tri-state currently collapses into `Optional` — revisit before Go
+serializer work (PLAN.md).

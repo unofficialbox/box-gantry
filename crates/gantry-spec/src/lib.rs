@@ -16,7 +16,10 @@
 
 mod error;
 mod ingest;
+mod lower;
 mod raw;
 
 pub use error::IngestError;
 pub use ingest::{Document, HttpMethod, OperationSummary, SpecSet};
+pub use lower::{Lowering, LoweringStats, lower};
+pub use raw::RawSchema;

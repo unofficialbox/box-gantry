@@ -70,4 +70,24 @@ pub enum IngestError {
 
     #[error("no spec documents given")]
     NoDocuments,
+
+    /// A `$ref` that does not resolve to a schema in the same document.
+    /// Unresolved references are ingestion errors, never a backend concern
+    /// (FR-2.4).
+    #[error("{file}: {location}: $ref {reference:?} does not resolve to a schema in this document")]
+    UnresolvedRef {
+        file: PathBuf,
+        location: String,
+        reference: String,
+    },
+
+    /// A schema shape the lowering cannot classify. Deliberately loud
+    /// (NF-1): the alternative — passing the shape through as something
+    /// vague — is the silent-miss bug class this engine exists to remove.
+    #[error("{file}: {location}: {detail}")]
+    UnsupportedSchema {
+        file: PathBuf,
+        location: String,
+        detail: String,
+    },
 }

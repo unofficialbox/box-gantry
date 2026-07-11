@@ -32,7 +32,7 @@ fn the_full_real_spec_set_ingests() {
     // If a spec refresh changes them, updating these numbers is the
     // deliberate, reviewed act the determinism rules want (FR-6.2, VR-6).
     assert_eq!(base.operations.len(), 296);
-    assert_eq!(base.schema_names.len(), 305);
+    assert_eq!(base.schemas.len(), 305);
     assert_eq!(base.managers().len(), 73);
 
     assert_eq!(set.documents[1].operations.len(), 37);
@@ -44,4 +44,18 @@ fn the_full_real_spec_set_ingests() {
             assert!(!op.id.is_empty() && !op.manager.is_empty());
         }
     }
+
+    // The whole set lowers into typed IR with zero errors; the counts are
+    // pinned so growth and free-form holes only change deliberately (NF-1,
+    // VR-6 lineage).
+    let lowering = gantry_spec::lower(&set).expect("the vendored Box specs must lower");
+    assert_eq!(lowering.program.decls.len(), 967);
+    let stats = &lowering.stats;
+    assert_eq!(
+        (stats.structs, stats.unions, stats.discriminated_unions),
+        (550, 43, 23)
+    );
+    assert_eq!((stats.enums, stats.aliases), (372, 2));
+    assert_eq!(stats.synthesized, 559);
+    assert_eq!(stats.json_value_sites, 20);
 }
