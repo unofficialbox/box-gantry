@@ -17,8 +17,9 @@ pub use models::{GeneratedFile, generate_models};
 
 /// Generate the complete SDK tree for a verified program.
 pub fn generate(analysis: &gantry_sema::Analysis<'_>) -> Result<Vec<GeneratedFile>, BackendError> {
+    let paged = gantry_synth::detect_pagination(analysis);
     let mut files = generate_models(analysis);
-    files.extend(generate_managers(analysis)?);
+    files.extend(generate_managers(analysis, &paged)?);
     // The runtime stubs are rendered from the contract data (FR-5.2):
     // generated managers compile against exactly the declared surface.
     files.push(GeneratedFile {

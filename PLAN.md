@@ -223,7 +223,11 @@ effort.
     (incl. JSON-in-query for `mdfilters`-class params), JSON / stream /
     multipart / form bodies, response decoding per shape. `gantry
     verify` covers the whole 92-file SDK tree in CI.
-13. M3 continues: pagination (`iter.Seq2`, TR-Go.4), the serialization
-    package (BG-1 tri-state wrapper, real `Date` type), `With*` client
-    decorators, generated tests + docs (FR-7.7/7.8); per-node lowering
-    fixtures (VR-2); round-trip tests (VR-4).
+13. ~~M3: pagination (`iter.Seq2`, TR-Go.4).~~ ✅ (D-111: gantry-synth
+    detects marker/offset pagination language-agnostically; Go lowers 64
+    iterators, compile-gated. The synth layer is now established for
+    Apex/Rust to reuse.)
+14. M3 continues: the serialization package (BG-1 tri-state wrapper,
+    real `Date` type), `With*` client decorators, generated tests + docs
+    (FR-7.7/7.8); per-node lowering fixtures (VR-2); round-trip tests
+    (VR-4).

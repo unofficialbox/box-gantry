@@ -3,12 +3,13 @@
 //! runtime contract (FR-5.2). URLs are built from structured path
 //! segments — never re-parsed from template strings (FR-2.2).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 use gantry_ir as ir;
 use gantry_ir::naming::{camel, constant, pascal};
 use gantry_sema::Analysis;
+use gantry_synth::{PageStyle, PagedOperation};
 
 use crate::models::GeneratedFile;
 
@@ -34,17 +35,27 @@ impl std::fmt::Display for BackendError {
 impl std::error::Error for BackendError {}
 
 /// Generate `managers/*.go` (one file per manager) and `client/client.go`.
-pub fn generate_managers(analysis: &Analysis<'_>) -> Result<Vec<GeneratedFile>, BackendError> {
+///
+/// `paged` carries the pagination decisions from feature synthesis
+/// (FR-7.3); the Go backend lowers each to an `iter.Seq2` iterator
+/// (TR-Go.4).
+pub fn generate_managers(
+    analysis: &Analysis<'_>,
+    paged: &[PagedOperation],
+) -> Result<Vec<GeneratedFile>, BackendError> {
     let base_version = analysis
         .program
         .operations
         .first()
         .and_then(|op| op.api_version.clone());
+    let paged_by_op: HashMap<usize, &PagedOperation> =
+        paged.iter().map(|p| (p.operation, p)).collect();
     let mut files = Vec::new();
     for (manager, op_indices) in &analysis.managers {
         let mut printer = ManagerPrinter {
             analysis,
             base_version: base_version.clone(),
+            paged: &paged_by_op,
             body: String::new(),
             imports: BTreeSet::new(),
         };
@@ -96,6 +107,7 @@ fn client_file(analysis: &Analysis<'_>) -> GeneratedFile {
 struct ManagerPrinter<'a> {
     analysis: &'a Analysis<'a>,
     base_version: Option<ir::ApiVersion>,
+    paged: &'a HashMap<usize, &'a PagedOperation>,
     body: String,
     imports: BTreeSet<String>,
 }
@@ -133,6 +145,9 @@ impl ManagerPrinter<'_> {
         for &index in op_indices {
             let op = self.analysis.program.operations[index].clone();
             self.operation(&type_name, &op)?;
+            if let Some(paged) = self.paged.get(&index).copied() {
+                self.paginator(&type_name, &op, paged)?;
+            }
         }
         Ok(())
     }
@@ -304,6 +319,256 @@ impl ManagerPrinter<'_> {
             }
         }
         Ok(())
+    }
+
+    /// A `{Method}Paginate` iterator over a paged operation (TR-Go.4,
+    /// FR-7.3). It wraps the plain method, threading the cursor and
+    /// yielding one element at a time as `iter.Seq2[*Element, error]`
+    /// (Go ≥ 1.23). The cursor lives in a *copy* of the caller's options
+    /// so pagination never mutates the caller's struct.
+    fn paginator(
+        &mut self,
+        manager_type: &str,
+        op: &ir::Operation,
+        paged: &PagedOperation,
+    ) -> Result<(), BackendError> {
+        let context = format!("paginate {}/{}", op.manager.as_str(), op.name.as_str());
+        let method = self.method_name(op);
+        self.imports.insert("iter".to_string());
+
+        // Rebuild the plain method's signature prefix (ctx, required
+        // args, body) and the matching forwarded call arguments.
+        let mut sig = vec!["ctx context.Context".to_string()];
+        let mut call = vec!["ctx".to_string()];
+        for param in op
+            .params
+            .iter()
+            .filter(|p| !matches!(p.ty, ir::Type::Optional(_)))
+        {
+            sig.push(format!("{} {}", arg_name(param), self.go_type(&param.ty)?));
+            call.push(arg_name(param));
+        }
+        if let Some(body) = &op.request {
+            let inner = unwrap_optionality(&body.ty);
+            let ty = self.go_type(inner)?;
+            let expr = if nilable(&ty) { ty } else { format!("*{ty}") };
+            sig.push(format!("body {expr}"));
+            call.push("body".to_string());
+        }
+        // Paged operations always have an options struct: the cursor
+        // parameter is itself optional.
+        let options_type = format!("{method}Options");
+        sig.push(format!("opts *{options_type}"));
+        call.push("&o".to_string());
+
+        let element_go = self.go_type(&paged.element)?;
+        let cursor_field = pascal(&paged.param_wire);
+        let entries_field = self.field_go_name(op, &paged.entries_wire, &context)?;
+        let response_cursor = self.field_go_name(op, &paged.cursor_wire, &context)?;
+
+        // The request cursor param and the response cursor field may
+        // disagree in type (e.g. DevicePinners: string marker param,
+        // int64 next_marker). Convert explicitly rather than emit a
+        // type-mismatched assignment.
+        let param_ty = op
+            .params
+            .iter()
+            .find(|p| p.location == ir::ParamLocation::Query && p.wire_name == paged.param_wire)
+            .map(|p| unwrap_optionality(&p.ty).clone())
+            .expect("detection required the cursor query parameter");
+        let response_ty = self.field_ir_type(op, &paged.cursor_wire, &context)?;
+
+        let _ = writeln!(
+            self.body,
+            "func (m *{manager_type}) {method}Paginate({sig}) iter.Seq2[*{element_go}, error] {{",
+            sig = sig.join(", "),
+        );
+        let _ = writeln!(
+            self.body,
+            "\treturn func(yield func(*{element_go}, error) bool) {{"
+        );
+        let _ = writeln!(self.body, "\t\tvar o {options_type}");
+        self.body
+            .push_str("\t\tif opts != nil {\n\t\t\to = *opts\n\t\t}\n");
+
+        match paged.style {
+            PageStyle::Marker => {
+                if !matches!(param_ty, ir::Type::String) {
+                    return Err(BackendError {
+                        context,
+                        detail: format!("marker cursor parameter is {param_ty:?}, not a string"),
+                    });
+                }
+                // Convert the response cursor to the string the request
+                // parameter expects; terminate on an absent cursor.
+                let (guard_extra, next_expr) = match response_ty {
+                    ir::Type::String => (
+                        format!(" || *page.{response_cursor} == \"\""),
+                        format!("*page.{response_cursor}"),
+                    ),
+                    ir::Type::Int64 => {
+                        self.imports.insert("strconv".to_string());
+                        (
+                            String::new(),
+                            format!("strconv.FormatInt(*page.{response_cursor}, 10)"),
+                        )
+                    }
+                    other @ (ir::Type::Bool
+                    | ir::Type::Float64
+                    | ir::Type::Date
+                    | ir::Type::DateTime
+                    | ir::Type::Binary
+                    | ir::Type::JsonValue
+                    | ir::Type::List(_)
+                    | ir::Type::Map(_)
+                    | ir::Type::Decl(_)
+                    | ir::Type::Optional(_)
+                    | ir::Type::Nullable(_)) => {
+                        return Err(BackendError {
+                            context,
+                            detail: format!("marker cursor field is {other:?}"),
+                        });
+                    }
+                };
+                let _ = writeln!(
+                    self.body,
+                    "\t\tfor {{\n\
+                     \t\t\tpage, err := m.{method}({call})\n\
+                     \t\t\tif err != nil {{\n\t\t\t\tyield(nil, err)\n\t\t\t\treturn\n\t\t\t}}\n\
+                     \t\t\tfor i := range page.{entries_field} {{\n\
+                     \t\t\t\tif !yield(&page.{entries_field}[i], nil) {{\n\t\t\t\t\treturn\n\t\t\t\t}}\n\t\t\t}}\n\
+                     \t\t\tif page.{response_cursor} == nil{guard_extra} {{\n\t\t\t\treturn\n\t\t\t}}\n\
+                     \t\t\tnext := {next_expr}\n\t\t\to.{cursor_field} = &next\n\t\t}}",
+                    call = call.join(", "),
+                );
+            }
+            PageStyle::Offset => {
+                if !matches!(param_ty, ir::Type::Int64) {
+                    return Err(BackendError {
+                        context,
+                        detail: format!("offset cursor parameter is {param_ty:?}, not int64"),
+                    });
+                }
+                let _ = writeln!(
+                    self.body,
+                    "\t\tvar offset int64\n\t\tif o.{cursor_field} != nil {{\n\t\t\toffset = *o.{cursor_field}\n\t\t}}\n\
+                     \t\tfor {{\n\
+                     \t\t\to.{cursor_field} = &offset\n\
+                     \t\t\tpage, err := m.{method}({call})\n\
+                     \t\t\tif err != nil {{\n\t\t\t\tyield(nil, err)\n\t\t\t\treturn\n\t\t\t}}\n\
+                     \t\t\tfor i := range page.{entries_field} {{\n\
+                     \t\t\t\tif !yield(&page.{entries_field}[i], nil) {{\n\t\t\t\t\treturn\n\t\t\t\t}}\n\t\t\t}}\n\
+                     \t\t\tif len(page.{entries_field}) == 0 {{\n\t\t\t\treturn\n\t\t\t}}\n\
+                     \t\t\toffset += int64(len(page.{entries_field}))\n\t\t}}",
+                    call = call.join(", "),
+                );
+            }
+        }
+        self.body.push_str("\t}\n}\n\n");
+        Ok(())
+    }
+
+    /// The Go field name for a response envelope's wire field, resolved
+    /// through the operation's response declaration.
+    fn field_go_name(
+        &self,
+        op: &ir::Operation,
+        wire: &str,
+        context: &str,
+    ) -> Result<String, BackendError> {
+        let ir::ResponseShape::Json(ty) = &op.response else {
+            return Err(BackendError {
+                context: context.to_string(),
+                detail: "paged operation without a JSON response".into(),
+            });
+        };
+        let mut current = ty;
+        let decl_id = loop {
+            match current {
+                ir::Type::Optional(inner) | ir::Type::Nullable(inner) => current = inner,
+                ir::Type::Decl(id) => break *id,
+                ir::Type::Bool
+                | ir::Type::Int64
+                | ir::Type::Float64
+                | ir::Type::String
+                | ir::Type::Date
+                | ir::Type::DateTime
+                | ir::Type::Binary
+                | ir::Type::JsonValue
+                | ir::Type::List(_)
+                | ir::Type::Map(_) => {
+                    return Err(BackendError {
+                        context: context.to_string(),
+                        detail: "paged response is not a declaration".into(),
+                    });
+                }
+            }
+        };
+        let ir::DeclKind::Struct(s) = &self.analysis.program.decl(decl_id).kind else {
+            return Err(BackendError {
+                context: context.to_string(),
+                detail: "paged response is not a struct".into(),
+            });
+        };
+        s.fields
+            .iter()
+            .find(|f| f.wire_name == wire)
+            .map(|f| pascal(f.name.as_str()))
+            .ok_or_else(|| BackendError {
+                context: context.to_string(),
+                detail: format!("paged response has no {wire:?} field"),
+            })
+    }
+
+    /// The unwrapped IR type of a response envelope's wire field.
+    fn field_ir_type(
+        &self,
+        op: &ir::Operation,
+        wire: &str,
+        context: &str,
+    ) -> Result<ir::Type, BackendError> {
+        let ir::ResponseShape::Json(ty) = &op.response else {
+            return Err(BackendError {
+                context: context.to_string(),
+                detail: "paged operation without a JSON response".into(),
+            });
+        };
+        let mut current = ty;
+        let decl_id = loop {
+            match current {
+                ir::Type::Optional(inner) | ir::Type::Nullable(inner) => current = inner,
+                ir::Type::Decl(id) => break *id,
+                ir::Type::Bool
+                | ir::Type::Int64
+                | ir::Type::Float64
+                | ir::Type::String
+                | ir::Type::Date
+                | ir::Type::DateTime
+                | ir::Type::Binary
+                | ir::Type::JsonValue
+                | ir::Type::List(_)
+                | ir::Type::Map(_) => {
+                    return Err(BackendError {
+                        context: context.to_string(),
+                        detail: "paged response is not a declaration".into(),
+                    });
+                }
+            }
+        };
+        let ir::DeclKind::Struct(s) = &self.analysis.program.decl(decl_id).kind else {
+            return Err(BackendError {
+                context: context.to_string(),
+                detail: "paged response is not a struct".into(),
+            });
+        };
+        s.fields
+            .iter()
+            .find(|f| f.wire_name == wire)
+            .map(|f| unwrap_optionality(&f.ty).clone())
+            .ok_or_else(|| BackendError {
+                context: context.to_string(),
+                detail: format!("paged response has no {wire:?} field"),
+            })
     }
 
     /// URL built from structured segments + the D-106 base-URL class.

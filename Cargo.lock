@@ -123,6 +123,7 @@ dependencies = [
  "gantry-manifest",
  "gantry-sema",
  "gantry-spec",
+ "gantry-synth",
 ]
 
 [[package]]
@@ -174,6 +175,11 @@ dependencies = [
 [[package]]
 name = "gantry-synth"
 version = "0.1.0"
+dependencies = [
+ "gantry-ir",
+ "gantry-sema",
+ "gantry-spec",
+]
 
 [[package]]
 name = "gantry-verify"

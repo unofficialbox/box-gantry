@@ -56,6 +56,21 @@ fn generation_is_deterministic() {
             );
         }
     }
+    // Pagination iterators are synthesized for the paged operations
+    // (FR-7.3, TR-Go.4): 54 marker + 10 offset. Pinned so the count only
+    // moves deliberately with the spec (VR-6 lineage).
+    let paginators: usize = once
+        .iter()
+        .filter(|f| f.path.starts_with("managers/"))
+        .map(|f| f.content.matches("Paginate(ctx ").count())
+        .sum();
+    assert_eq!(paginators, 64, "expected 64 pagination iterators");
+    let offset_iters: usize = once
+        .iter()
+        .filter(|f| f.path.starts_with("managers/"))
+        .map(|f| f.content.matches("var offset int64").count())
+        .sum();
+    assert_eq!(offset_iters, 10, "expected 10 offset iterators");
 }
 
 #[test]
