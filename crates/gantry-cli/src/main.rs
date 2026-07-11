@@ -72,7 +72,7 @@ fn check(specs: &[PathBuf]) -> ExitCode {
     let mut total_schemas = 0;
     for doc in &set.documents {
         total_ops += doc.operations.len();
-        total_schemas += doc.schema_names.len();
+        total_schemas += doc.schemas.len();
         let deprecated = doc.operations.iter().filter(|op| op.deprecated).count();
         let unstable = doc
             .operations
@@ -86,9 +86,44 @@ fn check(specs: &[PathBuf]) -> ExitCode {
             version = doc.api_version,
             ops = doc.operations.len(),
             managers = doc.managers().len(),
-            schemas = doc.schema_names.len(),
+            schemas = doc.schemas.len(),
         );
     }
+
+    let lowering = match gantry_spec::lower(&set) {
+        Ok(lowering) => lowering,
+        Err(err) => {
+            eprintln!("error: {err}");
+            return ExitCode::from(exit_codes::SPEC_ERROR);
+        }
+    };
+    let stats = &lowering.stats;
+    println!(
+        "ok  IR: {decls} declarations — {structs} structs, {unions} unions ({disc} discriminated), \
+         {enums} enums, {aliases} aliases; {synth} synthesized, {holes} free-form JSON sites",
+        decls = lowering.program.decls.len(),
+        structs = stats.structs,
+        unions = stats.unions,
+        disc = stats.discriminated_unions,
+        enums = stats.enums,
+        aliases = stats.aliases,
+        synth = stats.synthesized,
+        holes = stats.json_value_sites,
+    );
+    println!(
+        "ok  IR: {ops} operations — {json} JSON, {empty} body-less, {binary} binary, \
+         {redirect} redirect, {text} text",
+        ops = stats.operations,
+        json = stats.operations
+            - stats.empty_responses
+            - stats.binary_responses
+            - stats.redirect_responses
+            - stats.text_responses,
+        empty = stats.empty_responses,
+        binary = stats.binary_responses,
+        redirect = stats.redirect_responses,
+        text = stats.text_responses,
+    );
     println!(
         "ok  spec set: {docs} document(s), {total_ops} operations, {total_schemas} schemas",
         docs = set.documents.len(),

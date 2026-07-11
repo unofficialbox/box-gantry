@@ -2,8 +2,10 @@ use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use indexmap::IndexMap;
+
 use crate::error::IngestError;
-use crate::raw::RawDocument;
+use crate::raw::{RawDocument, RawParameter, RawPathItem, RawSchema};
 
 /// The version-aware model of one ingestion run: every document loaded,
 /// each contributing a distinct API version (FR-1.1).
@@ -22,7 +24,13 @@ pub struct Document {
     /// The Box API version this document contributes (e.g. `"2024.0"`).
     pub api_version: String,
     pub operations: Vec<OperationSummary>,
-    pub schema_names: Vec<String>,
+    /// Named schemas, in spec order (deterministic — FR-6.2). Lowered into
+    /// the typed IR by [`crate::lower`].
+    pub schemas: IndexMap<String, RawSchema>,
+    /// Raw path items, in spec order — the operation-lowering input.
+    pub paths: IndexMap<String, RawPathItem>,
+    /// Shared `components.parameters`.
+    pub parameters: IndexMap<String, RawParameter>,
 }
 
 /// One operation, as ingestion sees it. Naming rules (FR-1.2) will apply
@@ -184,7 +192,9 @@ impl Document {
             title: raw.info.title,
             api_version: raw.info.version,
             operations,
-            schema_names: raw.components.schemas.keys().cloned().collect(),
+            schemas: raw.components.schemas,
+            paths: raw.paths,
+            parameters: raw.components.parameters,
         })
     }
 
@@ -230,7 +240,7 @@ mod tests {
         assert_eq!(doc.operations.len(), 1);
         assert_eq!(doc.operations[0].manager, "files");
         assert_eq!(doc.operations[0].method, HttpMethod::Get);
-        assert_eq!(doc.schema_names, vec!["File"]);
+        assert_eq!(doc.schemas.keys().collect::<Vec<_>>(), ["File"]);
     }
 
     #[test]
