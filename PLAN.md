@@ -202,6 +202,12 @@ effort.
 8. ~~Freeze the IR node set as a decision~~ ✅ (D-107) ~~; then the M3.5
    Apex spike~~ ✅ (D-108: 85/85 managers lower, zero IR changes forced;
    name-length + tri-state findings feed the naming layer)
-9. M2 remainder: manifest freeze + runtime contract format (FR-4, FR-5);
-   FR-1.2 naming/casing layer (shorten synthesized names — D-108 finding
-   2 — and decide the tri-state, D-105/D-108 finding 3).
+9. ~~M2 remainder: manifest freeze + runtime contract format (FR-4,
+   FR-5).~~ ✅ (D-109: Go manifest frozen; contract v1 as data; Go stubs
+   rendered from the contract and compile-gated with go build/vet +
+   gofmt in tests and CI)
+10. FR-1.2 naming/casing layer: idiomatic operation/schema naming,
+    shorten synthesized names (D-108 finding 2), initialism policy;
+    decide the null-vs-absent tri-state (D-105/D-108 finding 3).
+11. M3 begins: Go backend — model lowering + printer (TR-Go.1/2/5),
+    compile-the-output loop from week one (VR-1.1).

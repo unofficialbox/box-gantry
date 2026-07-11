@@ -130,6 +130,9 @@ dependencies = [
 [[package]]
 name = "gantry-contract"
 version = "0.1.0"
+dependencies = [
+ "gantry-manifest",
+]
 
 [[package]]
 name = "gantry-ir"

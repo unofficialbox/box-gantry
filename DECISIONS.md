@@ -223,3 +223,39 @@ buffered streaming) — never the language name.
 **Consequences:** The spike stays in the workspace so its exhaustive
 matches keep proving IR-totality for Apex in CI; it is retired when the
 real backend lands (M4). Its output is never shipped.
+
+## D-109 — Go manifest frozen; runtime contract v1 drafted, stubs rendered from data
+
+**Status:** accepted · 2026-07-11
+
+**Context:** M2 requires the capability manifests (FR-4) and the
+machine-readable runtime contract (FR-5). The Apex spike (D-108) already
+consumed the Apex manifest's axes; the Go backend (M3) is next and needs
+a stable manifest plus the runtime surface generated code will call.
+
+**Decision:**
+- The **Go manifest is frozen**: hierarchical modules, full generics,
+  `(T, error)`, sync with `context.Context` threading, streaming
+  supported, no platform limits or coverage mandates. Apex and Rust
+  manifests remain drafts until their backends consume them (M4/M5).
+- The **runtime contract v1** (`gantry-contract::V1`) declares the
+  hand-written surface as data — name, params, return, fallibility,
+  context threading, and a behavior clause per function: `fetch` (the
+  retrying network layer), `access_token`, request builders
+  (headers/query/json/stream/multipart bodies), and response accessors
+  (bytes/stream/header/status). Draft until the Go backend consumes it
+  (M3); frozen then.
+- **Stubs are rendered from the contract data itself** (FR-5.2 by
+  construction — stub and declaration cannot drift), keyed off manifest
+  axes only (FR-4.2). Every stub panics loudly when called (NF-1):
+  a stub silently returning zero values would hide missing wiring.
+- The FR-5.3 gate is real from day one: tests compile the rendered Go
+  package with `go build` + `go vet` and assert gofmt-cleanliness
+  (G-17), locally when a Go toolchain exists (skipping loudly otherwise)
+  and always in CI (Go 1.23 pinned).
+
+**Consequences:** The Go backend can generate calls against a checked
+surface; the real `box-go-sdk`-style runtime implements the same
+contract (TR-Go.7). Serialization stays out of the contract by design:
+models serialize via struct tags (TR-Go.2), and union/enum helpers are
+generated, not hand-written.
