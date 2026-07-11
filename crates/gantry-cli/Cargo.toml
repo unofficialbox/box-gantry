@@ -1,0 +1,18 @@
+[package]
+name = "gantry-cli"
+description = "Thin driver over the engine library (FR-8)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "gantry"
+path = "src/main.rs"
+
+[dependencies]
+gantry-spec.workspace = true
+clap.workspace = true
+
+[lints]
+workspace = true

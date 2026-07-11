@@ -58,7 +58,7 @@ the requirements roll-up) and are re-baselined at every milestone exit —
 the ~3× throughput multiplier is a single data point from the box-codegen
 Go target (assessment §8).
 
-### M0 — Bootstrap (week 1)
+### M0 — Bootstrap (week 1) — ✅ complete 2026-07-11
 
 Scaffold the workspace; pin the toolchain (`rust-toolchain.toml`, locked
 deps — NF-6); CI running `cargo check` + `clippy` + `rustfmt` + tests;
@@ -67,7 +67,14 @@ docs regime seeded.
 **Exit:** CI green on the empty workspace; specs vendored; ISSUES /
 DECISIONS / SCOPE live.
 
-### M1 — Ingestion + IR (FR-1, FR-2) — ~weeks 2–8
+### M1 — Ingestion + IR (FR-1, FR-2) — ~weeks 2–8 — 🔄 in progress
+
+Done so far: loud-fail ingestion slice (FR-1.4 first, per the ground
+rules) — multi-document version-aware loading, `operationId`/`x-box-tag`
+invariants (D-104), JSON-path error reporting, `gantry check` over the
+full real spec set green in CI; IR core drafted (identifier hygiene,
+optionality constructor, rich unions, module concept, decl arena);
+capability-manifest axes drafted for all three targets.
 
 Multi-document, version-aware ingestion with naming rules inside the
 ingestion layer (FR-1.2 — the `PostFolders` lesson); Box quirks represented
@@ -166,14 +173,19 @@ effort.
 - No silent caps, ever: if generation bounds anything (top-N, fallback,
   skip), it appears in the run summary and CI asserts the allowlist (VR-6).
 
-## ⏭️ Immediate next steps (first two weeks)
+## ⏭️ Immediate next steps
 
-1. M0 scaffolding: workspace, pinned toolchain, CI, license/readme.
-2. Vendor the Box OpenAPI specs (base + 2025.0 + 2026.0) under
-   `fixtures/specs/`.
-3. Draft the IR node-set RFC (the {Go, Apex, Rust} axes table) as a
-   `DECISIONS.md` candidate; review against assessment §4.
-4. Begin `gantry-spec` ingestion against the vendored base spec, loud-fail
-   first (FR-1.4 before FR-1.1 breadth).
-5. Schedule the M3.5 Apex spike for the first week the IR can express a
+1. ~~M0 scaffolding: workspace, pinned toolchain, CI, license/readme.~~ ✅
+2. ~~Vendor the Box OpenAPI specs (base + 2025.0 + 2026.0) under
+   `fixtures/specs/`.~~ ✅
+3. ~~Begin `gantry-spec` ingestion against the vendored base spec,
+   loud-fail first (FR-1.4 before FR-1.1 breadth).~~ ✅ (first slice)
+4. Typed schema model in `gantry-spec`: parameters, request/response
+   bodies, `$ref` graph, `oneOf`/`allOf`, extensible-enum markers
+   (FR-1.3) — then lower into the IR `Program`.
+5. Naming rules in the ingestion layer (FR-1.2): operation naming incl.
+   `#variation` translation, manager/schema naming, casing.
+6. Review the drafted IR node set against assessment §4 and record it as a
+   decision once the schema model exercises it.
+7. Schedule the M3.5 Apex spike for the first week the IR can express a
    full manager.

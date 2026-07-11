@@ -1,0 +1,34 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/unofficialbox/box-gantry"
+
+[workspace.dependencies]
+gantry-ir = { path = "crates/gantry-ir" }
+gantry-spec = { path = "crates/gantry-spec" }
+gantry-sema = { path = "crates/gantry-sema" }
+gantry-manifest = { path = "crates/gantry-manifest" }
+gantry-contract = { path = "crates/gantry-contract" }
+gantry-synth = { path = "crates/gantry-synth" }
+gantry-backend-go = { path = "crates/gantry-backend-go" }
+gantry-verify = { path = "crates/gantry-verify" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_path_to_error = "0.1"
+thiserror = "2"
+indexmap = { version = "2", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# NF-1: silent fallthroughs are the bug class this engine exists to eliminate.
+wildcard_enum_match_arm = "warn"
