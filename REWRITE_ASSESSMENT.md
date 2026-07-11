@@ -1,8 +1,8 @@
 # Net-New Codegen for {Go, Apex, Rust}: Plan and Recommendation
 
 An assessment of building a from-scratch codegen engine, written after adding
-the Go target to the existing box-codegen engine (see `GO_TARGET_HANDOFF.md`,
-`ISSUES.md` G-1…G-18).
+the Go target to the existing box-codegen engine (see `GO_TARGET_HANDOFF.md`
+and `ISSUES.md` G-1…G-18, both in the box-codegen repository).
 
 **Operating assumptions:** zero existing users, zero obligation to the six
 existing SDK targets. Only net-new SDKs matter: **Go** first, **Salesforce
@@ -12,20 +12,22 @@ layer, uploads incl. chunked, downloads, pagination, versioned APIs, `oneOf`
 handling, generated tests and docs) — not output parity with any existing
 SDK.
 
-**TL;DR — recommendation: build the net-new engine.** ~12.5–18 focused
-engineer-months to three shipped SDKs. The engine cost amortizes across
+**TL;DR — recommendation: build the net-new engine.** ~13–19 focused
+engineer-months to three shipped SDKs (spec-evolution, distribution, and
+live-verification scope included). The engine cost amortizes across
 three committed backends; no legacy parity oracle is needed ("correct" is
 the capability contract plus each language's compiler); and the existing
 engine's C#-shaped assumptions actively fight Apex and Rust (§4). Write the
 engine in **Rust** (§6). Ship the engine + Go first, Apex second as the
-designed-for stress test, Rust third.
+designed-for stress test, Rust third. Throughout, box-codegen is consulted
+as prior art — never treated as a frozen baseline or acceptance oracle (§7).
 
 ---
 
 ## 1. What we're replacing, by the numbers
 
 Context on the existing engine — what informs the new design and what gets
-salvaged, not an obligation to preserve.
+consulted, not an obligation to preserve.
 
 | Measure | Value |
 |---|---|
@@ -146,9 +148,9 @@ but design for it from day one):
 
 **Go** (first to ship): the error model, pointer optionals, package layout,
 and D-012-style variant structs are already designed, implemented, and
-compile-verified in the existing engine — the Go backend is substantially a
-port, and its verification loop (generate real spec → `go build` →
-`go vet`) already exists.
+compile-verified in the existing engine — the Go backend re-expresses an
+already-proven design, and its verification-loop procedure (generate real
+spec → `go build` → `go vet`) is known to work.
 
 ## 5. Estimate
 
@@ -160,8 +162,9 @@ port, and its verification loop (generate real spec → `go build` →
 | Go backend | 1–1.5 | Port the existing Go AST/printers/transpiler logic and the G-1 loop wholesale |
 | Apex backend + scratch-org verification harness | 2.5–3.5 | The hard one (§4); includes the mandatory generated-test surface |
 | Rust backend | 1.5–2 | Best language fit; serde does heavy lifting |
-| Runtime contracts + 3 hand-written runtimes | 2–3 | Go's exists (`box-go-sdk`); Apex `Http`/auth runtime and Rust `reqwest` runtime are new |
-| **Total (three shipped SDKs)** | **~12.5–18 engineer-months** | |
+| Runtime contracts + 3 hand-written runtimes | 2–3 | Go's design exists to consult (`box-go-sdk`); Apex `Http`/auth runtime and Rust `reqwest` runtime are new |
+| Spec evolution, distribution, live verification | 0.5–1 | Spec-diff/breaking-change reporting, per-target ship artifacts, live smoke suite (requirements FR-9, NF-8, VR-7) |
+| **Total (three shipped SDKs)** | **~13–19 engineer-months** | |
 
 For comparison, retrofitting Apex + Rust into box-codegen is *not* obviously
 cheaper: Go — the sympathetic case — took weeks of transpilers plus the
@@ -226,34 +229,46 @@ lose on ecosystem and contributor/agent familiarity.)
 
 ## 7. Execution plan
 
-The engine is a **net-new project in its own repository** — clean history,
-no inherited build tooling, config, or conventions from box-codegen. This
-repo is not migrated or refactored; it is frozen and consulted (step 5).
+The engine is a **net-new project in its own repository — this one,
+box-gantry** — clean history, no inherited build tooling, config, or
+conventions from box-codegen. box-codegen is not migrated or refactored; it
+is consulted as prior art (step 6). The milestone-level breakdown lives in
+[`PLAN.md`](./PLAN.md).
 
-1. **Engine + Go backend first** (~5–7 months to first shipped SDK). Go
-   re-ships from the new engine; the current box-codegen Go output serves as
-   an informal functional baseline (diff the API surfaces, not the bytes).
-   Salvage aggressively: the Go AST/printer layer, the 54-test Go regression
-   suite, the G-1 verification loop, the spec-quirk knowledge in
-   `scripts/src`, and the docs regime (ISSUES/DECISIONS/PLAN/SCOPE) carry
-   over nearly intact.
-2. **Apex second** (~2.5–3.5 months). Its constraints were already baked
-   into the IR in step 1; what's built here is the backend, the Apex
-   runtime, and the scratch-org CI harness.
-3. **Rust third** (~1.5–2 months). By this point the engine has survived its
+1. **Engine + Go backend first** (~6–8 months to first shipped SDK,
+   agent-driven). Go ships from the new engine; the box-codegen Go output
+   may be consulted as an informal comparison (diff the API surfaces, not
+   the bytes) — the acceptance oracle is the capability contract, not any
+   existing SDK. Consult aggressively: the Go AST/printer design, the
+   54-case Go suite's test semantics, the G-1 verification-loop procedure,
+   the spec-quirk knowledge in `scripts/src`, and the docs regime
+   (ISSUES/DECISIONS/PLAN/SCOPE) all carry over as knowledge, re-expressed
+   against the new IR rather than ported verbatim.
+2. **Apex spike during step 1** (timeboxed ~2 weeks, throwaway). Lower two
+   or three representative managers (one paginated, one `oneOf`-heavy, one
+   upload) to Apex against the draft IR. The generated output is discarded;
+   the deliverable is the list of IR changes it forces — validating the
+   module-flattening, no-generics, and governor-limit axes while the IR is
+   still cheap to change (§8).
+3. **Apex second** (~2.5–3.5 months). Its constraints were already baked
+   into the IR in step 1 and validated by the step 2 spike; what's built
+   here is the backend, the Apex runtime, and the scratch-org CI harness.
+4. **Rust third** (~1.5–2 months). By this point the engine has survived its
    extreme target; Rust is largely a lowering exercise.
-4. **Non-negotiables from day one** (the lessons of §2): typed IR with no
+5. **Non-negotiables from day one** (the lessons of §2): typed IR with no
    string-encoded semantics; one semantic pass before any backend runs;
    per-language capability manifest; machine-checked runtime contract;
    compile-the-output as the primary CI signal for every backend from its
    first week.
-5. **Freeze box-codegen** as reference material. It stops being a
-   maintenance obligation and becomes documentation: the encoded Box domain
-   knowledge (manual code, test semantics, spec quirks) is consulted, never
-   executed.
+6. **Retire box-codegen to consultable prior art.** It stops being a
+   maintenance obligation; its encoded Box domain knowledge (manual code,
+   test semantics, spec quirks) is consulted when useful, never executed —
+   and never treated as a normative baseline: no acceptance criterion in
+   the new engine references its output.
 
-## 8. The one risk to watch
+## 8. Risks to watch
 
+**Primary — Apex leaking upward into the IR.**
 The IR's three-point design space ({Go, Apex, Rust}) is healthy, but Apex is
 so constrained that there will be pressure to let its limitations leak
 upward into the IR (e.g. flattening the module concept everywhere because
@@ -261,6 +276,21 @@ Apex lacks one). Hold the line: the IR models the *rich* concept; each
 backend lowers it. The moment Apex's flat namespace shapes what the Rust
 backend can express, the new engine has begun accumulating exactly the kind
 of target-shaped debt this plan was meant to escape.
+
+Three more, smaller but real:
+
+- **Scratch-org CI operability.** VR-1.3 budgets the harness code, not the
+  operations: Dev Hub auth in CI, scratch-org creation limits, and
+  flakiness are recurring costs. Mitigation: tiered checking (syntax per
+  commit, full validate per merge) and building the harness in the Apex
+  milestone's first week, not its last.
+- **The 3× agent-throughput figure is one data point**, measured on Go —
+  the sympathetic target. Mitigation: re-baseline the estimate at each
+  milestone exit (PLAN.md).
+- **The IR's Apex-readiness is otherwise unverified until v2**, months
+  after the IR is designed. Mitigation: the §7 step 2 Apex spike exercises
+  the module-flattening, no-generics, and governor-limit axes during engine
+  development, while the IR is still cheap to change.
 
 **What to keep no matter what:** the deterministic generate→compile loop,
 the per-language hand-written AST/printer design, and the docs regime

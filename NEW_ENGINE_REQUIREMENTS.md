@@ -1,51 +1,56 @@
-# 🏗️ New Codegen Engine — Requirements
+# 🏗️ box-gantry — New Codegen Engine Requirements
 
-Requirements for the net-new SDK generator described in
-[`REWRITE_ASSESSMENT.md`](./REWRITE_ASSESSMENT.md). This document is the seed
-specification for the new project's repository; box-codegen itself is frozen
-reference material.
+Requirements for **box-gantry**, the net-new SDK generator described in
+[`REWRITE_ASSESSMENT.md`](./REWRITE_ASSESSMENT.md) and planned in
+[`PLAN.md`](./PLAN.md). This document is the normative specification for
+this repository. box-codegen is **consultable prior art**: its designs and
+lessons inform this spec, but no requirement or acceptance criterion depends
+on its code or its output.
 
 **Scope assumptions:** zero existing users; zero obligations to the six
 legacy SDK targets; SDK targets are **Go** (first), **Salesforce Apex**
 (second), **Rust** (third); the engine is implemented in **Rust**
-(assessment §6) and lives in its own repository.
+(assessment §6, D-101) and lives in this repository.
 
 ## 🔑 Legend
 
 | Symbol / Notation | Meaning |
 |---|---|
-| ✅ | Satisfied — a directly portable artifact already exists (code, suite, or procedure carries over nearly verbatim) |
-| 🔶 | Partial — proven design or reference implementation exists in box-codegen but must be re-expressed in the new engine |
-| ❌ | Not started — net-new work |
-| **Est. hrs 👤 (🤖)** | Estimated effort in **human engineer-hours**, with **AI-agent-driven hours** in parentheses (agent-assisted delivery observed at roughly 3× throughput on the Go target) |
-| **% Complete** | Section score: ✅ = 100, 🔶 = 50, ❌ = 0 per row, averaged (salvage-adjusted — credits reusable box-codegen assets, not new-repo code, which is 0 lines today) |
+| ✅ | Satisfied — exists in this repository today |
+| 🔶 | Partial — a proven design or reference implementation exists in box-codegen to consult; the work must be re-expressed here (nothing is treated as verbatim-portable) |
+| ❌ | Not started — net-new work with no meaningful prior art |
+| **Est. hrs 👤 (🤖)** | Estimated effort in **human engineer-hours**, with **AI-agent-driven hours** in parentheses. The 🤖 column is derived mechanically at the ~3× throughput observed on the box-codegen Go target — it is not an independent estimate, and is re-baselined at each milestone exit (see PLAN.md) |
+| **% Complete** | Section score: ✅ = 100, 🔶 = 50, ❌ = 0 per row, averaged. 🔶 credit reflects consultable designs, not code — this repository is 0 lines of engine code today |
 | MUST / SHOULD / MAY | RFC 2119 |
-| (G-n / D-n / §n) | Source lesson: box-codegen issue, decision record, or assessment section |
+| G-n / D-n | box-codegen's `ISSUES.md` / `DECISIONS.md` entries (prior art, in that repository; this repo's own decisions start at D-101 in [`DECISIONS.md`](./DECISIONS.md)) |
+| §n / R§n | Assessment section / section of this document |
 
 ## 📊 Roll-up
 
 | Section | Est. hrs 👤 (🤖) | % Complete |
 |---|---|---|
 | FR-1 Spec ingestion | 280 (85) | 25% |
-| FR-2 Intermediate representation | 240 (70) | 21% |
+| FR-2 Intermediate representation | 240 (72) | 21% |
 | FR-3 Semantic analysis | 160 (50) | 0% |
 | FR-4 Capability manifest | 40 (12) | 0% |
 | FR-5 Runtime contract | 100 (30) | 17% |
 | FR-6 Backend infrastructure | 120 (36) | 30% |
 | FR-7 Feature synthesis | 400 (120) | 44% |
 | FR-8 CLI / driver | 60 (18) | 0% |
-| NF Non-functional | 140 (42) | 14% |
-| VR Verification | 220 (66) | 19% |
-| TR-Go | 200 (60) | 58% |
-| TR-Apex | 460 (140) | 0% |
-| TR-Rust | 260 (78) | 0% |
-| **TOTAL** | **2,680 (807)** | **~21%** |
+| FR-9 Spec evolution | 60 (18) | 0% |
+| NF Non-functional | 170 (51) | 13% |
+| VR Verification | 260 (78) | 11% |
+| TR-Go | 280 (84) | 50% |
+| TR-Apex | 580 (176) | 0% |
+| TR-Rust | 360 (108) | 0% |
+| **TOTAL** | **3,110 (938)** | **~18%** |
 
 > Hours are effort, not calendar: with agent-driven parallelism the calendar
-> path is the assessment §7 plan (~5–7 months to v1). The salvage-adjusted
-> ~21% reflects that the Go lowering logic, fixture suite, verification
-> loop, and feature designs (D-003…D-013) already exist and port — the new
-> repository itself starts at zero.
+> path is PLAN.md (~6–8 months to v1). The ~18% reflects that the Go
+> lowering design, fixture semantics, verification-loop procedure, and
+> feature designs (D-003…D-013) exist in box-codegen as prior art to
+> consult — the code in this repository starts at zero lines, and nothing
+> is credited as directly portable.
 
 ---
 
@@ -54,7 +59,7 @@ legacy SDK targets; SDK targets are **Go** (first), **Salesforce Apex**
 The engine consumes the Box OpenAPI specification (base + versioned) and
 produces, per target, a complete SDK with **functional parity to the Box SDK
 capability contract**. Byte- or structure-level parity with any existing SDK
-is a **non-goal** (§9 assumptions).
+is a **non-goal** (assessment, operating assumptions; R§6).
 
 | Capability | Detail | Release |
 |---|---|---|
@@ -78,7 +83,7 @@ is a **non-goal** (§9 assumptions).
 | FR-1.3 | MUST | Box-specific quirks (base-URL mapping, multipart/octet-stream bodies, binary responses, extensible-enum markers) handled at ingestion, represented structurally in the IR | G-2, G-7, G-11 | 🔶 | 100 (30) |
 | FR-1.4 | MUST | Ingestion errors report the offending spec path and fail the run; no silent partial ingestion | §2 | ❌ | 40 (12) |
 
-### FR-2 — 🧬 Intermediate representation — 240 hrs 👤 (70 🤖) — 21% complete
+### FR-2 — 🧬 Intermediate representation — 240 hrs 👤 (72 🤖) — 21% complete
 
 | ID | Level | Requirement | Source | Status | Hrs 👤 (🤖) |
 |---|---|---|---|---|---|
@@ -129,12 +134,12 @@ is a **non-goal** (§9 assumptions).
 | ID | Level | Requirement | Source | Status | Hrs 👤 (🤖) |
 |---|---|---|---|---|---|
 | FR-7.1 | MUST | Managers per spec tag + client entry point with fluent `With*` decorators that preserve sibling state | G-3 | 🔶 | 50 (15) |
-| FR-7.2 | MUST | All four auth flows wired per the capability contract, with pluggable token storage | §1 | 🔶 | 60 (18) |
+| FR-7.2 | MUST | All four auth flows wired per the capability contract, with pluggable token storage | R§1 | 🔶 | 60 (18) |
 | FR-7.3 | MUST | Marker/offset operations gain idiomatic paged surfaces (Go `iter.Seq2`; Apex transaction-bounded continuations; Rust `Stream`/iterator), manifest-driven | G-8, D-013 | 🔶 | 60 (18) |
 | FR-7.4 | MUST | Multipart + chunked-session uploads; streaming bodies where the platform allows, buffered fallbacks where not (Apex heap) | G-7 | 🔶 | 60 (18) |
 | FR-7.5 | MUST | Versioned schema/parameter sets generate into distinct idiomatic namespaces without base-spec collisions | G-9 | 🔶 | 40 (12) |
 | FR-7.6 | MUST | `oneOf`: exactly-one-variant semantics, discriminator dispatch on deserialize, unknown values retained and round-tripped | D-012, G-11 | 🔶 | 40 (12) |
-| FR-7.7 | MUST | Per-manager reference docs + cross-cutting guides (auth, pagination, errors) generated from the same IR | §1 | ❌ | 50 (15) |
+| FR-7.7 | MUST | Per-manager reference docs + cross-cutting guides (auth, pagination, errors) generated from the same IR | R§1 | ❌ | 50 (15) |
 | FR-7.8 | MUST | Per-manager tests generated from shared, language-agnostic test semantics; ship-blocking for Apex (75% gate) | G-18, §4 | 🔶 | 40 (12) |
 
 ### FR-8 — ⌨️ CLI / driver — 60 hrs 👤 (18 🤖) — 0% complete
@@ -145,7 +150,17 @@ is a **non-goal** (§9 assumptions).
 | FR-8.2 | MUST | CLI is a thin argument parser over the engine library; business logic in the driver prohibited | FR-1.2 | ❌ | 10 (3) |
 | FR-8.3 | MUST | Exit codes distinguish spec errors, engine bugs, verification failures | NF-3 | ❌ | 20 (6) |
 
-## 3. 🛡️ Non-functional requirements — 140 hrs 👤 (42 🤖) — 14% complete
+### FR-9 — 🔄 Spec evolution — 60 hrs 👤 (18 🤖) — 0% complete
+
+The engine's whole premise is ongoing regeneration as Box updates the spec;
+these requirements make that a first-class workflow rather than an afterthought.
+
+| ID | Level | Requirement | Source | Status | Hrs 👤 (🤖) |
+|---|---|---|---|---|---|
+| FR-9.1 | MUST | Spec-diff report between any two ingested spec sets: operations, schemas, parameters, and enum values added / removed / changed, each classified breaking vs non-breaking | R§7 | ❌ | 40 (12) |
+| FR-9.2 | MUST | Regeneration is the release workflow: a documented semver policy maps breaking-change classes to SDK version bumps, and the diff report suggests the bump | R§7 | ❌ | 20 (6) |
+
+## 3. 🛡️ Non-functional requirements — 170 hrs 👤 (51 🤖) — 13% complete
 
 | ID | Level | Requirement | Source | Status | Hrs 👤 (🤖) |
 |---|---|---|---|---|---|
@@ -153,26 +168,28 @@ is a **non-goal** (§9 assumptions).
 | NF-2 | SHOULD | Feedback-loop speed: `check` on the full real spec in seconds; per-target generation well under a minute; unit-level probes (single-node lowering) exist | §2 | ❌ | 30 (9) |
 | NF-3 | MUST | Every user-facing error answers what / where (spec path or IR node) / what to do; internal invariant violations name the responsible component | §3 | ❌ | 20 (6) |
 | NF-4 | MUST | A fourth language requires only: manifest + runtime contract/stubs + lowering/printer + harness entry, with the compiler enumerating the lowering work list | FR-2.1 | ❌ | 10 (3) |
-| NF-5 | MUST | Agent/newcomer maintainability: all contracts explicit in types or manifests; adopt the ISSUES/DECISIONS/PLAN/SCOPE docs regime from day one | §7 | ✅ | 10 (3) |
+| NF-5 | MUST | Agent/newcomer maintainability: all contracts explicit in types or manifests; the ISSUES/DECISIONS/PLAN/SCOPE docs regime adopted from day one (seeded in this repo) | §7 | ✅ | 10 (3) |
 | NF-6 | MUST | Reproducible from clean checkout: pinned toolchain + deps; no network during generation (specs are inputs) | §3 | ❌ | 20 (6) |
 | NF-7 | MUST | Generated output embeds spec hash + engine version; every SDK release traceable to its inputs | §3 | ❌ | 20 (6) |
+| NF-8 | MUST | Each release defines its ship artifact and the pipeline produces it: tagged Go module; publishable crate (`cargo publish --dry-run` clean); Apex deployable source, with the packaging decision (unlocked package vs deployable source) recorded in `DECISIONS.md` | R§7 | ❌ | 30 (9) |
 
-## 4. 🔬 Verification requirements — 220 hrs 👤 (66 🤖) — 19% complete
+## 4. 🔬 Verification requirements — 260 hrs 👤 (78 🤖) — 11% complete
 
 | ID | Level | Requirement | Source | Status | Hrs 👤 (🤖) |
 |---|---|---|---|---|---|
-| VR-1.1 | MUST | Go: generate full real spec (base + versioned) → `go build ./...` + `go vet ./...` clean in CI, from the backend's first week | G-1 | ✅ | 30 (9) |
+| VR-1.1 | MUST | Go: generate full real spec (base + versioned) → `go build ./...` + `go vet ./...` clean in CI, from the backend's first week (the G-1 loop, rebuilt here) | G-1 | 🔶 | 30 (9) |
 | VR-1.2 | MUST | Rust: `cargo check` + `clippy` clean in CI | §4 | ❌ | 20 (6) |
 | VR-1.3 | MUST | Apex: syntax check (apex-parser / Code Analyzer) per commit; full `sf project deploy validate` (compile + tests) against a scratch org at least per merge | §4 | ❌ | 60 (18) |
-| VR-2 | MUST | Per-node lowering fixtures (IR fragment → expected source) per backend; the 54-case box-codegen Go suite ports as the initial Go set | §7 | 🔶 | 40 (12) |
-| VR-3 | MUST | §1 capability contract as a machine-checkable per-target checklist (operation/manager counts, auth flows, paged surfaces), reported every CI run | §2 | ❌ | 30 (9) |
+| VR-2 | MUST | Per-node lowering fixtures (IR fragment → expected source) per backend; the 54-case box-codegen Go suite's case list and expected semantics inform the initial Go set, authored fresh against the new IR | §7 | 🔶 | 40 (12) |
+| VR-3 | MUST | R§1 capability contract as a machine-checkable per-target checklist (operation/manager counts, auth flows, paged surfaces), reported every CI run | §2 | ❌ | 30 (9) |
 | VR-4 | MUST | Round-trip tests: optional presence/absence, known/unknown discriminators, open enums, versioned payloads | G-10, G-11 | ❌ | 20 (6) |
 | VR-5 | MUST | Determinism: CI generates twice and diffs for byte-identity | FR-6.2 | ❌ | 10 (3) |
 | VR-6 | MUST | No silent caps: generation-time skips/fallbacks appear in a summary CI asserts against an allowlist | §2 | ❌ | 10 (3) |
+| VR-7 | MUST | Live smoke suite per target: one call per auth flow plus upload, download, and paginate against a Box developer account; runs per release and on demand, never in the generation path | R§7 | ❌ | 40 (12) |
 
 ## 5. 🎯 Per-target requirements
 
-### TR-Go 🐹 (v1) — 200 hrs 👤 (60 🤖) — 58% complete
+### TR-Go 🐹 (v1) — 280 hrs 👤 (84 🤖) — 50% complete
 
 | ID | Level | Requirement | Source | Status | Hrs 👤 (🤖) |
 |---|---|---|---|---|---|
@@ -181,9 +198,10 @@ is a **non-goal** (§9 assumptions).
 | TR-Go.3 | MUST | `context.Context` first parameter on every I/O method | D-003 | 🔶 | 10 (3) |
 | TR-Go.4 | MUST | Pagination via stdlib `iter.Seq2[*T, error]` (Go ≥ 1.23) | D-013 | 🔶 | 30 (9) |
 | TR-Go.5 | MUST | Package layout `client` / `managers` / `schemas` (+`vNrM`) / `parameters/vNrM` / `networking` / `serialization` / `internal/utils`; gofmt-clean | G-9, G-17 | 🔶 | 40 (12) |
-| TR-Go.6 | MUST | Functional baseline: box-codegen Go output's API surface, diffed structurally (not byte-wise) | §7 | ✅ | 60 (18) |
+| TR-Go.6 | MUST | Functional baseline: the R§1 capability contract, checked via the VR-3 conformance checklist across the full spec surface; box-codegen's Go output MAY be consulted as an informal comparison, never as an acceptance oracle | R§1 | 🔶 | 60 (18) |
+| TR-Go.7 | MUST | Hand-written Go runtime (networking with retry/backoff, auth token management, serialization helpers) implemented in this repo against the FR-5 contract and shipped with the generated SDK; the existing box-go-sdk runtime consulted, not vendored | FR-5 | 🔶 | 80 (24) |
 
-### TR-Apex ☁️ (v2) — 460 hrs 👤 (140 🤖) — 0% complete
+### TR-Apex ☁️ (v2) — 580 hrs 👤 (176 🤖) — 0% complete
 
 | ID | Level | Requirement | Source | Status | Hrs 👤 (🤖) |
 |---|---|---|---|---|---|
@@ -192,8 +210,9 @@ is a **non-goal** (§9 assumptions).
 | TR-Apex.3 | MUST | Governor-limit-aware shapes: callout budgets and heap/CPU bounds inform pagination (transaction-bounded, `Queueable` continuations), chunked upload part sizes, retry policy | §4 | ❌ | 120 (36) |
 | TR-Apex.4 | MUST | `oneOf`/polymorphic deserialization via generated `JSON.deserializeUntyped` dispatch | §4 | ❌ | 80 (24) |
 | TR-Apex.5 | MUST | Generated test classes clear the 75% coverage deployment gate and ship with the SDK | §4 | ❌ | 100 (32) |
+| TR-Apex.6 | MUST | Hand-written Apex runtime: `Http`-based networking with retry within callout budgets, Crypto-based JWT (RS256) signing with org key storage, pluggable token storage, multipart body assembly | FR-5, §4 | ❌ | 120 (36) |
 
-### TR-Rust 🦀 (v3) — 260 hrs 👤 (78 🤖) — 0% complete
+### TR-Rust 🦀 (v3) — 360 hrs 👤 (108 🤖) — 0% complete
 
 | ID | Level | Requirement | Source | Status | Hrs 👤 (🤖) |
 |---|---|---|---|---|---|
@@ -201,6 +220,7 @@ is a **non-goal** (§9 assumptions).
 | TR-Rust.2 | MUST | `Result<T, BoxError>` error model; `Option<T>` optionals | §4 | ❌ | 40 (12) |
 | TR-Rust.3 | MUST | Async-first (`reqwest` + `tokio`); owned types in all public signatures (no lifetime params); builders for optional-heavy request structs | §4 | ❌ | 120 (36) |
 | TR-Rust.4 | MUST | `cargo check` + `clippy` clean; rustfmt-clean output | §4 | ❌ | 40 (12) |
+| TR-Rust.5 | MUST | Hand-written Rust runtime: `reqwest`+`tokio` networking with retry/backoff, auth token management, streaming body support; implemented against the FR-5 contract | FR-5, §4 | ❌ | 100 (30) |
 
 ## 6. 🚫 Non-goals
 
@@ -215,7 +235,12 @@ is a **non-goal** (§9 assumptions).
 
 | Release | Scope | Acceptance criteria | Est. hrs 👤 (🤖) | % Complete |
 |---|---|---|---|---|
-| **v1 — Go SDK** 🐹 | Engine core (FR-1…FR-8, NF), Go verification (VR-1.1, VR-2, VR-3, VR-4, VR-5), TR-Go | Full real spec (base + 2025.0 + 2026.0) generates; `go build` + `go vet` clean; ported fixture suite green; conformance checklist ≥ box-codegen Go baseline; round-trip + determinism green; smoke app executes one call per auth flow | 1,860 (560) | ~25% |
-| **v2 — Apex SDK** ☁️ | TR-Apex, VR-1.3 harness | Full scratch-org validation green **including generated tests** (coverage gate); conformance parity with v1 minus manifest-documented platform exclusions | 530 (160) | 0% |
-| **v3 — Rust SDK** 🦀 | TR-Rust, VR-1.2 harness | `cargo check` + `clippy` clean; conformance parity with v1; round-trip suite green incl. unknown-discriminator retention | 290 (87) | 0% |
-| **TOTAL** | | | **2,680 (807)** | **~21%** |
+| **v1 — Go SDK** 🐹 | Engine core (FR-1…FR-9, NF), verification harnesses (VR-1.1, VR-2…VR-7), TR-Go | Full real spec (base + 2025.0 + 2026.0) generates; `go build` + `go vet` + gofmt clean; per-node fixture suite green; generated per-manager tests compile and pass; reference docs generated for every manager plus the auth/pagination/errors guides; VR-3 conformance checklist covers the full R§1 contract; round-trip + determinism green; VR-7 live smoke green (one call per auth flow + upload/download/paginate); FR-9 spec-diff runs across the versioned specs; ship artifact: tagged Go module (NF-8) | 2,090 (630) | ~23% |
+| **v2 — Apex SDK** ☁️ | TR-Apex, VR-1.3 harness | Full scratch-org deploy validation green **including generated tests** (75% coverage gate); conformance parity with v1 minus manifest-documented platform exclusions, each recorded in `DECISIONS.md`; VR-7 live smoke green from a scratch org; packaging decision recorded and ship artifact produced (NF-8) | 640 (194) | 0% |
+| **v3 — Rust SDK** 🦀 | TR-Rust, VR-1.2 harness | `cargo check` + `clippy` + rustfmt clean; conformance parity with v1; round-trip suite green incl. unknown-discriminator retention; generated tests pass and docs generated (same bar as v1); VR-7 live smoke green; `cargo publish --dry-run` clean (NF-8) | 380 (114) | 0% |
+| **TOTAL** | | | **3,110 (938)** | **~18%** |
+
+> The release rows decompose exactly: v1 = FR-1…FR-9 + NF + TR-Go +
+> VR minus {VR-1.2, VR-1.3}; v2 = TR-Apex + VR-1.3; v3 = TR-Rust + VR-1.2.
+> The VR-7 live-smoke harness is built in v1 and reused (with per-target
+> entries) in v2 and v3.
