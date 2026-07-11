@@ -1,10 +1,18 @@
 [package]
 name = "gantry-backend-go"
-description = "Go lowering + printer (TR-Go)"
+description = "Go lowering + printer (FR-6, TR-Go)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[dependencies]
+gantry-ir.workspace = true
+gantry-manifest.workspace = true
+gantry-sema.workspace = true
+
+[dev-dependencies]
+gantry-spec.workspace = true
 
 [lints]
 workspace = true

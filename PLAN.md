@@ -206,8 +206,18 @@ effort.
    FR-5).~~ ✅ (D-109: Go manifest frozen; contract v1 as data; Go stubs
    rendered from the contract and compile-gated with go build/vet +
    gofmt in tests and CI)
-10. FR-1.2 naming/casing layer: idiomatic operation/schema naming,
-    shorten synthesized names (D-108 finding 2), initialism policy;
-    decide the null-vs-absent tri-state (D-105/D-108 finding 3).
-11. M3 begins: Go backend — model lowering + printer (TR-Go.1/2/5),
-    compile-the-output loop from week one (VR-1.1).
+10. ~~Decide the null-vs-absent tri-state.~~ ✅ (D-110:
+    `Optional<Nullable<T>>`; synthesized-name shortening included)
+11. ~~M3 begins: Go backend — model lowering + printer (TR-Go.1/2/5),
+    compile-the-output loop from week one (VR-1.1).~~ ✅ first slice:
+    all 1,332 declarations generate as Go (structs + tags, open enums,
+    union variant structs with generated marshal/unmarshal, aliases);
+    `gantry generate`/`verify` live (FR-8.1); `go build`+`vet`+gofmt
+    clean on the full real spec, in tests and CI. The loop caught four
+    real defects on first contact (`User--Mini` names, `$`-prefixed
+    metadata keys, `:append` custom methods, union-field padding).
+12. M3 continues: managers + client (FR-7.1), URL/query building against
+    the runtime contract, pagination (`iter.Seq2`, TR-Go.4), the
+    serialization package incl. the BG-1 tri-state wrapper and a real
+    `Date` type; per-node lowering fixtures (VR-2); round-trip tests
+    (VR-4); determinism double-generate in CI (VR-5).

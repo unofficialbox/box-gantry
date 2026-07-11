@@ -117,12 +117,19 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 [[package]]
 name = "gantry-backend-go"
 version = "0.1.0"
+dependencies = [
+ "gantry-ir",
+ "gantry-manifest",
+ "gantry-sema",
+ "gantry-spec",
+]
 
 [[package]]
 name = "gantry-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "gantry-backend-go",
  "gantry-sema",
  "gantry-spec",
 ]

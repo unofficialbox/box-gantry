@@ -23,4 +23,18 @@ Template:
 
 ---
 
-*(no entries yet — the engine is at M0)*
+## BG-1 — Go models collapse `Optional<Nullable<T>>` to `*T,omitempty`
+
+**Found:** 2026-07-11 · M3 model slice (D-110 follow-through)
+**Symptom:** A Go caller cannot express "set this field to explicit
+`null`" (Box's clear-on-update semantics) for fields that are both
+optional and nullable: nil pointer + `omitempty` omits the key instead
+of sending `null`.
+**Root cause:** `encoding/json` has no native tri-state; representing it
+needs a serialization-package wrapper type (D-004-class design), which
+the model slice deliberately defers.
+**Fix:** Pending — design the tri-state wrapper alongside the
+`serialization` package before request-body writers land (PLAN.md M3).
+**Fix class:** deferred-design (visible, not silent: this entry + code
+comments at the collapse site).
+**Promoted to:** PLAN.md M3 work item.

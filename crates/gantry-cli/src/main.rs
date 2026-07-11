@@ -5,7 +5,7 @@
 //! lesson). Subcommands appear as the engine grows them; only `check`
 //! exists today.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -15,11 +15,7 @@ use clap::{Parser, Subcommand};
 mod exit_codes {
     /// The input specs are at fault; fix the spec (or the file list).
     pub const SPEC_ERROR: u8 = 3;
-    /// Reserved: generated output failed verification (`verify`).
-    #[expect(
-        dead_code,
-        reason = "taken into use when `gantry verify` lands (FR-8.1)"
-    )]
+    /// Generated output failed verification (`verify`).
     pub const VERIFICATION_FAILURE: u8 = 4;
     /// An internal invariant broke; file a box-gantry bug.
     pub const ENGINE_BUG: u8 = 5;
@@ -42,12 +38,157 @@ enum Command {
         #[arg(required = true, value_name = "SPEC")]
         specs: Vec<PathBuf>,
     },
+    /// Generate an SDK from spec documents (models slice today).
+    Generate {
+        #[arg(required = true, value_name = "SPEC")]
+        specs: Vec<PathBuf>,
+        /// Target language (manifest key).
+        #[arg(long, value_parser = ["go"])]
+        target: String,
+        /// Output directory (created if missing).
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Generate, then compile the output with the target's real toolchain
+    /// (VR-1.1). Exits 4 when the generated code fails verification.
+    Verify {
+        #[arg(required = true, value_name = "SPEC")]
+        specs: Vec<PathBuf>,
+        /// Target language (manifest key).
+        #[arg(long, value_parser = ["go"])]
+        target: String,
+    },
 }
 
 fn main() -> ExitCode {
     match Cli::parse().command {
         Command::Check { specs } => check(&specs),
+        Command::Generate { specs, target, out } => generate(&specs, &target, &out),
+        Command::Verify { specs, target } => verify(&specs, &target),
     }
+}
+
+/// Load → lower → analyze → generate; shared by `generate` and `verify`.
+/// Errors are printed and mapped to their FR-8.3 exit class.
+fn generate_files(
+    specs: &[PathBuf],
+    target: &str,
+) -> Result<Vec<gantry_backend_go::GeneratedFile>, ExitCode> {
+    assert_eq!(target, "go", "clap restricts --target to known manifests");
+    let set = gantry_spec::SpecSet::load(specs).map_err(|err| {
+        eprintln!("error: {err}");
+        ExitCode::from(exit_codes::SPEC_ERROR)
+    })?;
+    let lowering = gantry_spec::lower(&set).map_err(|err| {
+        eprintln!("error: {err}");
+        ExitCode::from(exit_codes::SPEC_ERROR)
+    })?;
+    match gantry_sema::analyze(&lowering.program) {
+        Ok(analysis) => Ok(gantry_backend_go::generate_models(&analysis)),
+        Err(errors) => {
+            let engine_bug = errors.iter().any(gantry_sema::SemaError::is_engine_bug);
+            for error in &errors {
+                eprintln!("error: {error}");
+            }
+            Err(ExitCode::from(if engine_bug {
+                exit_codes::ENGINE_BUG
+            } else {
+                exit_codes::SPEC_ERROR
+            }))
+        }
+    }
+}
+
+fn write_files(root: &Path, files: &[gantry_backend_go::GeneratedFile]) -> std::io::Result<()> {
+    for file in files {
+        let path = root.join(&file.path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, &file.content)?;
+    }
+    Ok(())
+}
+
+fn generate(specs: &[PathBuf], target: &str, out: &Path) -> ExitCode {
+    let files = match generate_files(specs, target) {
+        Ok(files) => files,
+        Err(code) => return code,
+    };
+    if let Err(err) = write_files(out, &files) {
+        eprintln!("error: cannot write output: {err}");
+        return ExitCode::from(exit_codes::ENGINE_BUG);
+    }
+    println!(
+        "ok  generated {count} file(s) into {out}",
+        count = files.len(),
+        out = out.display()
+    );
+    ExitCode::SUCCESS
+}
+
+fn verify(specs: &[PathBuf], target: &str) -> ExitCode {
+    let files = match generate_files(specs, target) {
+        Ok(files) => files,
+        Err(code) => return code,
+    };
+    let dir = std::env::temp_dir().join(format!("gantry-verify-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(err) = write_files(&dir, &files) {
+        eprintln!("error: cannot write output: {err}");
+        return ExitCode::from(exit_codes::ENGINE_BUG);
+    }
+
+    // The VR-1.1 loop: the target's real toolchain is the oracle.
+    for (label, program, args) in [
+        ("go build", "go", vec!["build", "./..."]),
+        ("go vet", "go", vec!["vet", "./..."]),
+    ] {
+        let output = match std::process::Command::new(program)
+            .args(&args)
+            .current_dir(&dir)
+            .output()
+        {
+            Ok(output) => output,
+            Err(err) => {
+                eprintln!("error: cannot run {label}: {err}");
+                return ExitCode::from(exit_codes::VERIFICATION_FAILURE);
+            }
+        };
+        if !output.status.success() {
+            eprintln!(
+                "error: {label} failed on the generated output:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return ExitCode::from(exit_codes::VERIFICATION_FAILURE);
+        }
+        println!("ok  {label} clean");
+    }
+    match std::process::Command::new("gofmt")
+        .arg("-l")
+        .arg(&dir)
+        .output()
+    {
+        Ok(output) if output.status.success() && output.stdout.is_empty() => {
+            println!("ok  gofmt clean");
+        }
+        Ok(output) => {
+            eprintln!(
+                "error: gofmt wants changes (G-17) in:\n{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            return ExitCode::from(exit_codes::VERIFICATION_FAILURE);
+        }
+        Err(err) => {
+            eprintln!("error: cannot run gofmt: {err}");
+            return ExitCode::from(exit_codes::VERIFICATION_FAILURE);
+        }
+    }
+    println!(
+        "ok  verified: {count} generated file(s) compile clean",
+        count = files.len()
+    );
+    ExitCode::SUCCESS
 }
 
 fn check(specs: &[PathBuf]) -> ExitCode {
