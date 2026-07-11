@@ -87,4 +87,12 @@ fn the_full_real_spec_set_ingests() {
         .filter(|op| op.base_url != gantry_ir::BaseUrl::Api)
         .count();
     assert_eq!(non_default, 14);
+
+    // The semantic pass verifies the whole real program (FR-3): every
+    // reference bound, every type well-formed, identities unique.
+    let analysis = gantry_sema::analyze(&lowering.program)
+        .expect("the real program must pass semantic analysis");
+    assert_eq!(analysis.managers.len(), 85);
+    let indexed: usize = analysis.managers.values().map(Vec::len).sum();
+    assert_eq!(indexed, 336);
 }

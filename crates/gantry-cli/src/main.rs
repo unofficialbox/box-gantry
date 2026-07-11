@@ -21,11 +21,7 @@ mod exit_codes {
         reason = "taken into use when `gantry verify` lands (FR-8.1)"
     )]
     pub const VERIFICATION_FAILURE: u8 = 4;
-    /// Reserved: an internal invariant broke; file a box-gantry bug.
-    #[expect(
-        dead_code,
-        reason = "taken into use when the engine has invariants to break"
-    )]
+    /// An internal invariant broke; file a box-gantry bug.
     pub const ENGINE_BUG: u8 = 5;
 }
 
@@ -123,6 +119,27 @@ fn check(specs: &[PathBuf]) -> ExitCode {
         binary = stats.binary_responses,
         redirect = stats.redirect_responses,
         text = stats.text_responses,
+    );
+
+    // The semantic pass (FR-3): backends only ever see verified programs.
+    let analysis = match gantry_sema::analyze(&lowering.program) {
+        Ok(analysis) => analysis,
+        Err(errors) => {
+            let engine_bug = errors.iter().any(gantry_sema::SemaError::is_engine_bug);
+            for error in &errors {
+                eprintln!("error: {error}");
+            }
+            eprintln!("error: semantic analysis found {} problem(s)", errors.len());
+            return ExitCode::from(if engine_bug {
+                exit_codes::ENGINE_BUG
+            } else {
+                exit_codes::SPEC_ERROR
+            });
+        }
+    };
+    println!(
+        "ok  sema: verified — {managers} managers, every reference bound, every type well-formed",
+        managers = analysis.managers.len(),
     );
     println!(
         "ok  spec set: {docs} document(s), {total_ops} operations, {total_schemas} schemas",

@@ -246,7 +246,7 @@ pub enum PathPart {
     Parameter(Identifier),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParamLocation {
     Path,
     Query,

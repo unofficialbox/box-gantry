@@ -16,6 +16,7 @@ indexmap.workspace = true
 
 [dev-dependencies]
 gantry-ir.workspace = true
+gantry-sema.workspace = true
 
 [lints]
 workspace = true
