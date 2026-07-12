@@ -511,3 +511,118 @@ paginated surfaces, 4 auth flows — all green. Unit tests pin the pass/fail
 logic (a dropped method and a missing auth flow both fail the gate); an
 integration test asserts the real generated SDK is fully conformant with
 non-trivial counts.
+
+## D-117 — Build provenance (NF-7) and the Go-module ship artifact (NF-8)
+
+**Status:** accepted · 2026-07-12
+
+**Context:** NF-7 requires every generated SDK to embed a spec hash + engine
+version so a release is traceable to its inputs; NF-8 requires each release
+to define and produce its ship artifact — for v1, a tagged Go module — with
+the packaging decision recorded.
+
+**Decision:**
+- **Spec fingerprint (NF-7):** `SpecSet::fingerprint()` is an **FNV-1a**
+  hash of the raw document bytes, folded in load order, rendered as 16
+  lowercase hex digits. Dependency-free (no `sha2` — consistent with the
+  stdlib-only runtime and NF-6's locked-deps discipline) and deterministic
+  (FR-6.2); it is an input *fingerprint* for traceability, not a security
+  hash, so collision resistance against an adversary is not required. It is
+  order-sensitive (the set is ordered, base first) and moves on any input
+  change.
+- **Provenance carried two ways:** a `BuildInfo { engine, spec_fingerprint }`
+  is threaded into generation. Every model file header gains
+  `(spec <fingerprint>)`, and a dedicated **`buildinfo` package** exports
+  `EngineVersion` and `SpecFingerprint` constants so the shipped SDK can
+  report its own provenance programmatically. The VR-3 checklist gains a
+  `traceability` capability gating the package's presence.
+- **Ship artifact (NF-8):** the generated tree **is** the artifact — a
+  self-contained Go module (`go.mod` with `module boxgantry.invalid/boxsdk`,
+  `go 1.23`) that builds/vets/gofmt/tests clean (VR-1.1). The `.invalid`
+  module path is the in-repo placeholder; the **real import path and the
+  `vMAJOR.MINOR.PATCH` tag are set by the release pipeline**, with the
+  version bump chosen by the FR-9 spec-diff (D-115): breaking → major,
+  additive → minor. Go modules ship as source (no build step), so there is
+  no unlocked-package-vs-source question as there will be for Apex — the
+  packaging choice here is simply *tagged module source*, recorded so v2/v3
+  can point back to it.
+
+**Consequences:** `gantry generate/verify/conform` all stamp the output;
+the fingerprint is computed once from the `SpecSet` and reused. On the real
+spec the fingerprint is `ee7d55aedefe2fa0` and the engine version `0.1.0`,
+embedded in the headers and the `buildinfo` package (both compile-gated in
+CI). Unit tests pin the fingerprint's determinism, hex shape, and
+order-sensitivity; the conformance checklist now reports 9 capabilities.
+Apex/Rust will carry the same `BuildInfo` into their own provenance
+surfaces (a `buildinfo` class / a `build_info` module).
+
+## D-118 — VR-2 per-node lowering fixtures: semantic, not byte-exact
+
+**Status:** accepted · 2026-07-12
+
+**Context:** VR-2 requires per-node lowering fixtures (IR fragment →
+expected source) per backend, the box-codegen 54-case Go suite informing
+the initial set, authored fresh against the new IR. The question was what
+to assert: byte-exact golden output, or the semantics.
+
+**Decision:** Assert the **semantics per node**, not byte-exact output.
+`node_fixtures.rs` builds a minimal IR program for one node kind (a struct
+field of a given type, an enum, a discriminated/structural union, an alias,
+an empty struct), renders the `schemas` module, and asserts the specific Go
+the rule must produce: the `*T`/`serialization.Nullable[T]`/`*serialization
+.Nullable[T]` tri-state shapes (D-110), `Date`→`serialization.Date`,
+`DateTime`→`time.Time`, `Binary`→`io.Reader`+`json:"-"`, `JsonValue`→`any`,
+slices/maps, per-element `[]serialization.Nullable[T]`, open-enum string
+type + prefixed constants, union variant structs with `Marshal`/`Unmarshal`
+dispatch and unknown-tag retention, and aliases.
+
+Byte-exact/gofmt-cleanliness/determinism are already the job of
+`compile_output.rs` (VR-1.1, VR-5); duplicating them as goldens would make
+the fixtures brittle to formatting. So assertions are **column-alignment
+insensitive** (a whitespace-squeezing matcher for field blocks) and target
+the type expression, tag, and method — the parts that encode meaning.
+
+**Consequences:** 17 focused cases cover every IR node kind and the Box
+quirks the tri-state/union/enum rules encode. They pinpoint *which rule*
+regressed when one changes — where VR-1.1 only says "the spec stopped
+building." The harness renders through the real `generate_models` +
+`BuildInfo`, so fixtures track the true printer. Apex/Rust get their own
+`node_fixtures` against the same IR fragments, which is how conformance
+parity is demonstrated node by node.
+
+## D-119 — VR-7 live smoke: build-tagged, credential-gated, runtime-level
+
+**Status:** accepted · 2026-07-12
+
+**Context:** VR-7 requires a live smoke — one call per auth flow plus
+upload/download/paginate — green against a real Box dev account, per
+release and on demand. It needs credentials and touches a live account, so
+it cannot be a per-commit gate.
+
+**Decision:**
+- The smoke lives in the **committed runtime** (`gantryruntime/
+  livesmoke_test.go`), not the generated output, and drives **only the
+  stable runtime contract** (`New` / `NewRequest` / `Fetch` / the `With*`
+  builders / response accessors) — never generated method names. So it
+  verifies the hand-written runtime (auth token exchange, retry, multipart,
+  streaming), which is exactly the part the compile gate (VR-1.1) cannot
+  exercise, and it does not churn when the spec/methods change.
+- It is **build-tagged `//go:build live`**, so the standard CI gate
+  (`go build`/`vet`/`test` without `-tags live`) never compiles or runs it —
+  a true no-op in the per-commit pipeline. gofmt still checks it (syntactic).
+- Credentials come from the **environment**; each flow runs only when its
+  variables are present, and the test `t.Skip()`s when none are — a
+  credential-free run passes cleanly.
+- In CI it runs only via a manual **`workflow_dispatch`** workflow that
+  reads the credentials from **repo secrets**, never the repository. This
+  is how the release pipeline "produces" the VR-7 result on demand.
+
+**Consequences:** The smoke covers all four flows (Developer Token / CCG /
+OAuth / JWT via `box_config.json`), then paginates the root folder
+(following the marker cursor like the generated iterators), and
+uploads → downloads (byte-compares) → deletes a scratch file. It compiles
+under `-tags live` and is excluded otherwise (both verified). Actual green
+runs require a Box dev account, tracked as the last open v1 acceptance item;
+the harness, the manual workflow, and the docs are in place so a maintainer
+supplies secrets and triggers it. Apex/Rust get the same shape (a tagged /
+ignored live test driving their runtimes) for their VR-7.

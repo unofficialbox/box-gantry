@@ -1,0 +1,35 @@
+# VR-7 live smoke (release-blocking, on demand). NOT part of the per-commit
+# gate: it needs real Box credentials and touches a live account, so it is
+# manual (workflow_dispatch). Credentials come from repo secrets — never
+# from the repository. Absent secrets → the test t.Skip()s, so a dry run
+# still passes.
+name: Live smoke (VR-7)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  live-smoke:
+    runs-on: ubuntu-latest
+    env:
+      # Map secrets to env here: the `secrets` context is available in `env`
+      # but not in step `if:` conditions, so gate the steps on these.
+      BOX_DEVELOPER_TOKEN: ${{ secrets.BOX_DEVELOPER_TOKEN }}
+      BOX_CLIENT_ID: ${{ secrets.BOX_CLIENT_ID }}
+      BOX_CLIENT_SECRET: ${{ secrets.BOX_CLIENT_SECRET }}
+      BOX_ENTERPRISE_ID: ${{ secrets.BOX_ENTERPRISE_ID }}
+      BOX_OAUTH_REFRESH_TOKEN: ${{ secrets.BOX_OAUTH_REFRESH_TOKEN }}
+      BOX_JWT_CONFIG_JSON: ${{ secrets.BOX_JWT_CONFIG }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - name: Write the JWT config, if provided
+        if: ${{ env.BOX_JWT_CONFIG_JSON != '' }}
+        run: |
+          printf '%s' "$BOX_JWT_CONFIG_JSON" > "$RUNNER_TEMP/box_config.json"
+          echo "BOX_JWT_CONFIG=$RUNNER_TEMP/box_config.json" >> "$GITHUB_ENV"
+      - name: Run the live smoke (one call per auth flow + upload/download/paginate)
+        working-directory: runtimes/go
+        run: go test -tags live -run TestLiveSmoke -v ./gantryruntime/...

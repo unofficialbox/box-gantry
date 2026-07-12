@@ -14,18 +14,17 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 fn generate() -> Vec<gantry_backend_go::GeneratedFile> {
-    let lowering = gantry_spec::lower(
-        &SpecSet::load(&[
-            fixture("openapi.json"),
-            fixture("openapi-v2025.0.json"),
-            fixture("openapi-v2026.0.json"),
-        ])
-        .unwrap(),
-    )
+    let set = SpecSet::load(&[
+        fixture("openapi.json"),
+        fixture("openapi-v2025.0.json"),
+        fixture("openapi-v2026.0.json"),
+    ])
     .unwrap();
+    let build = gantry_backend_go::BuildInfo::new(set.fingerprint());
+    let lowering = gantry_spec::lower(&set).unwrap();
     let program = Box::leak(Box::new(lowering.program));
     let analysis = gantry_sema::analyze(program).unwrap();
-    gantry_backend_go::generate(&analysis)
+    gantry_backend_go::generate(&analysis, &build)
         .expect("the go backend must express the verified program")
 }
 

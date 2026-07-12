@@ -199,6 +199,20 @@ pub fn conformance(
         "Developer Token / CCG / JWT / OAuth surfaced",
     ));
 
+    // Traceability: the buildinfo package carries the engine version and a
+    // non-empty spec fingerprint (NF-7), so a release is traceable to its
+    // inputs.
+    let traceable = files.iter().any(|f| {
+        f.path == "buildinfo/buildinfo.go"
+            && f.content.contains("EngineVersion")
+            && f.content.contains("SpecFingerprint")
+    });
+    checks.push(presence_check(
+        "traceability",
+        traceable,
+        "buildinfo: engine version + spec fingerprint",
+    ));
+
     // Cross-cutting guides: the index and the three topic guides (FR-7.7).
     let guides = [
         "docs/README.md",
@@ -319,6 +333,10 @@ mod tests {
             ("docs/README.md".into(), "index".into()),
             ("docs/pagination.md".into(), "pages".into()),
             ("docs/errors.md".into(), "errors".into()),
+            (
+                "buildinfo/buildinfo.go".into(),
+                "const EngineVersion = \"0.1.0\"\nconst SpecFingerprint = \"abc\"\n".into(),
+            ),
         ]
     }
 

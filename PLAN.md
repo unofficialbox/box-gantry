@@ -264,5 +264,32 @@ effort.
     4 auth flows, plus serialization/tests/docs. `gantry conform --target
     go` exits 4 on any shortfall; CI runs it every build. Target-neutral
     (reads a `GeneratedView`), so Apex/Rust reuse it.)
-21. M3 remainder toward v1: per-node lowering fixtures (VR-2); live smoke
-    (VR-7); tagged module (NF-8).
+21. ~~Build provenance (NF-7) + Go-module ship artifact (NF-8).~~ ✅
+    (D-117: `SpecSet::fingerprint()` — a dependency-free FNV-1a hash of the
+    input specs — plus the engine version are threaded via `BuildInfo`
+    into every model header and a generated `buildinfo` package
+    (`EngineVersion`/`SpecFingerprint`); VR-3 gains a `traceability`
+    capability. The generated tree is the NF-8 artifact: a self-contained
+    Go module, tag/version set by the release pipeline from the FR-9
+    diff.)
+22. ~~VR-2 per-node lowering fixtures.~~ ✅ (D-118: `node_fixtures.rs` —
+    17 cases, one IR node kind (and quirk) at a time, asserting the exact
+    Go each rule produces (tri-state shapes, Date/DateTime/Binary/JSON
+    scalars, containers, open enums, union dispatch + unknown retention,
+    aliases). Semantic assertions, alignment-insensitive; they pinpoint
+    which rule regressed where VR-1.1 only says the spec stopped building.)
+23. ~~VR-7 live smoke (harness).~~ ✅ (D-119: `livesmoke_test.go` in the
+    committed runtime, build-tagged `//go:build live` so the per-commit
+    gate never runs it; drives the stable runtime contract for one call
+    per auth flow (Developer/CCG/OAuth/JWT) + paginate + upload/download/
+    delete; credential-gated (`t.Skip` when unset); a manual
+    `workflow_dispatch` CI job runs it from repo secrets on demand.
+    Compiles under `-tags live`, excluded otherwise.) **Actual green runs
+    await a Box dev account's credentials** — the harness is ready.
+
+**v1 acceptance (R§7) is now complete in the engine**: full spec
+generates + builds/vets/gofmt clean (VR-1.1); per-node fixtures (VR-2);
+conformance checklist (VR-3); round-trip + generated tests (VR-4);
+determinism (VR-5) + skip allowlist (VR-6); FR-9 spec-diff; reference
+docs; the four auth flows; provenance + tagged-module artifact (NF-7/8);
+and the VR-7 live-smoke harness (green runs pending credentials).

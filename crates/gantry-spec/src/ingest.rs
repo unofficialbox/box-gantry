@@ -23,6 +23,9 @@ pub struct Document {
     pub title: String,
     /// The Box API version this document contributes (e.g. `"2024.0"`).
     pub api_version: String,
+    /// FNV-1a hash of the raw file bytes — the input fingerprint the
+    /// generated SDK embeds for traceability (NF-7).
+    pub content_fnv: u64,
     pub operations: Vec<OperationSummary>,
     /// Named schemas, in spec order (deterministic — FR-6.2). Lowered into
     /// the typed IR by [`crate::lower`].
@@ -115,6 +118,36 @@ impl SpecSet {
         }
         Ok(Self { documents })
     }
+
+    /// A deterministic fingerprint of the whole input set (NF-7): the
+    /// documents' content hashes folded in load order, so the same specs in
+    /// the same order always produce the same value and any change to any
+    /// input moves it. Rendered as 16 lowercase hex digits.
+    pub fn fingerprint(&self) -> String {
+        let mut acc = FNV_OFFSET;
+        for doc in &self.documents {
+            for byte in doc.content_fnv.to_le_bytes() {
+                acc = fnv_step(acc, byte);
+            }
+        }
+        format!("{acc:016x}")
+    }
+}
+
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+fn fnv_step(hash: u64, byte: u8) -> u64 {
+    (hash ^ u64::from(byte)).wrapping_mul(FNV_PRIME)
+}
+
+/// FNV-1a over raw bytes — a fast, dependency-free, deterministic hash.
+/// Used for input traceability (NF-7), not security; collision resistance
+/// against an adversary is not a requirement here.
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    bytes
+        .iter()
+        .fold(FNV_OFFSET, |hash, &byte| fnv_step(hash, byte))
 }
 
 impl Document {
@@ -123,6 +156,7 @@ impl Document {
             file: file.to_path_buf(),
             source,
         })?;
+        let content_fnv = fnv1a_64(text.as_bytes());
         let mut deserializer = serde_json::Deserializer::from_str(&text);
         let raw: RawDocument =
             serde_path_to_error::deserialize(&mut deserializer).map_err(|err| {
@@ -133,7 +167,9 @@ impl Document {
                     source: err.into_inner(),
                 }
             })?;
-        Self::validate(file, raw)
+        let mut document = Self::validate(file, raw)?;
+        document.content_fnv = content_fnv;
+        Ok(document)
     }
 
     fn validate(file: &Path, raw: RawDocument) -> Result<Self, IngestError> {
@@ -191,6 +227,7 @@ impl Document {
             file: file.to_path_buf(),
             title: raw.info.title,
             api_version: raw.info.version,
+            content_fnv: 0, // set by `load` from the raw bytes
             operations,
             schemas: raw.components.schemas,
             paths: raw.paths,
