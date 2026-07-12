@@ -278,6 +278,18 @@ effort.
     scalars, containers, open enums, union dispatch + unknown retention,
     aliases). Semantic assertions, alignment-insensitive; they pinpoint
     which rule regressed where VR-1.1 only says the spec stopped building.)
-23. M3 remainder toward v1: live smoke (VR-7) — the one v1 item that needs
-    a real Box dev account + credentials, so it runs per-release / on
-    demand, not in the standard CI gate.
+23. ~~VR-7 live smoke (harness).~~ ✅ (D-119: `livesmoke_test.go` in the
+    committed runtime, build-tagged `//go:build live` so the per-commit
+    gate never runs it; drives the stable runtime contract for one call
+    per auth flow (Developer/CCG/OAuth/JWT) + paginate + upload/download/
+    delete; credential-gated (`t.Skip` when unset); a manual
+    `workflow_dispatch` CI job runs it from repo secrets on demand.
+    Compiles under `-tags live`, excluded otherwise.) **Actual green runs
+    await a Box dev account's credentials** — the harness is ready.
+
+**v1 acceptance (R§7) is now complete in the engine**: full spec
+generates + builds/vets/gofmt clean (VR-1.1); per-node fixtures (VR-2);
+conformance checklist (VR-3); round-trip + generated tests (VR-4);
+determinism (VR-5) + skip allowlist (VR-6); FR-9 spec-diff; reference
+docs; the four auth flows; provenance + tagged-module artifact (NF-7/8);
+and the VR-7 live-smoke harness (green runs pending credentials).

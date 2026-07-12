@@ -589,3 +589,40 @@ building." The harness renders through the real `generate_models` +
 `BuildInfo`, so fixtures track the true printer. Apex/Rust get their own
 `node_fixtures` against the same IR fragments, which is how conformance
 parity is demonstrated node by node.
+
+## D-119 — VR-7 live smoke: build-tagged, credential-gated, runtime-level
+
+**Status:** accepted · 2026-07-12
+
+**Context:** VR-7 requires a live smoke — one call per auth flow plus
+upload/download/paginate — green against a real Box dev account, per
+release and on demand. It needs credentials and touches a live account, so
+it cannot be a per-commit gate.
+
+**Decision:**
+- The smoke lives in the **committed runtime** (`gantryruntime/
+  livesmoke_test.go`), not the generated output, and drives **only the
+  stable runtime contract** (`New` / `NewRequest` / `Fetch` / the `With*`
+  builders / response accessors) — never generated method names. So it
+  verifies the hand-written runtime (auth token exchange, retry, multipart,
+  streaming), which is exactly the part the compile gate (VR-1.1) cannot
+  exercise, and it does not churn when the spec/methods change.
+- It is **build-tagged `//go:build live`**, so the standard CI gate
+  (`go build`/`vet`/`test` without `-tags live`) never compiles or runs it —
+  a true no-op in the per-commit pipeline. gofmt still checks it (syntactic).
+- Credentials come from the **environment**; each flow runs only when its
+  variables are present, and the test `t.Skip()`s when none are — a
+  credential-free run passes cleanly.
+- In CI it runs only via a manual **`workflow_dispatch`** workflow that
+  reads the credentials from **repo secrets**, never the repository. This
+  is how the release pipeline "produces" the VR-7 result on demand.
+
+**Consequences:** The smoke covers all four flows (Developer Token / CCG /
+OAuth / JWT via `box_config.json`), then paginates the root folder
+(following the marker cursor like the generated iterators), and
+uploads → downloads (byte-compares) → deletes a scratch file. It compiles
+under `-tags live` and is excluded otherwise (both verified). Actual green
+runs require a Box dev account, tracked as the last open v1 acceptance item;
+the harness, the manual workflow, and the docs are in place so a maintainer
+supplies secrets and triggers it. Apex/Rust get the same shape (a tagged /
+ignored live test driving their runtimes) for their VR-7.
