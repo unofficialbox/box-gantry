@@ -58,6 +58,17 @@ enum Command {
         #[arg(long, value_parser = ["go"])]
         target: String,
     },
+    /// Report the R§1 capability conformance checklist for a target
+    /// (VR-3): managers, operations, paginated surfaces, auth flows, tests,
+    /// and docs — expected (from the spec) vs generated. Exits 4 when any
+    /// capability falls short, so CI can gate a partial SDK.
+    Conform {
+        #[arg(required = true, value_name = "SPEC")]
+        specs: Vec<PathBuf>,
+        /// Target language (manifest key).
+        #[arg(long, value_parser = ["go"])]
+        target: String,
+    },
     /// Diff two spec sets and report breaking vs compatible changes and the
     /// recommended SDK version bump (FR-9). Exits 4 when the diff is
     /// breaking, so CI can gate a major bump.
@@ -76,7 +87,54 @@ fn main() -> ExitCode {
         Command::Check { specs } => check(&specs),
         Command::Generate { specs, target, out } => generate(&specs, &target, &out),
         Command::Verify { specs, target } => verify(&specs, &target),
+        Command::Conform { specs, target } => conform(&specs, &target),
         Command::Diff { from, to } => diff(&from, &to),
+    }
+}
+
+/// VR-3: report the capability conformance checklist for a target. Prints
+/// the checklist; exits 4 when any capability falls short of the R§1
+/// contract, 0 when the SDK is fully conformant.
+fn conform(specs: &[PathBuf], target: &str) -> ExitCode {
+    assert_eq!(target, "go", "clap restricts --target to known manifests");
+    let program = match lower_program(specs) {
+        Ok(program) => program,
+        Err(code) => return code,
+    };
+    let analysis = match gantry_sema::analyze(&program) {
+        Ok(analysis) => analysis,
+        Err(errors) => {
+            let engine_bug = errors.iter().any(gantry_sema::SemaError::is_engine_bug);
+            for error in &errors {
+                eprintln!("error: {error}");
+            }
+            return ExitCode::from(if engine_bug {
+                exit_codes::ENGINE_BUG
+            } else {
+                exit_codes::SPEC_ERROR
+            });
+        }
+    };
+    let files = match gantry_backend_go::generate(&analysis) {
+        Ok(files) => files,
+        Err(err) => {
+            eprintln!("error: {err}");
+            return ExitCode::from(exit_codes::ENGINE_BUG);
+        }
+    };
+    let views: Vec<gantry_verify::GeneratedView> = files
+        .iter()
+        .map(|f| gantry_verify::GeneratedView {
+            path: &f.path,
+            content: &f.content,
+        })
+        .collect();
+    let report = gantry_verify::conformance(target, &analysis, &views);
+    print!("{}", report.report());
+    if report.passed() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(exit_codes::VERIFICATION_FAILURE)
     }
 }
 

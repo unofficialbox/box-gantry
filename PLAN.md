@@ -257,5 +257,12 @@ effort.
     and exits 4 on a breaking diff so CI can gate a major bump; an
     integration test proves the `2025.0` overlay is additive and its
     removal breaking.)
-20. M3 remainder toward v1: per-node lowering fixtures (VR-2); VR-3
-    conformance checklist; live smoke (VR-7); tagged module (NF-8).
+20. ~~VR-3 conformance checklist.~~ ✅ (D-116: `gantry-verify::conformance`
+    derives the expected R§1 surface from the verified program (managers,
+    operations, paginated surfaces) and measures the generated output,
+    capability by capability — 85 managers, 336 operations, 64 paginators,
+    4 auth flows, plus serialization/tests/docs. `gantry conform --target
+    go` exits 4 on any shortfall; CI runs it every build. Target-neutral
+    (reads a `GeneratedView`), so Apex/Rust reuse it.)
+21. M3 remainder toward v1: per-node lowering fixtures (VR-2); live smoke
+    (VR-7); tagged module (NF-8).
