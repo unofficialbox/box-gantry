@@ -187,8 +187,11 @@ dependencies = [
 name = "gantry-verify"
 version = "0.1.0"
 dependencies = [
+ "gantry-backend-go",
  "gantry-ir",
+ "gantry-sema",
  "gantry-spec",
+ "gantry-synth",
 ]
 
 [[package]]

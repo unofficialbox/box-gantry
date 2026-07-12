@@ -5,10 +5,13 @@
 //! the spec-diff/breaking-change report (FR-9).
 //!
 //! Grows alongside the Go backend in M3 (see PLAN.md); this crate is the
-//! seam. Shipped so far: the FR-9 [`diff`] module.
+//! seam. Shipped so far: the FR-9 [`diff`] module and the VR-3
+//! [`conformance`] checklist.
 
+pub mod conformance;
 pub mod diff;
 
+pub use conformance::{Check, CheckStatus, ConformanceReport, GeneratedView, conformance};
 pub use diff::{Change, ChangeKind, Severity, SpecDiff, VersionBump, diff};
 
 #[cfg(test)]

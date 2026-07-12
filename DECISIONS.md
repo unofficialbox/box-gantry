@@ -470,3 +470,44 @@ removing it is breaking (257 removals, major). The diff is language-neutral
 (it reads the IR), so the same report serves every target SDK's versioning.
 The remaining VR items (VR-2 fixtures, VR-3 conformance checklist, VR-7
 live smoke) build on this seam in `gantry-verify`.
+
+## D-116 — VR-3 conformance checklist: contract-derived, target-neutral
+
+**Status:** accepted · 2026-07-12
+
+**Context:** VR-3 requires the R§1 capability contract as a
+machine-checkable, per-target checklist (operation/manager counts, auth
+flows, paged surfaces), reported every CI run and release-blocking. The
+question was how to express "expected" without hand-maintaining golden
+numbers that rot as the spec moves.
+
+**Decision:** Derive **expected** from the verified program and **actual**
+from the generated output — never from a hard-coded table (`gantry-verify`
+`conformance`). Each capability is one `Check { expected, actual, status }`:
+- **managers** = `analysis.managers.len()` → generated `managers/*.go`;
+- **manager-docs** = managers → `docs/managers/*.md`;
+- **operations** = `program.operations.len()` → generated methods (counted
+  as `(ctx context.Context` signatures minus the `Paginate` ones);
+- **pagination** = `detect_pagination().len()` → `Paginate` iterators;
+- **serialization / round-trip-tests / auth-flows / docs-guides** =
+  presence/enumeration of the tri-state package, VR-4 tests, the four auth
+  flows surfaced in the generated guide, and the cross-cutting guides.
+
+A capability passes iff `actual >= expected` (extra helpers are fine; a
+shortfall is not). Because "expected" tracks the spec, the checklist can
+never silently pass on a partial SDK: drop a manager's methods or a
+paginator and the count falls short.
+
+The checklist reads a lightweight `GeneratedView { path, content }`, not
+the Go backend's file type, so it depends only on the IR crates and will
+measure the Apex and Rust outputs unchanged (TR-Apex/TR-Rust conformance
+parity is then the same report with a different target string).
+
+**Consequences:** `gantry conform --target go <specs>` prints the checklist
+and **exits 4 when any capability falls short** (the `VERIFICATION_FAILURE`
+class); CI runs it every build (release-blocking, per the verification
+cadence). On the real spec it reports 85 managers, 336 operations, 64
+paginated surfaces, 4 auth flows — all green. Unit tests pin the pass/fail
+logic (a dropped method and a missing auth flow both fail the gate); an
+integration test asserts the real generated SDK is fully conformant with
+non-trivial counts.
