@@ -21,6 +21,8 @@
 //!   the Apex backend lowers them to outer-class grouping. Apex's flat
 //!   namespace never shapes this model.
 
+pub mod naming;
+
 /// A single name segment: one identifier in one namespace.
 ///
 /// This is deliberately *not* a path, a chain, or an expression. The old

@@ -172,8 +172,13 @@ impl<'a> DocLowerer<'a> {
         name: &str,
         kind: ir::DeclKind,
     ) -> Result<ir::Decl, IngestError> {
+        // FR-1.2: declaration names normalize at ingestion. Newer Box
+        // documents name variants `User--Mini`; the separators collapse
+        // to the base-document convention (`UserMini`). Colliding results
+        // are caught by sema's duplicate-name check, loudly.
+        let normalized = gantry_ir::naming::pascal(&clean_name(name));
         Ok(ir::Decl {
-            name: identifier(self.doc, location, name)?,
+            name: identifier(self.doc, location, &normalized)?,
             module: self.module.clone(),
             api_version: Some(ir::ApiVersion(self.doc.api_version.clone())),
             kind,
@@ -359,7 +364,11 @@ impl<'a> DocLowerer<'a> {
         let mut fields = Vec::with_capacity(properties.len());
         for (wire_name, prop) in properties {
             let prop_location = format!("{location}.properties.{wire_name}");
-            let name = identifier(self.doc, &prop_location, &wire_name)?;
+            // FR-1.2: the field identifier is the wire name normalized
+            // (Box metadata keys are `$`-prefixed: `$id`, `$template`…).
+            // The wire name itself is untouched — serialization never
+            // depends on the identifier.
+            let name = identifier(self.doc, &prop_location, &clean_name(&wire_name))?;
             let mut ty = self.lower_type(&prop_location, &synth_name(owner, &wire_name), prop)?;
             // The tri-state is structural (FR-2.3, D-110): `nullable`
             // means the wire value may be an explicit `null` (Box uses it
@@ -609,9 +618,9 @@ impl<'a> DocLowerer<'a> {
                 ),
             ));
         }
-        let name = identifier(doc, &location, base_id)?;
+        let name = identifier(doc, &location, &clean_name(base_id))?;
         let variation = variation
-            .map(|v| identifier(doc, &location, v))
+            .map(|v| identifier(doc, &location, &clean_name(v)))
             .transpose()?;
         let manager = identifier(
             doc,
@@ -622,7 +631,7 @@ impl<'a> DocLowerer<'a> {
         )?;
         // Seed for synthesized declarations belonging to this operation.
         let owner = {
-            let mut owner = pascal(base_id);
+            let mut owner = pascal(&clean_name(base_id));
             if let Some(v) = &variation {
                 owner.push_str(&pascal(v.as_str()));
             }
@@ -1003,10 +1012,27 @@ impl<'a> DocLowerer<'a> {
     }
 }
 
+/// Normalize a raw spec name into identifier-safe characters (FR-1.2):
+/// `$` prefixes strip entirely (Box metadata keys: `$id`, `$template`);
+/// any other non-identifier character is a word boundary (the
+/// `levels:append` custom-method convention → `levels_append`).
+fn clean_name(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| *c != '$')
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 /// `Owner` + PascalCase(property): `File` + `shared_link` → `FileSharedLink`.
 fn synth_name(owner: &str, property: &str) -> String {
     let mut name = String::from(owner);
-    name.push_str(&pascal(property));
+    name.push_str(&pascal(&clean_name(property)));
     name
 }
 

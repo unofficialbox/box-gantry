@@ -291,3 +291,63 @@ both at the type level and handles the difference in serializers. The
 compiler enumerated every lowering the new kind touched (sema, spike) —
 the D-107 process working as intended. Program decl counts are
 unchanged; the real spec set verifies with the new wrappers in place.
+
+## D-111 — Pagination detection is language-agnostic synthesis; Go lowers to iter.Seq2
+
+**Status:** accepted · 2026-07-11
+
+**Context:** FR-7.3/D-013 require idiomatic paged surfaces per target.
+Surveyed on the real spec: 64 operations paginate — 54 marker (`marker`
+query param + `entries`/`next_marker` response), 10 offset (`offset`
+param + `entries`/`offset`). No OpenAPI extension marks pagination; it
+is a structural property of the (verified) IR.
+
+**Decision:**
+- Detection lives in the new `gantry-synth` crate (FR-7 feature
+  synthesis), keyed off IR shape only, never a language name (FR-4.2):
+  a JSON response struct with an `entries` list, plus an *optional*
+  cursor query param whose matching response field is present. An
+  operation with the param but no envelope (or vice versa) is
+  conservatively **not** paginated — it keeps its plain method.
+- Go lowers each `PagedOperation` to a `{Method}Paginate` returning
+  `iter.Seq2[*Element, error]` (Go ≥ 1.23, TR-Go.4): it wraps the plain
+  method, threads the cursor through a *copy* of the caller's options,
+  and yields elements one page at a time.
+- Cursor types are resolved, not assumed: the request param and response
+  field may disagree (DevicePinners has a `string` marker param but an
+  `int64` `next_marker`), so the backend converts explicitly
+  (`strconv.FormatInt`) rather than emit a type-mismatched assignment.
+
+**Consequences:** 64 iterators generate and compile (54 marker, 10
+offset), pinned in the Go compile test. The synth layer is now
+established for Apex (`Queueable` continuations) and Rust (`Stream`) to
+consume the same detection. The compile loop caught the
+string-vs-int64 cursor mismatch on first contact — the G-1 effect again.
+
+## D-112 — The Go serialization package: generic Nullable[T] and Date
+
+**Status:** accepted · 2026-07-12
+
+**Context:** The D-110 tri-state needs a Go representation `encoding/json`
+lacks natively (BG-1), and Box's RFC 3339 full-date (`2006-01-02`) is not
+`time.Time`'s default format. TR-Go.2 forbids per-model serializers, so
+these live in one hand-authored, generated static package.
+
+**Decision:** `serialization/serialization.go` ships:
+- `Nullable[T]` (Go generics, manifest axis `generics: Full`): a
+  `{Valid bool; Value T}` with custom Marshal/Unmarshal — `null` when
+  `!Valid`. Field mapping: `Optional<Nullable<T>>` →
+  `*serialization.Nullable[T],omitempty` (nil absent, `Null[T]()`
+  explicit null, `Value(v)` value); bare `Nullable<T>` → the wrapper by
+  value; nested in containers, the wrapper is kept so per-element null
+  round-trips.
+- `Date` wrapping `time.Time` with `2006-01-02` Marshal/Unmarshal and a
+  `String()` for query rendering.
+
+**Consequences:** 412 tri-state field sites + 3 Date sites round-trip
+correctly; BG-1 resolved. The pagination iterators learned to read the
+cursor *through* its wrapper (`page.X.Value` guarded by `.Valid`), since
+`next_marker` fields became `Nullable`. The whole SDK still compiles
+clean (VR-1.1). Apex/Rust will map the same IR distinction to their
+serializers (Rust: `Option<Option<T>>` or a tri-state enum; Apex:
+explicit null handling in `JSON.serialize`).

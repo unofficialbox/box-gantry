@@ -38,3 +38,10 @@ jobs:
           fixtures/specs/openapi.json
           fixtures/specs/openapi-v2025.0.json
           fixtures/specs/openapi-v2026.0.json
+      - name: Verify generated Go compiles (VR-1.1, the primary signal)
+        run: >
+          cargo run -p gantry-cli -- verify
+          fixtures/specs/openapi.json
+          fixtures/specs/openapi-v2025.0.json
+          fixtures/specs/openapi-v2026.0.json
+          --target go

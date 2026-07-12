@@ -206,8 +206,35 @@ effort.
    FR-5).~~ ✅ (D-109: Go manifest frozen; contract v1 as data; Go stubs
    rendered from the contract and compile-gated with go build/vet +
    gofmt in tests and CI)
-10. FR-1.2 naming/casing layer: idiomatic operation/schema naming,
-    shorten synthesized names (D-108 finding 2), initialism policy;
-    decide the null-vs-absent tri-state (D-105/D-108 finding 3).
-11. M3 begins: Go backend — model lowering + printer (TR-Go.1/2/5),
-    compile-the-output loop from week one (VR-1.1).
+10. ~~Decide the null-vs-absent tri-state.~~ ✅ (D-110:
+    `Optional<Nullable<T>>`; synthesized-name shortening included)
+11. ~~M3 begins: Go backend — model lowering + printer (TR-Go.1/2/5),
+    compile-the-output loop from week one (VR-1.1).~~ ✅ first slice:
+    all 1,332 declarations generate as Go (structs + tags, open enums,
+    union variant structs with generated marshal/unmarshal, aliases);
+    `gantry generate`/`verify` live (FR-8.1); `go build`+`vet`+gofmt
+    clean on the full real spec, in tests and CI. The loop caught four
+    real defects on first contact (`User--Mini` names, `$`-prefixed
+    metadata keys, `:append` custom methods, union-field padding).
+12. ~~M3: managers + client (FR-7.1), URL/query building against the
+    runtime contract.~~ ✅ All 85 managers + the client entry point
+    generate and compile against the contract stubs (FR-5.2/5.3 closed
+    loop): structured-path URL building, typed query/header conversion
+    (incl. JSON-in-query for `mdfilters`-class params), JSON / stream /
+    multipart / form bodies, response decoding per shape. `gantry
+    verify` covers the whole 92-file SDK tree in CI.
+13. ~~M3: pagination (`iter.Seq2`, TR-Go.4).~~ ✅ (D-111: gantry-synth
+    detects marker/offset pagination language-agnostically; Go lowers 64
+    iterators, compile-gated. The synth layer is now established for
+    Apex/Rust to reuse.)
+14. ~~M3: the serialization package (BG-1 tri-state wrapper, `Date`).~~
+    ✅ (D-112: generic `Nullable[T]` + `Date`; 412 tri-state + 3 Date
+    sites round-trip; BG-1 resolved.)
+15. ~~Generated reference docs (FR-7.7).~~ ✅ per-manager Markdown (85
+    pages) + index + auth/pagination/errors guides, from the same IR so
+    they can't drift; every manager's page verified present and linked.
+16. M3 continues: `With*` client decorators + client/session threading
+    (G-3, FR-7.1); the hand-written Go runtime implementing the contract
+    (TR-Go.7); generated per-manager tests (FR-7.8); per-node lowering
+    fixtures (VR-2); round-trip tests (VR-4); determinism double-generate
+    in CI (VR-5) — toward v1 acceptance.
