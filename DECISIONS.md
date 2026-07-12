@@ -390,3 +390,48 @@ public API composes end to end (FR-5.2 conformance by construction). CI
 builds/vets/gofmt-checks the runtime standalone. The remaining three auth
 flows (CCG, JWT, OAuth) implement the same `TokenSource` and land with
 auth synthesis.
+
+## D-114 — The four Box auth flows in the hand-written Go runtime
+
+**Status:** accepted · 2026-07-12
+
+**Context:** D-113 shipped the runtime with only `DeveloperToken`. A
+usable SDK needs the three credentialed flows Box supports: Client
+Credentials Grant (CCG), JWT server auth, and OAuth 2.0 authorization
+code. Each is identical across every generated Box SDK (same endpoints,
+same grants), so — like the serialization package (TR-Go.2) and the rest
+of the runtime (TR-Go.7) — they are **hand-written into the runtime**, not
+synthesized per-spec. There is nothing in the OpenAPI document that varies
+them, so putting them behind the code generator would add moving parts
+without adding fidelity.
+
+**Decision:**
+- All flows implement the existing `TokenSource` interface, so they drop
+  into `client.NewClient(ts, opts...)` with no generation change.
+- A shared `cachedToken` caches the access token behind a mutex and
+  refreshes it within `refreshMargin` (60s) of expiry via a flow-specific
+  closure; a shared `postTokenForm` posts the grant to Box's token
+  endpoint and surfaces non-2xx bodies as errors. `TokenURL` and
+  `HTTPClient` are overridable per config (custom deployments, tests).
+- **CCG** (`ClientCredentials(CCGConfig)`): `client_credentials` grant
+  with `box_subject_type`/`box_subject_id` — enterprise by default, user
+  when `UserID` is set.
+- **OAuth** (`OAuth`/`OAuthConfig.ExchangeCode`/`.AuthorizeURL`): the
+  authorization-code exchange plus refresh, **rotating** the refresh token
+  Box returns on each exchange (Box invalidates the previous one).
+- **JWT** (`JWTAuth(JWTConfig)`): builds and RS256-signs the bearer
+  assertion with stdlib crypto only. The RSA key is parsed (and, for the
+  legacy passphrase-encrypted PEM that Box's `box_config.json` ships,
+  decrypted) **at construction**, so a bad key fails loudly before the
+  first request rather than deep in a call.
+
+**Consequences:** Stdlib-only — no new dependencies (NF-6); JWT rides
+`crypto/rsa` + `crypto/x509` (the deprecated `DecryptPEMBlock` is exactly
+Box's key format and passes `go vet`). A runtime `auth_test.go` exercises
+every flow against an `httptest` token endpoint — CCG subject selection
+and caching, expiry-driven refresh, OAuth refresh-token rotation and code
+exchange, and a JWT assertion the paired public key verifies — and CI now
+runs `go test ./...` on the runtime as a gate. The generated auth guide
+(FR-7.7) documents all four with copy-paste constructors. Apex/Rust will
+re-express the same flows in their runtimes (TR-Apex.6/TR-Rust.5); JWT in
+Apex uses `Crypto.sign` per the M4 plan.

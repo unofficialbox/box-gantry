@@ -242,6 +242,13 @@ effort.
     tests (known/unknown discriminator dispatch on real generated types)
     + serialization tri-state/Date tests; `go test` now runs in the
     compile gate and passes.
-18. M3 remainder toward v1: remaining auth flows (CCG/JWT/OAuth) via auth
-    synthesis; per-node lowering fixtures (VR-2); VR-3 conformance
-    checklist; FR-9 spec-diff; live smoke (VR-7); tagged module (NF-8).
+18. ~~Remaining auth flows (CCG/JWT/OAuth).~~ ✅ (D-114: all three
+    land in the hand-written runtime as `TokenSource`s — CCG, OAuth
+    authorization-code with refresh-token rotation, and stdlib-only
+    RS256 JWT with encrypted-PEM key support. A runtime `auth_test.go`
+    exercises every flow against an `httptest` token endpoint; CI now
+    runs `go test ./...` on the runtime; the generated auth guide
+    documents all four flows.)
+19. M3 remainder toward v1: per-node lowering fixtures (VR-2); VR-3
+    conformance checklist; FR-9 spec-diff; live smoke (VR-7); tagged
+    module (NF-8).
