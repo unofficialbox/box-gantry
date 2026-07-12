@@ -272,5 +272,12 @@ effort.
     capability. The generated tree is the NF-8 artifact: a self-contained
     Go module, tag/version set by the release pipeline from the FR-9
     diff.)
-22. M3 remainder toward v1: per-node lowering fixtures (VR-2); live smoke
-    (VR-7, needs a Box dev account).
+22. ~~VR-2 per-node lowering fixtures.~~ ✅ (D-118: `node_fixtures.rs` —
+    17 cases, one IR node kind (and quirk) at a time, asserting the exact
+    Go each rule produces (tri-state shapes, Date/DateTime/Binary/JSON
+    scalars, containers, open enums, union dispatch + unknown retention,
+    aliases). Semantic assertions, alignment-insensitive; they pinpoint
+    which rule regressed where VR-1.1 only says the spec stopped building.)
+23. M3 remainder toward v1: live smoke (VR-7) — the one v1 item that needs
+    a real Box dev account + credentials, so it runs per-release / on
+    demand, not in the standard CI gate.

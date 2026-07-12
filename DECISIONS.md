@@ -555,3 +555,37 @@ CI). Unit tests pin the fingerprint's determinism, hex shape, and
 order-sensitivity; the conformance checklist now reports 9 capabilities.
 Apex/Rust will carry the same `BuildInfo` into their own provenance
 surfaces (a `buildinfo` class / a `build_info` module).
+
+## D-118 — VR-2 per-node lowering fixtures: semantic, not byte-exact
+
+**Status:** accepted · 2026-07-12
+
+**Context:** VR-2 requires per-node lowering fixtures (IR fragment →
+expected source) per backend, the box-codegen 54-case Go suite informing
+the initial set, authored fresh against the new IR. The question was what
+to assert: byte-exact golden output, or the semantics.
+
+**Decision:** Assert the **semantics per node**, not byte-exact output.
+`node_fixtures.rs` builds a minimal IR program for one node kind (a struct
+field of a given type, an enum, a discriminated/structural union, an alias,
+an empty struct), renders the `schemas` module, and asserts the specific Go
+the rule must produce: the `*T`/`serialization.Nullable[T]`/`*serialization
+.Nullable[T]` tri-state shapes (D-110), `Date`→`serialization.Date`,
+`DateTime`→`time.Time`, `Binary`→`io.Reader`+`json:"-"`, `JsonValue`→`any`,
+slices/maps, per-element `[]serialization.Nullable[T]`, open-enum string
+type + prefixed constants, union variant structs with `Marshal`/`Unmarshal`
+dispatch and unknown-tag retention, and aliases.
+
+Byte-exact/gofmt-cleanliness/determinism are already the job of
+`compile_output.rs` (VR-1.1, VR-5); duplicating them as goldens would make
+the fixtures brittle to formatting. So assertions are **column-alignment
+insensitive** (a whitespace-squeezing matcher for field blocks) and target
+the type expression, tag, and method — the parts that encode meaning.
+
+**Consequences:** 17 focused cases cover every IR node kind and the Box
+quirks the tri-state/union/enum rules encode. They pinpoint *which rule*
+regressed when one changes — where VR-1.1 only says "the spec stopped
+building." The harness renders through the real `generate_models` +
+`BuildInfo`, so fixtures track the true printer. Apex/Rust get their own
+`node_fixtures` against the same IR fragments, which is how conformance
+parity is demonstrated node by node.
