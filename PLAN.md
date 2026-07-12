@@ -227,7 +227,10 @@ effort.
     detects marker/offset pagination language-agnostically; Go lowers 64
     iterators, compile-gated. The synth layer is now established for
     Apex/Rust to reuse.)
-14. M3 continues: the serialization package (BG-1 tri-state wrapper,
-    real `Date` type), `With*` client decorators, generated tests + docs
-    (FR-7.7/7.8); per-node lowering fixtures (VR-2); round-trip tests
-    (VR-4).
+14. ~~M3: the serialization package (BG-1 tri-state wrapper, `Date`).~~
+    ✅ (D-112: generic `Nullable[T]` + `Date`; 412 tri-state + 3 Date
+    sites round-trip; BG-1 resolved.)
+15. M3 continues: `With*` client decorators (G-3), generated per-manager
+    tests + reference docs (FR-7.7/7.8); per-node lowering fixtures
+    (VR-2); round-trip tests (VR-4); determinism double-generate in CI
+    (VR-5); then the hand-written Go runtime (TR-Go.7) toward v1.

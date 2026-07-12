@@ -323,3 +323,31 @@ offset), pinned in the Go compile test. The synth layer is now
 established for Apex (`Queueable` continuations) and Rust (`Stream`) to
 consume the same detection. The compile loop caught the
 string-vs-int64 cursor mismatch on first contact — the G-1 effect again.
+
+## D-112 — The Go serialization package: generic Nullable[T] and Date
+
+**Status:** accepted · 2026-07-12
+
+**Context:** The D-110 tri-state needs a Go representation `encoding/json`
+lacks natively (BG-1), and Box's RFC 3339 full-date (`2006-01-02`) is not
+`time.Time`'s default format. TR-Go.2 forbids per-model serializers, so
+these live in one hand-authored, generated static package.
+
+**Decision:** `serialization/serialization.go` ships:
+- `Nullable[T]` (Go generics, manifest axis `generics: Full`): a
+  `{Valid bool; Value T}` with custom Marshal/Unmarshal — `null` when
+  `!Valid`. Field mapping: `Optional<Nullable<T>>` →
+  `*serialization.Nullable[T],omitempty` (nil absent, `Null[T]()`
+  explicit null, `Value(v)` value); bare `Nullable<T>` → the wrapper by
+  value; nested in containers, the wrapper is kept so per-element null
+  round-trips.
+- `Date` wrapping `time.Time` with `2006-01-02` Marshal/Unmarshal and a
+  `String()` for query rendering.
+
+**Consequences:** 412 tri-state field sites + 3 Date sites round-trip
+correctly; BG-1 resolved. The pagination iterators learned to read the
+cursor *through* its wrapper (`page.X.Value` guarded by `.Valid`), since
+`next_marker` fields became `Nullable`. The whole SDK still compiles
+clean (VR-1.1). Apex/Rust will map the same IR distinction to their
+serializers (Rust: `Option<Option<T>>` or a tri-state enum; Apex:
+explicit null handling in `JSON.serialize`).

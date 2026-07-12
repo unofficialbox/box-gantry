@@ -282,16 +282,18 @@ impl Printer<'_> {
     fn field_type(&mut self, ty: &ir::Type) -> (String, bool) {
         match ty {
             ir::Type::Optional(inner) => {
-                // Optional<Nullable<T>> collapses to *T,omitempty for now
-                // (BG-1: explicit-null-to-clear needs the serialization
-                // package).
+                // Optional<Nullable<T>> → *serialization.Nullable[T] with
+                // omitempty: nil = absent, non-nil = sent (null or value)
+                // — the full tri-state, resolving BG-1.
                 if let ir::Type::Nullable(nullable) = &**inner {
-                    (self.pointer_type(nullable), true)
+                    (format!("*{}", self.nullable_type(nullable)), true)
                 } else {
                     (self.pointer_type(inner), true)
                 }
             }
-            ir::Type::Nullable(inner) => (self.pointer_type(inner), false),
+            // Bare Nullable<T> (key always present, value may be null) is
+            // the wrapper by value.
+            ir::Type::Nullable(inner) => (self.nullable_type(inner), false),
             ir::Type::Bool
             | ir::Type::Int64
             | ir::Type::Float64
@@ -329,10 +331,9 @@ impl Printer<'_> {
             ir::Type::Float64 => "float64".into(),
             ir::Type::String => "string".into(),
             ir::Type::Date => {
-                // RFC 3339 full-date needs a format wrapper; the model
-                // slice uses string until the serialization package owns
-                // a Date type (PLAN.md M3).
-                "string".into()
+                self.imports
+                    .insert("boxgantry.invalid/boxsdk/serialization");
+                "serialization.Date".into()
             }
             ir::Type::DateTime => {
                 self.imports.insert("time");
@@ -346,9 +347,18 @@ impl Printer<'_> {
             ir::Type::List(inner) => format!("[]{}", self.bare_type(inner)),
             ir::Type::Map(inner) => format!("map[string]{}", self.bare_type(inner)),
             ir::Type::Decl(id) => self.program.decl(*id).name.as_str().to_string(),
-            // Wrapper types only appear at field sites, where field_type
-            // unpacks them; inside containers they collapse to pointers.
-            ir::Type::Optional(inner) | ir::Type::Nullable(inner) => self.pointer_type(inner),
+            // A `Nullable` nested inside a container keeps its wrapper (a
+            // `[]Nullable[T]` round-trips per-element null). An `Optional`
+            // there is a pointer.
+            ir::Type::Nullable(inner) => self.nullable_type(inner),
+            ir::Type::Optional(inner) => self.pointer_type(inner),
         }
+    }
+
+    /// `serialization.Nullable[T]`, importing the package.
+    fn nullable_type(&mut self, inner: &ir::Type) -> String {
+        self.imports
+            .insert("boxgantry.invalid/boxsdk/serialization");
+        format!("serialization.Nullable[{}]", self.bare_type(inner))
     }
 }

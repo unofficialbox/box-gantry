@@ -376,7 +376,7 @@ impl ManagerPrinter<'_> {
             .find(|p| p.location == ir::ParamLocation::Query && p.wire_name == paged.param_wire)
             .map(|p| unwrap_optionality(&p.ty).clone())
             .expect("detection required the cursor query parameter");
-        let response_ty = self.field_ir_type(op, &paged.cursor_wire, &context)?;
+        let response_raw = self.field_raw_type(op, &paged.cursor_wire, &context)?;
 
         let _ = writeln!(
             self.body,
@@ -399,19 +399,16 @@ impl ManagerPrinter<'_> {
                         detail: format!("marker cursor parameter is {param_ty:?}, not a string"),
                     });
                 }
-                // Convert the response cursor to the string the request
-                // parameter expects; terminate on an absent cursor.
-                let (guard_extra, next_expr) = match response_ty {
-                    ir::Type::String => (
-                        format!(" || *page.{response_cursor} == \"\""),
-                        format!("*page.{response_cursor}"),
-                    ),
+                // Extract the cursor through its wrapper, then convert it
+                // to the string the request parameter expects.
+                let access = format!("page.{response_cursor}");
+                let (presence_guard, value_expr, inner) =
+                    Self::cursor_access(&access, &response_raw);
+                let next_from_cursor = match inner {
+                    ir::Type::String => "cursor".to_string(),
                     ir::Type::Int64 => {
                         self.imports.insert("strconv".to_string());
-                        (
-                            String::new(),
-                            format!("strconv.FormatInt(*page.{response_cursor}, 10)"),
-                        )
+                        "strconv.FormatInt(cursor, 10)".to_string()
                     }
                     other @ (ir::Type::Bool
                     | ir::Type::Float64
@@ -426,7 +423,7 @@ impl ManagerPrinter<'_> {
                     | ir::Type::Nullable(_)) => {
                         return Err(BackendError {
                             context,
-                            detail: format!("marker cursor field is {other:?}"),
+                            detail: format!("marker cursor scalar is {other:?}"),
                         });
                     }
                 };
@@ -436,10 +433,20 @@ impl ManagerPrinter<'_> {
                      \t\t\tpage, err := m.{method}({call})\n\
                      \t\t\tif err != nil {{\n\t\t\t\tyield(nil, err)\n\t\t\t\treturn\n\t\t\t}}\n\
                      \t\t\tfor i := range page.{entries_field} {{\n\
-                     \t\t\t\tif !yield(&page.{entries_field}[i], nil) {{\n\t\t\t\t\treturn\n\t\t\t\t}}\n\t\t\t}}\n\
-                     \t\t\tif page.{response_cursor} == nil{guard_extra} {{\n\t\t\t\treturn\n\t\t\t}}\n\
-                     \t\t\tnext := {next_expr}\n\t\t\to.{cursor_field} = &next\n\t\t}}",
+                     \t\t\t\tif !yield(&page.{entries_field}[i], nil) {{\n\t\t\t\t\treturn\n\t\t\t\t}}\n\t\t\t}}",
                     call = call.join(", "),
+                );
+                if let Some(guard) = presence_guard {
+                    let _ = writeln!(self.body, "\t\t\tif {guard} {{\n\t\t\t\treturn\n\t\t\t}}");
+                }
+                let _ = writeln!(self.body, "\t\t\tcursor := {value_expr}");
+                if matches!(inner, ir::Type::String) {
+                    self.body
+                        .push_str("\t\t\tif cursor == \"\" {\n\t\t\t\treturn\n\t\t\t}\n");
+                }
+                let _ = writeln!(
+                    self.body,
+                    "\t\t\tnext := {next_from_cursor}\n\t\t\to.{cursor_field} = &next\n\t\t}}"
                 );
             }
             PageStyle::Offset => {
@@ -468,14 +475,15 @@ impl ManagerPrinter<'_> {
         Ok(())
     }
 
-    /// The Go field name for a response envelope's wire field, resolved
-    /// through the operation's response declaration.
-    fn field_go_name(
+    /// Look a response envelope's wire field up through the operation's
+    /// response declaration, projecting it with `project`.
+    fn field_lookup<T>(
         &self,
         op: &ir::Operation,
         wire: &str,
         context: &str,
-    ) -> Result<String, BackendError> {
+        project: impl Fn(&ir::Field) -> T,
+    ) -> Result<T, BackendError> {
         let ir::ResponseShape::Json(ty) = &op.response else {
             return Err(BackendError {
                 context: context.to_string(),
@@ -513,32 +521,36 @@ impl ManagerPrinter<'_> {
         s.fields
             .iter()
             .find(|f| f.wire_name == wire)
-            .map(|f| pascal(f.name.as_str()))
+            .map(project)
             .ok_or_else(|| BackendError {
                 context: context.to_string(),
                 detail: format!("paged response has no {wire:?} field"),
             })
     }
 
-    /// The unwrapped IR type of a response envelope's wire field.
-    fn field_ir_type(
+    /// The Go field name for a response envelope's wire field.
+    fn field_go_name(
         &self,
         op: &ir::Operation,
         wire: &str,
         context: &str,
-    ) -> Result<ir::Type, BackendError> {
-        let ir::ResponseShape::Json(ty) = &op.response else {
-            return Err(BackendError {
-                context: context.to_string(),
-                detail: "paged operation without a JSON response".into(),
-            });
-        };
-        let mut current = ty;
-        let decl_id = loop {
-            match current {
-                ir::Type::Optional(inner) | ir::Type::Nullable(inner) => current = inner,
-                ir::Type::Decl(id) => break *id,
-                ir::Type::Bool
+    ) -> Result<String, BackendError> {
+        self.field_lookup(op, wire, context, |f| pascal(f.name.as_str()))
+    }
+
+    /// How to reach a cursor scalar through its optionality wrapper
+    /// (D-110). Returns (presence guard that means "stop", value
+    /// expression, inner scalar type). `access` is e.g. `page.NextMarker`.
+    fn cursor_access(access: &str, ty: &ir::Type) -> (Option<String>, String, ir::Type) {
+        match ty {
+            // Optional<Nullable<S>> -> *serialization.Nullable[S].
+            ir::Type::Optional(inner) => match &**inner {
+                ir::Type::Nullable(scalar) => (
+                    Some(format!("{access} == nil || !{access}.Valid")),
+                    format!("{access}.Value"),
+                    (**scalar).clone(),
+                ),
+                scalar @ (ir::Type::Bool
                 | ir::Type::Int64
                 | ir::Type::Float64
                 | ir::Type::String
@@ -547,28 +559,42 @@ impl ManagerPrinter<'_> {
                 | ir::Type::Binary
                 | ir::Type::JsonValue
                 | ir::Type::List(_)
-                | ir::Type::Map(_) => {
-                    return Err(BackendError {
-                        context: context.to_string(),
-                        detail: "paged response is not a declaration".into(),
-                    });
-                }
-            }
-        };
-        let ir::DeclKind::Struct(s) = &self.analysis.program.decl(decl_id).kind else {
-            return Err(BackendError {
-                context: context.to_string(),
-                detail: "paged response is not a struct".into(),
-            });
-        };
-        s.fields
-            .iter()
-            .find(|f| f.wire_name == wire)
-            .map(|f| unwrap_optionality(&f.ty).clone())
-            .ok_or_else(|| BackendError {
-                context: context.to_string(),
-                detail: format!("paged response has no {wire:?} field"),
-            })
+                | ir::Type::Map(_)
+                | ir::Type::Decl(_)
+                | ir::Type::Optional(_)) => (
+                    Some(format!("{access} == nil")),
+                    format!("*{access}"),
+                    scalar.clone(),
+                ),
+            },
+            // Bare Nullable<S> -> serialization.Nullable[S] by value.
+            ir::Type::Nullable(scalar) => (
+                Some(format!("!{access}.Valid")),
+                format!("{access}.Value"),
+                (**scalar).clone(),
+            ),
+            scalar @ (ir::Type::Bool
+            | ir::Type::Int64
+            | ir::Type::Float64
+            | ir::Type::String
+            | ir::Type::Date
+            | ir::Type::DateTime
+            | ir::Type::Binary
+            | ir::Type::JsonValue
+            | ir::Type::List(_)
+            | ir::Type::Map(_)
+            | ir::Type::Decl(_)) => (None, access.to_string(), scalar.clone()),
+        }
+    }
+
+    /// The raw (wrapper-preserving) IR type of a response envelope field.
+    fn field_raw_type(
+        &self,
+        op: &ir::Operation,
+        wire: &str,
+        context: &str,
+    ) -> Result<ir::Type, BackendError> {
+        self.field_lookup(op, wire, context, |f| f.ty.clone())
     }
 
     /// URL built from structured segments + the D-106 base-URL class.
@@ -801,7 +827,7 @@ impl ManagerPrinter<'_> {
                 self.imports.insert("time".to_string());
                 Ok(format!("{expr}.Format(time.RFC3339)"))
             }
-            ir::Type::Date => Ok(expr.to_string()),
+            ir::Type::Date => Ok(format!("{expr}.String()")),
             ir::Type::List(inner) if self.is_scalar(inner) => {
                 // Comma-joined per Box convention, via the generated
                 // helpers in managers/helpers.go.
@@ -893,7 +919,12 @@ impl ManagerPrinter<'_> {
             ir::Type::Bool => Ok("bool".into()),
             ir::Type::Int64 => Ok("int64".into()),
             ir::Type::Float64 => Ok("float64".into()),
-            ir::Type::String | ir::Type::Date => Ok("string".into()),
+            ir::Type::String => Ok("string".into()),
+            ir::Type::Date => {
+                self.imports
+                    .insert("boxgantry.invalid/boxsdk/serialization".to_string());
+                Ok("serialization.Date".into())
+            }
             ir::Type::DateTime => {
                 self.imports.insert("time".to_string());
                 Ok("time.Time".into())
@@ -906,15 +937,30 @@ impl ManagerPrinter<'_> {
             ir::Type::List(inner) => Ok(format!("[]{}", self.go_type(inner)?)),
             ir::Type::Map(inner) => Ok(format!("map[string]{}", self.go_type(inner)?)),
             ir::Type::Decl(id) => Ok(self.qualified_decl(*id)),
-            ir::Type::Optional(inner) | ir::Type::Nullable(inner) => {
-                let go = self.go_type(inner)?;
-                if nilable(&go) {
-                    Ok(go)
+            // Tri-state mirrors the models (D-110): Optional<Nullable<T>>
+            // → *serialization.Nullable[T]; bare Nullable<T> → the wrapper
+            // by value; other Optional → pointer.
+            ir::Type::Optional(inner) => {
+                if let ir::Type::Nullable(nul) = &**inner {
+                    Ok(format!("*{}", self.nullable_type(nul)?))
                 } else {
-                    Ok(format!("*{go}"))
+                    let go = self.go_type(inner)?;
+                    if nilable(&go) {
+                        Ok(go)
+                    } else {
+                        Ok(format!("*{go}"))
+                    }
                 }
             }
+            ir::Type::Nullable(inner) => self.nullable_type(inner),
         }
+    }
+
+    /// `serialization.Nullable[T]`, importing the package.
+    fn nullable_type(&mut self, inner: &ir::Type) -> Result<String, BackendError> {
+        self.imports
+            .insert("boxgantry.invalid/boxsdk/serialization".to_string());
+        Ok(format!("serialization.Nullable[{}]", self.go_type(inner)?))
     }
 
     fn qualified_decl(&mut self, id: ir::DeclId) -> String {
