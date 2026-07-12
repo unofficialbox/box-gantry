@@ -41,7 +41,7 @@ pub fn generate_models(analysis: &Analysis<'_>) -> Vec<GeneratedFile> {
 
 /// `schemas` → `schemas/schemas.go`; `schemas::v2025_0` →
 /// `schemas/v2025r0/v2025r0.go` (the `vNrM` layout, TR-Go.5).
-fn module_dir_and_package(module: &ir::ModulePath) -> (String, String) {
+pub(crate) fn module_dir_and_package(module: &ir::ModulePath) -> (String, String) {
     let segments: Vec<String> = module
         .0
         .iter()

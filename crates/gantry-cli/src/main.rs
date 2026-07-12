@@ -58,6 +58,17 @@ enum Command {
         #[arg(long, value_parser = ["go"])]
         target: String,
     },
+    /// Diff two spec sets and report breaking vs compatible changes and the
+    /// recommended SDK version bump (FR-9). Exits 4 when the diff is
+    /// breaking, so CI can gate a major bump.
+    Diff {
+        /// The baseline spec set.
+        #[arg(long = "from", required = true, num_args = 1.., value_name = "SPEC")]
+        from: Vec<PathBuf>,
+        /// The new spec set.
+        #[arg(long = "to", required = true, num_args = 1.., value_name = "SPEC")]
+        to: Vec<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -65,6 +76,35 @@ fn main() -> ExitCode {
         Command::Check { specs } => check(&specs),
         Command::Generate { specs, target, out } => generate(&specs, &target, &out),
         Command::Verify { specs, target } => verify(&specs, &target),
+        Command::Diff { from, to } => diff(&from, &to),
+    }
+}
+
+/// Lower a spec set to a Program, mapping errors to their FR-8.3 class.
+fn lower_program(specs: &[PathBuf]) -> Result<gantry_ir::Program, ExitCode> {
+    let set = gantry_spec::SpecSet::load(specs).map_err(|err| {
+        eprintln!("error: {err}");
+        ExitCode::from(exit_codes::SPEC_ERROR)
+    })?;
+    let lowering = gantry_spec::lower(&set).map_err(|err| {
+        eprintln!("error: {err}");
+        ExitCode::from(exit_codes::SPEC_ERROR)
+    })?;
+    Ok(lowering.program)
+}
+
+/// FR-9: diff two spec sets. Prints the report; exits 4 when the change is
+/// breaking (a major SDK bump) so CI can gate on it, 0 otherwise.
+fn diff(from: &[PathBuf], to: &[PathBuf]) -> ExitCode {
+    let (old, new) = match (lower_program(from), lower_program(to)) {
+        (Ok(old), Ok(new)) => (old, new),
+        (Err(code), _) | (_, Err(code)) => return code,
+    };
+    let report = gantry_verify::diff(&old, &new);
+    print!("{}", report.report());
+    match report.bump() {
+        gantry_verify::VersionBump::Major => ExitCode::from(exit_codes::VERIFICATION_FAILURE),
+        gantry_verify::VersionBump::Minor | gantry_verify::VersionBump::None => ExitCode::SUCCESS,
     }
 }
 

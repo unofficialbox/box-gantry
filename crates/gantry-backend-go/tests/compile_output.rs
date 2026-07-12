@@ -71,6 +71,21 @@ fn generation_is_deterministic() {
         .map(|f| f.content.matches("var offset int64").count())
         .sum();
     assert_eq!(offset_iters, 10, "expected 10 offset iterators");
+    // Generated round-trip tests exist (FR-7.8, VR-4): the serialization
+    // package test plus per-module union tests.
+    assert!(
+        once.iter()
+            .any(|f| f.path == "serialization/serialization_test.go"),
+        "missing generated serialization test"
+    );
+    let union_tests = once
+        .iter()
+        .filter(|f| f.path.ends_with("roundtrip_test.go"))
+        .count();
+    assert!(
+        union_tests >= 1,
+        "expected generated union round-trip tests"
+    );
 }
 
 #[test]
@@ -158,5 +173,88 @@ fn the_real_spec_models_compile() {
         fmt.status.success() && fmt.stdout.is_empty(),
         "gofmt wants changes (G-17) in:\n{}",
         String::from_utf8_lossy(&fmt.stdout)
+    );
+
+    // The generated round-trip tests must pass (FR-7.8, VR-4). The
+    // serialization and schemas packages need no runtime, so they run
+    // against the stubs.
+    let test = Command::new("go")
+        .args(["test", "./serialization/...", "./schemas/..."])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        test.status.success(),
+        "generated go tests failed (FR-7.8, VR-4):\n{}\n{}",
+        String::from_utf8_lossy(&test.stdout),
+        String::from_utf8_lossy(&test.stderr)
+    );
+}
+
+/// FR-5.2/TR-Go.7: the generated SDK must compile against the real
+/// hand-written runtime, not only the stubs — proving the runtime
+/// satisfies the contract signatures the managers call.
+#[test]
+fn the_generated_sdk_compiles_against_the_real_runtime() {
+    if Command::new("go").arg("version").output().is_err() {
+        eprintln!("SKIPPED: go toolchain not available; CI runs this gate");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("gantry-go-runtime-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    write_all(&dir, &generate());
+
+    // Replace the generated stub package with the real runtime files.
+    let runtime_dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtimes/go/gantryruntime");
+    let target = dir.join("gantryruntime");
+    let _ = std::fs::remove_file(target.join("runtime.go")); // the stub
+    for entry in std::fs::read_dir(&runtime_dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "go") {
+            let name = path.file_name().unwrap();
+            std::fs::copy(&path, target.join(name)).unwrap();
+        }
+    }
+
+    // A smoke main proving the public API composes end to end: construct
+    // the client from a token source and reach a manager method.
+    let smoke = "package main\n\n\
+        import (\n\
+        \t\"context\"\n\
+        \t\"fmt\"\n\n\
+        \t\"boxgantry.invalid/boxsdk/client\"\n\
+        \t\"boxgantry.invalid/boxsdk/gantryruntime\"\n\
+        )\n\n\
+        func main() {\n\
+        \tc := client.NewClient(gantryruntime.DeveloperToken(\"dev-token\"))\n\
+        \tif false {\n\
+        \t\t_, _ = c.Files.GetFilesId(context.Background(), \"123\", nil)\n\
+        \t}\n\
+        \tfmt.Println(c)\n\
+        }\n";
+    std::fs::create_dir_all(dir.join("cmd/smoke")).unwrap();
+    std::fs::write(dir.join("cmd/smoke/main.go"), smoke).unwrap();
+
+    let build = Command::new("go")
+        .args(["build", "./..."])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "generated SDK does not compile against the real runtime (contract drift, FR-5.2):\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let vet = Command::new("go")
+        .args(["vet", "./..."])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        vet.status.success(),
+        "go vet failed against the real runtime:\n{}",
+        String::from_utf8_lossy(&vet.stderr)
     );
 }

@@ -246,9 +246,43 @@ fn request_media(media: ir::RequestMedia) -> &'static str {
 const AUTH_GUIDE: &str = "# Authentication\n\n\
 Every request is authorized through the runtime's token source: the\n\
 generated code calls `AccessToken(ctx)` and attaches the bearer token,\n\
-and the network layer refreshes on a `401` and retries once. The four\n\
-Box auth flows (Developer Token, Client Credentials, JWT, OAuth 2.0\n\
-authorization code) are configured on the client at construction.\n";
+and the network layer refreshes on a `401` and retries once. Pass one of\n\
+the four Box auth flows to `client.NewClient` at construction; each is a\n\
+`gantryruntime.TokenSource` that caches its access token until shortly\n\
+before it expires.\n\n\
+## Developer Token\n\n\
+```go\n\
+c := client.NewClient(gantryruntime.DeveloperToken(\"DEVELOPER_TOKEN\"))\n\
+```\n\n\
+## Client Credentials Grant (server auth, no key)\n\n\
+```go\n\
+c := client.NewClient(gantryruntime.ClientCredentials(gantryruntime.CCGConfig{\n\
+\tClientID:     \"CLIENT_ID\",\n\
+\tClientSecret: \"CLIENT_SECRET\",\n\
+\tEnterpriseID: \"ENTERPRISE_ID\", // or set UserID to act as a managed user\n\
+}))\n\
+```\n\n\
+## JWT (server auth with a signing key)\n\n\
+```go\n\
+src, err := gantryruntime.JWTAuth(gantryruntime.JWTConfig{\n\
+\tClientID:      \"CLIENT_ID\",\n\
+\tClientSecret:  \"CLIENT_SECRET\",\n\
+\tPublicKeyID:   \"PUBLIC_KEY_ID\",\n\
+\tPrivateKeyPEM: privateKeyPEM, // optionally encrypted; set Passphrase\n\
+\tEnterpriseID:  \"ENTERPRISE_ID\",\n\
+})\n\
+if err != nil {\n\t// bad key: fails loudly at construction\n}\n\
+c := client.NewClient(src)\n\
+```\n\n\
+## OAuth 2.0 (authorization code)\n\n\
+Redirect the user to `cfg.AuthorizeURL(redirectURI, state)`, exchange the\n\
+returned code, then reuse the stored refresh token on later runs:\n\n\
+```go\n\
+cfg := gantryruntime.OAuthConfig{ClientID: \"CLIENT_ID\", ClientSecret: \"CLIENT_SECRET\"}\n\
+src, err := cfg.ExchangeCode(ctx, code, redirectURI)\n\
+// later: src := gantryruntime.OAuth(cfg, storedRefreshToken)\n\
+c := client.NewClient(src)\n\
+```\n";
 
 const PAGINATION_GUIDE: &str = "# Pagination\n\n\
 Marker- and offset-paginated list operations expose an extra\n\

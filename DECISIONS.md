@@ -344,10 +344,129 @@ these live in one hand-authored, generated static package.
 - `Date` wrapping `time.Time` with `2006-01-02` Marshal/Unmarshal and a
   `String()` for query rendering.
 
-**Consequences:** 412 tri-state field sites + 3 Date sites round-trip
-correctly; BG-1 resolved. The pagination iterators learned to read the
+**Consequences:** 412 tri-state field sites + 3 Date sites serialize
+correctly; BG-1 resolved on the **write** side (absent / explicit-null /
+value). On read, `encoding/json` collapses a JSON `null` to a nil
+pointer without calling `UnmarshalJSON`, so null and absent both surface
+as nil — an accepted limitation, since Box's clear-on-update semantics
+are a write concern. Generated `go test` round-trip tests (VR-4) pin
+this behavior. The pagination iterators learned to read the
 cursor *through* its wrapper (`page.X.Value` guarded by `.Valid`), since
 `next_marker` fields became `Nullable`. The whole SDK still compiles
 clean (VR-1.1). Apex/Rust will map the same IR distinction to their
 serializers (Rust: `Option<Option<T>>` or a tri-state enum; Apex:
 explicit null handling in `JSON.serialize`).
+
+## D-113 — Runtime session threading + the hand-written Go runtime
+
+**Status:** accepted · 2026-07-12
+
+**Context:** The generated managers compiled against panicking stubs but
+had nowhere to hold per-client state (auth, base URLs, HTTP client, retry
+policy), so the SDK could not actually run. TR-Go.7 requires a
+hand-written runtime implementing the FR-5 contract.
+
+**Decision:**
+- The contract gains a **receiver axis** (`Session` | `Free`): stateful
+  functions (`new_request`, `base_url`, `fetch`, `access_token`) are
+  methods on the runtime `Client`; pure builders/accessors stay free
+  functions. Stubs render the split from the contract data (FR-5.2), so
+  the real runtime and the stubs share one shape.
+- Generated managers hold an unexported `session *gantryruntime.Client`
+  and are built by a generated `New<M>Manager(session)`. The client's
+  `NewClient(ts, opts...)` constructs one shared session (from a
+  `TokenSource` + `With*` options, G-3) and wires every manager to it —
+  so config applies everywhere.
+- The hand-written runtime lives at `runtimes/go/gantryruntime/`
+  (TR-Go.7): retrying `Fetch` (full-jitter backoff, single 401 refresh,
+  `Retry-After` on 429/503), request builders (header/query/json/form/
+  stream/multipart), buffered response accessors, `With*` options, and a
+  `DeveloperToken` `TokenSource` (one of the four flows).
+
+**Consequences:** A new test swaps the stubs for the real runtime, adds a
+smoke `main` (`NewClient(DeveloperToken(...))` reaching a manager method),
+and `go build`s — proving the runtime satisfies the contract and the
+public API composes end to end (FR-5.2 conformance by construction). CI
+builds/vets/gofmt-checks the runtime standalone. The remaining three auth
+flows (CCG, JWT, OAuth) implement the same `TokenSource` and land with
+auth synthesis.
+
+## D-114 — The four Box auth flows in the hand-written Go runtime
+
+**Status:** accepted · 2026-07-12
+
+**Context:** D-113 shipped the runtime with only `DeveloperToken`. A
+usable SDK needs the three credentialed flows Box supports: Client
+Credentials Grant (CCG), JWT server auth, and OAuth 2.0 authorization
+code. Each is identical across every generated Box SDK (same endpoints,
+same grants), so — like the serialization package (TR-Go.2) and the rest
+of the runtime (TR-Go.7) — they are **hand-written into the runtime**, not
+synthesized per-spec. There is nothing in the OpenAPI document that varies
+them, so putting them behind the code generator would add moving parts
+without adding fidelity.
+
+**Decision:**
+- All flows implement the existing `TokenSource` interface, so they drop
+  into `client.NewClient(ts, opts...)` with no generation change.
+- A shared `cachedToken` caches the access token behind a mutex and
+  refreshes it within `refreshMargin` (60s) of expiry via a flow-specific
+  closure; a shared `postTokenForm` posts the grant to Box's token
+  endpoint and surfaces non-2xx bodies as errors. `TokenURL` and
+  `HTTPClient` are overridable per config (custom deployments, tests).
+- **CCG** (`ClientCredentials(CCGConfig)`): `client_credentials` grant
+  with `box_subject_type`/`box_subject_id` — enterprise by default, user
+  when `UserID` is set.
+- **OAuth** (`OAuth`/`OAuthConfig.ExchangeCode`/`.AuthorizeURL`): the
+  authorization-code exchange plus refresh, **rotating** the refresh token
+  Box returns on each exchange (Box invalidates the previous one).
+- **JWT** (`JWTAuth(JWTConfig)`): builds and RS256-signs the bearer
+  assertion with stdlib crypto only. The RSA key is parsed (and, for the
+  legacy passphrase-encrypted PEM that Box's `box_config.json` ships,
+  decrypted) **at construction**, so a bad key fails loudly before the
+  first request rather than deep in a call.
+
+**Consequences:** Stdlib-only — no new dependencies (NF-6); JWT rides
+`crypto/rsa` + `crypto/x509` (the deprecated `DecryptPEMBlock` is exactly
+Box's key format and passes `go vet`). A runtime `auth_test.go` exercises
+every flow against an `httptest` token endpoint — CCG subject selection
+and caching, expiry-driven refresh, OAuth refresh-token rotation and code
+exchange, and a JWT assertion the paired public key verifies — and CI now
+runs `go test ./...` on the runtime as a gate. The generated auth guide
+(FR-7.7) documents all four with copy-paste constructors. Apex/Rust will
+re-express the same flows in their runtimes (TR-Apex.6/TR-Rust.5); JWT in
+Apex uses `Crypto.sign` per the M4 plan.
+
+## D-115 — FR-9 spec-diff runs on the IR, classified breaking vs compatible
+
+**Status:** accepted · 2026-07-12
+
+**Context:** FR-9 requires a spec-diff/breaking-change report on every spec
+bump to inform the SDK version. The question was *what* to diff: the raw
+OpenAPI documents, or the lowered IR the SDK is actually generated from.
+
+**Decision:** Diff the **verified IR `Program`s** (`gantry-verify::diff`),
+not the raw specs. The report then describes exactly the surface the
+generated SDK exposes — a field the naming/`allOf` layer normalizes away
+is not a diff; a removed operation, a changed response type, or a newly
+required parameter is. Each difference is classified:
+- **Breaking** (→ major bump): any removal (operation, schema, field, enum
+  value, union variant), any type change (param/field/request/response/
+  alias/variant), a decl-kind change, or a **new required** parameter.
+- **Compatible** (→ minor bump): additions (operation, schema, optional
+  field, enum value, union variant) and deprecation flips (advisory).
+- No differences → no bump.
+
+Cross-program type identity is by **structural signature**: a `Decl(id)`
+renders to its qualified name (`module::Name@version`), never its arena id,
+so the two programs' independent `DeclId` spaces compare correctly. Output
+is deterministic (sorted by category, key, kind).
+
+**Consequences:** `gantry diff --from <specs> --to <specs>` prints the
+report and **exits 4 on a breaking diff** (the `VERIFICATION_FAILURE`
+class), so CI can gate a major bump. Unit tests pin every classification
+rule; an integration test over the real vendored specs proves adding the
+`2025.0` overlay is purely additive (257 compatible changes, minor) and
+removing it is breaking (257 removals, major). The diff is language-neutral
+(it reads the IR), so the same report serves every target SDK's versioning.
+The remaining VR items (VR-2 fixtures, VR-3 conformance checklist, VR-7
+live smoke) build on this seam in `gantry-verify`.
