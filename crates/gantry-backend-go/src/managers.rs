@@ -153,19 +153,7 @@ impl ManagerPrinter<'_> {
     }
 
     fn method_name(&self, op: &ir::Operation) -> String {
-        let mut name = pascal(op.name.as_str());
-        if let Some(variation) = &op.variation {
-            name.push_str(&pascal(variation.as_str()));
-        }
-        // Operations from versioned documents carry the version in the
-        // method name so base and versioned surfaces never collide
-        // (FR-7.5).
-        if op.api_version != self.base_version
-            && let Some(version) = &op.api_version
-        {
-            name.push_str(&constant(&version.0));
-        }
-        name
+        method_name(op, self.base_version.as_ref())
     }
 
     fn operation(&mut self, manager_type: &str, op: &ir::Operation) -> Result<(), BackendError> {
@@ -976,6 +964,22 @@ impl ManagerPrinter<'_> {
             .insert(format!("boxgantry.invalid/boxsdk/{}", segments.join("/")));
         format!("{package}.{}", decl.name.as_str())
     }
+}
+
+/// The Go method name for an operation (shared with docs). Versioned
+/// operations carry the version so base and versioned surfaces never
+/// collide (FR-7.5).
+pub(crate) fn method_name(op: &ir::Operation, base_version: Option<&ir::ApiVersion>) -> String {
+    let mut name = pascal(op.name.as_str());
+    if let Some(variation) = &op.variation {
+        name.push_str(&pascal(variation.as_str()));
+    }
+    if op.api_version.as_ref() != base_version
+        && let Some(version) = &op.api_version
+    {
+        name.push_str(&constant(&version.0));
+    }
+    name
 }
 
 /// Go types that are already nilable: pointer-wrapping them is wrong

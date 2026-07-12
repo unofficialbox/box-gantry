@@ -230,7 +230,11 @@ effort.
 14. ~~M3: the serialization package (BG-1 tri-state wrapper, `Date`).~~
     ✅ (D-112: generic `Nullable[T]` + `Date`; 412 tri-state + 3 Date
     sites round-trip; BG-1 resolved.)
-15. M3 continues: `With*` client decorators (G-3), generated per-manager
-    tests + reference docs (FR-7.7/7.8); per-node lowering fixtures
-    (VR-2); round-trip tests (VR-4); determinism double-generate in CI
-    (VR-5); then the hand-written Go runtime (TR-Go.7) toward v1.
+15. ~~Generated reference docs (FR-7.7).~~ ✅ per-manager Markdown (85
+    pages) + index + auth/pagination/errors guides, from the same IR so
+    they can't drift; every manager's page verified present and linked.
+16. M3 continues: `With*` client decorators + client/session threading
+    (G-3, FR-7.1); the hand-written Go runtime implementing the contract
+    (TR-Go.7); generated per-manager tests (FR-7.8); per-node lowering
+    fixtures (VR-2); round-trip tests (VR-4); determinism double-generate
+    in CI (VR-5) — toward v1 acceptance.

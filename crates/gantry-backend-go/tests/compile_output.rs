@@ -74,6 +74,53 @@ fn generation_is_deterministic() {
 }
 
 #[test]
+fn every_manager_has_reference_docs() {
+    let files = generate();
+    // Each manager .go file has a matching docs page (FR-7.7).
+    let manager_files: Vec<&str> = files
+        .iter()
+        .filter_map(|f| {
+            f.path
+                .strip_prefix("managers/")
+                .and_then(|p| p.strip_suffix(".go"))
+        })
+        .filter(|name| *name != "helpers")
+        .collect();
+    assert!(!manager_files.is_empty());
+    for manager in &manager_files {
+        let doc_path = format!("docs/managers/{manager}.md");
+        let doc = files
+            .iter()
+            .find(|f| f.path == doc_path)
+            .unwrap_or_else(|| panic!("no docs page for manager {manager}"));
+        assert!(
+            doc.content.contains("Access via `client.NewClient()."),
+            "{doc_path} is malformed"
+        );
+    }
+    // The index and the three cross-cutting guides exist (FR-7.7).
+    for required in [
+        "docs/README.md",
+        "docs/auth.md",
+        "docs/pagination.md",
+        "docs/errors.md",
+    ] {
+        assert!(
+            files.iter().any(|f| f.path == required),
+            "missing {required}"
+        );
+    }
+    // The index links every manager page.
+    let index = files.iter().find(|f| f.path == "docs/README.md").unwrap();
+    for manager in &manager_files {
+        assert!(
+            index.content.contains(&format!("(managers/{manager}.md)")),
+            "index does not link {manager}"
+        );
+    }
+}
+
+#[test]
 fn the_real_spec_models_compile() {
     if Command::new("go").arg("version").output().is_err() {
         eprintln!("SKIPPED: go toolchain not available; CI runs this gate");

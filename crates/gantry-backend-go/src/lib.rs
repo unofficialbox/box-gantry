@@ -9,9 +9,11 @@
 //! deterministic (FR-6.2) and gofmt-clean by construction (G-17),
 //! verified by the real toolchain (VR-1.1 — the primary CI signal).
 
+mod docs;
 mod managers;
 mod models;
 
+pub use docs::generate_docs;
 pub use managers::{BackendError, generate_managers};
 pub use models::{GeneratedFile, generate_models};
 
@@ -20,6 +22,7 @@ pub fn generate(analysis: &gantry_sema::Analysis<'_>) -> Result<Vec<GeneratedFil
     let paged = gantry_synth::detect_pagination(analysis);
     let mut files = generate_models(analysis);
     files.extend(generate_managers(analysis, &paged)?);
+    files.extend(generate_docs(analysis, &paged));
     // The runtime stubs are rendered from the contract data (FR-5.2):
     // generated managers compile against exactly the declared surface.
     files.push(GeneratedFile {
