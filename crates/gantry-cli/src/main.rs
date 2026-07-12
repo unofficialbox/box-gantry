@@ -97,10 +97,21 @@ fn main() -> ExitCode {
 /// contract, 0 when the SDK is fully conformant.
 fn conform(specs: &[PathBuf], target: &str) -> ExitCode {
     assert_eq!(target, "go", "clap restricts --target to known manifests");
-    let program = match lower_program(specs) {
-        Ok(program) => program,
-        Err(code) => return code,
+    let set = match gantry_spec::SpecSet::load(specs) {
+        Ok(set) => set,
+        Err(err) => {
+            eprintln!("error: {err}");
+            return ExitCode::from(exit_codes::SPEC_ERROR);
+        }
     };
+    let program = match gantry_spec::lower(&set) {
+        Ok(lowering) => lowering.program,
+        Err(err) => {
+            eprintln!("error: {err}");
+            return ExitCode::from(exit_codes::SPEC_ERROR);
+        }
+    };
+    let build = gantry_backend_go::BuildInfo::new(set.fingerprint());
     let analysis = match gantry_sema::analyze(&program) {
         Ok(analysis) => analysis,
         Err(errors) => {
@@ -115,7 +126,7 @@ fn conform(specs: &[PathBuf], target: &str) -> ExitCode {
             });
         }
     };
-    let files = match gantry_backend_go::generate(&analysis) {
+    let files = match gantry_backend_go::generate(&analysis, &build) {
         Ok(files) => files,
         Err(err) => {
             eprintln!("error: {err}");
@@ -181,8 +192,9 @@ fn generate_files(
         eprintln!("error: {err}");
         ExitCode::from(exit_codes::SPEC_ERROR)
     })?;
+    let build = gantry_backend_go::BuildInfo::new(set.fingerprint());
     match gantry_sema::analyze(&lowering.program) {
-        Ok(analysis) => gantry_backend_go::generate(&analysis).map_err(|err| {
+        Ok(analysis) => gantry_backend_go::generate(&analysis, &build).map_err(|err| {
             eprintln!("error: {err}");
             ExitCode::from(exit_codes::ENGINE_BUG)
         }),

@@ -96,3 +96,22 @@ fn the_full_real_spec_set_ingests() {
     let indexed: usize = analysis.managers.values().map(Vec::len).sum();
     assert_eq!(indexed, 336);
 }
+
+#[test]
+fn the_spec_fingerprint_is_deterministic_and_order_sensitive() {
+    let load = |files: &[PathBuf]| SpecSet::load(files).unwrap().fingerprint();
+    let base_then_2025 = [fixture("openapi.json"), fixture("openapi-v2025.0.json")];
+    let reversed = [fixture("openapi-v2025.0.json"), fixture("openapi.json")];
+
+    // Deterministic: same inputs in the same order → same fingerprint (NF-7).
+    assert_eq!(load(&base_then_2025), load(&base_then_2025));
+    // Sixteen lowercase hex digits.
+    let fp = load(&base_then_2025);
+    assert_eq!(fp.len(), 16);
+    assert!(fp.chars().all(|c| c.is_ascii_hexdigit()));
+
+    // Load order changes the fingerprint (the set is ordered — base first).
+    assert_ne!(load(&base_then_2025), load(&reversed));
+    // Adding a document changes it.
+    assert_ne!(load(&base_then_2025), load(&[fixture("openapi.json")]));
+}

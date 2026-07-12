@@ -511,3 +511,47 @@ paginated surfaces, 4 auth flows — all green. Unit tests pin the pass/fail
 logic (a dropped method and a missing auth flow both fail the gate); an
 integration test asserts the real generated SDK is fully conformant with
 non-trivial counts.
+
+## D-117 — Build provenance (NF-7) and the Go-module ship artifact (NF-8)
+
+**Status:** accepted · 2026-07-12
+
+**Context:** NF-7 requires every generated SDK to embed a spec hash + engine
+version so a release is traceable to its inputs; NF-8 requires each release
+to define and produce its ship artifact — for v1, a tagged Go module — with
+the packaging decision recorded.
+
+**Decision:**
+- **Spec fingerprint (NF-7):** `SpecSet::fingerprint()` is an **FNV-1a**
+  hash of the raw document bytes, folded in load order, rendered as 16
+  lowercase hex digits. Dependency-free (no `sha2` — consistent with the
+  stdlib-only runtime and NF-6's locked-deps discipline) and deterministic
+  (FR-6.2); it is an input *fingerprint* for traceability, not a security
+  hash, so collision resistance against an adversary is not required. It is
+  order-sensitive (the set is ordered, base first) and moves on any input
+  change.
+- **Provenance carried two ways:** a `BuildInfo { engine, spec_fingerprint }`
+  is threaded into generation. Every model file header gains
+  `(spec <fingerprint>)`, and a dedicated **`buildinfo` package** exports
+  `EngineVersion` and `SpecFingerprint` constants so the shipped SDK can
+  report its own provenance programmatically. The VR-3 checklist gains a
+  `traceability` capability gating the package's presence.
+- **Ship artifact (NF-8):** the generated tree **is** the artifact — a
+  self-contained Go module (`go.mod` with `module boxgantry.invalid/boxsdk`,
+  `go 1.23`) that builds/vets/gofmt/tests clean (VR-1.1). The `.invalid`
+  module path is the in-repo placeholder; the **real import path and the
+  `vMAJOR.MINOR.PATCH` tag are set by the release pipeline**, with the
+  version bump chosen by the FR-9 spec-diff (D-115): breaking → major,
+  additive → minor. Go modules ship as source (no build step), so there is
+  no unlocked-package-vs-source question as there will be for Apex — the
+  packaging choice here is simply *tagged module source*, recorded so v2/v3
+  can point back to it.
+
+**Consequences:** `gantry generate/verify/conform` all stamp the output;
+the fingerprint is computed once from the `SpecSet` and reused. On the real
+spec the fingerprint is `ee7d55aedefe2fa0` and the engine version `0.1.0`,
+embedded in the headers and the `buildinfo` package (both compile-gated in
+CI). Unit tests pin the fingerprint's determinism, hex shape, and
+order-sensitivity; the conformance checklist now reports 9 capabilities.
+Apex/Rust will carry the same `BuildInfo` into their own provenance
+surfaces (a `buildinfo` class / a `build_info` module).

@@ -264,5 +264,13 @@ effort.
     4 auth flows, plus serialization/tests/docs. `gantry conform --target
     go` exits 4 on any shortfall; CI runs it every build. Target-neutral
     (reads a `GeneratedView`), so Apex/Rust reuse it.)
-21. M3 remainder toward v1: per-node lowering fixtures (VR-2); live smoke
-    (VR-7); tagged module (NF-8).
+21. ~~Build provenance (NF-7) + Go-module ship artifact (NF-8).~~ ✅
+    (D-117: `SpecSet::fingerprint()` — a dependency-free FNV-1a hash of the
+    input specs — plus the engine version are threaded via `BuildInfo`
+    into every model header and a generated `buildinfo` package
+    (`EngineVersion`/`SpecFingerprint`); VR-3 gains a `traceability`
+    capability. The generated tree is the NF-8 artifact: a self-contained
+    Go module, tag/version set by the release pipeline from the FR-9
+    diff.)
+22. M3 remainder toward v1: per-node lowering fixtures (VR-2); live smoke
+    (VR-7, needs a Box dev account).
