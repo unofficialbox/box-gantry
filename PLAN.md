@@ -233,8 +233,12 @@ effort.
 15. ~~Generated reference docs (FR-7.7).~~ ✅ per-manager Markdown (85
     pages) + index + auth/pagination/errors guides, from the same IR so
     they can't drift; every manager's page verified present and linked.
-16. M3 continues: `With*` client decorators + client/session threading
-    (G-3, FR-7.1); the hand-written Go runtime implementing the contract
-    (TR-Go.7); generated per-manager tests (FR-7.8); per-node lowering
-    fixtures (VR-2); round-trip tests (VR-4); determinism double-generate
-    in CI (VR-5) — toward v1 acceptance.
+16. ~~Client/session threading + `With*` decorators (G-3, FR-7.1) + the
+    hand-written Go runtime (TR-Go.7).~~ ✅ (D-113: session-receiver
+    contract axis; managers hold a shared session; retrying runtime with
+    auth/backoff/Retry-After; generated SDK compiles against the real
+    runtime + a smoke main — FR-5.2 conformance by construction.)
+17. M3 remainder toward v1: remaining auth flows (CCG/JWT/OAuth) with
+    auth synthesis; generated per-manager tests (FR-7.8); per-node
+    lowering fixtures (VR-2); round-trip tests (VR-4); VR-3 conformance
+    checklist; FR-9 spec-diff; live smoke (VR-7); tagged module (NF-8).

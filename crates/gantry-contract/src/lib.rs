@@ -39,11 +39,23 @@ pub enum ContractType {
     Stream,
 }
 
+/// Whether a runtime function needs the per-client session (config: auth,
+/// base URLs, HTTP client, retry) or is pure over its arguments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Receiver {
+    /// A method on the runtime session/client (holds config).
+    Session,
+    /// A free function operating only on its arguments (request/response
+    /// builders and accessors).
+    Free,
+}
+
 /// One function of the runtime surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContractFn {
     /// Canonical snake_case name; each backend renders its own casing.
     pub name: &'static str,
+    pub receiver: Receiver,
     /// Parameters after the (optional) context parameter.
     pub params: &'static [(&'static str, ContractType)],
     /// `None` means the function returns nothing (beyond an error, when
@@ -75,6 +87,7 @@ pub const V1: RuntimeContract = RuntimeContract {
     functions: &[
         ContractFn {
             name: "fetch",
+            receiver: Receiver::Session,
             params: &[("request", ContractType::Request)],
             ret: Some(ContractType::Response),
             fallible: true,
@@ -84,6 +97,7 @@ pub const V1: RuntimeContract = RuntimeContract {
         },
         ContractFn {
             name: "access_token",
+            receiver: Receiver::Session,
             params: &[],
             ret: Some(ContractType::String),
             fallible: true,
@@ -93,6 +107,7 @@ pub const V1: RuntimeContract = RuntimeContract {
         },
         ContractFn {
             name: "base_url",
+            receiver: Receiver::Session,
             params: &[("name", ContractType::String)],
             ret: Some(ContractType::String),
             fallible: false,
@@ -104,6 +119,7 @@ pub const V1: RuntimeContract = RuntimeContract {
         },
         ContractFn {
             name: "new_request",
+            receiver: Receiver::Session,
             params: &[
                 ("method", ContractType::String),
                 ("url", ContractType::String),
@@ -115,6 +131,7 @@ pub const V1: RuntimeContract = RuntimeContract {
         },
         ContractFn {
             name: "with_header",
+            receiver: Receiver::Free,
             params: &[
                 ("request", ContractType::Request),
                 ("name", ContractType::String),
@@ -127,6 +144,7 @@ pub const V1: RuntimeContract = RuntimeContract {
         },
         ContractFn {
             name: "with_query",
+            receiver: Receiver::Free,
             params: &[
                 ("request", ContractType::Request),
                 ("name", ContractType::String),
@@ -139,6 +157,7 @@ pub const V1: RuntimeContract = RuntimeContract {
         },
         ContractFn {
             name: "with_json_body",
+            receiver: Receiver::Free,
             params: &[
                 ("request", ContractType::Request),
                 ("body", ContractType::Bytes),
@@ -150,6 +169,7 @@ pub const V1: RuntimeContract = RuntimeContract {
         },
         ContractFn {
             name: "with_form_body",
+            receiver: Receiver::Free,
             params: &[
                 ("request", ContractType::Request),
                 ("form", ContractType::Bytes),
@@ -162,6 +182,7 @@ pub const V1: RuntimeContract = RuntimeContract {
         },
         ContractFn {
             name: "with_stream_body",
+            receiver: Receiver::Free,
             params: &[
                 ("request", ContractType::Request),
                 ("body", ContractType::Stream),
@@ -175,6 +196,7 @@ pub const V1: RuntimeContract = RuntimeContract {
         },
         ContractFn {
             name: "with_multipart_body",
+            receiver: Receiver::Free,
             params: &[
                 ("request", ContractType::Request),
                 ("attributes", ContractType::Bytes),
@@ -189,6 +211,7 @@ pub const V1: RuntimeContract = RuntimeContract {
         },
         ContractFn {
             name: "response_bytes",
+            receiver: Receiver::Free,
             params: &[("response", ContractType::Response)],
             ret: Some(ContractType::Bytes),
             fallible: true,
@@ -197,6 +220,7 @@ pub const V1: RuntimeContract = RuntimeContract {
         },
         ContractFn {
             name: "response_stream",
+            receiver: Receiver::Free,
             params: &[("response", ContractType::Response)],
             ret: Some(ContractType::Stream),
             fallible: false,
@@ -205,6 +229,7 @@ pub const V1: RuntimeContract = RuntimeContract {
         },
         ContractFn {
             name: "response_header",
+            receiver: Receiver::Free,
             params: &[
                 ("response", ContractType::Response),
                 ("name", ContractType::String),
@@ -217,6 +242,7 @@ pub const V1: RuntimeContract = RuntimeContract {
         },
         ContractFn {
             name: "status_code",
+            receiver: Receiver::Free,
             params: &[("response", ContractType::Response)],
             ret: Some(ContractType::Int64),
             fallible: false,

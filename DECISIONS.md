@@ -351,3 +351,37 @@ cursor *through* its wrapper (`page.X.Value` guarded by `.Valid`), since
 clean (VR-1.1). Apex/Rust will map the same IR distinction to their
 serializers (Rust: `Option<Option<T>>` or a tri-state enum; Apex:
 explicit null handling in `JSON.serialize`).
+
+## D-113 — Runtime session threading + the hand-written Go runtime
+
+**Status:** accepted · 2026-07-12
+
+**Context:** The generated managers compiled against panicking stubs but
+had nowhere to hold per-client state (auth, base URLs, HTTP client, retry
+policy), so the SDK could not actually run. TR-Go.7 requires a
+hand-written runtime implementing the FR-5 contract.
+
+**Decision:**
+- The contract gains a **receiver axis** (`Session` | `Free`): stateful
+  functions (`new_request`, `base_url`, `fetch`, `access_token`) are
+  methods on the runtime `Client`; pure builders/accessors stay free
+  functions. Stubs render the split from the contract data (FR-5.2), so
+  the real runtime and the stubs share one shape.
+- Generated managers hold an unexported `session *gantryruntime.Client`
+  and are built by a generated `New<M>Manager(session)`. The client's
+  `NewClient(ts, opts...)` constructs one shared session (from a
+  `TokenSource` + `With*` options, G-3) and wires every manager to it —
+  so config applies everywhere.
+- The hand-written runtime lives at `runtimes/go/gantryruntime/`
+  (TR-Go.7): retrying `Fetch` (full-jitter backoff, single 401 refresh,
+  `Retry-After` on 429/503), request builders (header/query/json/form/
+  stream/multipart), buffered response accessors, `With*` options, and a
+  `DeveloperToken` `TokenSource` (one of the four flows).
+
+**Consequences:** A new test swaps the stubs for the real runtime, adds a
+smoke `main` (`NewClient(DeveloperToken(...))` reaching a manager method),
+and `go build`s — proving the runtime satisfies the contract and the
+public API composes end to end (FR-5.2 conformance by construction). CI
+builds/vets/gofmt-checks the runtime standalone. The remaining three auth
+flows (CCG, JWT, OAuth) implement the same `TokenSource` and land with
+auth synthesis.

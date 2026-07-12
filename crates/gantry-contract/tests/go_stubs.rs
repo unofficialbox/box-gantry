@@ -17,7 +17,12 @@ fn go_stubs_render_deterministically() {
             function.name
         );
     }
-    assert!(once.contains("func Fetch(ctx context.Context, request *Request) (*Response, error)"));
+    // Fetch is a session method (receiver *Client); a free builder is not.
+    assert!(once.contains(
+        "func (c *Client) Fetch(ctx context.Context, request *Request) (*Response, error)"
+    ));
+    assert!(once.contains("func WithQuery(request *Request, name string, value string) *Request"));
+    assert!(once.contains("func New(ts TokenSource, opts ...Option) *Client"));
 }
 
 #[test]

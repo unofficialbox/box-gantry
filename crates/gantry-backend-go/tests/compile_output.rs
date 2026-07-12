@@ -160,3 +160,71 @@ fn the_real_spec_models_compile() {
         String::from_utf8_lossy(&fmt.stdout)
     );
 }
+
+/// FR-5.2/TR-Go.7: the generated SDK must compile against the real
+/// hand-written runtime, not only the stubs — proving the runtime
+/// satisfies the contract signatures the managers call.
+#[test]
+fn the_generated_sdk_compiles_against_the_real_runtime() {
+    if Command::new("go").arg("version").output().is_err() {
+        eprintln!("SKIPPED: go toolchain not available; CI runs this gate");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("gantry-go-runtime-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    write_all(&dir, &generate());
+
+    // Replace the generated stub package with the real runtime files.
+    let runtime_dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtimes/go/gantryruntime");
+    let target = dir.join("gantryruntime");
+    let _ = std::fs::remove_file(target.join("runtime.go")); // the stub
+    for entry in std::fs::read_dir(&runtime_dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "go") {
+            let name = path.file_name().unwrap();
+            std::fs::copy(&path, target.join(name)).unwrap();
+        }
+    }
+
+    // A smoke main proving the public API composes end to end: construct
+    // the client from a token source and reach a manager method.
+    let smoke = "package main\n\n\
+        import (\n\
+        \t\"context\"\n\
+        \t\"fmt\"\n\n\
+        \t\"boxgantry.invalid/boxsdk/client\"\n\
+        \t\"boxgantry.invalid/boxsdk/gantryruntime\"\n\
+        )\n\n\
+        func main() {\n\
+        \tc := client.NewClient(gantryruntime.DeveloperToken(\"dev-token\"))\n\
+        \tif false {\n\
+        \t\t_, _ = c.Files.GetFilesId(context.Background(), \"123\", nil)\n\
+        \t}\n\
+        \tfmt.Println(c)\n\
+        }\n";
+    std::fs::create_dir_all(dir.join("cmd/smoke")).unwrap();
+    std::fs::write(dir.join("cmd/smoke/main.go"), smoke).unwrap();
+
+    let build = Command::new("go")
+        .args(["build", "./..."])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "generated SDK does not compile against the real runtime (contract drift, FR-5.2):\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let vet = Command::new("go")
+        .args(["vet", "./..."])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        vet.status.success(),
+        "go vet failed against the real runtime:\n{}",
+        String::from_utf8_lossy(&vet.stderr)
+    );
+}

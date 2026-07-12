@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 
 use gantry_manifest::{AsyncModel, CapabilityManifest, ErrorModel};
 
-use crate::{ContractFn, ContractType, RuntimeContract};
+use crate::{ContractFn, ContractType, Receiver, RuntimeContract};
 
 /// Render the compilable Go stub package for a contract.
 ///
@@ -44,7 +44,21 @@ pub fn go_stubs(contract: &RuntimeContract, manifest: &CapabilityManifest) -> St
          // Request is the runtime-owned HTTP request envelope.\n\
          type Request struct{ private struct{} }\n\n\
          // Response is the runtime-owned HTTP response envelope.\n\
-         type Response struct{ private struct{} }\n\n",
+         type Response struct{ private struct{} }\n\n\
+         // TokenSource yields an access token for the configured auth flow.\n\
+         type TokenSource interface {\n\
+         \tAccessToken(ctx context.Context) (string, error)\n\
+         }\n\n\
+         // Option configures a Client at construction (the With* surface).\n\
+         type Option func(*Client)\n\n\
+         // Client is the runtime session holding config (auth, base URLs,\n\
+         // HTTP client, retry policy). Session-receiver contract functions\n\
+         // are its methods.\n\
+         type Client struct{ private struct{} }\n\n\
+         // New builds a runtime Client for a token source and options.\n\
+         func New(ts TokenSource, opts ...Option) *Client {\n\
+         \tpanic(\"gantryruntime stub: New is not wired to a real runtime\")\n\
+         }\n\n",
     );
 
     for function in contract.functions {
@@ -75,9 +89,15 @@ fn render_fn(out: &mut String, function: &ContractFn) {
         (None, false) => String::new(),
     };
 
+    // Session functions are methods on *Client; free functions are
+    // package-level (FR-5.1 receiver axis).
+    let receiver = match function.receiver {
+        Receiver::Session => "(c *Client) ",
+        Receiver::Free => "",
+    };
     let _ = writeln!(
         out,
-        "func {name}({params}){ret} {{\n\tpanic(\"gantryruntime stub: {raw} is not wired to a real runtime\")\n}}\n",
+        "func {receiver}{name}({params}){ret} {{\n\tpanic(\"gantryruntime stub: {raw} is not wired to a real runtime\")\n}}\n",
         name = go_name(function.name),
         params = params.join(", "),
         raw = function.name,
