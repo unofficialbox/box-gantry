@@ -132,8 +132,10 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "gantry-backend-go",
+ "gantry-ir",
  "gantry-sema",
  "gantry-spec",
+ "gantry-verify",
 ]
 
 [[package]]
@@ -184,6 +186,10 @@ dependencies = [
 [[package]]
 name = "gantry-verify"
 version = "0.1.0"
+dependencies = [
+ "gantry-ir",
+ "gantry-spec",
+]
 
 [[package]]
 name = "hashbrown"

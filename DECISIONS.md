@@ -435,3 +435,38 @@ runs `go test ./...` on the runtime as a gate. The generated auth guide
 (FR-7.7) documents all four with copy-paste constructors. Apex/Rust will
 re-express the same flows in their runtimes (TR-Apex.6/TR-Rust.5); JWT in
 Apex uses `Crypto.sign` per the M4 plan.
+
+## D-115 — FR-9 spec-diff runs on the IR, classified breaking vs compatible
+
+**Status:** accepted · 2026-07-12
+
+**Context:** FR-9 requires a spec-diff/breaking-change report on every spec
+bump to inform the SDK version. The question was *what* to diff: the raw
+OpenAPI documents, or the lowered IR the SDK is actually generated from.
+
+**Decision:** Diff the **verified IR `Program`s** (`gantry-verify::diff`),
+not the raw specs. The report then describes exactly the surface the
+generated SDK exposes — a field the naming/`allOf` layer normalizes away
+is not a diff; a removed operation, a changed response type, or a newly
+required parameter is. Each difference is classified:
+- **Breaking** (→ major bump): any removal (operation, schema, field, enum
+  value, union variant), any type change (param/field/request/response/
+  alias/variant), a decl-kind change, or a **new required** parameter.
+- **Compatible** (→ minor bump): additions (operation, schema, optional
+  field, enum value, union variant) and deprecation flips (advisory).
+- No differences → no bump.
+
+Cross-program type identity is by **structural signature**: a `Decl(id)`
+renders to its qualified name (`module::Name@version`), never its arena id,
+so the two programs' independent `DeclId` spaces compare correctly. Output
+is deterministic (sorted by category, key, kind).
+
+**Consequences:** `gantry diff --from <specs> --to <specs>` prints the
+report and **exits 4 on a breaking diff** (the `VERIFICATION_FAILURE`
+class), so CI can gate a major bump. Unit tests pin every classification
+rule; an integration test over the real vendored specs proves adding the
+`2025.0` overlay is purely additive (257 compatible changes, minor) and
+removing it is breaking (257 removals, major). The diff is language-neutral
+(it reads the IR), so the same report serves every target SDK's versioning.
+The remaining VR items (VR-2 fixtures, VR-3 conformance checklist, VR-7
+live smoke) build on this seam in `gantry-verify`.

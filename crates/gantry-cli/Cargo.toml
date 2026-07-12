@@ -12,8 +12,10 @@ path = "src/main.rs"
 
 [dependencies]
 gantry-backend-go.workspace = true
+gantry-ir.workspace = true
 gantry-sema.workspace = true
 gantry-spec.workspace = true
+gantry-verify.workspace = true
 clap.workspace = true
 
 [lints]

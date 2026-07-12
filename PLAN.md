@@ -249,6 +249,13 @@ effort.
     exercises every flow against an `httptest` token endpoint; CI now
     runs `go test ./...` on the runtime; the generated auth guide
     documents all four flows.)
-19. M3 remainder toward v1: per-node lowering fixtures (VR-2); VR-3
-    conformance checklist; FR-9 spec-diff; live smoke (VR-7); tagged
-    module (NF-8).
+19. ~~FR-9 spec-diff.~~ ✅ (D-115: `gantry-verify::diff` diffs two
+    verified IR `Program`s, classifying every difference as breaking
+    (removals, type changes, new required params → major) or compatible
+    (additions, deprecation → minor); cross-program type identity is by
+    structural signature. `gantry diff --from … --to …` prints the report
+    and exits 4 on a breaking diff so CI can gate a major bump; an
+    integration test proves the `2025.0` overlay is additive and its
+    removal breaking.)
+20. M3 remainder toward v1: per-node lowering fixtures (VR-2); VR-3
+    conformance checklist; live smoke (VR-7); tagged module (NF-8).
