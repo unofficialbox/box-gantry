@@ -238,7 +238,10 @@ effort.
     contract axis; managers hold a shared session; retrying runtime with
     auth/backoff/Retry-After; generated SDK compiles against the real
     runtime + a smoke main — FR-5.2 conformance by construction.)
-17. M3 remainder toward v1: remaining auth flows (CCG/JWT/OAuth) with
-    auth synthesis; generated per-manager tests (FR-7.8); per-node
-    lowering fixtures (VR-2); round-trip tests (VR-4); VR-3 conformance
+17. ~~Generated round-trip tests (FR-7.8, VR-4).~~ ✅ per-module union
+    tests (known/unknown discriminator dispatch on real generated types)
+    + serialization tri-state/Date tests; `go test` now runs in the
+    compile gate and passes.
+18. M3 remainder toward v1: remaining auth flows (CCG/JWT/OAuth) via auth
+    synthesis; per-node lowering fixtures (VR-2); VR-3 conformance
     checklist; FR-9 spec-diff; live smoke (VR-7); tagged module (NF-8).

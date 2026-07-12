@@ -344,8 +344,13 @@ these live in one hand-authored, generated static package.
 - `Date` wrapping `time.Time` with `2006-01-02` Marshal/Unmarshal and a
   `String()` for query rendering.
 
-**Consequences:** 412 tri-state field sites + 3 Date sites round-trip
-correctly; BG-1 resolved. The pagination iterators learned to read the
+**Consequences:** 412 tri-state field sites + 3 Date sites serialize
+correctly; BG-1 resolved on the **write** side (absent / explicit-null /
+value). On read, `encoding/json` collapses a JSON `null` to a nil
+pointer without calling `UnmarshalJSON`, so null and absent both surface
+as nil — an accepted limitation, since Box's clear-on-update semantics
+are a write concern. Generated `go test` round-trip tests (VR-4) pin
+this behavior. The pagination iterators learned to read the
 cursor *through* its wrapper (`page.X.Value` guarded by `.Valid`), since
 `next_marker` fields became `Nullable`. The whole SDK still compiles
 clean (VR-1.1). Apex/Rust will map the same IR distinction to their
