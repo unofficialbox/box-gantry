@@ -27,7 +27,9 @@ BOX_DEVELOPER_TOKEN=… go test -tags live -run TestLiveSmoke -v ./gantryruntime
 
 Credentials come from the environment; a flow runs only when its variables
 are present, and the whole test `t.Skip()`s when none are set (so a
-credential-free run is a clean no-op). Recognized variables:
+credential-free run is a clean no-op). For local runs, copy the repo-root
+`.env.sample` to `.env` (gitignored) and fill in the flows you want — the
+test loads it automatically (real env vars still win). Recognized variables:
 
 | Variable | Flow |
 |---|---|

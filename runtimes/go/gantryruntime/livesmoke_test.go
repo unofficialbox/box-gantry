@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -25,11 +26,60 @@ import (
 	"boxgantry.invalid/boxsdk/gantryruntime"
 )
 
+// loadDotenv loads KEY=VALUE lines from a .env file into the process
+// environment (for local runs — see .env.sample). It searches BOX_ENV_FILE,
+// then walks up from the working directory so it works whether the test is
+// run from the repo root or the package dir. Real environment variables
+// always win; the .env only fills gaps. Dependency-free by design (the
+// runtime ships zero external dependencies).
+func loadDotenv(t *testing.T) {
+	t.Helper()
+	path := os.Getenv("BOX_ENV_FILE")
+	if path == "" {
+		dir, _ := os.Getwd()
+		for range 5 {
+			candidate := filepath.Join(dir, ".env")
+			if _, err := os.Stat(candidate); err == nil {
+				path = candidate
+				break
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+	}
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.Trim(strings.TrimSpace(value), `"'`)
+		if _, set := os.LookupEnv(key); !set {
+			t.Setenv(key, value)
+		}
+	}
+}
+
 // authSources builds every auth flow the environment configures. A flow is
 // attempted only when its variables are present, so a token-only setup
 // still runs the whole smoke.
 func authSources(t *testing.T) map[string]gantryruntime.TokenSource {
 	t.Helper()
+	loadDotenv(t)
 	sources := map[string]gantryruntime.TokenSource{}
 
 	if token := os.Getenv("BOX_DEVELOPER_TOKEN"); token != "" {
