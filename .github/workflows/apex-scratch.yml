@@ -57,9 +57,9 @@ jobs:
           sf org create scratch --target-dev-hub devhub \
             --definition-file config/project-scratch-def.json \
             --alias validate-org --set-default --duration-days 1 --wait 20
-          # Check-only deploy: the platform compiles every class; nothing is
-          # persisted. This is the VR-1.3 signal.
-          sf project deploy start --check-only --wait 30 --ignore-conflicts
+          # Validate-only deploy (--dry-run): the platform compiles every
+          # class; nothing is persisted. This is the VR-1.3 signal.
+          sf project deploy start --dry-run --wait 30 --ignore-conflicts
       - if: always() && steps.guard.outputs.skip != 'true'
         name: Delete the scratch org
         working-directory: apex-sdk
