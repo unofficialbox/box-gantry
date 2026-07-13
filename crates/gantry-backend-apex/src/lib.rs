@@ -196,7 +196,11 @@ pub(crate) fn safe_word(name: &str) -> String {
         }
     }
     let trimmed = out.trim_matches('_');
-    let mut ident = if trimmed.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
+    let mut ident = if trimmed
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic())
+    {
         trimmed.to_string()
     } else {
         // leading digit (or empty) — Apex identifiers must start with a
