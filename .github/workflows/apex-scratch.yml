@@ -31,7 +31,9 @@ jobs:
       - if: steps.guard.outputs.skip != 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # The Salesforce CLI's bundled undici needs Node >= 22
+          # (webidl.util.markAsUncloneable); Node 20 crashes on first callout.
+          node-version: '22'
       - if: steps.guard.outputs.skip != 'true'
         name: Install the Salesforce CLI
         run: npm install --global @salesforce/cli
