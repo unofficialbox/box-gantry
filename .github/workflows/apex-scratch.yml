@@ -54,7 +54,8 @@ jobs:
           cat > config/project-scratch-def.json <<'JSON'
           { "orgName": "box-gantry", "edition": "Developer" }
           JSON
-          sf org create scratch --definition-file config/project-scratch-def.json \
+          sf org create scratch --target-dev-hub devhub \
+            --definition-file config/project-scratch-def.json \
             --alias validate-org --set-default --duration-days 1 --wait 20
           # Check-only deploy: the platform compiles every class; nothing is
           # persisted. This is the VR-1.3 signal.
