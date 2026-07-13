@@ -835,3 +835,32 @@ trailing-underscore/`__` identifiers and zero intra-class duplicate fields
 tests pin the escapes (reserved fields, reserved enum constants, `__`/
 leading-digit shaping). This is the VR-1.3 compile-the-output loop doing its
 job: the platform is the oracle for exactly the rules no unit test encodes.
+
+## D-125 — Synthesized names use immediate context, not the full ancestry
+
+**Context.** 924 of 1332 IR declarations are synthesized from inline
+anonymous schemas. The synthesizer threaded an `owner` string that grew by
+one segment at every nesting level, seeded from the (already long) Box
+`operationId` — so a 4-deep inline field produced a 109-char type name
+(`PutMetadataTemplates…SchemaUpdateBodyDataStaticConfigClassification`), the
+exact box-node-sdk failure mode. Apex only hid it by hashing the overflow to
+opaque names like `V20250EnterpriseConfigurationCon_0de4df4`.
+
+**Decision.** `lower_type`/`lower_struct`/`lower_union` now thread two things
+instead of one accumulating `owner`: `name` (the exact name for a
+synthesized type at this position = its parent's leaf + this leaf) and `leaf`
+(just this leaf, passed to *children*). Depth therefore adds one segment per
+level rather than concatenating the whole path: the deepest enum above is now
+`StaticConfigClassification` (26 chars), and `FileFull.type` is `FileFullType`
+(12). A named schema seeds its children from its own normalized name.
+
+**Consequences.** On the real spec the longest Go type drops **109 → 83**,
+the 60+‑char bucket **56 → 35**, and `<= 25` chars grows **845 → 997**; Apex
+opaque hash-mangled class names drop **190 → 124**. Every remaining long name
+is now either operation-seeded (the long `operationId` prefix — addressed by
+the method-name-shortening slice) or an inherently long Box source name
+(named schema + long field). A `lowering` regression test pins the
+immediate-context rule and asserts the full-ancestry name is never emitted.
+Structural dedupe of identical inline shapes (collapsing repeated `{id}`
+references to one shared type) is the follow-on to this slice. Counts and all
+100 existing tests are unchanged — naming only.

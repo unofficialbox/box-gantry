@@ -260,6 +260,51 @@ fn synthesized_names_disambiguate_deterministically() {
 }
 
 #[test]
+fn nested_inline_names_use_immediate_context_not_the_full_ancestry() {
+    // Deeply-nested inline objects must be named from their immediate parent
+    // + leaf (2 segments), never the accumulated path — the box-node-sdk
+    // failure mode that produced 100+ char identifiers. Here the deepest
+    // enum is `StaticConfigClassification`, NOT
+    // `OuterDataStaticConfigClassification`.
+    let lowering = lower_schemas(serde_json::json!({
+        "Outer": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "object",
+                    "properties": {
+                        "static_config": {
+                            "type": "object",
+                            "properties": {
+                                "classification": { "type": "string", "enum": ["a", "b"] }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }))
+    .unwrap();
+    // Each level is its parent's leaf + its own leaf.
+    let _ = find(&lowering.program, "OuterData");
+    let _ = find(&lowering.program, "DataStaticConfig");
+    let ir::DeclKind::Enum(decl) = &find(&lowering.program, "StaticConfigClassification").kind
+    else {
+        panic!("the deepest inline enum must be StaticConfigClassification")
+    };
+    assert_eq!(decl.values, ["a", "b"]);
+    // The full-ancestry name must NOT exist.
+    assert!(
+        lowering
+            .program
+            .decls
+            .iter()
+            .all(|d| d.name.as_str() != "OuterDataStaticConfigClassification"),
+        "immediate-context naming must not emit the full-ancestry name"
+    );
+}
+
+#[test]
 fn versioned_documents_get_their_own_module() {
     let dir = std::env::temp_dir().join(format!(
         "gantry-lowering-versioned-{}-{:?}",

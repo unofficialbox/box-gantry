@@ -197,9 +197,13 @@ impl<'a> DocLowerer<'a> {
             self.stats.aliases += 1;
             return Ok(ir::DeclKind::Alias(ir::Type::Decl(id)));
         }
+        // A named schema seeds its inline children from its own normalized
+        // name (its decl name), so a field's inline type reads like
+        // `FileFullType`, not the whole ancestry.
+        let leaf = pascal(&clean_name(name));
         if !raw.one_of.is_empty() || !raw.any_of.is_empty() {
             return self
-                .lower_union(location, name, raw)
+                .lower_union(location, &leaf, &leaf, raw)
                 .map(ir::DeclKind::Union);
         }
         if let Some(values) = &raw.enumeration {
@@ -227,29 +231,38 @@ impl<'a> DocLowerer<'a> {
         }
         if !raw.all_of.is_empty() || is_object(raw) {
             return self
-                .lower_struct(location, name, raw)
+                .lower_struct(location, &leaf, raw)
                 .map(ir::DeclKind::Struct);
         }
         // A named primitive (or a schema that says nothing).
-        let ty = self.lower_type(location, name, raw)?;
+        let ty = self.lower_type(location, &leaf, &leaf, raw)?;
         self.stats.aliases += 1;
         Ok(ir::DeclKind::Alias(ty))
     }
 
     /// Lower a schema in *type position* (property, array item, map value).
-    /// `owner` seeds synthesized names for inline anonymous shapes.
+    ///
+    /// Synthesized names for inline anonymous shapes use **immediate
+    /// context**, not the full ancestry (which produced 100+ char monsters —
+    /// the box-node-sdk failure mode). `name` is the exact name to give a
+    /// synthesized type here (its parent's leaf + this leaf, e.g.
+    /// `StaticConfigClassification`); `leaf` is the short prefix threaded to
+    /// this type's *children* (just this leaf, so depth adds one segment per
+    /// level instead of accumulating the whole path). An array item or map
+    /// value shares its container's `(name, leaf)` — it is the same position.
     fn lower_type(
         &mut self,
         location: &str,
-        owner: &str,
+        name: &str,
+        leaf: &str,
         raw: &'a RawSchema,
     ) -> Result<ir::Type, IngestError> {
         if let Some(reference) = &raw.reference {
             return Ok(ir::Type::Decl(self.resolve_ref(location, reference)?));
         }
         if !raw.one_of.is_empty() || !raw.any_of.is_empty() {
-            let union = self.lower_union(location, owner, raw)?;
-            let id = self.synthesize(location, owner, ir::DeclKind::Union(union))?;
+            let union = self.lower_union(location, name, leaf, raw)?;
+            let id = self.synthesize(location, name, ir::DeclKind::Union(union))?;
             return Ok(ir::Type::Decl(id));
         }
         if let Some(values) = &raw.enumeration {
@@ -260,7 +273,7 @@ impl<'a> DocLowerer<'a> {
             }
             let has_null = values.iter().any(serde_json::Value::is_null);
             let decl = self.lower_enum(location, values)?;
-            let id = self.synthesize(location, owner, ir::DeclKind::Enum(decl))?;
+            let id = self.synthesize(location, name, ir::DeclKind::Enum(decl))?;
             // A `null` entry in the value list is the spec's way of
             // saying the field may be explicitly null (D-105, D-110).
             let ty = ir::Type::Decl(id);
@@ -276,7 +289,7 @@ impl<'a> DocLowerer<'a> {
                 .filter(|part| !is_annotation_only(part))
                 .collect();
             if let [part] = structural.as_slice() {
-                return self.lower_type(&format!("{location}.allOf"), owner, part);
+                return self.lower_type(&format!("{location}.allOf"), name, leaf, part);
             }
             if structural.is_empty() {
                 self.stats.json_value_sites += 1;
@@ -284,8 +297,8 @@ impl<'a> DocLowerer<'a> {
             }
         }
         if !raw.all_of.is_empty() {
-            let decl = self.lower_struct(location, owner, raw)?;
-            let id = self.synthesize(location, owner, ir::DeclKind::Struct(decl))?;
+            let decl = self.lower_struct(location, leaf, raw)?;
+            let id = self.synthesize(location, name, ir::DeclKind::Struct(decl))?;
             return Ok(ir::Type::Decl(id));
         }
         match raw.schema_type.as_deref() {
@@ -293,18 +306,22 @@ impl<'a> DocLowerer<'a> {
                 let Some(items) = &raw.items else {
                     return Err(self.unsupported(location, "array schema has no `items`"));
                 };
-                let inner = self.lower_type(&format!("{location}.items"), owner, items)?;
+                let inner = self.lower_type(&format!("{location}.items"), name, leaf, items)?;
                 Ok(ir::Type::List(Box::new(inner)))
             }
             Some("object") if !raw.properties.is_empty() => {
-                let decl = self.lower_struct(location, owner, raw)?;
-                let id = self.synthesize(location, owner, ir::DeclKind::Struct(decl))?;
+                let decl = self.lower_struct(location, leaf, raw)?;
+                let id = self.synthesize(location, name, ir::DeclKind::Struct(decl))?;
                 Ok(ir::Type::Decl(id))
             }
             Some("object") => match raw.additional_properties.as_ref() {
                 Some(RawAdditionalProperties::Schema(value)) => {
-                    let inner =
-                        self.lower_type(&format!("{location}.additionalProperties"), owner, value)?;
+                    let inner = self.lower_type(
+                        &format!("{location}.additionalProperties"),
+                        name,
+                        leaf,
+                        value,
+                    )?;
                     Ok(ir::Type::Map(Box::new(inner)))
                 }
                 Some(RawAdditionalProperties::Bool(_)) | None => {
@@ -318,8 +335,8 @@ impl<'a> DocLowerer<'a> {
                 Err(self.unsupported(location, &format!("unknown schema type {other:?}")))
             }
             None if !raw.properties.is_empty() => {
-                let decl = self.lower_struct(location, owner, raw)?;
-                let id = self.synthesize(location, owner, ir::DeclKind::Struct(decl))?;
+                let decl = self.lower_struct(location, leaf, raw)?;
+                let id = self.synthesize(location, name, ir::DeclKind::Struct(decl))?;
                 Ok(ir::Type::Decl(id))
             }
             None => {
@@ -351,10 +368,14 @@ impl<'a> DocLowerer<'a> {
     }
 
     /// Flatten `allOf` composition + own properties into one struct.
+    ///
+    /// `leaf` is this struct's own short name; each inline field type is
+    /// named `leaf + FieldName` and threads `FieldName` as the leaf for its
+    /// own children (immediate-context naming — see `lower_type`).
     fn lower_struct(
         &mut self,
         location: &str,
-        owner: &str,
+        leaf: &str,
         raw: &'a RawSchema,
     ) -> Result<ir::StructDecl, IngestError> {
         let mut properties: IndexMap<String, &'a RawSchema> = IndexMap::new();
@@ -369,7 +390,9 @@ impl<'a> DocLowerer<'a> {
             // The wire name itself is untouched — serialization never
             // depends on the identifier.
             let name = identifier(self.doc, &prop_location, &clean_name(&wire_name))?;
-            let mut ty = self.lower_type(&prop_location, &synth_name(owner, &wire_name), prop)?;
+            let child_leaf = pascal(&clean_name(&wire_name));
+            let child_name = synth_name(leaf, &wire_name);
+            let mut ty = self.lower_type(&prop_location, &child_name, &child_leaf, prop)?;
             // The tri-state is structural (FR-2.3, D-110): `nullable`
             // means the wire value may be an explicit `null` (Box uses it
             // to clear fields); not-required means the key may be absent.
@@ -442,7 +465,8 @@ impl<'a> DocLowerer<'a> {
     fn lower_union(
         &mut self,
         location: &str,
-        owner: &str,
+        name: &str,
+        leaf: &str,
         raw: &'a RawSchema,
     ) -> Result<ir::UnionDecl, IngestError> {
         if !raw.one_of.is_empty() && !raw.any_of.is_empty() {
@@ -462,8 +486,10 @@ impl<'a> DocLowerer<'a> {
                 let target = self.resolve_raw(&variant_location, reference)?;
                 (ir::Type::Decl(id), self.type_const(target, 0))
             } else {
-                let name = format!("{owner}Variant{index}");
-                let ty = self.lower_type(&variant_location, &name, variant)?;
+                let variant_name = format!("{name}Variant{index}");
+                let variant_leaf = format!("{leaf}Variant{index}");
+                let ty =
+                    self.lower_type(&variant_location, &variant_name, &variant_leaf, variant)?;
                 (ty, self.type_const(variant, 0))
             };
             variants.push(ir::UnionVariant {
@@ -723,6 +749,7 @@ impl<'a> DocLowerer<'a> {
             let mut ty = self.lower_type(
                 &format!("{param_location}.schema"),
                 &synth_name(owner, wire_name),
+                &pascal(&clean_name(wire_name)),
                 schema,
             )?;
             if !resolved.required {
@@ -848,8 +875,11 @@ impl<'a> DocLowerer<'a> {
                 &format!("{body_location}.content[{media_key:?}]"),
                 // "Body", not "RequestBody": synthesized names must stay
                 // short — 337 identifiers blew Apex's 40-char limit before
-                // this (D-108 finding 2, D-110).
+                // this (D-108 finding 2, D-110). The body's own fields thread
+                // `owner` as their leaf, so they read `<Op><Field>`, and
+                // deeper levels drop to immediate context.
                 &format!("{owner}Body"),
+                owner,
                 schema,
             )?,
             None => {
@@ -907,6 +937,7 @@ impl<'a> DocLowerer<'a> {
                             Some(schema) => self.lower_type(
                                 &format!("{response_location}.content[{media_key:?}]"),
                                 &format!("{owner}Response"),
+                                owner,
                                 schema,
                             )?,
                             None => {
