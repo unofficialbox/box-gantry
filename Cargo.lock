@@ -122,6 +122,7 @@ dependencies = [
  "gantry-manifest",
  "gantry-sema",
  "gantry-spec",
+ "serde_json",
 ]
 
 [[package]]
@@ -141,8 +142,10 @@ name = "gantry-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "gantry-backend-apex",
  "gantry-backend-go",
  "gantry-ir",
+ "gantry-manifest",
  "gantry-sema",
  "gantry-spec",
  "gantry-verify",

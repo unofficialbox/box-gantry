@@ -8,7 +8,9 @@
 
 use std::path::PathBuf;
 
-use gantry_backend_apex::{GeneratedFile, generate_models};
+use gantry_backend_apex::{GeneratedFile, generate, generate_models};
+
+const CLASSES: &str = "force-app/main/default/classes";
 use gantry_ir as ir;
 use gantry_manifest::{ModuleSystem, apex};
 use gantry_spec::SpecSet;
@@ -182,7 +184,7 @@ fn discriminated_union_gets_deserialize_untyped_dispatch() {
     ]);
     let union = files
         .iter()
-        .find(|f| f.path == "classes/Item.cls")
+        .find(|f| f.path == format!("{CLASSES}/Item.cls"))
         .expect("union class");
     assert_contains(
         &union.content,
@@ -233,12 +235,14 @@ fn alias_emits_no_class_and_resolves_through() {
         ),
     ]);
     assert!(
-        !files.iter().any(|f| f.path == "classes/Token.cls"),
+        !files
+            .iter()
+            .any(|f| f.path == format!("{CLASSES}/Token.cls")),
         "alias must not emit a class"
     );
     let holder = files
         .iter()
-        .find(|f| f.path == "classes/Holder.cls")
+        .find(|f| f.path == format!("{CLASSES}/Holder.cls"))
         .unwrap();
     assert_contains(&holder.content, "public String token; // wire: token");
 }
@@ -285,7 +289,7 @@ fn the_real_spec_lowers_to_apex_classes() {
     for file in &files {
         let name = file
             .path
-            .strip_prefix("classes/")
+            .strip_prefix(&format!("{CLASSES}/"))
             .and_then(|p| p.strip_suffix(".cls"))
             .expect("class path shape");
         assert!(
@@ -324,4 +328,59 @@ fn generation_is_deterministic() {
         assert_eq!(a.path, b.path);
         assert_eq!(a.content, b.content, "nondeterministic: {}", a.path);
     }
+}
+
+#[test]
+fn the_generated_tree_is_a_deployable_sfdx_project() {
+    let lowering = gantry_spec::lower(
+        &SpecSet::load(&[
+            fixture("openapi.json"),
+            fixture("openapi-v2025.0.json"),
+            fixture("openapi-v2026.0.json"),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    let program = Box::leak(Box::new(lowering.program));
+    let analysis = gantry_sema::analyze(program).unwrap();
+    let files = generate(&analysis, &apex());
+
+    // The project manifest exists and is valid JSON naming the source dir.
+    let project = files
+        .iter()
+        .find(|f| f.path == "sfdx-project.json")
+        .expect("sfdx-project.json");
+    let parsed: serde_json::Value = serde_json::from_str(&project.content).expect("valid JSON");
+    assert_eq!(parsed["packageDirectories"][0]["path"], "force-app");
+
+    // Every class has exactly one matching -meta.xml sidecar (source
+    // format), so the tree deploys as-is.
+    let classes: Vec<&str> = files
+        .iter()
+        .filter(|f| f.path.ends_with(".cls"))
+        .map(|f| f.path.as_str())
+        .collect();
+    assert_eq!(classes.len(), 1330, "one class per non-alias decl");
+    for class in &classes {
+        let meta = format!("{class}-meta.xml");
+        assert!(
+            files.iter().any(|f| f.path == meta),
+            "class {class} has no -meta.xml sidecar"
+        );
+        assert!(class.starts_with("force-app/main/default/classes/"));
+    }
+    // 1 project + 1330 classes + 1330 metas.
+    assert_eq!(files.len(), 1 + 1330 * 2);
+
+    // Deterministic and path-sorted.
+    let sorted: Vec<&String> = {
+        let mut p: Vec<&String> = files.iter().map(|f| &f.path).collect();
+        p.sort();
+        p
+    };
+    assert_eq!(
+        files.iter().map(|f| &f.path).collect::<Vec<_>>(),
+        sorted,
+        "generate() output must be path-sorted"
+    );
 }

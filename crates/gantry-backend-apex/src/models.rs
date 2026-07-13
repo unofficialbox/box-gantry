@@ -27,7 +27,7 @@ use gantry_ir::naming::{constant, pascal};
 use gantry_manifest::{CapabilityManifest, ModuleSystem};
 use gantry_sema::Analysis;
 
-use crate::{GeneratedFile, fnv1a_64, safe_word};
+use crate::{CLASSES_DIR, GeneratedFile, fnv1a_64, safe_word};
 
 /// Generate the Apex model classes for a verified program — one top-level
 /// class per schema declaration, mangled to the manifest's identifier
@@ -51,7 +51,7 @@ pub fn generate_models(
                 .get(ir::DeclId(index as u32))
                 .expect("rendered decl has a name");
             files.push(GeneratedFile {
-                path: format!("classes/{name}.cls"),
+                path: format!("{CLASSES_DIR}/{name}.cls"),
                 content,
             });
         }

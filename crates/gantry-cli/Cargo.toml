@@ -12,7 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 gantry-backend-go.workspace = true
+gantry-backend-apex.workspace = true
 gantry-ir.workspace = true
+gantry-manifest.workspace = true
 gantry-sema.workspace = true
 gantry-spec.workspace = true
 gantry-verify.workspace = true

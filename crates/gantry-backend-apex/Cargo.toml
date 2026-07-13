@@ -13,6 +13,7 @@ gantry-sema.workspace = true
 
 [dev-dependencies]
 gantry-spec.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

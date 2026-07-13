@@ -38,12 +38,13 @@ enum Command {
         #[arg(required = true, value_name = "SPEC")]
         specs: Vec<PathBuf>,
     },
-    /// Generate an SDK from spec documents (models slice today).
+    /// Generate an SDK from spec documents.
     Generate {
         #[arg(required = true, value_name = "SPEC")]
         specs: Vec<PathBuf>,
-        /// Target language (manifest key).
-        #[arg(long, value_parser = ["go"])]
+        /// Target language (manifest key). `go` is complete; `apex` emits
+        /// the model layer as a deployable SFDX project (M4, in progress).
+        #[arg(long, value_parser = ["go", "apex"])]
         target: String,
         /// Output directory (created if missing).
         #[arg(long)]
@@ -224,11 +225,20 @@ fn write_files(root: &Path, files: &[gantry_backend_go::GeneratedFile]) -> std::
 }
 
 fn generate(specs: &[PathBuf], target: &str, out: &Path) -> ExitCode {
-    let files = match generate_files(specs, target) {
-        Ok(files) => files,
-        Err(code) => return code,
+    // Both backends emit (path, content); dispatch on the target and write
+    // a common shape.
+    let files: Vec<(String, String)> = match target {
+        "go" => match generate_files(specs, "go") {
+            Ok(files) => files.into_iter().map(|f| (f.path, f.content)).collect(),
+            Err(code) => return code,
+        },
+        "apex" => match generate_apex(specs) {
+            Ok(files) => files,
+            Err(code) => return code,
+        },
+        other => unreachable!("clap restricts --target to known manifests, got {other:?}"),
     };
-    if let Err(err) = write_files(out, &files) {
+    if let Err(err) = write_pairs(out, &files) {
         eprintln!("error: cannot write output: {err}");
         return ExitCode::from(exit_codes::ENGINE_BUG);
     }
@@ -238,6 +248,43 @@ fn generate(specs: &[PathBuf], target: &str, out: &Path) -> ExitCode {
         out = out.display()
     );
     ExitCode::SUCCESS
+}
+
+/// Load → lower → analyze → Apex-generate. The Apex backend consumes the
+/// `apex()` manifest; no toolchain runs here (the scratch-org deploy loop
+/// is the VR-1.3 gate).
+fn generate_apex(specs: &[PathBuf]) -> Result<Vec<(String, String)>, ExitCode> {
+    let program = lower_program(specs)?;
+    match gantry_sema::analyze(&program) {
+        Ok(analysis) => Ok(
+            gantry_backend_apex::generate(&analysis, &gantry_manifest::apex())
+                .into_iter()
+                .map(|f| (f.path, f.content))
+                .collect(),
+        ),
+        Err(errors) => {
+            let engine_bug = errors.iter().any(gantry_sema::SemaError::is_engine_bug);
+            for error in &errors {
+                eprintln!("error: {error}");
+            }
+            Err(ExitCode::from(if engine_bug {
+                exit_codes::ENGINE_BUG
+            } else {
+                exit_codes::SPEC_ERROR
+            }))
+        }
+    }
+}
+
+fn write_pairs(root: &Path, files: &[(String, String)]) -> std::io::Result<()> {
+    for (path, content) in files {
+        let path = root.join(path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, content)?;
+    }
+    Ok(())
 }
 
 fn verify(specs: &[PathBuf], target: &str) -> ExitCode {
