@@ -204,6 +204,35 @@ fn enum_constants_that_are_reserved_words_are_mangled() {
 }
 
 #[test]
+fn enum_constant_dedup_is_case_insensitive() {
+    // Apex identifiers are case-insensitive, so `ASC` and `asc` both escape
+    // to `Asc_r` and would be a duplicate field. The dedup must key on the
+    // lowercased name and disambiguate the second with a numeric suffix.
+    let go = only(vec![ir::Decl {
+        name: ident("Direction"),
+        module: schemas(),
+        api_version: None,
+        kind: ir::DeclKind::Enum(ir::EnumDecl {
+            values: vec!["ASC".into(), "asc".into()],
+            extensibility: ir::Extensibility::Open,
+        }),
+    }]);
+    assert_contains(&go, "public static final String ASC_r = 'ASC';");
+    assert_contains(&go, "public static final String Asc_r2 = 'asc';");
+}
+
+#[test]
+fn a_schema_named_for_a_reserved_type_is_a_safe_class_name() {
+    // `Group` is a reserved Apex type; a schema of that name can't be a bare
+    // class. The class identifier gets the same `_r` escape as a field.
+    let go = only(vec![struct_decl(
+        "Group",
+        vec![field("id", ir::Type::String)],
+    )]);
+    assert_contains(&go, "public class Group_r {");
+}
+
+#[test]
 fn enum_and_union_typed_fields_use_native_json_types() {
     // A field typed as an open enum is a `String`; as a union it is an
     // `Object` (raw map for the caller to dispatch) — so a struct

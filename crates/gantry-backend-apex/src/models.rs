@@ -74,7 +74,10 @@ impl ClassNames {
             if matches!(decl.kind, ir::DeclKind::Alias(_)) {
                 continue; // aliases resolve through — no class, no name
             }
-            names[index] = Some(mint_unique(&base_name(decl), limit, &mut used));
+            // A schema named for a reserved type (`Group`, `Date`, …) can't
+            // be a bare class name either — shape + reserved-word escape
+            // applies to the class identifier just like a field.
+            names[index] = Some(mint_unique(&safe_word(&base_name(decl)), limit, &mut used));
         }
         Self { names }
     }
@@ -164,13 +167,16 @@ fn render_decl(
             // Apex-safe (a value like `Date`/`Group`/`ASC` is a reserved
             // word and is rejected as a bare identifier), then deduped within
             // the class so two wire values that collapse to the same
-            // identifier can't emit a duplicate `static final`.
+            // identifier can't emit a duplicate `static final`. Apex
+            // identifiers are **case-insensitive**, so the dedup is keyed on
+            // the lowercased name — `ASC` and `asc` both escape to `Asc_r`,
+            // which the platform rejects as a duplicate field.
             let mut used: HashSet<String> = HashSet::new();
             for value in &e.values {
                 let base = safe_word(&constant(value));
                 let mut constant_name = base.clone();
                 for n in 2u32.. {
-                    if used.insert(constant_name.clone()) {
+                    if used.insert(constant_name.to_ascii_lowercase()) {
                         break;
                     }
                     constant_name = format!("{base}{n}");
