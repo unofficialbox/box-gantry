@@ -319,6 +319,9 @@ fn unique_method_name(op: &ir::Operation, used: &mut HashSet<String>) -> String 
     if let Some(variation) = &op.variation {
         base.push_str(&pascal(variation.as_str()));
     }
+    // A method named for a reserved word (`delete`, `update`, …) is rejected
+    // by the platform just like a field is; give it the same `_r` escape.
+    base = safe_word(&base);
     if let Some(version) = &op.api_version {
         // Distinguish same-named operations across API versions.
         let suffix = version.0.replace(['.', '-'], "");

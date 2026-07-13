@@ -804,3 +804,34 @@ packaging test's new global-uniqueness assertion pin it. Pagination
 (per-type page classes, no generics), chunked upload, and the D-122
 serialization remainders ride on this surface in later slices; the Apex
 runtime implements `BoxClient`.
+
+## D-124 — Apex identifier shaping: the platform compiler is the oracle (VR-1.3)
+
+**Context.** The first scratch-org dry-run deploy (VR-1.3) of the 1,419
+generated classes surfaced three whole classes of invalid identifier that
+the structural tests could not have caught, because only the Salesforce
+compiler encodes Apex's identifier rules:
+
+1. The reserved-word escape appended a **trailing `_`** (`limit_`, `end_`,
+   `value_`) — but Apex forbids an identifier that *ends* in `_`.
+2. **Enum constants** (`ASC`, `Date`, `Group`, `Trigger`, `by`) were emitted
+   raw, never checked against the reserved list.
+3. Wire names with **runs of `__`** (`Box__Security__Classification__Key`)
+   and **leading digits** became field identifiers verbatim — both illegal.
+
+**Decision.** `safe_word` is now a full **Apex-identifier sanitizer**, not a
+reserved-word-only helper: fold every non-alphanumeric to `_`, collapse
+runs, drop leading/trailing `_`, prefix `x` when a letter doesn't lead, then
+suffix reserved words with **`_r`** (a letter-terminated escape, so it can't
+reintroduce a trailing `_`). It is applied at **every** identifier site —
+struct fields, params, manager fields, method names, and enum constants.
+Added `by` and `commit` to the reserved list. The wire name (JSON key) is
+untouched — it rides the `// wire:` comment today and the serializer later
+(D-122), so shaping the identifier never changes the contract.
+
+**Consequences.** A local scan of the regenerated 1,419 classes shows zero
+trailing-underscore/`__` identifiers and zero intra-class duplicate fields
+(the collapse introduced no collisions on the real spec). Three regression
+tests pin the escapes (reserved fields, reserved enum constants, `__`/
+leading-digit shaping). This is the VR-1.3 compile-the-output loop doing its
+job: the platform is the oracle for exactly the rules no unit test encodes.

@@ -160,17 +160,20 @@ fn render_decl(
             // (see `apex_type`), so JSON round-trips the value natively —
             // unknown values included; this class just names the known ones.
             let _ = writeln!(out, "public class {name} {{");
-            // Constant names are the shared PascalCase identifier form,
-            // deduped within the class so two wire values that collapse to
-            // the same identifier can't emit a duplicate `static final`.
+            // Constant names are the shared PascalCase identifier form, made
+            // Apex-safe (a value like `Date`/`Group`/`ASC` is a reserved
+            // word and is rejected as a bare identifier), then deduped within
+            // the class so two wire values that collapse to the same
+            // identifier can't emit a duplicate `static final`.
             let mut used: HashSet<String> = HashSet::new();
             for value in &e.values {
-                let mut constant_name = constant(value);
+                let base = safe_word(&constant(value));
+                let mut constant_name = base.clone();
                 for n in 2u32.. {
                     if used.insert(constant_name.clone()) {
                         break;
                     }
-                    constant_name = format!("{}{n}", constant(value));
+                    constant_name = format!("{base}{n}");
                 }
                 let _ = writeln!(
                     out,

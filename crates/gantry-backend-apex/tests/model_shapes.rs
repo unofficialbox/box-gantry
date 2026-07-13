@@ -123,8 +123,9 @@ fn collections_use_builtin_generics() {
 
 #[test]
 fn reserved_field_names_are_mangled_wire_name_preserved() {
-    // `limit` and `group` are Apex reserved words; the field gains a `_`,
-    // but the wire name (the JSON key) is untouched.
+    // `limit` and `group` are Apex reserved words; the field gains a `_r`
+    // suffix (Apex forbids a trailing `_`), but the wire name (the JSON key)
+    // is untouched.
     let go = only(vec![struct_decl(
         "S",
         vec![
@@ -132,8 +133,28 @@ fn reserved_field_names_are_mangled_wire_name_preserved() {
             field("group", ir::Type::String),
         ],
     )]);
-    assert_contains(&go, "public Long limit_; // wire: limit");
-    assert_contains(&go, "public String group_; // wire: group");
+    assert_contains(&go, "public Long limit_r; // wire: limit");
+    assert_contains(&go, "public String group_r; // wire: group");
+}
+
+#[test]
+fn field_names_are_shaped_into_valid_apex_identifiers() {
+    // Box wire names break Apex's identifier rules: runs of `__` (metadata
+    // keys like `Box__Security__Classification__Key`) and leading digits are
+    // both rejected. The identifier is folded to a legal shape; the wire
+    // name (JSON key) is preserved verbatim in the trailing comment.
+    let go = only(vec![struct_decl(
+        "S",
+        vec![
+            field("Box__Security__Classification__Key", ir::Type::String),
+            field("2fa_enabled", ir::Type::Bool),
+        ],
+    )]);
+    assert_contains(
+        &go,
+        "public String Box_Security_Classification_Key; // wire: Box__Security__Classification__Key",
+    );
+    assert_contains(&go, "public Boolean x2fa_enabled; // wire: 2fa_enabled");
 }
 
 // --- enums / unions / aliases --------------------------------------------
@@ -160,6 +181,26 @@ fn open_enum_is_a_string_class_with_constants() {
     // value is the string literal.
     assert_contains(&go, "public static final String File = 'file';");
     assert_contains(&go, "public static final String WebLink = 'web_link';");
+}
+
+#[test]
+fn enum_constants_that_are_reserved_words_are_mangled() {
+    // A wire value whose identifier form is an Apex reserved word (`asc`,
+    // `date`, `group`) can't be a bare constant name — the platform rejects
+    // it ("Identifier name is reserved" / "Unexpected token"). It gains the
+    // same `_r` suffix as reserved fields; the wire literal is untouched.
+    let go = only(vec![ir::Decl {
+        name: ident("Sort"),
+        module: schemas(),
+        api_version: None,
+        kind: ir::DeclKind::Enum(ir::EnumDecl {
+            values: vec!["asc".into(), "date".into(), "group".into()],
+            extensibility: ir::Extensibility::Open,
+        }),
+    }]);
+    assert_contains(&go, "public static final String Asc_r = 'asc';");
+    assert_contains(&go, "public static final String Date_r = 'date';");
+    assert_contains(&go, "public static final String Group_r = 'group';");
 }
 
 #[test]
