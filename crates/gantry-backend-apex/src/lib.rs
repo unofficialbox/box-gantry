@@ -19,6 +19,7 @@
 mod docs;
 mod managers;
 mod models;
+mod runtime;
 
 pub use managers::generate_managers;
 pub use models::generate_models;
@@ -51,6 +52,9 @@ pub fn generate(analysis: &Analysis<'_>, manifest: &CapabilityManifest) -> Vec<G
 
     let mut classes = generate_models(analysis, manifest);
     classes.extend(generate_managers(analysis, manifest));
+    // The hand-written runtime deploys alongside the generated classes (Apex
+    // is one flat namespace), behind the generated `BoxClient` contract.
+    classes.extend(runtime::runtime_classes());
     let class_meta = class_meta_xml();
     for class in classes {
         files.push(GeneratedFile {

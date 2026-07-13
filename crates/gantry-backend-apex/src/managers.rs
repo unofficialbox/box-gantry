@@ -81,10 +81,14 @@ pub(crate) fn manager_infos(
 ) -> Vec<ManagerInfo> {
     // Manager/client/stub names share the flat namespace with the model
     // classes, so mint them into a set seeded with every model name plus the
-    // reserved runtime names — globally unique, within the limit. Managers
-    // appear in analysis order (BTreeMap → sorted, deterministic).
+    // reserved contract + hand-written-runtime names — globally unique, within
+    // the limit. Managers appear in analysis order (BTreeMap → sorted,
+    // deterministic).
     let mut used: HashSet<String> = names.names().map(str::to_string).collect();
-    for reserved in RUNTIME_NAMES {
+    for reserved in RUNTIME_NAMES
+        .iter()
+        .chain(crate::runtime::RUNTIME_CLASS_NAMES)
+    {
         used.insert((*reserved).to_string());
     }
     analysis

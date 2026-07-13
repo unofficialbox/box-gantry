@@ -997,3 +997,37 @@ manager indexes + 1 top index). Docs/scaffolding live outside the package
 directory, so the deployable surface (and VR-1.3) is unchanged. Deterministic;
 new regression tests pin the scaffolding, the doc-per-endpoint count, and a
 sample page's setup/types/example. 105 tests, fmt, clippy green.
+
+## D-130 — The hand-written Apex runtime (BoxClient implementation)
+
+**Context.** The generated managers call `client.send(request)` against the
+`BoxClient` *interface* stub; nothing ran. The Go analogue is the hand-written
+`gantryruntime` package the generated code imports. Apex has no package
+imports — every class deploys together in one flat namespace — so the runtime
+must ship *inside* the generated project.
+
+**Decision.** A hand-written runtime lives in
+`runtimes/apex/main/default/classes/*.cls` (the source of truth) and is
+**embedded** into every generated project under `classes/` via `include_str!`
+(`crates/gantry-backend-apex/src/runtime.rs`), behind the generated
+`BoxClient`/`BoxRequest`/`BoxResponse` contract:
+
+- **`BoxHttpClient implements BoxClient`** — resolves the D-106 base-URL class,
+  attaches the bearer token + the request's headers/query/body, sends the
+  Salesforce HTTP callout, and maps a non-2xx response to a `BoxApiException`.
+- **`BoxTokenProvider`** (auth contract) + **`BoxDeveloperTokenProvider`** (the
+  simplest flow, a fixed token). CCG/JWT providers are later slices.
+- **`BoxApiException`** — carries HTTP status + response body (the manifest
+  error model, D-107).
+
+**Governor limits shape the retry policy (a genuine Apex constraint):** Apex
+has no `sleep`, so retries are **immediate** rather than backed-off, bounded by
+the per-transaction callout limit; they cover 429/5xx, with a single 401
+re-attempt for a caching token provider. The runtime's class names are
+reserved in the flat-namespace minter so no generated class collides.
+
+**Consequences.** `generate --target apex` now ships **991 classes** (was 987:
++4 runtime), all deployable. The generated SDK is now actually callable:
+`new Box(new BoxHttpClient(new BoxDeveloperTokenProvider(token))).files.getById(...)`.
+Verified by the scratch-org compile loop (VR-1.3). New regression tests assert
+the runtime classes are present; 105 tests, fmt, clippy, determinism green.

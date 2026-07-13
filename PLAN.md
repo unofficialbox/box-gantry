@@ -361,7 +361,14 @@ already proved it (85/85 managers lower, zero IR changes forced).
     endpoint under `docs/` with an imports/setup block, SDK types used,
     params, and a copy-pasteable example. `generate --target apex` → 2,401
     files (422 docs); deploy surface unchanged. 3 regression tests.)
-32. **Next**: governor-limit-aware pagination (per-type page classes) +
+32. ~~The hand-written Apex runtime (BoxClient implementation).~~ ✅
+    (D-130: `runtimes/apex/**` — `BoxHttpClient implements BoxClient` (callout,
+    base-URL resolution, immediate governor-limit-aware retries, non-2xx →
+    exception), `BoxTokenProvider` + `BoxDeveloperTokenProvider`,
+    `BoxApiException` — embedded into every generated project. The SDK is now
+    callable. 991 classes; regression tests + VR-1.3.)
+33. **Next**: CCG/JWT token providers (Crypto-signed, cached);
+    governor-limit-aware pagination (per-type page classes) +
     chunked upload; the remaining serialization gaps (field↔wire remap,
     tri-state); the hand-written Apex runtime implementing `BoxClient`
     (`Http` + Crypto-JWT); generated test classes clearing the 75% gate.
