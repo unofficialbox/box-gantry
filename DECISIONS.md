@@ -957,3 +957,43 @@ id_apply`→`ApplyById`, `post_metadata_taxonomies_…_levels:append`→
 `AppendLevels`, `get_authorize`→`Authorize`. Class/method counts unchanged
 (987 classes, 336 methods); a `lowering` regression test pins the action-lead
 and the `:` split; 103 tests, fmt, clippy, determinism green.
+
+## D-129 — Apex project structure, ApexDoc, and per-endpoint reference docs
+
+**Context.** Three quality requirements before the Apex runtime work: a proper
+SFDX project layout, generated code readable by both humans and AI coding
+assistants, and Markdown documentation for every endpoint.
+
+**Decision.**
+
+- **SFDX scaffolding.** `generate()` now emits the full project a developer
+  expects: `sfdx-project.json` (with `namespace`/`sfdcLoginUrl`),
+  `config/project-scratch-def.json` (the same def the VR-1.3 loop deploys —
+  now shipped, and the workflow uses it instead of an inline heredoc),
+  `.forceignore` (keeps `docs/`+`README.md` out of deploys),
+  `manifest/package.xml` (wildcard ApexClass deploy), and a project `README.md`.
+- **ApexDoc.** Every generated class and method carries `/** … */` doc:
+  managers describe their tag + `client.<field>` access; methods document the
+  `HTTP path`, each `@param` (with in-location + optional), `@param body`,
+  `@return`, and `@deprecated`; models describe the schema; the `Box` client
+  and each manager field are documented. Structural (the IR carries no
+  per-operation prose), so it never invents descriptions.
+- **Per-endpoint docs.** One Markdown page per endpoint under
+  `docs/<manager>/<method>.md`, plus a per-manager index and a top index. Each
+  page opens with an **Imports & setup** section — Apex has no `import`
+  statement, so it documents the namespace-global model and the one-time
+  `Box` client bootstrap — lists the **SDK types used**, tables the parameters,
+  states the request body / return type, and closes with a **complete,
+  copy-pasteable example** calling the real method (required params as named
+  variables, optionals as `null`). Tuned for AI-assistant consumption.
+
+The method signature, its ApexDoc, and its doc page all derive from one
+`OpSignature` built in `managers.rs`, so they can never drift; the manager
+class names the docs reference come from a shared `manager_infos` minter.
+
+**Consequences.** `generate --target apex` now writes **2,401 files**: 5
+scaffolding + 987 classes + 987 metas + **422 docs** (336 endpoint pages + 85
+manager indexes + 1 top index). Docs/scaffolding live outside the package
+directory, so the deployable surface (and VR-1.3) is unchanged. Deterministic;
+new regression tests pin the scaffolding, the doc-per-endpoint count, and a
+sample page's setup/types/example. 105 tests, fmt, clippy green.

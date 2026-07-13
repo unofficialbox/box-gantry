@@ -50,10 +50,7 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s' "$SFDX_AUTH_URL" | sf org login sfdx-url --sfdx-url-stdin --set-default-dev-hub --alias devhub
-          mkdir -p config
-          cat > config/project-scratch-def.json <<'JSON'
-          { "orgName": "box-gantry", "edition": "Developer" }
-          JSON
+          # The generated project ships config/project-scratch-def.json.
           sf org create scratch --target-dev-hub devhub \
             --definition-file config/project-scratch-def.json \
             --alias validate-org --set-default --duration-days 1 --wait 20

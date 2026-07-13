@@ -355,7 +355,13 @@ already proved it (85/85 managers lower, zero IR changes forced).
     refs collapse to one shared type. Real spec 1332→900 decls (924→492
     synthesized), Go types 1550→1118, Apex classes 1419→987. Deterministic; a
     `lowering` regression test pins it.)
-31. **Next**: governor-limit-aware pagination (per-type page classes) +
+31. ~~Apex project structure + AI/human-readable code + per-endpoint docs.~~
+    ✅ (D-129: full SFDX scaffolding (config/, manifest/, .forceignore,
+    README); ApexDoc on every class/method/model; one Markdown page per
+    endpoint under `docs/` with an imports/setup block, SDK types used,
+    params, and a copy-pasteable example. `generate --target apex` → 2,401
+    files (422 docs); deploy surface unchanged. 3 regression tests.)
+32. **Next**: governor-limit-aware pagination (per-type page classes) +
     chunked upload; the remaining serialization gaps (field↔wire remap,
     tri-state); the hand-written Apex runtime implementing `BoxClient`
     (`Http` + Crypto-JWT); generated test classes clearing the 75% gate.

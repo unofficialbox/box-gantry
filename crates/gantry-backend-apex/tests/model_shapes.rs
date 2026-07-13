@@ -502,8 +502,38 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         // including managers/client/stubs vs model classes.
         assert!(names.insert(*class), "duplicate class {class}");
     }
-    // 1 project + 1419 classes + 1419 metas.
-    assert_eq!(files.len(), 1 + 987 * 2);
+    // The standard SFDX scaffolding ships with the project.
+    for scaffold in [
+        "sfdx-project.json",
+        "config/project-scratch-def.json",
+        ".forceignore",
+        "manifest/package.xml",
+        "README.md",
+    ] {
+        assert!(
+            files.iter().any(|f| f.path == scaffold),
+            "missing scaffolding file {scaffold}"
+        );
+    }
+    // One Markdown doc per endpoint, plus a per-manager index and the top
+    // index — none of it under the package directory, so it never deploys.
+    let docs: Vec<&str> = files
+        .iter()
+        .filter(|f| f.path.starts_with("docs/") || f.path == "docs/README.md")
+        .map(|f| f.path.as_str())
+        .collect();
+    assert!(
+        docs.contains(&"docs/README.md"),
+        "the docs index is missing"
+    );
+    assert!(
+        docs.iter().all(|d| d.ends_with(".md")),
+        "docs must be Markdown only"
+    );
+    // 336 endpoint pages + 85 manager indexes + 1 top index = 422.
+    assert_eq!(docs.len(), 422, "endpoint + manager + top-index docs");
+    // 5 scaffolding + 987 classes + 987 metas + 422 docs.
+    assert_eq!(files.len(), 5 + 987 * 2 + 422);
 
     // Deterministic and path-sorted.
     let sorted: Vec<&String> = {
@@ -515,5 +545,49 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         files.iter().map(|f| &f.path).collect::<Vec<_>>(),
         sorted,
         "generate() output must be path-sorted"
+    );
+}
+
+#[test]
+fn each_endpoint_has_a_markdown_doc_with_a_runnable_snippet() {
+    let lowering = gantry_spec::lower(
+        &SpecSet::load(&[
+            fixture("openapi.json"),
+            fixture("openapi-v2025.0.json"),
+            fixture("openapi-v2026.0.json"),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    let op_count = lowering.program.operations.len();
+    let program = Box::leak(Box::new(lowering.program));
+    let analysis = gantry_sema::analyze(program).unwrap();
+    let files = generate(&analysis, &apex());
+
+    // One endpoint page per operation (the `docs/<manager>/README.md` indexes
+    // and `docs/README.md` are the non-endpoint Markdown).
+    let endpoint_pages = files
+        .iter()
+        .filter(|f| {
+            f.path.starts_with("docs/") && f.path.ends_with(".md") && !f.path.ends_with("README.md")
+        })
+        .count();
+    assert_eq!(endpoint_pages, op_count, "one endpoint page per operation");
+
+    // A known endpoint reads as expected: the import/setup section, the SDK
+    // types it touches, and a copy-pasteable example calling the real method.
+    let get_file = files
+        .iter()
+        .find(|f| f.path == "docs/files/getById.md")
+        .expect("docs/files/getById.md");
+    let body = &get_file.content;
+    assert_contains(body, "`GET /files/{file_id}`");
+    assert_contains(body, "## Imports & setup");
+    assert_contains(body, "Apex has no `import` statement");
+    assert_contains(body, "**SDK types used:** `Box`, `BoxFiles`, `FileFull`");
+    assert_contains(body, "Box client = new Box(myBoxClient);");
+    assert_contains(
+        body,
+        "FileFull result = client.files.getById(fileId, null, null, null, null);",
     );
 }

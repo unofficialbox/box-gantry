@@ -24,15 +24,15 @@ backends + runtimes, not new engine.
 | | Human-equiv hrs | Agent-hrs | Complete |
 |---|---:|---:|---:|
 | **v1 — Go** 🐹 | 2,090 | 630 | **100%** |
-| v2 — Apex ☁️ | 640 | 194 | ~42% |
+| v2 — Apex ☁️ | 640 | 194 | ~48% |
 | v3 — Rust 🦀 | 380 | 114 | 0% |
-| **Total** | **3,110** | **938** | **~76%** |
+| **Total** | **3,110** | **938** | **~77%** |
 
 ## By SDK target
 
 ```
 v1 — Go 🐹    ██████████  100%   SHIPPED 2026-07-13
-v2 — Apex ☁️  ████░░░░░░   ~44%   in progress (M4) — models, SFDX loop, JSON, managers, VR-1.3 green; naming overhaul (immediate-context, short methods, dedupe → 987 classes)
+v2 — Apex ☁️  █████░░░░░   ~48%   in progress (M4) — models, SFDX loop, JSON, managers, VR-1.3 green; naming overhaul (immediate-context, short methods, dedupe → 987 classes); SFDX scaffolding + ApexDoc + per-endpoint docs (D-129)
 v3 — Rust 🦀  ░░░░░░░░░░    0%   after (M5)
 ```
 
