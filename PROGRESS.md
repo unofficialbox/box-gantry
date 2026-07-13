@@ -23,7 +23,7 @@ backends + runtimes, not new engine.
 | | Human-equiv hrs | Agent-hrs | Complete |
 |---|---:|---:|---:|
 | **v1 — Go** 🐹 | 2,090 | 630 | **100%** |
-| v2 — Apex ☁️ | 640 | 194 | ~22% |
+| v2 — Apex ☁️ | 640 | 194 | ~26% |
 | v3 — Rust 🦀 | 380 | 114 | 0% |
 | **Total** | **3,110** | **938** | **~72%** |
 
@@ -31,7 +31,7 @@ backends + runtimes, not new engine.
 
 ```
 v1 — Go 🐹    ██████████  100%   SHIPPED 2026-07-13
-v2 — Apex ☁️  ██░░░░░░░░   ~22%   in progress (M4) — models + SFDX/scratch-org loop
+v2 — Apex ☁️  ██░░░░░░░░   ~26%   in progress (M4) — models, SFDX loop, native JSON
 v3 — Rust 🦀  ░░░░░░░░░░    0%   after (M5)
 ```
 
@@ -44,7 +44,7 @@ v3 — Rust 🦀  ░░░░░░░░░░    0%   after (M5)
 | **M2** — Semantics, manifest, contract (FR-3–FR-5) | one semantic pass, per-language manifests, runtime contract + drift check | ✅ |
 | **M3** — Go backend, runtime, verification (FR-6–FR-9, TR-Go, VR) | lowering + printer, feature synthesis, Go runtime, full VR suite, CLI | ✅ 2026-07-13 |
 | **M3.5** — Apex spike | throwaway lowering to de-risk the IR for Apex (D-108) | ✅ |
-| **M4** — Apex backend + scratch-org harness (TR-Apex, VR-1.3) | flat-namespace lowering, no-generics, governor limits, Apex runtime, 75% test gate | 🔄 model layer done (D-120) |
+| **M4** — Apex backend + scratch-org harness (TR-Apex, VR-1.3) | flat-namespace lowering, no-generics, governor limits, Apex runtime, 75% test gate | 🔄 models + SFDX/scratch-org loop + native JSON (D-120–122) |
 | **M5** — Rust backend + runtime (TR-Rust, VR-1.2) | serde-tagged enums, `Result`/`Option`, async reqwest/tokio runtime | ⬜ 0% |
 
 ## v1 (Go SDK) — requirement coverage

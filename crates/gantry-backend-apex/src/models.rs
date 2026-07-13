@@ -150,9 +150,10 @@ fn render_decl(
             let _ = writeln!(out, "}}");
         }
         ir::DeclKind::Enum(e) => {
-            // Open enum: a class over a raw String so unknown values survive.
+            // Open enum: a constants namespace. The *field* type is `String`
+            // (see `apex_type`), so JSON round-trips the value natively —
+            // unknown values included; this class just names the known ones.
             let _ = writeln!(out, "public class {name} {{");
-            let _ = writeln!(out, "    public String value;");
             // Constant names are the shared PascalCase identifier form,
             // deduped within the class so two wire values that collapse to
             // the same identifier can't emit a duplicate `static final`.
@@ -242,9 +243,18 @@ fn apex_type(program: &ir::Program, names: &ClassNames, ty: &ir::Type) -> String
             match &decl.kind {
                 // No Apex aliases — resolve through to the target type.
                 ir::DeclKind::Alias(inner) => apex_type(program, names, inner),
-                ir::DeclKind::Struct(_) | ir::DeclKind::Union(_) | ir::DeclKind::Enum(_) => names
+                // An open enum is a `String` on the wire (its class is a
+                // constants namespace), so it round-trips natively via
+                // JSON.deserialize, unknown values included.
+                ir::DeclKind::Enum(_) => "String".to_string(),
+                // A union deserializes as its raw untyped map; the field is
+                // `Object` and the caller dispatches with `<Union>.parse`.
+                // Typing it as the dispatch-only class would make
+                // JSON.deserialize mis-map the wire object.
+                ir::DeclKind::Union(_) => "Object".to_string(),
+                ir::DeclKind::Struct(_) => names
                     .get(*id)
-                    .expect("a non-alias decl always has a class name")
+                    .expect("a struct always has a class name")
                     .to_string(),
             }
         }

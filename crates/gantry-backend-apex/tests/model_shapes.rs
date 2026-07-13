@@ -150,11 +150,68 @@ fn open_enum_is_a_string_class_with_constants() {
         }),
     }]);
     assert_contains(&go, "public class ItemType {");
-    assert_contains(&go, "public String value;");
+    // A constants namespace — no per-instance `value`; enum *fields* are
+    // typed `String` (see the field-representation test).
+    assert!(
+        !go.contains("public String value;"),
+        "the enum class must be constants-only"
+    );
     // Constant names are the shared PascalCase identifier form; the wire
     // value is the string literal.
     assert_contains(&go, "public static final String File = 'file';");
     assert_contains(&go, "public static final String WebLink = 'web_link';");
+}
+
+#[test]
+fn enum_and_union_typed_fields_use_native_json_types() {
+    // A field typed as an open enum is a `String`; as a union it is an
+    // `Object` (raw map for the caller to dispatch) — so a struct
+    // round-trips through JSON.deserialize natively.
+    let files = render(vec![
+        ir::Decl {
+            name: ident("Role"),
+            module: schemas(),
+            api_version: None,
+            kind: ir::DeclKind::Enum(ir::EnumDecl {
+                values: vec!["admin".into()],
+                extensibility: ir::Extensibility::Open,
+            }),
+        },
+        struct_decl("Sub", vec![field("id", ir::Type::String)]),
+        ir::Decl {
+            name: ident("Payload"),
+            module: schemas(),
+            api_version: None,
+            kind: ir::DeclKind::Union(ir::UnionDecl {
+                discriminator: Some("type".into()),
+                variants: vec![ir::UnionVariant {
+                    discriminator_value: Some("sub".into()),
+                    ty: ir::Type::Decl(ir::DeclId(1)),
+                }],
+                extensibility: ir::Extensibility::Open,
+            }),
+        },
+        struct_decl(
+            "Holder",
+            vec![
+                field("role", ir::Type::Decl(ir::DeclId(0))),
+                field("payload", ir::Type::Decl(ir::DeclId(2))),
+                field(
+                    "roles",
+                    ir::Type::List(Box::new(ir::Type::Decl(ir::DeclId(0)))),
+                ),
+                field("sub", ir::Type::Decl(ir::DeclId(1))), // a struct ref stays typed
+            ],
+        ),
+    ]);
+    let holder = files
+        .iter()
+        .find(|f| f.path == format!("{CLASSES}/Holder.cls"))
+        .unwrap();
+    assert_contains(&holder.content, "public String role; // wire: role");
+    assert_contains(&holder.content, "public Object payload; // wire: payload");
+    assert_contains(&holder.content, "public List<String> roles; // wire: roles");
+    assert_contains(&holder.content, "public Sub sub; // wire: sub");
 }
 
 #[test]

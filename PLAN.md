@@ -317,7 +317,14 @@ already proved it (85/85 managers lower, zero IR changes forced).
     check-only-deploys to a fresh scratch org, gated on the `SFDX_AUTH_URL`
     Dev Hub secret like the VR-7 live smoke. Real spec → 2,661 files;
     green the moment a Dev Hub is configured.)
-26. **Next**: Apex serialization field↔wire mapping (so mismatched keys
-    deserialize), managers + client + governor-limit-aware
-    pagination/upload/retry, the Apex runtime (`Http` + Crypto-JWT), and
-    generated test classes clearing the 75% gate. Then M5 — Rust (v3).
+26. ~~Native JSON round-trip for models.~~ ✅ (D-122: enum-typed fields →
+    `String` (the enum class is a constants namespace), union-typed →
+    `Object` (caller dispatches via `<Union>.parse`), struct/scalar/List/
+    Map already native — so a struct round-trips through plain
+    `JSON.deserialize`. Real spec: `FileMini.type` now `String`, no stray
+    `value` fields, 1,330 classes / 23 dispatches unchanged.)
+27. **Next**: the remaining serialization gap — remap fields whose Apex
+    identifier ≠ wire key (reserved words, `$`-prefixed) and the D-110
+    null-vs-absent tri-state — then managers + client + governor-limit-
+    aware pagination/upload/retry, the Apex runtime (`Http` + Crypto-JWT),
+    and generated test classes clearing the 75% gate. Then M5 — Rust (v3).

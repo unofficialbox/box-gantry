@@ -722,3 +722,41 @@ did for the live account) — until then structural + determinism tests are
 the per-commit signal. Serialization field↔wire mapping, managers, the
 client, and the Apex runtime are the next slices, now verifiable against a
 real org.
+
+## D-122 — Apex models round-trip natively; enums are Strings, unions are Object
+
+**Status:** accepted · 2026-07-13
+
+**Context:** The model slice (D-120) made open enums a class with a `value`
+field and discriminated unions a dispatch-only class. But on the wire an
+enum is a plain JSON string and a union is a JSON object, so
+`JSON.deserialize(json, StructClass.class)` — the natural Apex path — would
+mis-map both: it would try to build an enum object from a string and an
+empty union instance from the variant's fields. Serialization has to be
+right before managers can return usable models.
+
+**Decision:** Represent model fields with the **native JSON shape** so
+`JSON.serialize`/`JSON.deserialize` round-trip a struct directly:
+- **Enum-typed field → `String`.** The `<Enum>` class becomes a pure
+  constants namespace (the `value` field is dropped); unknown values
+  survive for free because any string is valid (open enums, G-11).
+- **Union-typed field → `Object`.** The field holds the raw untyped map;
+  the caller dispatches with the still-generated `<Union>.parse(...)`
+  (TR-Apex.4). Typing it as the dispatch-only class would make
+  `JSON.deserialize` mis-map the wire object.
+- **Struct-typed field → the struct class** (JSON.deserialize recurses).
+  Scalars/`List`/`Map` are already native. This composes: `List<Enum>` →
+  `List<String>`, `List<Union>` → `List<Object>`.
+
+**Consequences:** a struct whose fields are scalars, nested structs,
+enums-as-String, or unions-as-Object round-trips through plain
+`JSON.deserialize` with no generated per-class serializer — the simplest
+thing that can work on the platform. On the real spec, `FileMini.type` is
+now `String` and no class carries a stray `value` field; the class count
+(1,330) and union dispatch count (23) are unchanged. **Still open** (the
+next serialization step, to be nailed once the scratch-org loop is live to
+verify it): fields whose Apex identifier differs from the wire key —
+reserved words (`limit` → `limit_`) and `$`-prefixed metadata keys — need a
+name remap that `JSON.deserialize` can't do by itself, and the D-110 null-
+vs-absent tri-state (explicit-null clear-on-update) needs explicit handling
+rather than omit-on-null. Both are deferred, not silently lost.
