@@ -21,7 +21,7 @@
 //! Anything else is a loud [`IngestError`] naming the file and the
 //! schema location (FR-1.4, NF-1, NF-3).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use gantry_ir as ir;
 use indexmap::IndexMap;
@@ -90,13 +90,32 @@ pub fn lower(set: &SpecSet) -> Result<Lowering, IngestError> {
             stats: &mut stats,
             ids: IndexMap::new(),
             used_names: HashSet::new(),
+            method_names: HashMap::new(),
+            shapes: HashMap::new(),
         }
         .lower_document()?;
     }
-    let decls = arena
+    let decls: Vec<ir::Decl> = arena
         .into_iter()
         .map(|slot| slot.expect("every predeclared schema is filled by lower_document"))
         .collect();
+    // The kind breakdown is computed from the *final* decls, not counted
+    // during lowering: structural dedupe (D-127) discards inline copies after
+    // they are built, so a build-time counter would over-report. (`aliases`
+    // are never synthesized, so they are counted at their source.)
+    for decl in &decls {
+        match &decl.kind {
+            ir::DeclKind::Struct(_) => stats.structs += 1,
+            ir::DeclKind::Enum(_) => stats.enums += 1,
+            ir::DeclKind::Union(u) => {
+                stats.unions += 1;
+                if u.discriminator.is_some() {
+                    stats.discriminated_unions += 1;
+                }
+            }
+            ir::DeclKind::Alias(_) => {}
+        }
+    }
     Ok(Lowering {
         program: ir::Program { decls, operations },
         stats,
@@ -134,6 +153,17 @@ struct DocLowerer<'a> {
     /// Every declaration name taken in this document's module, for
     /// deterministic synthesized-name disambiguation.
     used_names: HashSet<String>,
+    /// Method names already taken, keyed by `manager\0variation` — the pretty
+    /// short name (D-126) can collapse distinct operations (e.g. one vs two
+    /// `{id}` path params), so a collision falls back to a fuller name.
+    method_names: HashMap<String, HashSet<String>>,
+    /// Structural dedupe (D-127): the canonical decl id for each *synthesized*
+    /// shape, keyed on the `DeclKind`'s structure. An inline shape identical
+    /// to one already synthesized reuses it instead of minting a copy, so the
+    /// hundreds of repeated `{id}`/`{id,type}` inline refs collapse to one
+    /// type each. Bottom-up: identical subtrees dedupe first, so their
+    /// parents then match too.
+    shapes: HashMap<String, ir::DeclId>,
 }
 
 impl<'a> DocLowerer<'a> {
@@ -409,7 +439,6 @@ impl<'a> DocLowerer<'a> {
                 ty,
             });
         }
-        self.stats.structs += 1;
         Ok(ir::StructDecl { fields })
     }
 
@@ -506,7 +535,6 @@ impl<'a> DocLowerer<'a> {
                 .is_some_and(|value| seen.insert(value.clone()))
         });
         let discriminator = if discriminated {
-            self.stats.discriminated_unions += 1;
             Some(DISCRIMINATOR_FIELD.to_string())
         } else {
             // Half-inferred values would be misleading: a structural union
@@ -516,7 +544,6 @@ impl<'a> DocLowerer<'a> {
             }
             None
         };
-        self.stats.unions += 1;
         Ok(ir::UnionDecl {
             discriminator,
             variants,
@@ -570,7 +597,6 @@ impl<'a> DocLowerer<'a> {
                 }
             }
         }
-        self.stats.enums += 1;
         Ok(ir::EnumDecl {
             values: out,
             // Box enums are open by convention (G-11, D-105): unknown
@@ -587,6 +613,17 @@ impl<'a> DocLowerer<'a> {
         base: &str,
         kind: ir::DeclKind,
     ) -> Result<ir::DeclId, IngestError> {
+        // Structural dedupe (D-127): an inline shape identical to one already
+        // synthesized reuses it. The `DeclKind` Debug form is a faithful
+        // structural key — it captures the kind, every field's wire name and
+        // type, enum values, and union variants, and the inner `DeclId`s it
+        // names are themselves already canonical (children dedupe first). The
+        // decl *name* is not part of the key, so differently-named copies of
+        // one shape collapse.
+        let key = format!("{:?}", kind);
+        if let Some(&existing) = self.shapes.get(&key) {
+            return Ok(existing);
+        }
         let mut name = base.to_string();
         let mut suffix = 2;
         while self.used_names.contains(&name) {
@@ -597,6 +634,7 @@ impl<'a> DocLowerer<'a> {
         let decl = self.decl(location, &name, kind)?;
         let id = self.next_id();
         self.arena.push(Some(decl));
+        self.shapes.insert(key, id);
         self.stats.synthesized += 1;
         Ok(id)
     }
@@ -644,20 +682,53 @@ impl<'a> DocLowerer<'a> {
                 ),
             ));
         }
-        let name = identifier(doc, &location, &clean_name(base_id))?;
+        let box_tag = op
+            .box_tag
+            .as_deref()
+            .expect("x-box-tag presence is validated at ingestion");
+        // Box operationIds carry noise that inflates the method name and every
+        // type synthesized under it: opaque id handles leaked from example
+        // URLs (`..._6VMVochwUWo_...`) and an echo of the manager tag (the
+        // call is already `client.<manager>.<method>`). Strip both once
+        // (D-126). The *method name* is then further prettified
+        // (`get_files_id`→`GetById`); the *type seed* keeps the fuller token
+        // list, since the pretty leaf is deliberately terse and repeats
+        // across operations — a `GetById`-seeded `…Body`/`…Response` would
+        // collide, the token-list seed stays operation-unique.
+        let short_tokens = short_op_tokens(base_id, box_tag);
         let variation = variation
             .map(|v| identifier(doc, &location, &clean_name(v)))
             .transpose()?;
-        let manager = identifier(
-            doc,
-            &location,
-            op.box_tag
-                .as_deref()
-                .expect("x-box-tag presence is validated at ingestion"),
-        )?;
+        // Resolve the method name against the ones already taken in this
+        // (manager, variation): the pretty form first, the keep-all-ids form
+        // on collision, then a numeric suffix. Sema rejects a true duplicate
+        // loudly, so this must always converge on a fresh name.
+        let scope = format!(
+            "{box_tag}\u{0}{}",
+            variation.as_ref().map_or("", ir::Identifier::as_str)
+        );
+        let taken = self.method_names.entry(scope).or_default();
+        let method_ident = {
+            let pretty = clean_name(&method_name(&short_tokens, false));
+            let full = clean_name(&method_name(&short_tokens, true));
+            let mut chosen = pretty.clone();
+            if taken.contains(&chosen.to_ascii_lowercase()) {
+                chosen = full.clone();
+            }
+            let base = chosen.clone();
+            let mut suffix = 2;
+            while taken.contains(&chosen.to_ascii_lowercase()) {
+                chosen = format!("{base}_{suffix}");
+                suffix += 1;
+            }
+            taken.insert(chosen.to_ascii_lowercase());
+            chosen
+        };
+        let name = identifier(doc, &location, &method_ident)?;
+        let manager = identifier(doc, &location, box_tag)?;
         // Seed for synthesized declarations belonging to this operation.
         let owner = {
-            let mut owner = pascal(&clean_name(base_id));
+            let mut owner = pascal(&short_tokens.join("_"));
             if let Some(v) = &variation {
                 owner.push_str(&pascal(v.as_str()));
             }
@@ -1058,6 +1129,134 @@ fn clean_name(raw: &str) -> String {
             }
         })
         .collect()
+}
+
+/// The tokens of a Box `operationId` with two kinds of noise removed:
+///
+/// - **Opaque id handles** leaked from example URLs — a token that mixes an
+///   uppercase letter with a digit (`6VMVochwUWo`) is a specific object id,
+///   never a word; pure noise in a generated name.
+/// - **A manager-tag echo** — the call is already `client.<manager>.<method>`,
+///   so repeating the `x-box-tag` tokens is redundant. The first contiguous
+///   run matching the tag is dropped (never emptying the token list).
+///
+/// No dictionary or semantic guessing, so the result is deterministic and
+/// 1:1 with the spec.
+fn short_op_tokens(base_id: &str, box_tag: &str) -> Vec<String> {
+    let is_opaque = |t: &str| {
+        t.chars().any(|c| c.is_ascii_uppercase()) && t.chars().any(|c| c.is_ascii_digit())
+    };
+    // Split on `_` and on `:` — the latter is Box's custom-method separator
+    // (`levels:append`), so the action verb becomes its own token.
+    let mut tokens: Vec<String> = base_id
+        .split(['_', ':'])
+        .filter(|t| !t.is_empty() && !is_opaque(t))
+        .map(str::to_string)
+        .collect();
+
+    let tag_tokens: Vec<&str> = box_tag.split('_').filter(|t| !t.is_empty()).collect();
+    if !tag_tokens.is_empty()
+        && tokens.len() > tag_tokens.len()
+        && let Some(pos) = tokens.windows(tag_tokens.len()).position(|w| {
+            w.len() == tag_tokens.len()
+                && w.iter()
+                    .zip(&tag_tokens)
+                    .all(|(a, b)| a.eq_ignore_ascii_case(b))
+        })
+    {
+        tokens.drain(pos..pos + tag_tokens.len());
+    }
+    if tokens.is_empty() {
+        // The whole id was the tag/opaque — fall back to the raw id.
+        return base_id
+            .split(['_', ':'])
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
+    tokens
+}
+
+/// Box custom-action verbs that appear as the trailing token of an
+/// operationId (a `/…/{id}/copy` endpoint or the `:append` custom-method
+/// convention). When one trails, it *is* the verb — it leads the method name
+/// and the HTTP verb drops — so `post_files_id_copy`→`CopyById`,
+/// `post_ai_ask`→`Ask`, `post_metadata_taxonomies_…_levels:append`→
+/// `AppendLevels`. Curated from the real spec (D-126), not guessed, since no
+/// rule distinguishes a verb-action from a noun-subresource.
+const ACTION_VERBS: &[&str] = &[
+    "append",
+    "apply",
+    "ask",
+    "authorize",
+    "cancel",
+    "commit",
+    "convert",
+    "copy",
+    "extract",
+    "resend",
+    "revoke",
+    "start",
+    "trim",
+];
+
+/// A short, Box-SDK-flavoured method name from the noise-stripped tokens
+/// (D-126): a leading HTTP verb maps to a semantic one (`get`→`get`,
+/// `post`→`create`, `put`/`patch`→`update`, `delete`→`delete`) unless a
+/// curated [`ACTION_VERBS`] token trails (then that action leads instead); a
+/// trailing path id becomes `by_id`, and interior ids (parent-path context)
+/// drop. So `get_files_id`→`GetById`, `post_folders`→`Create`,
+/// `get_folders_id_items`→`GetItems`, `post_files_id_copy`→`CopyById`.
+///
+/// `keep_all_ids` renders *every* id as `by_id` instead of dropping interior
+/// ones — the collision fallback for multi-`{id}` paths (`…_id_id` →
+/// `GetByIdById`), so one- and two-id endpoints stay distinct.
+fn method_name(short_tokens: &[String], keep_all_ids: bool) -> String {
+    const HTTP_VERBS: &[&str] = &["get", "post", "put", "patch", "delete", "options", "head"];
+
+    // Strip a leading HTTP verb, remembering its semantic mapping.
+    let (http_verb, rest): (Option<&str>, &[String]) = match short_tokens.first() {
+        Some(first) if HTTP_VERBS.contains(&first.as_str()) => {
+            let mapped = match first.as_str() {
+                "post" => "create",
+                "put" | "patch" => "update",
+                verb => verb,
+            };
+            (Some(mapped), &short_tokens[1..])
+        }
+        _ => (None, short_tokens),
+    };
+
+    // A trailing curated action verb leads the name (dropping the HTTP verb);
+    // otherwise the mapped HTTP verb leads.
+    let (verb, body): (Option<&str>, &[String]) = match rest.last() {
+        Some(last) if ACTION_VERBS.contains(&last.as_str()) => {
+            (Some(last.as_str()), &rest[..rest.len() - 1])
+        }
+        _ => (http_verb, rest),
+    };
+
+    let mut out: Vec<String> = Vec::new();
+    if let Some(verb) = verb {
+        out.push(verb.to_string());
+    }
+    for (index, token) in body.iter().enumerate() {
+        if token == "id" {
+            // A trailing id targets a specific resource (`ById`); an interior
+            // id is just parent-path context and drops — unless a collision
+            // forced `keep_all_ids`, which keeps each id to stay distinct.
+            if keep_all_ids || index == body.len() - 1 {
+                out.push("by".to_string());
+                out.push("id".to_string());
+            }
+        } else {
+            out.push(token.clone());
+        }
+    }
+    if out.is_empty() {
+        out.push("call".to_string());
+    }
+    out.join("_")
 }
 
 /// `Owner` + PascalCase(property): `File` + `shared_link` → `FileSharedLink`.

@@ -39,28 +39,21 @@ pub fn generate_managers(
         }
     };
     let names = ClassNames::build(program, limit);
-
-    // Manager/client/stub names share the flat namespace with the model
-    // classes, so mint them into a set seeded with every model name plus
-    // the reserved runtime names — globally unique, within the limit.
-    let mut used: std::collections::HashSet<String> = names.names().map(str::to_string).collect();
-    for reserved in RUNTIME_NAMES {
-        used.insert((*reserved).to_string());
-    }
+    let infos = manager_infos(analysis, &names, limit);
 
     let mut files = Vec::new();
-    // Managers appear in analysis order (BTreeMap → sorted, deterministic).
-    let mut client_fields: Vec<(String, String)> = Vec::new();
-    for (manager, op_indices) in &analysis.managers {
-        let class = mint_unique(&format!("Box{}", pascal(manager)), limit, &mut used);
-        let field = safe_word(&camel(manager));
-        client_fields.push((field, class.clone()));
+    for info in &infos {
+        let op_indices = &analysis.managers[&info.manager];
         files.push(GeneratedFile {
-            path: format!("{CLASSES_DIR}/{class}.cls"),
-            content: manager_class(program, &names, &class, op_indices),
+            path: format!("{CLASSES_DIR}/{}.cls", info.class),
+            content: manager_class(program, &names, &info.class, &info.manager, op_indices),
         });
     }
 
+    let client_fields: Vec<(String, String)> = infos
+        .iter()
+        .map(|i| (i.field.clone(), i.class.clone()))
+        .collect();
     files.push(GeneratedFile {
         path: format!("{CLASSES_DIR}/Box.cls"),
         content: client_class(&client_fields),
@@ -71,15 +64,66 @@ pub fn generate_managers(
     files
 }
 
+/// A manager's stable names in the flat namespace: the Box tag, its minted
+/// class name (`BoxFiles`, abbreviated to the identifier limit if needed),
+/// and the `Box` client field (`files`). The single source both the manager
+/// generator and the docs generator mint from, so they never disagree.
+pub(crate) struct ManagerInfo {
+    pub manager: String,
+    pub class: String,
+    pub field: String,
+}
+
+pub(crate) fn manager_infos(
+    analysis: &Analysis<'_>,
+    names: &ClassNames,
+    limit: usize,
+) -> Vec<ManagerInfo> {
+    // Manager/client/stub names share the flat namespace with the model
+    // classes, so mint them into a set seeded with every model name plus the
+    // reserved contract + hand-written-runtime names — globally unique, within
+    // the limit. Managers appear in analysis order (BTreeMap → sorted,
+    // deterministic).
+    let mut used: HashSet<String> = names.names().map(str::to_string).collect();
+    for reserved in RUNTIME_NAMES
+        .iter()
+        .chain(crate::runtime::RUNTIME_CLASS_NAMES)
+    {
+        used.insert((*reserved).to_string());
+    }
+    analysis
+        .managers
+        .keys()
+        .map(|manager| ManagerInfo {
+            manager: manager.clone(),
+            class: mint_unique(&format!("Box{}", pascal(manager)), limit, &mut used),
+            field: safe_word(&camel(manager)),
+        })
+        .collect()
+}
+
 fn manager_class(
     program: &ir::Program,
     names: &ClassNames,
     class: &str,
+    manager: &str,
     op_indices: &[usize],
 ) -> String {
     let mut out = header();
+    let _ = writeln!(
+        out,
+        "/**\n * The `{manager}` resource manager — {count} operation(s).\n \
+         * Reached through the `Box` client (`client.{field}`), never\n \
+         * constructed directly.\n */",
+        count = op_indices.len(),
+        field = safe_word(&camel(manager)),
+    );
     let _ = writeln!(out, "public with sharing class {class} {{");
     let _ = writeln!(out, "    private final BoxClient client;");
+    let _ = writeln!(
+        out,
+        "    /** Wire the manager to the shared runtime client. */"
+    );
     let _ = writeln!(out, "    public {class}(BoxClient client) {{");
     let _ = writeln!(out, "        this.client = client;");
     let _ = writeln!(out, "    }}");
@@ -96,6 +140,149 @@ fn manager_class(
     out
 }
 
+/// One parameter of a generated method, in call order.
+pub(crate) struct OpParam {
+    pub name: String,
+    pub apex_type: String,
+    pub location: ir::ParamLocation,
+    pub optional: bool,
+}
+
+/// The full shape of a generated manager method — the single source of truth
+/// for the method signature, its ApexDoc, and the per-endpoint reference docs
+/// (so the three can never drift). `method_name` is resolved by the caller
+/// (it is stateful within a manager); everything else derives from the IR.
+pub(crate) struct OpSignature {
+    pub method_name: String,
+    pub http: &'static str,
+    pub path_display: String,
+    pub return_ty: String,
+    pub params: Vec<OpParam>,
+    pub body_type: Option<String>,
+    pub deprecated: bool,
+}
+
+pub(crate) fn op_signature(
+    program: &ir::Program,
+    names: &ClassNames,
+    op: &ir::Operation,
+    method_name: String,
+) -> OpSignature {
+    let mut params: Vec<OpParam> = Vec::new();
+    // Path params first (always required, always `String`), then the rest in
+    // spec order — matching the emitted signature.
+    for param in path_params(op) {
+        params.push(OpParam {
+            name: arg_name(param),
+            apex_type: "String".to_string(),
+            location: ir::ParamLocation::Path,
+            optional: false,
+        });
+    }
+    for param in &op.params {
+        if param.location != ir::ParamLocation::Path {
+            params.push(OpParam {
+                name: arg_name(param),
+                apex_type: apex_type(program, names, &param.ty),
+                location: param.location,
+                optional: matches!(param.ty, ir::Type::Optional(_)),
+            });
+        }
+    }
+    OpSignature {
+        method_name,
+        http: http_method(op.method),
+        path_display: path_display(&op.path),
+        return_ty: response_type(program, names, &op.response),
+        params,
+        body_type: op.request.as_ref().map(|b| request_type(program, names, b)),
+        deprecated: op.deprecated,
+    }
+}
+
+impl OpSignature {
+    /// The Apex parameter list (`Type name, …`) for the method signature.
+    fn arg_list(&self) -> String {
+        let mut args: Vec<String> = self
+            .params
+            .iter()
+            .map(|p| format!("{} {}", p.apex_type, p.name))
+            .collect();
+        if let Some(body) = &self.body_type {
+            args.push(format!("{body} body"));
+        }
+        args.join(", ")
+    }
+
+    /// The ApexDoc block for the method (structural — the spec carries no
+    /// per-operation prose in the IR, so this documents the wire shape).
+    fn apexdoc(&self) -> String {
+        let mut doc = String::from("    /**\n");
+        let _ = writeln!(
+            doc,
+            "     * `{http} {path}`",
+            http = self.http,
+            path = self.path_display
+        );
+        if self.deprecated {
+            let _ = writeln!(doc, "     *\n     * @deprecated by the Box API");
+        }
+        if !self.params.is_empty() || self.body_type.is_some() {
+            doc.push_str("     *\n");
+        }
+        for param in &self.params {
+            let opt = if param.optional { ", optional" } else { "" };
+            let _ = writeln!(
+                doc,
+                "     * @param {name} {loc} parameter{opt}",
+                name = param.name,
+                loc = param_location(param.location),
+            );
+        }
+        if let Some(body) = &self.body_type {
+            let _ = writeln!(doc, "     * @param body the request body (`{body}`)");
+        }
+        if self.return_ty != "void" {
+            let _ = writeln!(doc, "     * @return `{}`", self.return_ty);
+        }
+        doc.push_str("     */\n");
+        doc
+    }
+}
+
+fn param_location(loc: ir::ParamLocation) -> &'static str {
+    match loc {
+        ir::ParamLocation::Path => "path",
+        ir::ParamLocation::Query => "query",
+        ir::ParamLocation::Header => "header",
+    }
+}
+
+/// Render the path template for display/docs: `/files/{file_id}`.
+pub(crate) fn path_display(path: &[ir::PathSegment]) -> String {
+    let mut out = String::new();
+    for segment in path {
+        out.push('/');
+        match segment {
+            ir::PathSegment::Literal(text) => out.push_str(text),
+            ir::PathSegment::Parameter(name) => {
+                let _ = write!(out, "{{{}}}", name.as_str());
+            }
+            ir::PathSegment::Composite(pieces) => {
+                for piece in pieces {
+                    match piece {
+                        ir::PathPart::Literal(text) => out.push_str(text),
+                        ir::PathPart::Parameter(name) => {
+                            let _ = write!(out, "{{{}}}", name.as_str());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 fn render_operation(
     out: &mut String,
     program: &ir::Program,
@@ -104,31 +291,15 @@ fn render_operation(
     used: &mut HashSet<String>,
 ) {
     let method_name = unique_method_name(op, used);
-    let return_ty = response_type(program, names, &op.response);
+    let sig = op_signature(program, names, op, method_name);
 
-    // Signature: path + non-path params, then the request body.
-    let mut args: Vec<String> = Vec::new();
-    for param in path_params(op) {
-        args.push(format!("String {}", arg_name(param)));
-    }
-    for param in &op.params {
-        if param.location != ir::ParamLocation::Path {
-            args.push(format!(
-                "{} {}",
-                apex_type(program, names, &param.ty),
-                arg_name(param)
-            ));
-        }
-    }
-    if let Some(body) = &op.request {
-        let ty = request_type(program, names, body);
-        args.push(format!("{ty} body"));
-    }
-
+    out.push_str(&sig.apexdoc());
     let _ = writeln!(
         out,
-        "    public {return_ty} {method_name}({}) {{",
-        args.join(", ")
+        "    public {return_ty} {method_name}({args}) {{",
+        return_ty = sig.return_ty,
+        method_name = sig.method_name,
+        args = sig.arg_list(),
     );
     let _ = writeln!(out, "        BoxRequest request = new BoxRequest();");
     let _ = writeln!(
@@ -236,10 +407,22 @@ fn request_type(program: &ir::Program, names: &ClassNames, body: &ir::RequestBod
 /// The client entry point: one field per manager, wired from a `BoxClient`.
 fn client_class(fields: &[(String, String)]) -> String {
     let mut out = header();
+    let _ = writeln!(
+        out,
+        "/**\n * The Box SDK entry point: one field per resource manager.\n \
+         * Construct it with a `BoxClient` (the hand-written runtime that\n \
+         * performs auth + HTTP callouts), then reach an endpoint through its\n \
+         * manager, e.g. `new Box(client).files.getById(...)`.\n */"
+    );
     let _ = writeln!(out, "public with sharing class Box {{");
     for (field, class) in fields {
+        let _ = writeln!(out, "    /** The `{field}` resource manager. */");
         let _ = writeln!(out, "    public final {class} {field};");
     }
+    let _ = writeln!(
+        out,
+        "    /** Wire every manager to one shared runtime client. */"
+    );
     let _ = writeln!(out, "    public Box(BoxClient client) {{");
     for (field, class) in fields {
         let _ = writeln!(out, "        this.{field} = new {class}(client);");
@@ -314,7 +497,7 @@ fn path_params(op: &ir::Operation) -> impl Iterator<Item = &ir::Param> {
 
 /// A method name unique within its manager class: `camelName` + Pascal
 /// variation, then a numeric suffix on collision.
-fn unique_method_name(op: &ir::Operation, used: &mut HashSet<String>) -> String {
+pub(crate) fn unique_method_name(op: &ir::Operation, used: &mut HashSet<String>) -> String {
     let mut base = camel(op.name.as_str());
     if let Some(variation) = &op.variation {
         base.push_str(&pascal(variation.as_str()));

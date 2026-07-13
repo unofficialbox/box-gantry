@@ -49,14 +49,16 @@ fn the_full_real_spec_set_ingests() {
     // pinned so growth and free-form holes only change deliberately (NF-1,
     // VR-6 lineage).
     let lowering = gantry_spec::lower(&set).expect("the vendored Box specs must lower");
-    assert_eq!(lowering.program.decls.len(), 1332);
+    // After structural dedupe (D-127) identical inline shapes collapse:
+    // 1332 → 900 decls (492 synthesized, down from 924).
+    assert_eq!(lowering.program.decls.len(), 900);
     let stats = &lowering.stats;
     assert_eq!(
         (stats.structs, stats.unions, stats.discriminated_unions),
-        (736, 46, 23)
+        (608, 42, 23)
     );
-    assert_eq!((stats.enums, stats.aliases), (548, 2));
-    assert_eq!(stats.synthesized, 924);
+    assert_eq!((stats.enums, stats.aliases), (248, 2));
+    assert_eq!(stats.synthesized, 492);
     assert_eq!(stats.json_value_sites, 26);
 
     // Operations: every one lowered, with classified success shapes.

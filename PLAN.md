@@ -343,11 +343,33 @@ already proved it (85/85 managers lower, zero IR changes forced).
     level. Longest Go type 109 → 83, 60+‑char bucket 56 → 35, Apex opaque
     hash names 190 → 124. Shared-engine change, all backends; counts and
     tests unchanged. A `lowering` regression test pins it.)
-29. **Next**: **method-name shortening** (the remaining long names are all
-    operation-seeded from long Box operationIds — user-approved) and
-    **structural dedupe** of identical inline shapes (collapse repeated
-    `{id}` refs to one shared type — user-approved). Then
-    governor-limit-aware pagination + chunked upload; the remaining
-    serialization gaps (field↔wire remap, tri-state); the hand-written Apex
-    runtime implementing `BoxClient` (`Http` + Crypto-JWT); generated test
-    classes clearing the 75% gate. Then M5 — Rust (v3).
+29. ~~Method-name shortening (keep the entity, Box-SDK-flavoured).~~ ✅
+    (D-126: strip the opaque id handles + manager-tag echo, map the HTTP verb
+    (`post`→`create`…), trailing id→`ById`, interior ids drop —
+    `get_files_id`→`GetById`, `post_files_id_copy`→`CreateCopy`. The type
+    seed stays qualified so inline `…Body`/`…Response` names don't collide;
+    the Go `…Options` structs are manager-qualified. Longest Go method
+    75→46, one collision fallback in 336 methods, Apex hash names 124→91.)
+30. ~~Structural dedupe of identical inline shapes.~~ ✅ (D-127: `synthesize`
+    dedupes on the `DeclKind`'s structure — repeated `{id}`/`{id,type}` inline
+    refs collapse to one shared type. Real spec 1332→900 decls (924→492
+    synthesized), Go types 1550→1118, Apex classes 1419→987. Deterministic; a
+    `lowering` regression test pins it.)
+31. ~~Apex project structure + AI/human-readable code + per-endpoint docs.~~
+    ✅ (D-129: full SFDX scaffolding (config/, manifest/, .forceignore,
+    README); ApexDoc on every class/method/model; one Markdown page per
+    endpoint under `docs/` with an imports/setup block, SDK types used,
+    params, and a copy-pasteable example. `generate --target apex` → 2,401
+    files (422 docs); deploy surface unchanged. 3 regression tests.)
+32. ~~The hand-written Apex runtime (BoxClient implementation).~~ ✅
+    (D-130: `runtimes/apex/**` — `BoxHttpClient implements BoxClient` (callout,
+    base-URL resolution, immediate governor-limit-aware retries, non-2xx →
+    exception), `BoxTokenProvider` + `BoxDeveloperTokenProvider`,
+    `BoxApiException` — embedded into every generated project. The SDK is now
+    callable. 991 classes; regression tests + VR-1.3.)
+33. **Next**: CCG/JWT token providers (Crypto-signed, cached);
+    governor-limit-aware pagination (per-type page classes) +
+    chunked upload; the remaining serialization gaps (field↔wire remap,
+    tri-state); the hand-written Apex runtime implementing `BoxClient`
+    (`Http` + Crypto-JWT); generated test classes clearing the 75% gate.
+    Then M5 — Rust (v3).

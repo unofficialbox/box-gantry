@@ -146,6 +146,12 @@ fn render_decl(
     );
     match &decl.kind {
         ir::DeclKind::Struct(s) => {
+            let _ = writeln!(
+                out,
+                "/** Model for the `{name}` schema ({count} field(s)). Fields\n \
+                 * carry their wire (JSON) name in a trailing comment. */",
+                count = s.fields.len()
+            );
             let _ = writeln!(out, "public class {name} {{");
             for field in &s.fields {
                 let ty = apex_type(program, names, &field.ty);
@@ -162,6 +168,12 @@ fn render_decl(
             // Open enum: a constants namespace. The *field* type is `String`
             // (see `apex_type`), so JSON round-trips the value natively —
             // unknown values included; this class just names the known ones.
+            let _ = writeln!(
+                out,
+                "/** Open enum `{name}`: known values as `String` constants.\n \
+                 * A field of this type is a `String`, so unknown values from\n \
+                 * the API round-trip unchanged. */"
+            );
             let _ = writeln!(out, "public class {name} {{");
             // Constant names are the shared PascalCase identifier form, made
             // Apex-safe (a value like `Date`/`Group`/`ASC` is a reserved
@@ -196,6 +208,23 @@ fn render_decl(
 }
 
 fn render_union(out: &mut String, names: &ClassNames, name: &str, u: &ir::UnionDecl) {
+    match &u.discriminator {
+        Some(_) => {
+            let _ = writeln!(
+                out,
+                "/** Discriminated union `{name}`: call `{name}.parse(map)` on\n \
+                 * the decoded JSON object to dispatch on its `type` tag; an\n \
+                 * unknown tag returns the raw `Map<String, Object>`. */"
+            );
+        }
+        None => {
+            let _ = writeln!(
+                out,
+                "/** Structural union `{name}`: the value is an untyped\n \
+                 * `Object`; inspect its shape at the call site. */"
+            );
+        }
+    }
     let _ = writeln!(out, "public class {name} {{");
     match &u.discriminator {
         Some(discriminator) => {

@@ -864,3 +864,170 @@ immediate-context rule and asserts the full-ancestry name is never emitted.
 Structural dedupe of identical inline shapes (collapsing repeated `{id}`
 references to one shared type) is the follow-on to this slice. Counts and all
 100 existing tests are unchanged — naming only.
+
+## D-126 — Method names are shortened; the type seed stays qualified
+
+**Context.** After D-125 killed the *deep* long names, the remaining ones were
+all operation-seeded: Box `operationId`s are long (`put_metadata_templates_
+enterprise_security_classification_6VMVochwUWo_schema_update` → a 75-char
+method name and 83-char inline types). The user approved shortening methods
+"but keep the entity" (Box-SDK-flavoured, not terse).
+
+**Decision.** A Box `operationId` is reduced to tokens with two kinds of noise
+removed: **opaque id handles** leaked from example URLs (a token mixing an
+uppercase letter with a digit, `6VMVochwUWo`) and the **manager-tag echo** (the
+call is already `client.<manager>.<method>`). From those tokens:
+
+- The **method name** maps the HTTP verb to a semantic one (`get`→`get`,
+  `post`→`create`, `put`/`patch`→`update`, `delete`→`delete`), turns a
+  trailing path id into `ById`, and drops interior ids (parent-path context):
+  `get_files_id`→`GetById`, `post_folders`→`Create`, `get_folders_id_items`→
+  `GetItems`, `post_files_id_copy`→`CreateCopy`. No dictionary distinguishes a
+  verb-action from a noun-subresource, so the mapping is uniform.
+- The **type seed** (for `…Body`/`…Response`/param inline types) keeps the
+  fuller token list, *not* the pretty method name — many operations share a
+  pretty name (`GetById`), so a `GetById`-seeded `…Body` would collide, while
+  the token-list seed stays operation-unique.
+
+Method names are unique **per (manager, variation)** — they are receiver-scoped
+in Go/Apex. A one-vs-two-`{id}` collision (`get_metadata_taxonomies_id` and
+`…_id_id` both want `GetById`) falls back to keeping all ids (`GetByIdById`),
+then a numeric suffix. Sema still rejects a true duplicate loudly. The Go
+backend's package-level `…Options` structs are now manager-qualified, since a
+per-manager-unique method name no longer guarantees a package-unique helper.
+
+**Consequences.** Longest Go method **75 → 46**, methods over 40 chars down to
+8, exactly **one** numeric-suffix fallback in all 336 methods
+(`CreateFilesContent2`). Longest Go inline type **83 → 77** (the residue is now
+named-schema + long-field, the dedupe target), the 60+‑char type bucket
+**35 → 15**, and Apex opaque hash-mangled class names **124 → 91**. A `lowering`
+regression test pins the verb mapping, `ById`, and the collision fallback; all
+102 tests, fmt, clippy green. Structural dedupe of identical inline shapes is
+the remaining naming slice.
+
+## D-127 — Structural dedupe of identical inline shapes
+
+**Context.** Inline anonymous schemas are 924 of 1332 IR decls, and many are
+identical: Box request bodies repeat `{id}` and `{id, type}` reference objects
+in dozens of places, each previously minting its own type. That is the bulk of
+the type-count and a source of near-duplicate long names.
+
+**Decision.** `synthesize` now dedupes on structure: the `DeclKind`'s Debug
+form is a faithful structural key (kind + every field's wire name and type +
+enum values + union variants), and the inner `DeclId`s it references are
+already canonical because children are synthesized first. An inline shape
+identical to one already synthesized **reuses that decl** instead of minting a
+copy; the decl *name* is not part of the key, so differently-named copies of
+one shape collapse. Dedupe is per document/module (versioned specs keep their
+own namespace, G-9) and deterministic (spec order; first occurrence wins the
+name). Only *synthesized* decls dedupe — named schemas are never merged.
+
+The kind breakdown in `LoweringStats` is now computed from the final decls
+rather than counted during lowering, since a build-time counter would include
+the copies dedupe discards.
+
+**Consequences.** The real spec lowers to **900 decls** (was 1332) — **492
+synthesized** (was 924), 608 structs / 248 enums / 42 unions / 2 aliases.
+Go types **1550 → 1118**; Apex classes **1419 → 987** (and files 2839 → 1975),
+opaque hash-mangled Apex names **91 → 69**. Output stays byte-identical across
+runs. A `lowering` regression test pins that two identical inline shapes share
+one decl while a different shape stays distinct; all 102 tests, fmt, clippy
+green. (The longest *type* names — named-schema + long Box field — are not
+duplicates, so dedupe leaves them; shortening those would need abbreviation,
+not collapse.)
+
+## D-128 — Curated action verbs for custom-method endpoints
+
+**Context.** D-126's uniform verb map rendered Box custom-action endpoints as
+`Create<Action>` (`post_files_id_copy`→`CreateCopy`), because no mechanical
+rule distinguishes a verb-action from a noun-subresource. The user asked for
+the Box-SDK reading (`CopyById`).
+
+**Decision.** A small **curated** list of action verbs — grounded in the real
+spec, not guessed — is recognised as the *trailing* operationId token:
+`append, apply, ask, authorize, cancel, commit, convert, copy, extract,
+resend, revoke, start, trim`. When one trails, it leads the method name and
+the HTTP verb drops. `short_op_tokens` now also splits on `:` (Box's
+custom-method separator, `levels:append`) so the action becomes its own token.
+
+**Consequences.** `post_files_id_copy`→`CopyById` (across files/folders/hubs/
+file_requests), `post_ai_ask`→`Ask`, `post_ai_extract`→`Extract`,
+`post_sign_requests_id_cancel`→`CancelById`, `post_metadata_cascade_policies_
+id_apply`→`ApplyById`, `post_metadata_taxonomies_…_levels:append`→
+`AppendLevels`, `get_authorize`→`Authorize`. Class/method counts unchanged
+(987 classes, 336 methods); a `lowering` regression test pins the action-lead
+and the `:` split; 103 tests, fmt, clippy, determinism green.
+
+## D-129 — Apex project structure, ApexDoc, and per-endpoint reference docs
+
+**Context.** Three quality requirements before the Apex runtime work: a proper
+SFDX project layout, generated code readable by both humans and AI coding
+assistants, and Markdown documentation for every endpoint.
+
+**Decision.**
+
+- **SFDX scaffolding.** `generate()` now emits the full project a developer
+  expects: `sfdx-project.json` (with `namespace`/`sfdcLoginUrl`),
+  `config/project-scratch-def.json` (the same def the VR-1.3 loop deploys —
+  now shipped, and the workflow uses it instead of an inline heredoc),
+  `.forceignore` (keeps `docs/`+`README.md` out of deploys),
+  `manifest/package.xml` (wildcard ApexClass deploy), and a project `README.md`.
+- **ApexDoc.** Every generated class and method carries `/** … */` doc:
+  managers describe their tag + `client.<field>` access; methods document the
+  `HTTP path`, each `@param` (with in-location + optional), `@param body`,
+  `@return`, and `@deprecated`; models describe the schema; the `Box` client
+  and each manager field are documented. Structural (the IR carries no
+  per-operation prose), so it never invents descriptions.
+- **Per-endpoint docs.** One Markdown page per endpoint under
+  `docs/<manager>/<method>.md`, plus a per-manager index and a top index. Each
+  page opens with an **Imports & setup** section — Apex has no `import`
+  statement, so it documents the namespace-global model and the one-time
+  `Box` client bootstrap — lists the **SDK types used**, tables the parameters,
+  states the request body / return type, and closes with a **complete,
+  copy-pasteable example** calling the real method (required params as named
+  variables, optionals as `null`). Tuned for AI-assistant consumption.
+
+The method signature, its ApexDoc, and its doc page all derive from one
+`OpSignature` built in `managers.rs`, so they can never drift; the manager
+class names the docs reference come from a shared `manager_infos` minter.
+
+**Consequences.** `generate --target apex` now writes **2,401 files**: 5
+scaffolding + 987 classes + 987 metas + **422 docs** (336 endpoint pages + 85
+manager indexes + 1 top index). Docs/scaffolding live outside the package
+directory, so the deployable surface (and VR-1.3) is unchanged. Deterministic;
+new regression tests pin the scaffolding, the doc-per-endpoint count, and a
+sample page's setup/types/example. 105 tests, fmt, clippy green.
+
+## D-130 — The hand-written Apex runtime (BoxClient implementation)
+
+**Context.** The generated managers call `client.send(request)` against the
+`BoxClient` *interface* stub; nothing ran. The Go analogue is the hand-written
+`gantryruntime` package the generated code imports. Apex has no package
+imports — every class deploys together in one flat namespace — so the runtime
+must ship *inside* the generated project.
+
+**Decision.** A hand-written runtime lives in
+`runtimes/apex/main/default/classes/*.cls` (the source of truth) and is
+**embedded** into every generated project under `classes/` via `include_str!`
+(`crates/gantry-backend-apex/src/runtime.rs`), behind the generated
+`BoxClient`/`BoxRequest`/`BoxResponse` contract:
+
+- **`BoxHttpClient implements BoxClient`** — resolves the D-106 base-URL class,
+  attaches the bearer token + the request's headers/query/body, sends the
+  Salesforce HTTP callout, and maps a non-2xx response to a `BoxApiException`.
+- **`BoxTokenProvider`** (auth contract) + **`BoxDeveloperTokenProvider`** (the
+  simplest flow, a fixed token). CCG/JWT providers are later slices.
+- **`BoxApiException`** — carries HTTP status + response body (the manifest
+  error model, D-107).
+
+**Governor limits shape the retry policy (a genuine Apex constraint):** Apex
+has no `sleep`, so retries are **immediate** rather than backed-off, bounded by
+the per-transaction callout limit; they cover 429/5xx, with a single 401
+re-attempt for a caching token provider. The runtime's class names are
+reserved in the flat-namespace minter so no generated class collides.
+
+**Consequences.** `generate --target apex` now ships **991 classes** (was 987:
++4 runtime), all deployable. The generated SDK is now actually callable:
+`new Box(new BoxHttpClient(new BoxDeveloperTokenProvider(token))).files.getById(...)`.
+Verified by the scratch-org compile loop (VR-1.3). New regression tests assert
+the runtime classes are present; 105 tests, fmt, clippy, determinism green.
