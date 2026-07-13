@@ -1,0 +1,18 @@
+[package]
+name = "gantry-backend-apex"
+description = "Salesforce Apex lowering + printer (FR-6, TR-Apex)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gantry-ir.workspace = true
+gantry-manifest.workspace = true
+gantry-sema.workspace = true
+
+[dev-dependencies]
+gantry-spec.workspace = true
+
+[lints]
+workspace = true

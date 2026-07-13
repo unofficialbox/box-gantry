@@ -636,3 +636,50 @@ pagination end to end against the real API — the one thing the compile
 gate can't prove. The `secrets`-in-`if:` fix was validated in the same
 run (the JWT step correctly skipped). **This closes the last open v1
 acceptance item: v1 (the Go SDK) is complete.**
+
+## D-120 — M4 opens: the Apex model layer (flat namespace, no generics)
+
+**Status:** accepted · 2026-07-13
+
+**Context:** M4 (the Apex backend, v2) begins. Apex is the assessment's
+primary risk — one flat namespace, no user generics, exceptions, buffered
+bodies, a 40-char identifier limit, a 75% coverage gate. The M3.5 spike
+(D-108) already proved the IR is total for Apex (85/85 managers lowered,
+zero IR changes forced); this is the real, non-throwaway backend, opening
+with the model layer, mirroring how the Go backend opened (models first,
+then managers/client/runtime).
+
+**Decision** (`gantry-backend-apex`, consuming only the `apex()` manifest
+axes — never the language name, FR-4.2):
+- **One top-level `.cls` per schema** (`Struct`/`Union`/`Enum`). Apex has
+  no packages, so the IR module tree collapses into a **globally-unique,
+  deterministically-mangled** class name (TR-Apex.1): module prefix + decl
+  name, abbreviated to the manifest's 40-char limit as `prefix_<7-hex FNV>`
+  with a numeric-suffix fallback on collision. Names are computed once in
+  program order so a reference always renders to the same name as its class.
+- **Tri-state erases at the type level.** Every Apex reference is nullable,
+  so `Optional<T>`, `Nullable<T>`, and `Optional<Nullable<T>>` (D-110) all
+  render as the bare Apex type; absent-vs-null becomes the serializer's job
+  (a later slice). Built-in `List`/`Map` are used (the no-generics axis
+  forbids *user-defined* generics, not platform collections).
+- **Open enum → a `String`-valued class** with `static final String`
+  constants (PascalCase, deduped), so unknown values round-trip — a real
+  Apex `enum` cannot (D-105/G-11).
+- **Discriminated union → a generated `JSON.deserializeUntyped` dispatch**
+  on the tag, unknown tags returning the raw map (open unions, TR-Apex.4).
+  **Structural union → `Object value`** (the manifest-accepted loss).
+- **Alias → nothing**; references resolve through it (Apex has no aliases).
+- Scalars: `Boolean`/`Long`/`Double`/`String`/`Date`/`Datetime`; `Binary` →
+  `Blob` (buffered platform); `JsonValue` → `Object`. Reserved words gain a
+  trailing `_` (`safe_word`); the wire name is untouched (FR-2 split).
+
+**Consequences:** the full real spec lowers to **1,330 Apex classes**
+(1,332 decls − 2 aliases), deterministically, every name ≤ 40 chars and
+globally unique, with 23 `deserializeUntyped` dispatches (matching the IR's
+discriminated-union count). No Apex toolchain runs here, so the per-commit
+signal is structural + determinism tests (10, mirroring the VR-2 node
+fixtures); the scratch-org `sf project deploy validate` loop (VR-1.3) is
+the CI/merge gate once a Dev Hub is configured — the next slice, alongside
+managers/client/serializer/runtime. Serialization field-name↔wire-name
+mapping is deferred to the serializer slice (structs currently carry a
+`// wire:` comment); the union path already uses `deserializeUntyped`.

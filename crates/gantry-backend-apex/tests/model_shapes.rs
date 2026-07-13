@@ -1,0 +1,327 @@
+//! Structural + determinism fixtures for the Apex model layer.
+//!
+//! No Apex toolchain runs here, so — until the scratch-org gate (VR-1.3) —
+//! these assert the shape each lowering rule produces and that the whole
+//! real spec lowers deterministically within the platform's identifier
+//! limit. The case list mirrors the Go per-node fixtures (VR-2), retargeted
+//! to Apex semantics.
+
+use std::path::PathBuf;
+
+use gantry_backend_apex::{GeneratedFile, generate_models};
+use gantry_ir as ir;
+use gantry_manifest::{ModuleSystem, apex};
+use gantry_spec::SpecSet;
+
+fn ident(name: &str) -> ir::Identifier {
+    ir::Identifier::new(name).unwrap()
+}
+
+fn schemas() -> ir::ModulePath {
+    ir::ModulePath(vec![ident("schemas")])
+}
+
+fn field(wire: &str, ty: ir::Type) -> ir::Field {
+    ir::Field {
+        name: ident(wire),
+        wire_name: wire.to_string(),
+        ty,
+    }
+}
+
+fn struct_decl(name: &str, fields: Vec<ir::Field>) -> ir::Decl {
+    ir::Decl {
+        name: ident(name),
+        module: schemas(),
+        api_version: None,
+        kind: ir::DeclKind::Struct(ir::StructDecl { fields }),
+    }
+}
+
+/// Render a program's model classes with the Apex manifest.
+fn render(decls: Vec<ir::Decl>) -> Vec<GeneratedFile> {
+    let mut program = ir::Program::default();
+    for decl in decls {
+        program.add(decl);
+    }
+    let program = Box::leak(Box::new(program));
+    let analysis = gantry_sema::analyze(program).expect("fixture must analyze");
+    generate_models(&analysis, &apex())
+}
+
+fn only(decls: Vec<ir::Decl>) -> String {
+    let files = render(decls);
+    assert_eq!(files.len(), 1, "expected exactly one class file");
+    files.into_iter().next().unwrap().content
+}
+
+fn assert_contains(haystack: &str, needle: &str) {
+    assert!(
+        haystack.contains(needle),
+        "expected to find:\n  {needle}\nin:\n{haystack}"
+    );
+}
+
+// --- scalar + container mappings -----------------------------------------
+
+#[test]
+fn scalars_map_to_apex_types() {
+    let go = only(vec![struct_decl(
+        "S",
+        vec![
+            field("b", ir::Type::Bool),
+            field("i", ir::Type::Int64),
+            field("f", ir::Type::Float64),
+            field("s", ir::Type::String),
+            field("d", ir::Type::Date),
+            field("dt", ir::Type::DateTime),
+            field("bin", ir::Type::Binary),
+            field("j", ir::Type::JsonValue),
+        ],
+    )]);
+    assert_contains(&go, "public Boolean b; // wire: b");
+    assert_contains(&go, "public Long i; // wire: i");
+    assert_contains(&go, "public Double f; // wire: f");
+    assert_contains(&go, "public String s; // wire: s");
+    assert_contains(&go, "public Date d; // wire: d");
+    assert_contains(&go, "public Datetime dt; // wire: dt");
+    assert_contains(&go, "public Blob bin; // wire: bin"); // buffered platform
+    assert_contains(&go, "public Object j; // wire: j");
+}
+
+#[test]
+fn tri_state_wrappers_erase_at_the_type_level() {
+    // Optional<T>, Nullable<T>, and Optional<Nullable<T>> all render as the
+    // bare Apex type — every reference is nullable; the serializer carries
+    // absent-vs-null (D-110), not the type.
+    let opt = ir::Type::Optional(Box::new(ir::Type::String));
+    let null = ir::Type::Nullable(Box::new(ir::Type::String));
+    let tri = ir::Type::Optional(Box::new(ir::Type::Nullable(Box::new(ir::Type::String))));
+    let go = only(vec![struct_decl(
+        "S",
+        vec![field("a", opt), field("b", null), field("c", tri)],
+    )]);
+    assert_contains(&go, "public String a;");
+    assert_contains(&go, "public String b;");
+    assert_contains(&go, "public String c;");
+}
+
+#[test]
+fn collections_use_builtin_generics() {
+    let go = only(vec![struct_decl(
+        "S",
+        vec![
+            field("xs", ir::Type::List(Box::new(ir::Type::Int64))),
+            field("m", ir::Type::Map(Box::new(ir::Type::String))),
+        ],
+    )]);
+    assert_contains(&go, "public List<Long> xs;");
+    assert_contains(&go, "public Map<String, String> m;");
+}
+
+#[test]
+fn reserved_field_names_are_mangled_wire_name_preserved() {
+    // `limit` and `group` are Apex reserved words; the field gains a `_`,
+    // but the wire name (the JSON key) is untouched.
+    let go = only(vec![struct_decl(
+        "S",
+        vec![
+            field("limit", ir::Type::Int64),
+            field("group", ir::Type::String),
+        ],
+    )]);
+    assert_contains(&go, "public Long limit_; // wire: limit");
+    assert_contains(&go, "public String group_; // wire: group");
+}
+
+// --- enums / unions / aliases --------------------------------------------
+
+#[test]
+fn open_enum_is_a_string_class_with_constants() {
+    let go = only(vec![ir::Decl {
+        name: ident("ItemType"),
+        module: schemas(),
+        api_version: None,
+        kind: ir::DeclKind::Enum(ir::EnumDecl {
+            values: vec!["file".into(), "web_link".into()],
+            extensibility: ir::Extensibility::Open,
+        }),
+    }]);
+    assert_contains(&go, "public class ItemType {");
+    assert_contains(&go, "public String value;");
+    // Constant names are the shared PascalCase identifier form; the wire
+    // value is the string literal.
+    assert_contains(&go, "public static final String File = 'file';");
+    assert_contains(&go, "public static final String WebLink = 'web_link';");
+}
+
+#[test]
+fn discriminated_union_gets_deserialize_untyped_dispatch() {
+    let files = render(vec![
+        struct_decl("File", vec![field("id", ir::Type::String)]),
+        struct_decl("Folder", vec![field("id", ir::Type::String)]),
+        ir::Decl {
+            name: ident("Item"),
+            module: schemas(),
+            api_version: None,
+            kind: ir::DeclKind::Union(ir::UnionDecl {
+                discriminator: Some("type".into()),
+                variants: vec![
+                    ir::UnionVariant {
+                        discriminator_value: Some("file".into()),
+                        ty: ir::Type::Decl(ir::DeclId(0)),
+                    },
+                    ir::UnionVariant {
+                        discriminator_value: Some("folder".into()),
+                        ty: ir::Type::Decl(ir::DeclId(1)),
+                    },
+                ],
+                extensibility: ir::Extensibility::Open,
+            }),
+        },
+    ]);
+    let union = files
+        .iter()
+        .find(|f| f.path == "classes/Item.cls")
+        .expect("union class");
+    assert_contains(
+        &union.content,
+        "public static Object parse(Map<String, Object> untyped) {",
+    );
+    assert_contains(&union.content, "String tag = (String) untyped.get('type');");
+    assert_contains(
+        &union.content,
+        "if (tag == 'file') return (File) JSON.deserialize(JSON.serialize(untyped), File.class);",
+    );
+    // Open union: unknown tag round-trips as the raw map.
+    assert_contains(&union.content, "return untyped;");
+}
+
+#[test]
+fn structural_union_erases_to_object() {
+    let go = only(vec![ir::Decl {
+        name: ident("AnyValue"),
+        module: schemas(),
+        api_version: None,
+        kind: ir::DeclKind::Union(ir::UnionDecl {
+            discriminator: None,
+            variants: vec![ir::UnionVariant {
+                discriminator_value: None,
+                ty: ir::Type::String,
+            }],
+            extensibility: ir::Extensibility::Open,
+        }),
+    }]);
+    assert_contains(&go, "public class AnyValue {");
+    assert_contains(&go, "public Object value;");
+}
+
+#[test]
+fn alias_emits_no_class_and_resolves_through() {
+    // An alias produces no file; a field referencing it renders as the
+    // target type.
+    let files = render(vec![
+        ir::Decl {
+            name: ident("Token"),
+            module: schemas(),
+            api_version: None,
+            kind: ir::DeclKind::Alias(ir::Type::String),
+        },
+        struct_decl(
+            "Holder",
+            vec![field("token", ir::Type::Decl(ir::DeclId(0)))],
+        ),
+    ]);
+    assert!(
+        !files.iter().any(|f| f.path == "classes/Token.cls"),
+        "alias must not emit a class"
+    );
+    let holder = files
+        .iter()
+        .find(|f| f.path == "classes/Holder.cls")
+        .unwrap();
+    assert_contains(&holder.content, "public String token; // wire: token");
+}
+
+// --- the whole real spec -------------------------------------------------
+
+fn fixture(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/specs")
+        .join(name)
+}
+
+fn real_spec_files() -> Vec<GeneratedFile> {
+    let lowering = gantry_spec::lower(
+        &SpecSet::load(&[
+            fixture("openapi.json"),
+            fixture("openapi-v2025.0.json"),
+            fixture("openapi-v2026.0.json"),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    let program = Box::leak(Box::new(lowering.program));
+    let analysis = gantry_sema::analyze(program).unwrap();
+    generate_models(&analysis, &apex())
+}
+
+#[test]
+fn the_real_spec_lowers_to_apex_classes() {
+    let files = real_spec_files();
+
+    // Every struct/union/enum decl becomes one class; aliases (2 in the
+    // real spec) do not. 1332 decls − 2 aliases = 1330 classes. Pinned so
+    // the count only moves deliberately with the spec (VR-6 lineage).
+    assert_eq!(files.len(), 1330, "expected one class per non-alias decl");
+
+    // Every class name obeys the platform identifier limit (TR-Apex.1) and
+    // is globally unique (flat namespace), and every file carries the
+    // do-not-edit header (FR-6.3).
+    let ModuleSystem::Flat { identifier_limit } = apex().modules else {
+        unreachable!()
+    };
+    let mut class_names = std::collections::HashSet::new();
+    for file in &files {
+        let name = file
+            .path
+            .strip_prefix("classes/")
+            .and_then(|p| p.strip_suffix(".cls"))
+            .expect("class path shape");
+        assert!(
+            name.len() <= identifier_limit as usize,
+            "identifier {name:?} exceeds the {identifier_limit}-char limit"
+        );
+        assert!(class_names.insert(name), "duplicate class name {name:?}");
+        assert!(
+            file.content.starts_with("// Code generated by box-gantry "),
+            "{} lacks the header",
+            file.path
+        );
+    }
+
+    // The generated deserializeUntyped dispatch appears for every
+    // discriminated union (23 in the real spec — matches the IR stats).
+    let dispatch = files
+        .iter()
+        .filter(|f| {
+            f.content
+                .contains("public static Object parse(Map<String, Object> untyped)")
+        })
+        .count();
+    assert_eq!(
+        dispatch, 23,
+        "expected one dispatch per discriminated union"
+    );
+}
+
+#[test]
+fn generation_is_deterministic() {
+    let once = real_spec_files();
+    let twice = real_spec_files();
+    assert_eq!(once.len(), twice.len());
+    for (a, b) in once.iter().zip(&twice) {
+        assert_eq!(a.path, b.path);
+        assert_eq!(a.content, b.content, "nondeterministic: {}", a.path);
+    }
+}
