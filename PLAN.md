@@ -119,7 +119,7 @@ risk.
 
 ### 🚢 v1 ship — Go SDK
 
-### M4 — Apex backend + runtime + scratch-org harness (TR-Apex, VR-1.3) — ~2.5–3.5 months
+### M4 — Apex backend + runtime + scratch-org harness (TR-Apex, VR-1.3) — 🔄 in progress
 
 Flat-namespace layout and name mangling; manifest-driven no-generics
 lowering; governor-limit-aware pagination/upload/retry shapes;
@@ -299,12 +299,19 @@ versioned specs; reference docs for every manager + auth/pagination/errors
 guides; the four auth flows; provenance + tagged Go-module artifact
 (NF-7/8); and **VR-7 live smoke green against a real account**.
 
-### ⏭️ Next: M4 — Apex backend (v2)
+### 🔄 M4 — Apex backend (v2), in progress
 
 The engine's three-target IR was designed for this; the M3.5 spike (D-108)
-already proved it (85/85 managers lower, zero IR changes forced). First
-week: the scratch-org CI harness (the operational risk), then
-manifest-driven no-generics lowering, governor-limit-aware
-pagination/upload/retry, `JSON.deserializeUntyped` dispatch, the Apex
-runtime (`Http` + Crypto-JWT), and generated test classes clearing the 75%
-gate. Then M5 — Rust (v3).
+already proved it (85/85 managers lower, zero IR changes forced).
+
+24. ~~M4 opens: the Apex model layer.~~ ✅ (D-120: `gantry-backend-apex`
+    lowers every schema to a top-level `.cls` — flat-namespace mangling to
+    the 40-char limit, tri-state erasure, open-enum-as-String-class,
+    `JSON.deserializeUntyped` union dispatch. The full real spec →
+    **1,330 classes**, deterministic, all names unique and ≤ 40 chars, 23
+    dispatches; 10 structural + determinism tests (VR-2-equivalent).)
+25. **Next**: the scratch-org CI harness (the operational risk — tiered
+    syntax/deploy-validate, VR-1.3), then serialization field↔wire mapping,
+    managers + client + governor-limit-aware pagination/upload/retry, the
+    Apex runtime (`Http` + Crypto-JWT), and generated test classes clearing
+    the 75% gate. Then M5 — Rust (v3).

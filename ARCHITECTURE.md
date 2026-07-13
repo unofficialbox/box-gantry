@@ -64,6 +64,7 @@ compiler, not convention.
 | [`gantry-contract`](crates/gantry-contract) | Runtime-contract definition + drift check; per-target stubs | FR-5 |
 | [`gantry-synth`](crates/gantry-synth) | Language-agnostic feature synthesis (pagination, …) | FR-7 |
 | [`gantry-backend-go`](crates/gantry-backend-go) | Go lowering + printer | FR-6, TR-Go |
+| [`gantry-backend-apex`](crates/gantry-backend-apex) | Apex lowering + printer (v2, in progress) | FR-6, TR-Apex |
 | [`gantry-verify`](crates/gantry-verify) | Conformance checklist, spec-diff, verification glue | VR-*, FR-9 |
 | [`gantry-cli`](crates/gantry-cli) | The one CLI: `check` / `generate` / `verify` / `conform` / `diff` | FR-8 |
 
@@ -176,6 +177,7 @@ box-gantry/
 │   ├── gantry-contract/       #   runtime contract + stubs (FR-5)
 │   ├── gantry-synth/          #   feature synthesis (FR-7)
 │   ├── gantry-backend-go/     #   Go lowering + printer (FR-6, TR-Go)
+│   ├── gantry-backend-apex/   #   Apex lowering + printer (FR-6, TR-Apex) — v2, in progress
 │   ├── gantry-verify/         #   conformance, spec-diff (VR-*, FR-9)
 │   └── gantry-cli/            #   the `gantry` binary (FR-8)
 │

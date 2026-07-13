@@ -9,27 +9,28 @@ parentheses); status is tracked in [`PLAN.md`](./PLAN.md). Last updated
 ## Overall
 
 ```
-███████░░░  67%
+███████░░░  70%
 ```
 
-**~67% complete by effort** — **v1 (Go SDK) is shipped**; v2 (Apex) and v3
-(Rust) remain. The large shared cost — the whole engine core (ingestion,
-typed IR, semantics, manifest, runtime contract) and the verification
-harnesses — landed with v1 and is **reused unchanged** by v2/v3, so the
-remaining 33% is mostly target-specific backends + runtimes, not new engine.
+**~70% complete by effort** — **v1 (Go SDK) is shipped**; v2 (Apex) is
+underway (the model layer landed); v3 (Rust) remains. The large shared cost
+— the whole engine core (ingestion, typed IR, semantics, manifest, runtime
+contract) and the verification harnesses — landed with v1 and is **reused
+unchanged** by v2/v3, so the remaining ~30% is mostly target-specific
+backends + runtimes, not new engine.
 
 | | Human-equiv hrs | Agent-hrs | Complete |
 |---|---:|---:|---:|
 | **v1 — Go** 🐹 | 2,090 | 630 | **100%** |
-| v2 — Apex ☁️ | 640 | 194 | 0% |
+| v2 — Apex ☁️ | 640 | 194 | ~15% |
 | v3 — Rust 🦀 | 380 | 114 | 0% |
-| **Total** | **3,110** | **938** | **~67%** |
+| **Total** | **3,110** | **938** | **~70%** |
 
 ## By SDK target
 
 ```
 v1 — Go 🐹    ██████████  100%   SHIPPED 2026-07-13
-v2 — Apex ☁️  ░░░░░░░░░░    0%   next (M4)
+v2 — Apex ☁️  █░░░░░░░░░   ~15%   in progress (M4) — model layer done
 v3 — Rust 🦀  ░░░░░░░░░░    0%   after (M5)
 ```
 
@@ -42,7 +43,7 @@ v3 — Rust 🦀  ░░░░░░░░░░    0%   after (M5)
 | **M2** — Semantics, manifest, contract (FR-3–FR-5) | one semantic pass, per-language manifests, runtime contract + drift check | ✅ |
 | **M3** — Go backend, runtime, verification (FR-6–FR-9, TR-Go, VR) | lowering + printer, feature synthesis, Go runtime, full VR suite, CLI | ✅ 2026-07-13 |
 | **M3.5** — Apex spike | throwaway lowering to de-risk the IR for Apex (D-108) | ✅ |
-| **M4** — Apex backend + scratch-org harness (TR-Apex, VR-1.3) | flat-namespace lowering, no-generics, governor limits, Apex runtime, 75% test gate | ⬜ 0% |
+| **M4** — Apex backend + scratch-org harness (TR-Apex, VR-1.3) | flat-namespace lowering, no-generics, governor limits, Apex runtime, 75% test gate | 🔄 model layer done (D-120) |
 | **M5** — Rust backend + runtime (TR-Rust, VR-1.2) | serde-tagged enums, `Result`/`Option`, async reqwest/tokio runtime | ⬜ 0% |
 
 ## v1 (Go SDK) — requirement coverage
