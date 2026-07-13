@@ -683,3 +683,42 @@ the CI/merge gate once a Dev Hub is configured — the next slice, alongside
 managers/client/serializer/runtime. Serialization field-name↔wire-name
 mapping is deferred to the serializer slice (structs currently carry a
 `// wire:` comment); the union path already uses `deserializeUntyped`.
+
+## D-121 — Apex ships as an SFDX project; the scratch-org loop is the gate
+
+**Status:** accepted · 2026-07-13
+
+**Context:** M3's engine came alive because the generated Go compiled every
+commit (VR-1.1). Apex needs the same loop, but its "compiler" is a
+Salesforce org. To run one, the generated tree must be a **deployable SFDX
+project**, and CI must be able to `sf project deploy validate` it against a
+scratch org.
+
+**Decision:**
+- The Apex backend's top-level `generate()` emits a **deployable SFDX
+  source-format project**: an `sfdx-project.json` (package dir `force-app`,
+  a pinned `sourceApiVersion`), every class under
+  `force-app/main/default/classes/<Name>.cls`, and a `<Name>.cls-meta.xml`
+  sidecar per class. Output is path-sorted for determinism (FR-6.2).
+- `gantry generate --target apex` is wired: both backends emit
+  `(path, content)`, so the CLI dispatches on the target and writes a
+  common shape. (`verify`/`conform` stay Go-only — their oracle is the Go
+  toolchain; Apex's is the scratch org.)
+- **VR-1.3 harness** (`.github/workflows/apex-scratch.yml`): a manual
+  `workflow_dispatch` job that generates the SDK, creates a fresh scratch
+  org from the Dev Hub, and **check-only-deploys** it (the platform
+  compiles every class; nothing persists), then deletes the org. Like the
+  VR-7 live smoke, the Dev Hub auth is a **repo secret** (`SFDX_AUTH_URL`),
+  never the repository; absent the secret the job skips, so a dry run
+  passes. This attacks the assessment §8 operational risk (Ded Hub auth,
+  org limits, flakiness — Dev Hub auth) early, per the M4 week-one mandate.
+
+**Consequences:** on the real spec, `generate --target apex` writes **2,661
+files** (1 project + 1,330 classes + 1,330 meta sidecars). A packaging test
+asserts the project JSON is valid and every class has exactly one meta
+sidecar under the source-format path; determinism holds. The scratch-org
+compile loop turns **green the moment a Dev Hub secret is added** (as VR-7
+did for the live account) — until then structural + determinism tests are
+the per-commit signal. Serialization field↔wire mapping, managers, the
+client, and the Apex runtime are the next slices, now verifiable against a
+real org.

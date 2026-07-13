@@ -9,11 +9,12 @@ parentheses); status is tracked in [`PLAN.md`](./PLAN.md). Last updated
 ## Overall
 
 ```
-███████░░░  70%
+███████░░░  72%
 ```
 
-**~70% complete by effort** — **v1 (Go SDK) is shipped**; v2 (Apex) is
-underway (the model layer landed); v3 (Rust) remains. The large shared cost
+**~72% complete by effort** — **v1 (Go SDK) is shipped**; v2 (Apex) is
+underway (models + the deployable-SFDX/scratch-org loop landed); v3 (Rust)
+remains. The large shared cost
 — the whole engine core (ingestion, typed IR, semantics, manifest, runtime
 contract) and the verification harnesses — landed with v1 and is **reused
 unchanged** by v2/v3, so the remaining ~30% is mostly target-specific
@@ -22,15 +23,15 @@ backends + runtimes, not new engine.
 | | Human-equiv hrs | Agent-hrs | Complete |
 |---|---:|---:|---:|
 | **v1 — Go** 🐹 | 2,090 | 630 | **100%** |
-| v2 — Apex ☁️ | 640 | 194 | ~15% |
+| v2 — Apex ☁️ | 640 | 194 | ~22% |
 | v3 — Rust 🦀 | 380 | 114 | 0% |
-| **Total** | **3,110** | **938** | **~70%** |
+| **Total** | **3,110** | **938** | **~72%** |
 
 ## By SDK target
 
 ```
 v1 — Go 🐹    ██████████  100%   SHIPPED 2026-07-13
-v2 — Apex ☁️  █░░░░░░░░░   ~15%   in progress (M4) — model layer done
+v2 — Apex ☁️  ██░░░░░░░░   ~22%   in progress (M4) — models + SFDX/scratch-org loop
 v3 — Rust 🦀  ░░░░░░░░░░    0%   after (M5)
 ```
 

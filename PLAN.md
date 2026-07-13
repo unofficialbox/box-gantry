@@ -310,8 +310,14 @@ already proved it (85/85 managers lower, zero IR changes forced).
     `JSON.deserializeUntyped` union dispatch. The full real spec →
     **1,330 classes**, deterministic, all names unique and ≤ 40 chars, 23
     dispatches; 10 structural + determinism tests (VR-2-equivalent).)
-25. **Next**: the scratch-org CI harness (the operational risk — tiered
-    syntax/deploy-validate, VR-1.3), then serialization field↔wire mapping,
-    managers + client + governor-limit-aware pagination/upload/retry, the
-    Apex runtime (`Http` + Crypto-JWT), and generated test classes clearing
-    the 75% gate. Then M5 — Rust (v3).
+25. ~~SFDX packaging + the scratch-org compile loop (VR-1.3).~~ ✅ (D-121:
+    `generate()` emits a deployable SFDX project — `sfdx-project.json` +
+    per-class `.cls` + `-meta.xml` under `force-app/main/default/classes/`;
+    `gantry generate --target apex` wired; a manual `apex-scratch.yml`
+    check-only-deploys to a fresh scratch org, gated on the `SFDX_AUTH_URL`
+    Dev Hub secret like the VR-7 live smoke. Real spec → 2,661 files;
+    green the moment a Dev Hub is configured.)
+26. **Next**: Apex serialization field↔wire mapping (so mismatched keys
+    deserialize), managers + client + governor-limit-aware
+    pagination/upload/retry, the Apex runtime (`Http` + Crypto-JWT), and
+    generated test classes clearing the 75% gate. Then M5 — Rust (v3).

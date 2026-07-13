@@ -20,11 +20,59 @@ mod models;
 
 pub use models::generate_models;
 
+use gantry_manifest::CapabilityManifest;
+use gantry_sema::Analysis;
+
 /// One generated file, path relative to the SDK root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeneratedFile {
     pub path: String,
     pub content: String,
+}
+
+/// SFDX source-format class directory. The generated tree is a deployable
+/// SFDX project so the scratch-org loop (VR-1.3) can `sf project deploy
+/// validate` it directly.
+pub(crate) const CLASSES_DIR: &str = "force-app/main/default/classes";
+
+/// The Salesforce API version the generated metadata targets.
+pub(crate) const APEX_API_VERSION: &str = "62.0";
+
+/// Generate the complete Apex SDK as a deployable SFDX project: the
+/// `sfdx-project.json`, every model class, and a `-meta.xml` sidecar per
+/// class (source format). Deterministic (FR-6.2).
+pub fn generate(analysis: &Analysis<'_>, manifest: &CapabilityManifest) -> Vec<GeneratedFile> {
+    let mut files = vec![GeneratedFile {
+        path: "sfdx-project.json".to_string(),
+        content: sfdx_project_json(),
+    }];
+
+    let classes = generate_models(analysis, manifest);
+    let class_meta = class_meta_xml();
+    for class in classes {
+        files.push(GeneratedFile {
+            path: format!("{}-meta.xml", class.path),
+            content: class_meta.clone(),
+        });
+        files.push(class);
+    }
+
+    // Deterministic: sort by path so the tree order never depends on
+    // insertion order.
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    files
+}
+
+fn sfdx_project_json() -> String {
+    format!(
+        "{{\n  \"packageDirectories\": [{{ \"path\": \"force-app\", \"default\": true }}],\n  \"name\": \"box-gantry-apex\",\n  \"sourceApiVersion\": \"{APEX_API_VERSION}\"\n}}\n"
+    )
+}
+
+fn class_meta_xml() -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ApexClass xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n    <apiVersion>{APEX_API_VERSION}</apiVersion>\n    <status>Active</status>\n</ApexClass>\n"
+    )
 }
 
 /// FNV-1a over raw bytes — a fast, dependency-free, deterministic hash used
