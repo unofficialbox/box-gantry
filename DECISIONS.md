@@ -621,8 +621,18 @@ it cannot be a per-commit gate.
 OAuth / JWT via `box_config.json`), then paginates the root folder
 (following the marker cursor like the generated iterators), and
 uploads → downloads (byte-compares) → deletes a scratch file. It compiles
-under `-tags live` and is excluded otherwise (both verified). Actual green
-runs require a Box dev account, tracked as the last open v1 acceptance item;
-the harness, the manual workflow, and the docs are in place so a maintainer
-supplies secrets and triggers it. Apex/Rust get the same shape (a tagged /
-ignored live test driving their runtimes) for their VR-7.
+under `-tags live` and is excluded otherwise (both verified). Apex/Rust get
+the same shape (a tagged / ignored live test driving their runtimes) for
+their VR-7.
+
+**Green — 2026-07-13.** The maintainer added the CCG secrets and the
+`workflow_dispatch` run passed against the live Box account
+(run 29216656902): CCG authenticated as the enterprise service account
+(`GET /users/me`), paginated the root folder (20 items via the marker
+cursor), and uploaded → downloaded (byte-compared) → deleted a scratch
+file — `PASS: TestLiveSmoke (3.33s)`. This exercised the hand-written
+runtime's token exchange, retry layer, multipart, streaming, and
+pagination end to end against the real API — the one thing the compile
+gate can't prove. The `secrets`-in-`if:` fix was validated in the same
+run (the JWT step correctly skipped). **This closes the last open v1
+acceptance item: v1 (the Go SDK) is complete.**

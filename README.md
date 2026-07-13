@@ -17,8 +17,11 @@ cargo run -p gantry-cli -- check \
   fixtures/specs/openapi-v2026.0.json
 ```
 
-`gantry check` ingests and validates a spec set; `generate` and `verify`
-arrive with the Go backend (see `PLAN.md`, milestone M3).
+The `gantry` CLI has five subcommands: `check` (ingest + validate a spec
+set), `generate` (emit an SDK), `verify` (generate then compile with the
+target toolchain), `conform` (the R§1 capability checklist), and `diff` (the
+breaking-change report between two spec sets). The **Go SDK (v1) is shipped**;
+Apex (v2) and Rust (v3) are next — see [`PROGRESS.md`](./PROGRESS.md).
 
 ## Documents
 
@@ -26,6 +29,8 @@ Start here:
 
 | Doc | Role |
 |---|---|
+| [`ARCHITECTURE.md`](./ARCHITECTURE.md) | Components, the pipeline, directory breakdown |
+| [`PROGRESS.md`](./PROGRESS.md) | Effort-weighted percentage breakdown |
 | [`SCOPE.md`](./SCOPE.md) | One-page orientation and hard boundaries |
 | [`NEW_ENGINE_REQUIREMENTS.md`](./NEW_ENGINE_REQUIREMENTS.md) | Normative requirements, estimates, acceptance criteria |
 | [`REWRITE_ASSESSMENT.md`](./REWRITE_ASSESSMENT.md) | Why net-new, why Rust, lessons learned |

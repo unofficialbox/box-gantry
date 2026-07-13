@@ -98,7 +98,7 @@ runtime stubs.
 bound, every expression typed; backends can be started against a verified
 program.
 
-### M3 — Go backend, runtime, verification (FR-6…FR-9, TR-Go, VR) — ~months 4–7
+### M3 — Go backend, runtime, verification (FR-6…FR-9, TR-Go, VR) — ✅ complete 2026-07-13
 
 Lowering + printer; feature synthesis re-expressed against the IR (auth
 flows, `iter.Seq2` pagination, chunked upload, `oneOf` variant structs,
@@ -278,18 +278,33 @@ effort.
     scalars, containers, open enums, union dispatch + unknown retention,
     aliases). Semantic assertions, alignment-insensitive; they pinpoint
     which rule regressed where VR-1.1 only says the spec stopped building.)
-23. ~~VR-7 live smoke (harness).~~ ✅ (D-119: `livesmoke_test.go` in the
-    committed runtime, build-tagged `//go:build live` so the per-commit
-    gate never runs it; drives the stable runtime contract for one call
-    per auth flow (Developer/CCG/OAuth/JWT) + paginate + upload/download/
-    delete; credential-gated (`t.Skip` when unset); a manual
-    `workflow_dispatch` CI job runs it from repo secrets on demand.
-    Compiles under `-tags live`, excluded otherwise.) **Actual green runs
-    await a Box dev account's credentials** — the harness is ready.
+23. ~~VR-7 live smoke.~~ ✅ (D-119: `livesmoke_test.go` in the committed
+    runtime, build-tagged `//go:build live` so the per-commit gate never
+    runs it; drives the stable runtime contract for one call per auth flow
+    (Developer/CCG/OAuth/JWT) + paginate + upload/download/delete;
+    credential-gated (`t.Skip` when unset); a manual `workflow_dispatch`
+    CI job runs it from repo secrets on demand. **Green 2026-07-13** — the
+    CCG `workflow_dispatch` run passed against the live Box account
+    (`PASS: TestLiveSmoke (3.33s)`): auth → paginate 20 items → upload →
+    download byte-compare → delete.)
 
-**v1 acceptance (R§7) is now complete in the engine**: full spec
-generates + builds/vets/gofmt clean (VR-1.1); per-node fixtures (VR-2);
-conformance checklist (VR-3); round-trip + generated tests (VR-4);
-determinism (VR-5) + skip allowlist (VR-6); FR-9 spec-diff; reference
-docs; the four auth flows; provenance + tagged-module artifact (NF-7/8);
-and the VR-7 live-smoke harness (green runs pending credentials).
+## ✅ v1 — Go SDK: SHIPPED (2026-07-13)
+
+**Every R§7 v1 acceptance criterion is met.** Full spec (base + 2025.0 +
+2026.0) generates and builds/vets/gofmt clean (VR-1.1); per-node fixtures
+(VR-2); conformance checklist covering the full R§1 contract (VR-3);
+round-trip + generated per-manager tests that compile and pass (VR-4);
+determinism (VR-5) + skip allowlist (VR-6); FR-9 spec-diff across the
+versioned specs; reference docs for every manager + auth/pagination/errors
+guides; the four auth flows; provenance + tagged Go-module artifact
+(NF-7/8); and **VR-7 live smoke green against a real account**.
+
+### ⏭️ Next: M4 — Apex backend (v2)
+
+The engine's three-target IR was designed for this; the M3.5 spike (D-108)
+already proved it (85/85 managers lower, zero IR changes forced). First
+week: the scratch-org CI harness (the operational risk), then
+manifest-driven no-generics lowering, governor-limit-aware
+pagination/upload/retry, `JSON.deserializeUntyped` dispatch, the Apex
+runtime (`Http` + Crypto-JWT), and generated test classes clearing the 75%
+gate. Then M5 — Rust (v3).
