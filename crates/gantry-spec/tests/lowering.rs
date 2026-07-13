@@ -451,15 +451,15 @@ fn method_names_are_shortened_and_collisions_fall_back() {
             .map(|o| o.name.as_str().to_string())
             .collect()
     };
-    // files: GET by id → `get_by_id`; POST .../copy → `create_copy` (the
-    // manager `files` echo is stripped, `post`→`create`).
+    // files: GET by id → `get_by_id`; POST .../copy → `copy_by_id` (the
+    // curated action verb `copy` leads, the HTTP verb drops, D-126).
     let files_ops = names_for("files");
     assert!(
         files_ops.contains(&"get_by_id".to_string()),
         "{files_ops:?}"
     );
     assert!(
-        files_ops.contains(&"create_copy".to_string()),
+        files_ops.contains(&"copy_by_id".to_string()),
         "{files_ops:?}"
     );
     // metadata_taxonomies: the one-id and two-id GETs both want `get_by_id`;
@@ -476,6 +476,45 @@ fn method_names_are_shortened_and_collisions_fall_back() {
         tax.iter().all(|n| n.starts_with("get_by_id")),
         "both target-by-id names share the prefix: {tax:?}"
     );
+}
+
+#[test]
+fn custom_action_verbs_lead_the_method_name() {
+    // A curated action verb that trails the operationId leads the method name
+    // (the HTTP verb drops); the `:` custom-method separator is split like
+    // `_`, so `levels:append` yields the `append` action token.
+    let lowering = lower_paths(
+        serde_json::json!({
+            "/ai/ask": {
+                "post": { "operationId": "post_ai_ask", "x-box-tag": "ai",
+                    "responses": { "204": {} } }
+            },
+            "/metadata_taxonomies/{scope}/{id}/levels": {
+                "post": { "operationId": "post_metadata_taxonomies_id_id_levels:append",
+                    "x-box-tag": "metadata_taxonomies",
+                    "parameters": [
+                        {"name":"scope","in":"path","required":true,"schema":{"type":"string"}},
+                        {"name":"id","in":"path","required":true,"schema":{"type":"string"}}],
+                    "responses": { "204": {} } }
+            }
+        }),
+        serde_json::json!({}),
+    )
+    .unwrap();
+    let name_of = |manager: &str| {
+        lowering
+            .program
+            .operations
+            .iter()
+            .find(|o| o.manager.as_str() == manager)
+            .map(|o| o.name.as_str().to_string())
+            .unwrap()
+    };
+    // `post_ai_ask` → the action `ask` leads, no HTTP verb: `ask`.
+    assert_eq!(name_of("ai"), "ask");
+    // `..._levels:append` → action `append` leads, interior ids drop, the
+    // `levels` sub-resource stays: `append_levels`.
+    assert_eq!(name_of("metadata_taxonomies"), "append_levels");
 }
 
 #[test]

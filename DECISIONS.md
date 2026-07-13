@@ -935,3 +935,25 @@ one decl while a different shape stays distinct; all 102 tests, fmt, clippy
 green. (The longest *type* names — named-schema + long Box field — are not
 duplicates, so dedupe leaves them; shortening those would need abbreviation,
 not collapse.)
+
+## D-128 — Curated action verbs for custom-method endpoints
+
+**Context.** D-126's uniform verb map rendered Box custom-action endpoints as
+`Create<Action>` (`post_files_id_copy`→`CreateCopy`), because no mechanical
+rule distinguishes a verb-action from a noun-subresource. The user asked for
+the Box-SDK reading (`CopyById`).
+
+**Decision.** A small **curated** list of action verbs — grounded in the real
+spec, not guessed — is recognised as the *trailing* operationId token:
+`append, apply, ask, authorize, cancel, commit, convert, copy, extract,
+resend, revoke, start, trim`. When one trails, it leads the method name and
+the HTTP verb drops. `short_op_tokens` now also splits on `:` (Box's
+custom-method separator, `levels:append`) so the action becomes its own token.
+
+**Consequences.** `post_files_id_copy`→`CopyById` (across files/folders/hubs/
+file_requests), `post_ai_ask`→`Ask`, `post_ai_extract`→`Extract`,
+`post_sign_requests_id_cancel`→`CancelById`, `post_metadata_cascade_policies_
+id_apply`→`ApplyById`, `post_metadata_taxonomies_…_levels:append`→
+`AppendLevels`, `get_authorize`→`Authorize`. Class/method counts unchanged
+(987 classes, 336 methods); a `lowering` regression test pins the action-lead
+and the `:` split; 103 tests, fmt, clippy, determinism green.

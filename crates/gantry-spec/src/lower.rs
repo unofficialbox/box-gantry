@@ -1146,8 +1146,10 @@ fn short_op_tokens(base_id: &str, box_tag: &str) -> Vec<String> {
     let is_opaque = |t: &str| {
         t.chars().any(|c| c.is_ascii_uppercase()) && t.chars().any(|c| c.is_ascii_digit())
     };
+    // Split on `_` and on `:` — the latter is Box's custom-method separator
+    // (`levels:append`), so the action verb becomes its own token.
     let mut tokens: Vec<String> = base_id
-        .split('_')
+        .split(['_', ':'])
         .filter(|t| !t.is_empty() && !is_opaque(t))
         .map(str::to_string)
         .collect();
@@ -1167,7 +1169,7 @@ fn short_op_tokens(base_id: &str, box_tag: &str) -> Vec<String> {
     if tokens.is_empty() {
         // The whole id was the tag/opaque — fall back to the raw id.
         return base_id
-            .split('_')
+            .split(['_', ':'])
             .filter(|t| !t.is_empty())
             .map(str::to_string)
             .collect();
@@ -1175,43 +1177,75 @@ fn short_op_tokens(base_id: &str, box_tag: &str) -> Vec<String> {
     tokens
 }
 
+/// Box custom-action verbs that appear as the trailing token of an
+/// operationId (a `/…/{id}/copy` endpoint or the `:append` custom-method
+/// convention). When one trails, it *is* the verb — it leads the method name
+/// and the HTTP verb drops — so `post_files_id_copy`→`CopyById`,
+/// `post_ai_ask`→`Ask`, `post_metadata_taxonomies_…_levels:append`→
+/// `AppendLevels`. Curated from the real spec (D-126), not guessed, since no
+/// rule distinguishes a verb-action from a noun-subresource.
+const ACTION_VERBS: &[&str] = &[
+    "append",
+    "apply",
+    "ask",
+    "authorize",
+    "cancel",
+    "commit",
+    "convert",
+    "copy",
+    "extract",
+    "resend",
+    "revoke",
+    "start",
+    "trim",
+];
+
 /// A short, Box-SDK-flavoured method name from the noise-stripped tokens
-/// (D-126): the leading HTTP verb maps to a semantic one (`get`→`get`,
-/// `post`→`create`, `put`/`patch`→`update`, `delete`→`delete`), a trailing
-/// path id becomes `by_id`, and interior ids (parent-path context) drop. So
-/// `get_files_id`→`GetById`, `post_folders`→`Create`, `get_folders_id_items`
-/// →`GetItems`. A custom sub-action reads as `Create<Action>` (e.g.
-/// `post_files_id_copy`→`CreateCopy`) — no dictionary tells a verb-action
-/// from a noun-subresource, so the mapping stays uniform.
+/// (D-126): a leading HTTP verb maps to a semantic one (`get`→`get`,
+/// `post`→`create`, `put`/`patch`→`update`, `delete`→`delete`) unless a
+/// curated [`ACTION_VERBS`] token trails (then that action leads instead); a
+/// trailing path id becomes `by_id`, and interior ids (parent-path context)
+/// drop. So `get_files_id`→`GetById`, `post_folders`→`Create`,
+/// `get_folders_id_items`→`GetItems`, `post_files_id_copy`→`CopyById`.
 ///
 /// `keep_all_ids` renders *every* id as `by_id` instead of dropping interior
 /// ones — the collision fallback for multi-`{id}` paths (`…_id_id` →
 /// `GetByIdById`), so one- and two-id endpoints stay distinct.
 fn method_name(short_tokens: &[String], keep_all_ids: bool) -> String {
-    const VERBS: &[&str] = &["get", "post", "put", "patch", "delete", "options", "head"];
-    let mut out: Vec<String> = Vec::new();
-    let rest: &[String] = if short_tokens
-        .first()
-        .is_some_and(|t| VERBS.contains(&t.as_str()))
-    {
-        out.push(
-            match short_tokens[0].as_str() {
+    const HTTP_VERBS: &[&str] = &["get", "post", "put", "patch", "delete", "options", "head"];
+
+    // Strip a leading HTTP verb, remembering its semantic mapping.
+    let (http_verb, rest): (Option<&str>, &[String]) = match short_tokens.first() {
+        Some(first) if HTTP_VERBS.contains(&first.as_str()) => {
+            let mapped = match first.as_str() {
                 "post" => "create",
                 "put" | "patch" => "update",
                 verb => verb,
-            }
-            .to_string(),
-        );
-        &short_tokens[1..]
-    } else {
-        short_tokens
+            };
+            (Some(mapped), &short_tokens[1..])
+        }
+        _ => (None, short_tokens),
     };
-    for (index, token) in rest.iter().enumerate() {
+
+    // A trailing curated action verb leads the name (dropping the HTTP verb);
+    // otherwise the mapped HTTP verb leads.
+    let (verb, body): (Option<&str>, &[String]) = match rest.last() {
+        Some(last) if ACTION_VERBS.contains(&last.as_str()) => {
+            (Some(last.as_str()), &rest[..rest.len() - 1])
+        }
+        _ => (http_verb, rest),
+    };
+
+    let mut out: Vec<String> = Vec::new();
+    if let Some(verb) = verb {
+        out.push(verb.to_string());
+    }
+    for (index, token) in body.iter().enumerate() {
         if token == "id" {
             // A trailing id targets a specific resource (`ById`); an interior
             // id is just parent-path context and drops — unless a collision
             // forced `keep_all_ids`, which keeps each id to stay distinct.
-            if keep_all_ids || index == rest.len() - 1 {
+            if keep_all_ids || index == body.len() - 1 {
                 out.push("by".to_string());
                 out.push("id".to_string());
             }
