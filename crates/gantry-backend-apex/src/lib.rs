@@ -16,8 +16,10 @@
 //! tests; the scratch-org `sf project deploy validate` loop (VR-1.3) is the
 //! CI/merge gate once a Dev Hub is configured.
 
+mod managers;
 mod models;
 
+pub use managers::generate_managers;
 pub use models::generate_models;
 
 use gantry_manifest::CapabilityManifest;
@@ -47,7 +49,8 @@ pub fn generate(analysis: &Analysis<'_>, manifest: &CapabilityManifest) -> Vec<G
         content: sfdx_project_json(),
     }];
 
-    let classes = generate_models(analysis, manifest);
+    let mut classes = generate_models(analysis, manifest);
+    classes.extend(generate_managers(analysis, manifest));
     let class_meta = class_meta_xml();
     for class in classes {
         files.push(GeneratedFile {
@@ -97,9 +100,11 @@ pub(crate) const RESERVED: &[&str] = &[
     "blob",
     "boolean",
     "break",
+    "by",
     "case",
     "catch",
     "class",
+    "commit",
     "continue",
     "currency",
     "date",
@@ -117,6 +122,7 @@ pub(crate) const RESERVED: &[&str] = &[
     "false",
     "final",
     "finally",
+    "float",
     "for",
     "from",
     "global",
@@ -145,6 +151,7 @@ pub(crate) const RESERVED: &[&str] = &[
     "return",
     "select",
     "set",
+    "sort",
     "static",
     "string",
     "super",
@@ -171,13 +178,39 @@ pub(crate) const RESERVED: &[&str] = &[
     "without",
 ];
 
-/// Return an Apex-safe identifier: reserved words gain a trailing `_`. The
-/// wire name is unaffected (it travels via the serializer, not the field
-/// name).
+/// Return an Apex-safe identifier for a wire/param/field name. Apex
+/// identifiers must begin with a letter and contain only alphanumerics and
+/// single, non-trailing underscores — Box wire names break every one of
+/// these rules (`Box__Security__Classification__Key` has runs of `__`; some
+/// keys start with a digit), and a reserved word like `limit`/`group` is
+/// rejected outright. So: fold every non-alphanumeric to `_`, collapse runs,
+/// drop leading/trailing `_`, ensure a letter leads, then give reserved
+/// words a `_r` suffix (a bare trailing `_` is itself invalid). The wire
+/// name is unaffected — it travels via the serializer, not the field name.
 pub(crate) fn safe_word(name: &str) -> String {
-    if RESERVED.contains(&name.to_ascii_lowercase().as_str()) {
-        format!("{name}_")
-    } else {
-        name.to_string()
+    let mut out = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else if !out.ends_with('_') {
+            // fold any other char to `_`, but never emit a run of them
+            out.push('_');
+        }
     }
+    let trimmed = out.trim_matches('_');
+    let mut ident = if trimmed
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic())
+    {
+        trimmed.to_string()
+    } else {
+        // leading digit (or empty) — Apex identifiers must start with a
+        // letter; `x` prefix keeps it deterministic.
+        format!("x{trimmed}")
+    };
+    if RESERVED.contains(&ident.to_ascii_lowercase().as_str()) {
+        ident.push_str("_r");
+    }
+    ident
 }

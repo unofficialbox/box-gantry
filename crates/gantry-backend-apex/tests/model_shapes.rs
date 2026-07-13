@@ -123,8 +123,9 @@ fn collections_use_builtin_generics() {
 
 #[test]
 fn reserved_field_names_are_mangled_wire_name_preserved() {
-    // `limit` and `group` are Apex reserved words; the field gains a `_`,
-    // but the wire name (the JSON key) is untouched.
+    // `limit` and `group` are Apex reserved words; the field gains a `_r`
+    // suffix (Apex forbids a trailing `_`), but the wire name (the JSON key)
+    // is untouched.
     let go = only(vec![struct_decl(
         "S",
         vec![
@@ -132,8 +133,28 @@ fn reserved_field_names_are_mangled_wire_name_preserved() {
             field("group", ir::Type::String),
         ],
     )]);
-    assert_contains(&go, "public Long limit_; // wire: limit");
-    assert_contains(&go, "public String group_; // wire: group");
+    assert_contains(&go, "public Long limit_r; // wire: limit");
+    assert_contains(&go, "public String group_r; // wire: group");
+}
+
+#[test]
+fn field_names_are_shaped_into_valid_apex_identifiers() {
+    // Box wire names break Apex's identifier rules: runs of `__` (metadata
+    // keys like `Box__Security__Classification__Key`) and leading digits are
+    // both rejected. The identifier is folded to a legal shape; the wire
+    // name (JSON key) is preserved verbatim in the trailing comment.
+    let go = only(vec![struct_decl(
+        "S",
+        vec![
+            field("Box__Security__Classification__Key", ir::Type::String),
+            field("2fa_enabled", ir::Type::Bool),
+        ],
+    )]);
+    assert_contains(
+        &go,
+        "public String Box_Security_Classification_Key; // wire: Box__Security__Classification__Key",
+    );
+    assert_contains(&go, "public Boolean x2fa_enabled; // wire: 2fa_enabled");
 }
 
 // --- enums / unions / aliases --------------------------------------------
@@ -150,11 +171,117 @@ fn open_enum_is_a_string_class_with_constants() {
         }),
     }]);
     assert_contains(&go, "public class ItemType {");
-    assert_contains(&go, "public String value;");
+    // A constants namespace — no per-instance `value`; enum *fields* are
+    // typed `String` (see the field-representation test).
+    assert!(
+        !go.contains("public String value;"),
+        "the enum class must be constants-only"
+    );
     // Constant names are the shared PascalCase identifier form; the wire
     // value is the string literal.
     assert_contains(&go, "public static final String File = 'file';");
     assert_contains(&go, "public static final String WebLink = 'web_link';");
+}
+
+#[test]
+fn enum_constants_that_are_reserved_words_are_mangled() {
+    // A wire value whose identifier form is an Apex reserved word (`asc`,
+    // `date`, `group`) can't be a bare constant name — the platform rejects
+    // it ("Identifier name is reserved" / "Unexpected token"). It gains the
+    // same `_r` suffix as reserved fields; the wire literal is untouched.
+    let go = only(vec![ir::Decl {
+        name: ident("Sort"),
+        module: schemas(),
+        api_version: None,
+        kind: ir::DeclKind::Enum(ir::EnumDecl {
+            values: vec!["asc".into(), "date".into(), "group".into()],
+            extensibility: ir::Extensibility::Open,
+        }),
+    }]);
+    assert_contains(&go, "public static final String Asc_r = 'asc';");
+    assert_contains(&go, "public static final String Date_r = 'date';");
+    assert_contains(&go, "public static final String Group_r = 'group';");
+}
+
+#[test]
+fn enum_constant_dedup_is_case_insensitive() {
+    // Apex identifiers are case-insensitive, so `ASC` and `asc` both escape
+    // to `Asc_r` and would be a duplicate field. The dedup must key on the
+    // lowercased name and disambiguate the second with a numeric suffix.
+    let go = only(vec![ir::Decl {
+        name: ident("Direction"),
+        module: schemas(),
+        api_version: None,
+        kind: ir::DeclKind::Enum(ir::EnumDecl {
+            values: vec!["ASC".into(), "asc".into()],
+            extensibility: ir::Extensibility::Open,
+        }),
+    }]);
+    assert_contains(&go, "public static final String ASC_r = 'ASC';");
+    assert_contains(&go, "public static final String Asc_r2 = 'asc';");
+}
+
+#[test]
+fn a_schema_named_for_a_reserved_type_is_a_safe_class_name() {
+    // `Group` is a reserved Apex type; a schema of that name can't be a bare
+    // class. The class identifier gets the same `_r` escape as a field.
+    let go = only(vec![struct_decl(
+        "Group",
+        vec![field("id", ir::Type::String)],
+    )]);
+    assert_contains(&go, "public class Group_r {");
+}
+
+#[test]
+fn enum_and_union_typed_fields_use_native_json_types() {
+    // A field typed as an open enum is a `String`; as a union it is an
+    // `Object` (raw map for the caller to dispatch) — so a struct
+    // round-trips through JSON.deserialize natively.
+    let files = render(vec![
+        ir::Decl {
+            name: ident("Role"),
+            module: schemas(),
+            api_version: None,
+            kind: ir::DeclKind::Enum(ir::EnumDecl {
+                values: vec!["admin".into()],
+                extensibility: ir::Extensibility::Open,
+            }),
+        },
+        struct_decl("Sub", vec![field("id", ir::Type::String)]),
+        ir::Decl {
+            name: ident("Payload"),
+            module: schemas(),
+            api_version: None,
+            kind: ir::DeclKind::Union(ir::UnionDecl {
+                discriminator: Some("type".into()),
+                variants: vec![ir::UnionVariant {
+                    discriminator_value: Some("sub".into()),
+                    ty: ir::Type::Decl(ir::DeclId(1)),
+                }],
+                extensibility: ir::Extensibility::Open,
+            }),
+        },
+        struct_decl(
+            "Holder",
+            vec![
+                field("role", ir::Type::Decl(ir::DeclId(0))),
+                field("payload", ir::Type::Decl(ir::DeclId(2))),
+                field(
+                    "roles",
+                    ir::Type::List(Box::new(ir::Type::Decl(ir::DeclId(0)))),
+                ),
+                field("sub", ir::Type::Decl(ir::DeclId(1))), // a struct ref stays typed
+            ],
+        ),
+    ]);
+    let holder = files
+        .iter()
+        .find(|f| f.path == format!("{CLASSES}/Holder.cls"))
+        .unwrap();
+    assert_contains(&holder.content, "public String role; // wire: role");
+    assert_contains(&holder.content, "public Object payload; // wire: payload");
+    assert_contains(&holder.content, "public List<String> roles; // wire: roles");
+    assert_contains(&holder.content, "public Sub sub; // wire: sub");
 }
 
 #[test]
@@ -354,13 +481,15 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     assert_eq!(parsed["packageDirectories"][0]["path"], "force-app");
 
     // Every class has exactly one matching -meta.xml sidecar (source
-    // format), so the tree deploys as-is.
+    // format), so the tree deploys as-is. 1330 model classes + 85 managers
+    // + the Box client + 3 runtime stubs = 1419.
     let classes: Vec<&str> = files
         .iter()
         .filter(|f| f.path.ends_with(".cls"))
         .map(|f| f.path.as_str())
         .collect();
-    assert_eq!(classes.len(), 1330, "one class per non-alias decl");
+    assert_eq!(classes.len(), 1419, "models + managers + client + stubs");
+    let mut names = std::collections::HashSet::new();
     for class in &classes {
         let meta = format!("{class}-meta.xml");
         assert!(
@@ -368,9 +497,12 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
             "class {class} has no -meta.xml sidecar"
         );
         assert!(class.starts_with("force-app/main/default/classes/"));
+        // Flat namespace: every top-level class name is globally unique,
+        // including managers/client/stubs vs model classes.
+        assert!(names.insert(*class), "duplicate class {class}");
     }
-    // 1 project + 1330 classes + 1330 metas.
-    assert_eq!(files.len(), 1 + 1330 * 2);
+    // 1 project + 1419 classes + 1419 metas.
+    assert_eq!(files.len(), 1 + 1419 * 2);
 
     // Deterministic and path-sorted.
     let sorted: Vec<&String> = {

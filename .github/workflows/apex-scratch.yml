@@ -31,7 +31,9 @@ jobs:
       - if: steps.guard.outputs.skip != 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # The Salesforce CLI's bundled undici needs Node >= 22
+          # (webidl.util.markAsUncloneable); Node 20 crashes on first callout.
+          node-version: '22'
       - if: steps.guard.outputs.skip != 'true'
         name: Install the Salesforce CLI
         run: npm install --global @salesforce/cli
@@ -52,11 +54,12 @@ jobs:
           cat > config/project-scratch-def.json <<'JSON'
           { "orgName": "box-gantry", "edition": "Developer" }
           JSON
-          sf org create scratch --definition-file config/project-scratch-def.json \
+          sf org create scratch --target-dev-hub devhub \
+            --definition-file config/project-scratch-def.json \
             --alias validate-org --set-default --duration-days 1 --wait 20
-          # Check-only deploy: the platform compiles every class; nothing is
-          # persisted. This is the VR-1.3 signal.
-          sf project deploy start --check-only --wait 30 --ignore-conflicts
+          # Validate-only deploy (--dry-run): the platform compiles every
+          # class; nothing is persisted. This is the VR-1.3 signal.
+          sf project deploy start --dry-run --wait 30 --ignore-conflicts
       - if: always() && steps.guard.outputs.skip != 'true'
         name: Delete the scratch org
         working-directory: apex-sdk

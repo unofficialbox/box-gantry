@@ -74,13 +74,22 @@ impl ClassNames {
             if matches!(decl.kind, ir::DeclKind::Alias(_)) {
                 continue; // aliases resolve through — no class, no name
             }
-            names[index] = Some(mint_unique(&base_name(decl), limit, &mut used));
+            // A schema named for a reserved type (`Group`, `Date`, …) can't
+            // be a bare class name either — shape + reserved-word escape
+            // applies to the class identifier just like a field.
+            names[index] = Some(mint_unique(&safe_word(&base_name(decl)), limit, &mut used));
         }
         Self { names }
     }
 
     pub(crate) fn get(&self, id: ir::DeclId) -> Option<&str> {
         self.names[id.0 as usize].as_deref()
+    }
+
+    /// Every minted class name (aliases excluded) — the seed for keeping
+    /// manager/client/stub names globally unique in the flat namespace.
+    pub(crate) fn names(&self) -> impl Iterator<Item = &str> {
+        self.names.iter().filter_map(Option::as_deref)
     }
 }
 
@@ -100,7 +109,7 @@ fn base_name(decl: &ir::Decl) -> String {
 /// Register a unique identifier, abbreviating deterministically when it
 /// exceeds the platform limit: `prefix_<7-hex FNV>`, then a numeric suffix
 /// if that still collides. Same inputs (in the same order) → same output.
-fn mint_unique(base: &str, limit: usize, used: &mut HashSet<String>) -> String {
+pub(crate) fn mint_unique(base: &str, limit: usize, used: &mut HashSet<String>) -> String {
     let candidate = if base.len() <= limit {
         base.to_string()
     } else {
@@ -150,20 +159,27 @@ fn render_decl(
             let _ = writeln!(out, "}}");
         }
         ir::DeclKind::Enum(e) => {
-            // Open enum: a class over a raw String so unknown values survive.
+            // Open enum: a constants namespace. The *field* type is `String`
+            // (see `apex_type`), so JSON round-trips the value natively —
+            // unknown values included; this class just names the known ones.
             let _ = writeln!(out, "public class {name} {{");
-            let _ = writeln!(out, "    public String value;");
-            // Constant names are the shared PascalCase identifier form,
-            // deduped within the class so two wire values that collapse to
-            // the same identifier can't emit a duplicate `static final`.
+            // Constant names are the shared PascalCase identifier form, made
+            // Apex-safe (a value like `Date`/`Group`/`ASC` is a reserved
+            // word and is rejected as a bare identifier), then deduped within
+            // the class so two wire values that collapse to the same
+            // identifier can't emit a duplicate `static final`. Apex
+            // identifiers are **case-insensitive**, so the dedup is keyed on
+            // the lowercased name — `ASC` and `asc` both escape to `Asc_r`,
+            // which the platform rejects as a duplicate field.
             let mut used: HashSet<String> = HashSet::new();
             for value in &e.values {
-                let mut constant_name = constant(value);
+                let base = safe_word(&constant(value));
+                let mut constant_name = base.clone();
                 for n in 2u32.. {
-                    if used.insert(constant_name.clone()) {
+                    if used.insert(constant_name.to_ascii_lowercase()) {
                         break;
                     }
-                    constant_name = format!("{}{n}", constant(value));
+                    constant_name = format!("{base}{n}");
                 }
                 let _ = writeln!(
                     out,
@@ -222,7 +238,7 @@ fn render_union(out: &mut String, names: &ClassNames, name: &str, u: &ir::UnionD
 /// available (the no-generics axis forbids *user-defined* generics, not the
 /// platform collections). Both tri-state wrappers erase — every Apex
 /// reference is nullable, so absent-vs-null is the serializer's concern.
-fn apex_type(program: &ir::Program, names: &ClassNames, ty: &ir::Type) -> String {
+pub(crate) fn apex_type(program: &ir::Program, names: &ClassNames, ty: &ir::Type) -> String {
     match ty {
         ir::Type::Optional(inner) | ir::Type::Nullable(inner) => apex_type(program, names, inner),
         ir::Type::List(inner) => format!("List<{}>", apex_type(program, names, inner)),
@@ -242,9 +258,18 @@ fn apex_type(program: &ir::Program, names: &ClassNames, ty: &ir::Type) -> String
             match &decl.kind {
                 // No Apex aliases — resolve through to the target type.
                 ir::DeclKind::Alias(inner) => apex_type(program, names, inner),
-                ir::DeclKind::Struct(_) | ir::DeclKind::Union(_) | ir::DeclKind::Enum(_) => names
+                // An open enum is a `String` on the wire (its class is a
+                // constants namespace), so it round-trips natively via
+                // JSON.deserialize, unknown values included.
+                ir::DeclKind::Enum(_) => "String".to_string(),
+                // A union deserializes as its raw untyped map; the field is
+                // `Object` and the caller dispatches with `<Union>.parse`.
+                // Typing it as the dispatch-only class would make
+                // JSON.deserialize mis-map the wire object.
+                ir::DeclKind::Union(_) => "Object".to_string(),
+                ir::DeclKind::Struct(_) => names
                     .get(*id)
-                    .expect("a non-alias decl always has a class name")
+                    .expect("a struct always has a class name")
                     .to_string(),
             }
         }

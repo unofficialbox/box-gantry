@@ -722,3 +722,145 @@ did for the live account) — until then structural + determinism tests are
 the per-commit signal. Serialization field↔wire mapping, managers, the
 client, and the Apex runtime are the next slices, now verifiable against a
 real org.
+
+## D-122 — Apex models round-trip natively; enums are Strings, unions are Object
+
+**Status:** accepted · 2026-07-13
+
+**Context:** The model slice (D-120) made open enums a class with a `value`
+field and discriminated unions a dispatch-only class. But on the wire an
+enum is a plain JSON string and a union is a JSON object, so
+`JSON.deserialize(json, StructClass.class)` — the natural Apex path — would
+mis-map both: it would try to build an enum object from a string and an
+empty union instance from the variant's fields. Serialization has to be
+right before managers can return usable models.
+
+**Decision:** Represent model fields with the **native JSON shape** so
+`JSON.serialize`/`JSON.deserialize` round-trip a struct directly:
+- **Enum-typed field → `String`.** The `<Enum>` class becomes a pure
+  constants namespace (the `value` field is dropped); unknown values
+  survive for free because any string is valid (open enums, G-11).
+- **Union-typed field → `Object`.** The field holds the raw untyped map;
+  the caller dispatches with the still-generated `<Union>.parse(...)`
+  (TR-Apex.4). Typing it as the dispatch-only class would make
+  `JSON.deserialize` mis-map the wire object.
+- **Struct-typed field → the struct class** (JSON.deserialize recurses).
+  Scalars/`List`/`Map` are already native. This composes: `List<Enum>` →
+  `List<String>`, `List<Union>` → `List<Object>`.
+
+**Consequences:** a struct whose fields are scalars, nested structs,
+enums-as-String, or unions-as-Object round-trips through plain
+`JSON.deserialize` with no generated per-class serializer — the simplest
+thing that can work on the platform. On the real spec, `FileMini.type` is
+now `String` and no class carries a stray `value` field; the class count
+(1,330) and union dispatch count (23) are unchanged. **Still open** (the
+next serialization step, to be nailed once the scratch-org loop is live to
+verify it): fields whose Apex identifier differs from the wire key —
+reserved words (`limit` → `limit_`) and `$`-prefixed metadata keys — need a
+name remap that `JSON.deserialize` can't do by itself, and the D-110 null-
+vs-absent tri-state (explicit-null clear-on-update) needs explicit handling
+rather than omit-on-null. Both are deferred, not silently lost.
+
+## D-123 — Apex managers + client call a runtime contract stub
+
+**Status:** accepted · 2026-07-13
+
+**Context:** With models in place, the SDK needs the callable surface: one
+class per manager, a method per operation, and an entry point. The Go
+backend proved the pattern — managers call a machine-checked runtime
+contract and compile against compilable stubs, and a hand-written runtime
+drops in behind the same signatures (D-113). Apex takes the same shape.
+
+**Decision** (`gantry-backend-apex::generate_managers`):
+- **One `Box<Manager>` class per `x-box-tag`**, holding a `BoxClient` and a
+  method per operation. Method bodies build a `BoxRequest` structurally from
+  the IR — `method`, base-URL class key, the path expression from the
+  structured segments (FR-2.2), null-guarded `query`/`headers` puts by wire
+  name, and the body — call `client.send(request)`, and deserialize the
+  response into the model type. `void` when there is no body; a non-2xx is
+  an exception the runtime raises (manifest `ErrorModel::Exceptions`).
+- **Response deserialization** follows D-122: a struct/`List`/`Map` return
+  goes through `(T) JSON.deserialize(body, T.class)`; a union (`Object`) via
+  `JSON.deserializeUntyped`; an enum (`String`) or text is the raw body;
+  binary is the `Blob`.
+- **The `Box` client** exposes one field per manager, each constructed from
+  the shared `BoxClient`.
+- **The runtime contract is emitted as stubs** (`BoxRequest`, `BoxResponse`,
+  and the `BoxClient` interface) — the Apex analogue of the Go
+  `gantryruntime` stubs — so the generated managers compile standalone; the
+  hand-written Apex runtime (auth + callout + retry + governor limits) is a
+  later slice implementing `BoxClient`.
+- **Flat-namespace uniqueness:** manager/client/stub names are minted into a
+  set **seeded with every model class name** plus the four reserved runtime
+  names, and mangled to the 40-char limit (TR-Apex.1) — so nothing in the
+  one namespace collides. Method names are unique within their class.
+
+**Consequences:** on the real spec the backend adds **85 manager classes +
+the `Box` client + 3 stubs = 89 classes**, with exactly **336 methods**
+(one per operation), all names globally unique and ≤ 40 chars.
+`gantry generate --target apex` now writes **2,839 files** (1 project +
+1,419 classes + 1,419 metas). Four structural + determinism tests plus the
+packaging test's new global-uniqueness assertion pin it. Pagination
+(per-type page classes, no generics), chunked upload, and the D-122
+serialization remainders ride on this surface in later slices; the Apex
+runtime implements `BoxClient`.
+
+## D-124 — Apex identifier shaping: the platform compiler is the oracle (VR-1.3)
+
+**Context.** The first scratch-org dry-run deploy (VR-1.3) of the 1,419
+generated classes surfaced three whole classes of invalid identifier that
+the structural tests could not have caught, because only the Salesforce
+compiler encodes Apex's identifier rules:
+
+1. The reserved-word escape appended a **trailing `_`** (`limit_`, `end_`,
+   `value_`) — but Apex forbids an identifier that *ends* in `_`.
+2. **Enum constants** (`ASC`, `Date`, `Group`, `Trigger`, `by`) were emitted
+   raw, never checked against the reserved list.
+3. Wire names with **runs of `__`** (`Box__Security__Classification__Key`)
+   and **leading digits** became field identifiers verbatim — both illegal.
+
+**Decision.** `safe_word` is now a full **Apex-identifier sanitizer**, not a
+reserved-word-only helper: fold every non-alphanumeric to `_`, collapse
+runs, drop leading/trailing `_`, prefix `x` when a letter doesn't lead, then
+suffix reserved words with **`_r`** (a letter-terminated escape, so it can't
+reintroduce a trailing `_`). It is applied at **every** identifier site —
+struct fields, params, manager fields, method names, and enum constants.
+Added `by` and `commit` to the reserved list. The wire name (JSON key) is
+untouched — it rides the `// wire:` comment today and the serializer later
+(D-122), so shaping the identifier never changes the contract.
+
+**Consequences.** A local scan of the regenerated 1,419 classes shows zero
+trailing-underscore/`__` identifiers and zero intra-class duplicate fields
+(the collapse introduced no collisions on the real spec). Three regression
+tests pin the escapes (reserved fields, reserved enum constants, `__`/
+leading-digit shaping). This is the VR-1.3 compile-the-output loop doing its
+job: the platform is the oracle for exactly the rules no unit test encodes.
+
+## D-125 — Synthesized names use immediate context, not the full ancestry
+
+**Context.** 924 of 1332 IR declarations are synthesized from inline
+anonymous schemas. The synthesizer threaded an `owner` string that grew by
+one segment at every nesting level, seeded from the (already long) Box
+`operationId` — so a 4-deep inline field produced a 109-char type name
+(`PutMetadataTemplates…SchemaUpdateBodyDataStaticConfigClassification`), the
+exact box-node-sdk failure mode. Apex only hid it by hashing the overflow to
+opaque names like `V20250EnterpriseConfigurationCon_0de4df4`.
+
+**Decision.** `lower_type`/`lower_struct`/`lower_union` now thread two things
+instead of one accumulating `owner`: `name` (the exact name for a
+synthesized type at this position = its parent's leaf + this leaf) and `leaf`
+(just this leaf, passed to *children*). Depth therefore adds one segment per
+level rather than concatenating the whole path: the deepest enum above is now
+`StaticConfigClassification` (26 chars), and `FileFull.type` is `FileFullType`
+(12). A named schema seeds its children from its own normalized name.
+
+**Consequences.** On the real spec the longest Go type drops **109 → 83**,
+the 60+‑char bucket **56 → 35**, and `<= 25` chars grows **845 → 997**; Apex
+opaque hash-mangled class names drop **190 → 124**. Every remaining long name
+is now either operation-seeded (the long `operationId` prefix — addressed by
+the method-name-shortening slice) or an inherently long Box source name
+(named schema + long field). A `lowering` regression test pins the
+immediate-context rule and asserts the full-ancestry name is never emitted.
+Structural dedupe of identical inline shapes (collapsing repeated `{id}`
+references to one shared type) is the follow-on to this slice. Counts and all
+100 existing tests are unchanged — naming only.

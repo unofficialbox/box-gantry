@@ -314,10 +314,40 @@ already proved it (85/85 managers lower, zero IR changes forced).
     `generate()` emits a deployable SFDX project — `sfdx-project.json` +
     per-class `.cls` + `-meta.xml` under `force-app/main/default/classes/`;
     `gantry generate --target apex` wired; a manual `apex-scratch.yml`
-    check-only-deploys to a fresh scratch org, gated on the `SFDX_AUTH_URL`
-    Dev Hub secret like the VR-7 live smoke. Real spec → 2,661 files;
-    green the moment a Dev Hub is configured.)
-26. **Next**: Apex serialization field↔wire mapping (so mismatched keys
-    deserialize), managers + client + governor-limit-aware
-    pagination/upload/retry, the Apex runtime (`Http` + Crypto-JWT), and
-    generated test classes clearing the 75% gate. Then M5 — Rust (v3).
+    dry-run-deploys to a fresh scratch org, gated on the `SFDX_AUTH_URL`
+    Dev Hub secret like the VR-7 live smoke. Real spec → 2,661 files.)
+    **VR-1.3 GREEN 2026-07-13** — the Salesforce platform compiler
+    validated all **1,419** generated classes (`sf project deploy start
+    --dry-run` → "Dry-run complete", run `29221112203`). The compile loop
+    surfaced real generator bugs no unit test could (Apex's letter-terminated
+    identifiers, case-insensitive names, reserved words `sort`/`float`/`by`/
+    `commit`, a reserved `Group` class) — D-124; each fixed with a regression
+    test.)
+26. ~~Native JSON round-trip for models.~~ ✅ (D-122: enum-typed fields →
+    `String` (the enum class is a constants namespace), union-typed →
+    `Object` (caller dispatches via `<Union>.parse`), struct/scalar/List/
+    Map already native — so a struct round-trips through plain
+    `JSON.deserialize`. Real spec: `FileMini.type` now `String`, no stray
+    `value` fields, 1,330 classes / 23 dispatches unchanged.)
+27. ~~Managers + client + runtime contract stubs.~~ ✅ (D-123: one
+    `Box<Manager>` class per tag with a method per operation (request built
+    structurally, response deserialized per D-122), the `Box` client
+    wiring them, and `BoxRequest`/`BoxResponse`/`BoxClient` stubs — the Go
+    `gantryruntime` pattern. Real spec: 85 managers + client + 3 stubs,
+    336 methods, all names globally unique ≤ 40 chars; `generate --target
+    apex` → 2,839 files.)
+28. ~~Synthesized names use immediate context, not the full ancestry.~~ ✅
+    (D-125: inline anonymous schemas were named by concatenating the whole
+    ancestor path — a 109-char box-node-sdk-style monster; now each is named
+    from its parent's leaf + its own leaf, so depth adds one segment per
+    level. Longest Go type 109 → 83, 60+‑char bucket 56 → 35, Apex opaque
+    hash names 190 → 124. Shared-engine change, all backends; counts and
+    tests unchanged. A `lowering` regression test pins it.)
+29. **Next**: **method-name shortening** (the remaining long names are all
+    operation-seeded from long Box operationIds — user-approved) and
+    **structural dedupe** of identical inline shapes (collapse repeated
+    `{id}` refs to one shared type — user-approved). Then
+    governor-limit-aware pagination + chunked upload; the remaining
+    serialization gaps (field↔wire remap, tri-state); the hand-written Apex
+    runtime implementing `BoxClient` (`Http` + Crypto-JWT); generated test
+    classes clearing the 75% gate. Then M5 — Rust (v3).
