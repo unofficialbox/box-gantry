@@ -197,7 +197,10 @@ impl ManagerPrinter<'_> {
             let expr = if nilable(&ty) { ty } else { format!("*{ty}") };
             args.push(format!("body {expr}"));
         }
-        let options_type = format!("{method}Options");
+        // Manager-qualified: method names are unique per manager (they are
+        // receiver-scoped), but this options struct is package-level, so it
+        // must carry the manager to stay unique across the `managers` package.
+        let options_type = format!("{}{method}Options", pascal(op.manager.as_str()));
         if !optional.is_empty() {
             args.push(format!("opts *{options_type}"));
         }
@@ -357,7 +360,10 @@ impl ManagerPrinter<'_> {
         }
         // Paged operations always have an options struct: the cursor
         // parameter is itself optional.
-        let options_type = format!("{method}Options");
+        // Manager-qualified: method names are unique per manager (they are
+        // receiver-scoped), but this options struct is package-level, so it
+        // must carry the manager to stay unique across the `managers` package.
+        let options_type = format!("{}{method}Options", pascal(op.manager.as_str()));
         sig.push(format!("opts *{options_type}"));
         call.push("&o".to_string());
 

@@ -366,6 +366,80 @@ fn lower_paths(
 }
 
 #[test]
+fn method_names_are_shortened_and_collisions_fall_back() {
+    // D-126: drop the manager-tag echo and opaque id handles, map the HTTP
+    // verb (`get`→`get`, `post`→`create`, …), a trailing id → `ById`, interior
+    // ids drop. A one-vs-two-`{id}` collision falls back to keeping both ids.
+    let lowering = lower_paths(
+        serde_json::json!({
+            "/files/{file_id}": {
+                "get": { "operationId": "get_files_id", "x-box-tag": "files",
+                    "parameters": [{"name":"file_id","in":"path","required":true,
+                        "schema":{"type":"string"}}],
+                    "responses": { "204": {} } }
+            },
+            "/files/{file_id}/copy": {
+                "post": { "operationId": "post_files_id_copy", "x-box-tag": "files",
+                    "parameters": [{"name":"file_id","in":"path","required":true,
+                        "schema":{"type":"string"}}],
+                    "responses": { "204": {} } }
+            },
+            "/metadata_taxonomies/{scope}/{id}": {
+                "get": { "operationId": "get_metadata_taxonomies_id_id",
+                    "x-box-tag": "metadata_taxonomies",
+                    "parameters": [
+                        {"name":"scope","in":"path","required":true,"schema":{"type":"string"}},
+                        {"name":"id","in":"path","required":true,"schema":{"type":"string"}}],
+                    "responses": { "204": {} } }
+            },
+            "/metadata_taxonomies/{id}": {
+                "get": { "operationId": "get_metadata_taxonomies_id",
+                    "x-box-tag": "metadata_taxonomies",
+                    "parameters": [{"name":"id","in":"path","required":true,
+                        "schema":{"type":"string"}}],
+                    "responses": { "204": {} } }
+            }
+        }),
+        serde_json::json!({}),
+    )
+    .unwrap();
+    let names_for = |manager: &str| -> Vec<String> {
+        lowering
+            .program
+            .operations
+            .iter()
+            .filter(|o| o.manager.as_str() == manager)
+            .map(|o| o.name.as_str().to_string())
+            .collect()
+    };
+    // files: GET by id → `get_by_id`; POST .../copy → `create_copy` (the
+    // manager `files` echo is stripped, `post`→`create`).
+    let files_ops = names_for("files");
+    assert!(
+        files_ops.contains(&"get_by_id".to_string()),
+        "{files_ops:?}"
+    );
+    assert!(
+        files_ops.contains(&"create_copy".to_string()),
+        "{files_ops:?}"
+    );
+    // metadata_taxonomies: the one-id and two-id GETs both want `get_by_id`;
+    // the collision keeps them distinct (which one keeps the short name
+    // depends on spec order, so assert distinctness, not a specific pair).
+    let tax = names_for("metadata_taxonomies");
+    assert_eq!(tax.len(), 2, "{tax:?}");
+    assert!(tax.contains(&"get_by_id".to_string()), "{tax:?}");
+    assert!(
+        tax[0] != tax[1],
+        "the collision must stay distinct: {tax:?}"
+    );
+    assert!(
+        tax.iter().all(|n| n.starts_with("get_by_id")),
+        "both target-by-id names share the prefix: {tax:?}"
+    );
+}
+
+#[test]
 fn variation_and_version_suffix_become_structure() {
     let lowering = lower_paths(
         serde_json::json!({
@@ -389,11 +463,13 @@ fn variation_and_version_suffix_become_structure() {
     let ops = &lowering.program.operations;
     assert_eq!(ops.len(), 2);
     // `_v2025.0` stripped (the document already carries the version);
-    // `#refresh` split into structured variation data.
-    assert_eq!(ops[0].name.as_str(), "post_oauth2_token");
+    // `#refresh` split into structured variation data. The method name maps
+    // the HTTP verb to a semantic one (`post`→`create`, D-126); the two share
+    // a name but differ by variation, so they don't collide.
+    assert_eq!(ops[0].name.as_str(), "create_oauth2_token");
     assert_eq!(ops[0].variation, None);
     assert_eq!(ops[0].base_url, ir::BaseUrl::Api);
-    assert_eq!(ops[1].name.as_str(), "post_oauth2_token");
+    assert_eq!(ops[1].name.as_str(), "create_oauth2_token");
     assert_eq!(ops[1].variation.as_ref().unwrap().as_str(), "refresh");
     assert_eq!(ops[1].base_url, ir::BaseUrl::ApiRoot);
     // The `#` fragment is not part of the request path.

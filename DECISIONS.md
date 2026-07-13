@@ -864,3 +864,43 @@ immediate-context rule and asserts the full-ancestry name is never emitted.
 Structural dedupe of identical inline shapes (collapsing repeated `{id}`
 references to one shared type) is the follow-on to this slice. Counts and all
 100 existing tests are unchanged — naming only.
+
+## D-126 — Method names are shortened; the type seed stays qualified
+
+**Context.** After D-125 killed the *deep* long names, the remaining ones were
+all operation-seeded: Box `operationId`s are long (`put_metadata_templates_
+enterprise_security_classification_6VMVochwUWo_schema_update` → a 75-char
+method name and 83-char inline types). The user approved shortening methods
+"but keep the entity" (Box-SDK-flavoured, not terse).
+
+**Decision.** A Box `operationId` is reduced to tokens with two kinds of noise
+removed: **opaque id handles** leaked from example URLs (a token mixing an
+uppercase letter with a digit, `6VMVochwUWo`) and the **manager-tag echo** (the
+call is already `client.<manager>.<method>`). From those tokens:
+
+- The **method name** maps the HTTP verb to a semantic one (`get`→`get`,
+  `post`→`create`, `put`/`patch`→`update`, `delete`→`delete`), turns a
+  trailing path id into `ById`, and drops interior ids (parent-path context):
+  `get_files_id`→`GetById`, `post_folders`→`Create`, `get_folders_id_items`→
+  `GetItems`, `post_files_id_copy`→`CreateCopy`. No dictionary distinguishes a
+  verb-action from a noun-subresource, so the mapping is uniform.
+- The **type seed** (for `…Body`/`…Response`/param inline types) keeps the
+  fuller token list, *not* the pretty method name — many operations share a
+  pretty name (`GetById`), so a `GetById`-seeded `…Body` would collide, while
+  the token-list seed stays operation-unique.
+
+Method names are unique **per (manager, variation)** — they are receiver-scoped
+in Go/Apex. A one-vs-two-`{id}` collision (`get_metadata_taxonomies_id` and
+`…_id_id` both want `GetById`) falls back to keeping all ids (`GetByIdById`),
+then a numeric suffix. Sema still rejects a true duplicate loudly. The Go
+backend's package-level `…Options` structs are now manager-qualified, since a
+per-manager-unique method name no longer guarantees a package-unique helper.
+
+**Consequences.** Longest Go method **75 → 46**, methods over 40 chars down to
+8, exactly **one** numeric-suffix fallback in all 336 methods
+(`CreateFilesContent2`). Longest Go inline type **83 → 77** (the residue is now
+named-schema + long-field, the dedupe target), the 60+‑char type bucket
+**35 → 15**, and Apex opaque hash-mangled class names **124 → 91**. A `lowering`
+regression test pins the verb mapping, `ById`, and the collision fallback; all
+102 tests, fmt, clippy green. Structural dedupe of identical inline shapes is
+the remaining naming slice.

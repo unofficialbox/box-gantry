@@ -21,7 +21,7 @@
 //! Anything else is a loud [`IngestError`] naming the file and the
 //! schema location (FR-1.4, NF-1, NF-3).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use gantry_ir as ir;
 use indexmap::IndexMap;
@@ -90,6 +90,7 @@ pub fn lower(set: &SpecSet) -> Result<Lowering, IngestError> {
             stats: &mut stats,
             ids: IndexMap::new(),
             used_names: HashSet::new(),
+            method_names: HashMap::new(),
         }
         .lower_document()?;
     }
@@ -134,6 +135,10 @@ struct DocLowerer<'a> {
     /// Every declaration name taken in this document's module, for
     /// deterministic synthesized-name disambiguation.
     used_names: HashSet<String>,
+    /// Method names already taken, keyed by `manager\0variation` — the pretty
+    /// short name (D-126) can collapse distinct operations (e.g. one vs two
+    /// `{id}` path params), so a collision falls back to a fuller name.
+    method_names: HashMap<String, HashSet<String>>,
 }
 
 impl<'a> DocLowerer<'a> {
@@ -644,20 +649,53 @@ impl<'a> DocLowerer<'a> {
                 ),
             ));
         }
-        let name = identifier(doc, &location, &clean_name(base_id))?;
+        let box_tag = op
+            .box_tag
+            .as_deref()
+            .expect("x-box-tag presence is validated at ingestion");
+        // Box operationIds carry noise that inflates the method name and every
+        // type synthesized under it: opaque id handles leaked from example
+        // URLs (`..._6VMVochwUWo_...`) and an echo of the manager tag (the
+        // call is already `client.<manager>.<method>`). Strip both once
+        // (D-126). The *method name* is then further prettified
+        // (`get_files_id`→`GetById`); the *type seed* keeps the fuller token
+        // list, since the pretty leaf is deliberately terse and repeats
+        // across operations — a `GetById`-seeded `…Body`/`…Response` would
+        // collide, the token-list seed stays operation-unique.
+        let short_tokens = short_op_tokens(base_id, box_tag);
         let variation = variation
             .map(|v| identifier(doc, &location, &clean_name(v)))
             .transpose()?;
-        let manager = identifier(
-            doc,
-            &location,
-            op.box_tag
-                .as_deref()
-                .expect("x-box-tag presence is validated at ingestion"),
-        )?;
+        // Resolve the method name against the ones already taken in this
+        // (manager, variation): the pretty form first, the keep-all-ids form
+        // on collision, then a numeric suffix. Sema rejects a true duplicate
+        // loudly, so this must always converge on a fresh name.
+        let scope = format!(
+            "{box_tag}\u{0}{}",
+            variation.as_ref().map_or("", ir::Identifier::as_str)
+        );
+        let taken = self.method_names.entry(scope).or_default();
+        let method_ident = {
+            let pretty = clean_name(&method_name(&short_tokens, false));
+            let full = clean_name(&method_name(&short_tokens, true));
+            let mut chosen = pretty.clone();
+            if taken.contains(&chosen.to_ascii_lowercase()) {
+                chosen = full.clone();
+            }
+            let base = chosen.clone();
+            let mut suffix = 2;
+            while taken.contains(&chosen.to_ascii_lowercase()) {
+                chosen = format!("{base}_{suffix}");
+                suffix += 1;
+            }
+            taken.insert(chosen.to_ascii_lowercase());
+            chosen
+        };
+        let name = identifier(doc, &location, &method_ident)?;
+        let manager = identifier(doc, &location, box_tag)?;
         // Seed for synthesized declarations belonging to this operation.
         let owner = {
-            let mut owner = pascal(&clean_name(base_id));
+            let mut owner = pascal(&short_tokens.join("_"));
             if let Some(v) = &variation {
                 owner.push_str(&pascal(v.as_str()));
             }
@@ -1058,6 +1096,100 @@ fn clean_name(raw: &str) -> String {
             }
         })
         .collect()
+}
+
+/// The tokens of a Box `operationId` with two kinds of noise removed:
+///
+/// - **Opaque id handles** leaked from example URLs — a token that mixes an
+///   uppercase letter with a digit (`6VMVochwUWo`) is a specific object id,
+///   never a word; pure noise in a generated name.
+/// - **A manager-tag echo** — the call is already `client.<manager>.<method>`,
+///   so repeating the `x-box-tag` tokens is redundant. The first contiguous
+///   run matching the tag is dropped (never emptying the token list).
+///
+/// No dictionary or semantic guessing, so the result is deterministic and
+/// 1:1 with the spec.
+fn short_op_tokens(base_id: &str, box_tag: &str) -> Vec<String> {
+    let is_opaque = |t: &str| {
+        t.chars().any(|c| c.is_ascii_uppercase()) && t.chars().any(|c| c.is_ascii_digit())
+    };
+    let mut tokens: Vec<String> = base_id
+        .split('_')
+        .filter(|t| !t.is_empty() && !is_opaque(t))
+        .map(str::to_string)
+        .collect();
+
+    let tag_tokens: Vec<&str> = box_tag.split('_').filter(|t| !t.is_empty()).collect();
+    if !tag_tokens.is_empty()
+        && tokens.len() > tag_tokens.len()
+        && let Some(pos) = tokens.windows(tag_tokens.len()).position(|w| {
+            w.len() == tag_tokens.len()
+                && w.iter()
+                    .zip(&tag_tokens)
+                    .all(|(a, b)| a.eq_ignore_ascii_case(b))
+        })
+    {
+        tokens.drain(pos..pos + tag_tokens.len());
+    }
+    if tokens.is_empty() {
+        // The whole id was the tag/opaque — fall back to the raw id.
+        return base_id
+            .split('_')
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
+    tokens
+}
+
+/// A short, Box-SDK-flavoured method name from the noise-stripped tokens
+/// (D-126): the leading HTTP verb maps to a semantic one (`get`→`get`,
+/// `post`→`create`, `put`/`patch`→`update`, `delete`→`delete`), a trailing
+/// path id becomes `by_id`, and interior ids (parent-path context) drop. So
+/// `get_files_id`→`GetById`, `post_folders`→`Create`, `get_folders_id_items`
+/// →`GetItems`. A custom sub-action reads as `Create<Action>` (e.g.
+/// `post_files_id_copy`→`CreateCopy`) — no dictionary tells a verb-action
+/// from a noun-subresource, so the mapping stays uniform.
+///
+/// `keep_all_ids` renders *every* id as `by_id` instead of dropping interior
+/// ones — the collision fallback for multi-`{id}` paths (`…_id_id` →
+/// `GetByIdById`), so one- and two-id endpoints stay distinct.
+fn method_name(short_tokens: &[String], keep_all_ids: bool) -> String {
+    const VERBS: &[&str] = &["get", "post", "put", "patch", "delete", "options", "head"];
+    let mut out: Vec<String> = Vec::new();
+    let rest: &[String] = if short_tokens
+        .first()
+        .is_some_and(|t| VERBS.contains(&t.as_str()))
+    {
+        out.push(
+            match short_tokens[0].as_str() {
+                "post" => "create",
+                "put" | "patch" => "update",
+                verb => verb,
+            }
+            .to_string(),
+        );
+        &short_tokens[1..]
+    } else {
+        short_tokens
+    };
+    for (index, token) in rest.iter().enumerate() {
+        if token == "id" {
+            // A trailing id targets a specific resource (`ById`); an interior
+            // id is just parent-path context and drops — unless a collision
+            // forced `keep_all_ids`, which keeps each id to stay distinct.
+            if keep_all_ids || index == rest.len() - 1 {
+                out.push("by".to_string());
+                out.push("id".to_string());
+            }
+        } else {
+            out.push(token.clone());
+        }
+    }
+    if out.is_empty() {
+        out.push("call".to_string());
+    }
+    out.join("_")
 }
 
 /// `Owner` + PascalCase(property): `File` + `shared_link` → `FileSharedLink`.

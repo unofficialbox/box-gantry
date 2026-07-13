@@ -343,10 +343,16 @@ already proved it (85/85 managers lower, zero IR changes forced).
     level. Longest Go type 109 → 83, 60+‑char bucket 56 → 35, Apex opaque
     hash names 190 → 124. Shared-engine change, all backends; counts and
     tests unchanged. A `lowering` regression test pins it.)
-29. **Next**: **method-name shortening** (the remaining long names are all
-    operation-seeded from long Box operationIds — user-approved) and
-    **structural dedupe** of identical inline shapes (collapse repeated
-    `{id}` refs to one shared type — user-approved). Then
+29. ~~Method-name shortening (keep the entity, Box-SDK-flavoured).~~ ✅
+    (D-126: strip the opaque id handles + manager-tag echo, map the HTTP verb
+    (`post`→`create`…), trailing id→`ById`, interior ids drop —
+    `get_files_id`→`GetById`, `post_files_id_copy`→`CreateCopy`. The type
+    seed stays qualified so inline `…Body`/`…Response` names don't collide;
+    the Go `…Options` structs are manager-qualified. Longest Go method
+    75→46, one collision fallback in 336 methods, Apex hash names 124→91.)
+30. **Next**: **structural dedupe** of identical inline shapes (collapse
+    repeated `{id}` refs to one shared type — the remaining long *type* names
+    are named-schema + long-field; user-approved). Then
     governor-limit-aware pagination + chunked upload; the remaining
     serialization gaps (field↔wire remap, tri-state); the hand-written Apex
     runtime implementing `BoxClient` (`Http` + Crypto-JWT); generated test
