@@ -760,3 +760,47 @@ reserved words (`limit` → `limit_`) and `$`-prefixed metadata keys — need a
 name remap that `JSON.deserialize` can't do by itself, and the D-110 null-
 vs-absent tri-state (explicit-null clear-on-update) needs explicit handling
 rather than omit-on-null. Both are deferred, not silently lost.
+
+## D-123 — Apex managers + client call a runtime contract stub
+
+**Status:** accepted · 2026-07-13
+
+**Context:** With models in place, the SDK needs the callable surface: one
+class per manager, a method per operation, and an entry point. The Go
+backend proved the pattern — managers call a machine-checked runtime
+contract and compile against compilable stubs, and a hand-written runtime
+drops in behind the same signatures (D-113). Apex takes the same shape.
+
+**Decision** (`gantry-backend-apex::generate_managers`):
+- **One `Box<Manager>` class per `x-box-tag`**, holding a `BoxClient` and a
+  method per operation. Method bodies build a `BoxRequest` structurally from
+  the IR — `method`, base-URL class key, the path expression from the
+  structured segments (FR-2.2), null-guarded `query`/`headers` puts by wire
+  name, and the body — call `client.send(request)`, and deserialize the
+  response into the model type. `void` when there is no body; a non-2xx is
+  an exception the runtime raises (manifest `ErrorModel::Exceptions`).
+- **Response deserialization** follows D-122: a struct/`List`/`Map` return
+  goes through `(T) JSON.deserialize(body, T.class)`; a union (`Object`) via
+  `JSON.deserializeUntyped`; an enum (`String`) or text is the raw body;
+  binary is the `Blob`.
+- **The `Box` client** exposes one field per manager, each constructed from
+  the shared `BoxClient`.
+- **The runtime contract is emitted as stubs** (`BoxRequest`, `BoxResponse`,
+  and the `BoxClient` interface) — the Apex analogue of the Go
+  `gantryruntime` stubs — so the generated managers compile standalone; the
+  hand-written Apex runtime (auth + callout + retry + governor limits) is a
+  later slice implementing `BoxClient`.
+- **Flat-namespace uniqueness:** manager/client/stub names are minted into a
+  set **seeded with every model class name** plus the four reserved runtime
+  names, and mangled to the 40-char limit (TR-Apex.1) — so nothing in the
+  one namespace collides. Method names are unique within their class.
+
+**Consequences:** on the real spec the backend adds **85 manager classes +
+the `Box` client + 3 stubs = 89 classes**, with exactly **336 methods**
+(one per operation), all names globally unique and ≤ 40 chars.
+`gantry generate --target apex` now writes **2,839 files** (1 project +
+1,419 classes + 1,419 metas). Four structural + determinism tests plus the
+packaging test's new global-uniqueness assertion pin it. Pagination
+(per-type page classes, no generics), chunked upload, and the D-122
+serialization remainders ride on this surface in later slices; the Apex
+runtime implements `BoxClient`.

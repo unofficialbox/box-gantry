@@ -411,13 +411,15 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     assert_eq!(parsed["packageDirectories"][0]["path"], "force-app");
 
     // Every class has exactly one matching -meta.xml sidecar (source
-    // format), so the tree deploys as-is.
+    // format), so the tree deploys as-is. 1330 model classes + 85 managers
+    // + the Box client + 3 runtime stubs = 1419.
     let classes: Vec<&str> = files
         .iter()
         .filter(|f| f.path.ends_with(".cls"))
         .map(|f| f.path.as_str())
         .collect();
-    assert_eq!(classes.len(), 1330, "one class per non-alias decl");
+    assert_eq!(classes.len(), 1419, "models + managers + client + stubs");
+    let mut names = std::collections::HashSet::new();
     for class in &classes {
         let meta = format!("{class}-meta.xml");
         assert!(
@@ -425,9 +427,12 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
             "class {class} has no -meta.xml sidecar"
         );
         assert!(class.starts_with("force-app/main/default/classes/"));
+        // Flat namespace: every top-level class name is globally unique,
+        // including managers/client/stubs vs model classes.
+        assert!(names.insert(*class), "duplicate class {class}");
     }
-    // 1 project + 1330 classes + 1330 metas.
-    assert_eq!(files.len(), 1 + 1330 * 2);
+    // 1 project + 1419 classes + 1419 metas.
+    assert_eq!(files.len(), 1 + 1419 * 2);
 
     // Deterministic and path-sorted.
     let sorted: Vec<&String> = {

@@ -82,6 +82,12 @@ impl ClassNames {
     pub(crate) fn get(&self, id: ir::DeclId) -> Option<&str> {
         self.names[id.0 as usize].as_deref()
     }
+
+    /// Every minted class name (aliases excluded) — the seed for keeping
+    /// manager/client/stub names globally unique in the flat namespace.
+    pub(crate) fn names(&self) -> impl Iterator<Item = &str> {
+        self.names.iter().filter_map(Option::as_deref)
+    }
 }
 
 /// The flat-namespace base name (TR-Apex.1): the module path (minus the
@@ -100,7 +106,7 @@ fn base_name(decl: &ir::Decl) -> String {
 /// Register a unique identifier, abbreviating deterministically when it
 /// exceeds the platform limit: `prefix_<7-hex FNV>`, then a numeric suffix
 /// if that still collides. Same inputs (in the same order) → same output.
-fn mint_unique(base: &str, limit: usize, used: &mut HashSet<String>) -> String {
+pub(crate) fn mint_unique(base: &str, limit: usize, used: &mut HashSet<String>) -> String {
     let candidate = if base.len() <= limit {
         base.to_string()
     } else {
@@ -223,7 +229,7 @@ fn render_union(out: &mut String, names: &ClassNames, name: &str, u: &ir::UnionD
 /// available (the no-generics axis forbids *user-defined* generics, not the
 /// platform collections). Both tri-state wrappers erase — every Apex
 /// reference is nullable, so absent-vs-null is the serializer's concern.
-fn apex_type(program: &ir::Program, names: &ClassNames, ty: &ir::Type) -> String {
+pub(crate) fn apex_type(program: &ir::Program, names: &ClassNames, ty: &ir::Type) -> String {
     match ty {
         ir::Type::Optional(inner) | ir::Type::Nullable(inner) => apex_type(program, names, inner),
         ir::Type::List(inner) => format!("List<{}>", apex_type(program, names, inner)),

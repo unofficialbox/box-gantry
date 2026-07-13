@@ -323,8 +323,15 @@ already proved it (85/85 managers lower, zero IR changes forced).
     Map already native — so a struct round-trips through plain
     `JSON.deserialize`. Real spec: `FileMini.type` now `String`, no stray
     `value` fields, 1,330 classes / 23 dispatches unchanged.)
-27. **Next**: the remaining serialization gap — remap fields whose Apex
-    identifier ≠ wire key (reserved words, `$`-prefixed) and the D-110
-    null-vs-absent tri-state — then managers + client + governor-limit-
-    aware pagination/upload/retry, the Apex runtime (`Http` + Crypto-JWT),
-    and generated test classes clearing the 75% gate. Then M5 — Rust (v3).
+27. ~~Managers + client + runtime contract stubs.~~ ✅ (D-123: one
+    `Box<Manager>` class per tag with a method per operation (request built
+    structurally, response deserialized per D-122), the `Box` client
+    wiring them, and `BoxRequest`/`BoxResponse`/`BoxClient` stubs — the Go
+    `gantryruntime` pattern. Real spec: 85 managers + client + 3 stubs,
+    336 methods, all names globally unique ≤ 40 chars; `generate --target
+    apex` → 2,839 files.)
+28. **Next**: governor-limit-aware pagination (per-type page classes) +
+    chunked upload; the remaining serialization gaps (field↔wire remap,
+    tri-state); the hand-written Apex runtime implementing `BoxClient`
+    (`Http` + Crypto-JWT); generated test classes clearing the 75% gate.
+    Then M5 — Rust (v3).

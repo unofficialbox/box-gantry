@@ -16,8 +16,10 @@
 //! tests; the scratch-org `sf project deploy validate` loop (VR-1.3) is the
 //! CI/merge gate once a Dev Hub is configured.
 
+mod managers;
 mod models;
 
+pub use managers::generate_managers;
 pub use models::generate_models;
 
 use gantry_manifest::CapabilityManifest;
@@ -47,7 +49,8 @@ pub fn generate(analysis: &Analysis<'_>, manifest: &CapabilityManifest) -> Vec<G
         content: sfdx_project_json(),
     }];
 
-    let classes = generate_models(analysis, manifest);
+    let mut classes = generate_models(analysis, manifest);
+    classes.extend(generate_managers(analysis, manifest));
     let class_meta = class_meta_xml();
     for class in classes {
         files.push(GeneratedFile {
