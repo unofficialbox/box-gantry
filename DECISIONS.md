@@ -904,3 +904,34 @@ named-schema + long-field, the dedupe target), the 60+‑char type bucket
 regression test pins the verb mapping, `ById`, and the collision fallback; all
 102 tests, fmt, clippy green. Structural dedupe of identical inline shapes is
 the remaining naming slice.
+
+## D-127 — Structural dedupe of identical inline shapes
+
+**Context.** Inline anonymous schemas are 924 of 1332 IR decls, and many are
+identical: Box request bodies repeat `{id}` and `{id, type}` reference objects
+in dozens of places, each previously minting its own type. That is the bulk of
+the type-count and a source of near-duplicate long names.
+
+**Decision.** `synthesize` now dedupes on structure: the `DeclKind`'s Debug
+form is a faithful structural key (kind + every field's wire name and type +
+enum values + union variants), and the inner `DeclId`s it references are
+already canonical because children are synthesized first. An inline shape
+identical to one already synthesized **reuses that decl** instead of minting a
+copy; the decl *name* is not part of the key, so differently-named copies of
+one shape collapse. Dedupe is per document/module (versioned specs keep their
+own namespace, G-9) and deterministic (spec order; first occurrence wins the
+name). Only *synthesized* decls dedupe — named schemas are never merged.
+
+The kind breakdown in `LoweringStats` is now computed from the final decls
+rather than counted during lowering, since a build-time counter would include
+the copies dedupe discards.
+
+**Consequences.** The real spec lowers to **900 decls** (was 1332) — **492
+synthesized** (was 924), 608 structs / 248 enums / 42 unions / 2 aliases.
+Go types **1550 → 1118**; Apex classes **1419 → 987** (and files 2839 → 1975),
+opaque hash-mangled Apex names **91 → 69**. Output stays byte-identical across
+runs. A `lowering` regression test pins that two identical inline shapes share
+one decl while a different shape stays distinct; all 102 tests, fmt, clippy
+green. (The longest *type* names — named-schema + long Box field — are not
+duplicates, so dedupe leaves them; shortening those would need abbreviation,
+not collapse.)

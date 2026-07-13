@@ -402,9 +402,10 @@ fn the_real_spec_lowers_to_apex_classes() {
     let files = real_spec_files();
 
     // Every struct/union/enum decl becomes one class; aliases (2 in the
-    // real spec) do not. 1332 decls − 2 aliases = 1330 classes. Pinned so
-    // the count only moves deliberately with the spec (VR-6 lineage).
-    assert_eq!(files.len(), 1330, "expected one class per non-alias decl");
+    // real spec) do not. After structural dedupe (D-127) the spec lowers to
+    // 900 decls − 2 aliases = 898 classes. Pinned so the count only moves
+    // deliberately with the spec (VR-6 lineage).
+    assert_eq!(files.len(), 898, "expected one class per non-alias decl");
 
     // Every class name obeys the platform identifier limit (TR-Apex.1) and
     // is globally unique (flat namespace), and every file carries the
@@ -481,14 +482,14 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     assert_eq!(parsed["packageDirectories"][0]["path"], "force-app");
 
     // Every class has exactly one matching -meta.xml sidecar (source
-    // format), so the tree deploys as-is. 1330 model classes + 85 managers
-    // + the Box client + 3 runtime stubs = 1419.
+    // format), so the tree deploys as-is. After dedupe (D-127): 898 model
+    // classes + 85 managers + the Box client + 3 runtime stubs = 987.
     let classes: Vec<&str> = files
         .iter()
         .filter(|f| f.path.ends_with(".cls"))
         .map(|f| f.path.as_str())
         .collect();
-    assert_eq!(classes.len(), 1419, "models + managers + client + stubs");
+    assert_eq!(classes.len(), 987, "models + managers + client + stubs");
     let mut names = std::collections::HashSet::new();
     for class in &classes {
         let meta = format!("{class}-meta.xml");
@@ -502,7 +503,7 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         assert!(names.insert(*class), "duplicate class {class}");
     }
     // 1 project + 1419 classes + 1419 metas.
-    assert_eq!(files.len(), 1 + 1419 * 2);
+    assert_eq!(files.len(), 1 + 987 * 2);
 
     // Deterministic and path-sorted.
     let sorted: Vec<&String> = {

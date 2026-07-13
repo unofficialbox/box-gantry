@@ -260,6 +260,45 @@ fn synthesized_names_disambiguate_deterministically() {
 }
 
 #[test]
+fn identical_inline_shapes_dedupe_to_one_declaration() {
+    // D-127: two inline objects with the same structure collapse to a single
+    // synthesized decl; both fields reference it. The repeated `{id}` refs
+    // that pepper Box request bodies become one shared type, not N copies.
+    let lowering = lower_schemas(serde_json::json!({
+        "Thing": {
+            "type": "object",
+            "properties": {
+                "parent": { "type": "object", "properties": { "id": { "type": "string" } } },
+                "child":  { "type": "object", "properties": { "id": { "type": "string" } } },
+                "other":  { "type": "object", "properties": { "name": { "type": "string" } } }
+            }
+        }
+    }))
+    .unwrap();
+    // `parent` and `child` share a shape → one synthesized struct; `other`
+    // differs → a second. Two synthesized total, not three.
+    assert_eq!(lowering.stats.synthesized, 2);
+    let thing = struct_decl(find(&lowering.program, "Thing"));
+    let decl_id = |field: &ir::Field| -> ir::DeclId {
+        // Fields are optional (not required), so unwrap the Optional wrapper.
+        let ty = if let ir::Type::Optional(inner) = &field.ty {
+            inner.as_ref()
+        } else {
+            &field.ty
+        };
+        let ir::Type::Decl(id) = ty else {
+            panic!("inline object must be a Decl: {ty:?}")
+        };
+        *id
+    };
+    let parent = decl_id(&thing.fields[0]);
+    let child = decl_id(&thing.fields[1]);
+    let other = decl_id(&thing.fields[2]);
+    assert_eq!(parent, child, "identical inline shapes share one decl");
+    assert_ne!(parent, other, "a different shape is a distinct decl");
+}
+
+#[test]
 fn nested_inline_names_use_immediate_context_not_the_full_ancestry() {
     // Deeply-nested inline objects must be named from their immediate parent
     // + leaf (2 segments), never the accumulated path — the box-node-sdk

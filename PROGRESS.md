@@ -32,7 +32,7 @@ backends + runtimes, not new engine.
 
 ```
 v1 — Go 🐹    ██████████  100%   SHIPPED 2026-07-13
-v2 — Apex ☁️  ████░░░░░░   ~42%   in progress (M4) — models, SFDX loop, JSON, managers, VR-1.3 green (1,419 classes compile)
+v2 — Apex ☁️  ████░░░░░░   ~44%   in progress (M4) — models, SFDX loop, JSON, managers, VR-1.3 green; naming overhaul (immediate-context, short methods, dedupe → 987 classes)
 v3 — Rust 🦀  ░░░░░░░░░░    0%   after (M5)
 ```
 

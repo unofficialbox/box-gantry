@@ -350,10 +350,13 @@ already proved it (85/85 managers lower, zero IR changes forced).
     seed stays qualified so inline `…Body`/`…Response` names don't collide;
     the Go `…Options` structs are manager-qualified. Longest Go method
     75→46, one collision fallback in 336 methods, Apex hash names 124→91.)
-30. **Next**: **structural dedupe** of identical inline shapes (collapse
-    repeated `{id}` refs to one shared type — the remaining long *type* names
-    are named-schema + long-field; user-approved). Then
-    governor-limit-aware pagination + chunked upload; the remaining
-    serialization gaps (field↔wire remap, tri-state); the hand-written Apex
-    runtime implementing `BoxClient` (`Http` + Crypto-JWT); generated test
-    classes clearing the 75% gate. Then M5 — Rust (v3).
+30. ~~Structural dedupe of identical inline shapes.~~ ✅ (D-127: `synthesize`
+    dedupes on the `DeclKind`'s structure — repeated `{id}`/`{id,type}` inline
+    refs collapse to one shared type. Real spec 1332→900 decls (924→492
+    synthesized), Go types 1550→1118, Apex classes 1419→987. Deterministic; a
+    `lowering` regression test pins it.)
+31. **Next**: governor-limit-aware pagination (per-type page classes) +
+    chunked upload; the remaining serialization gaps (field↔wire remap,
+    tri-state); the hand-written Apex runtime implementing `BoxClient`
+    (`Http` + Crypto-JWT); generated test classes clearing the 75% gate.
+    Then M5 — Rust (v3).

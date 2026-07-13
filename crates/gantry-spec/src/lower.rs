@@ -91,13 +91,31 @@ pub fn lower(set: &SpecSet) -> Result<Lowering, IngestError> {
             ids: IndexMap::new(),
             used_names: HashSet::new(),
             method_names: HashMap::new(),
+            shapes: HashMap::new(),
         }
         .lower_document()?;
     }
-    let decls = arena
+    let decls: Vec<ir::Decl> = arena
         .into_iter()
         .map(|slot| slot.expect("every predeclared schema is filled by lower_document"))
         .collect();
+    // The kind breakdown is computed from the *final* decls, not counted
+    // during lowering: structural dedupe (D-127) discards inline copies after
+    // they are built, so a build-time counter would over-report. (`aliases`
+    // are never synthesized, so they are counted at their source.)
+    for decl in &decls {
+        match &decl.kind {
+            ir::DeclKind::Struct(_) => stats.structs += 1,
+            ir::DeclKind::Enum(_) => stats.enums += 1,
+            ir::DeclKind::Union(u) => {
+                stats.unions += 1;
+                if u.discriminator.is_some() {
+                    stats.discriminated_unions += 1;
+                }
+            }
+            ir::DeclKind::Alias(_) => {}
+        }
+    }
     Ok(Lowering {
         program: ir::Program { decls, operations },
         stats,
@@ -139,6 +157,13 @@ struct DocLowerer<'a> {
     /// short name (D-126) can collapse distinct operations (e.g. one vs two
     /// `{id}` path params), so a collision falls back to a fuller name.
     method_names: HashMap<String, HashSet<String>>,
+    /// Structural dedupe (D-127): the canonical decl id for each *synthesized*
+    /// shape, keyed on the `DeclKind`'s structure. An inline shape identical
+    /// to one already synthesized reuses it instead of minting a copy, so the
+    /// hundreds of repeated `{id}`/`{id,type}` inline refs collapse to one
+    /// type each. Bottom-up: identical subtrees dedupe first, so their
+    /// parents then match too.
+    shapes: HashMap<String, ir::DeclId>,
 }
 
 impl<'a> DocLowerer<'a> {
@@ -414,7 +439,6 @@ impl<'a> DocLowerer<'a> {
                 ty,
             });
         }
-        self.stats.structs += 1;
         Ok(ir::StructDecl { fields })
     }
 
@@ -511,7 +535,6 @@ impl<'a> DocLowerer<'a> {
                 .is_some_and(|value| seen.insert(value.clone()))
         });
         let discriminator = if discriminated {
-            self.stats.discriminated_unions += 1;
             Some(DISCRIMINATOR_FIELD.to_string())
         } else {
             // Half-inferred values would be misleading: a structural union
@@ -521,7 +544,6 @@ impl<'a> DocLowerer<'a> {
             }
             None
         };
-        self.stats.unions += 1;
         Ok(ir::UnionDecl {
             discriminator,
             variants,
@@ -575,7 +597,6 @@ impl<'a> DocLowerer<'a> {
                 }
             }
         }
-        self.stats.enums += 1;
         Ok(ir::EnumDecl {
             values: out,
             // Box enums are open by convention (G-11, D-105): unknown
@@ -592,6 +613,17 @@ impl<'a> DocLowerer<'a> {
         base: &str,
         kind: ir::DeclKind,
     ) -> Result<ir::DeclId, IngestError> {
+        // Structural dedupe (D-127): an inline shape identical to one already
+        // synthesized reuses it. The `DeclKind` Debug form is a faithful
+        // structural key — it captures the kind, every field's wire name and
+        // type, enum values, and union variants, and the inner `DeclId`s it
+        // names are themselves already canonical (children dedupe first). The
+        // decl *name* is not part of the key, so differently-named copies of
+        // one shape collapse.
+        let key = format!("{:?}", kind);
+        if let Some(&existing) = self.shapes.get(&key) {
+            return Ok(existing);
+        }
         let mut name = base.to_string();
         let mut suffix = 2;
         while self.used_names.contains(&name) {
@@ -602,6 +634,7 @@ impl<'a> DocLowerer<'a> {
         let decl = self.decl(location, &name, kind)?;
         let id = self.next_id();
         self.arena.push(Some(decl));
+        self.shapes.insert(key, id);
         self.stats.synthesized += 1;
         Ok(id)
     }
