@@ -109,8 +109,16 @@ fn the_generated_apex_sdk_is_conformant() {
     assert_eq!(by("operations").expected, 336);
     assert_eq!(by("operations").actual, 336, "one method per operation");
     assert_eq!(by("pagination").expected, 64);
-    assert_eq!(by("pagination").actual, 64, "one paged surface per operation");
-    assert_eq!(by("traceability").actual, 1, "BoxBuildInfo carries provenance");
+    assert_eq!(
+        by("pagination").actual,
+        64,
+        "one paged surface per operation"
+    );
+    assert_eq!(
+        by("traceability").actual,
+        1,
+        "BoxBuildInfo carries provenance"
+    );
     assert_eq!(by("docs-guides").actual, 4, "index + 3 topic guides");
 
     // The two documented platform exclusions pass as not-applicable, never

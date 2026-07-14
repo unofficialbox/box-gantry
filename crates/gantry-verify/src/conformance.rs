@@ -241,10 +241,7 @@ fn capability(
     actual: usize,
     detail: &str,
 ) -> Check {
-    let exclusion = shape
-        .exclusions
-        .iter()
-        .find(|e| e.capability == capability);
+    let exclusion = shape.exclusions.iter().find(|e| e.capability == capability);
     let excused = exclusion.map_or(0, |e| e.count);
 
     let status = if actual >= expected {
@@ -441,8 +438,11 @@ fn apex_manager_docs(files: &[GeneratedView]) -> usize {
 
 fn apex_operations(files: &[GeneratedView]) -> usize {
     // Every generated manager method opens its ApexDoc with the HTTP verb in
-    // backticks (`` * `GET /files/{id}` ``), one line per operation.
-    const VERBS: [&str; 7] = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"];
+    // backticks (`` * `GET /files/{id}` ``), one line per operation. All HTTP
+    // methods the IR models are counted so no valid operation is missed.
+    const VERBS: [&str; 8] = [
+        "GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD", "TRACE",
+    ];
     files
         .iter()
         .filter(|f| apex_is_manager_class(f))
@@ -494,14 +494,18 @@ fn apex_round_trip_tests(files: &[GeneratedView]) -> usize {
 fn apex_auth(files: &[GeneratedView]) -> usize {
     // The three server-viable token providers ship as runtime classes; OAuth
     // is the documented exclusion. Count the concrete provider classes.
-    ["BoxDeveloperTokenProvider", "BoxCcgTokenProvider", "BoxJwtTokenProvider"]
-        .iter()
-        .filter(|name| {
-            files
-                .iter()
-                .any(|f| f.content.contains(&format!("class {name}")))
-        })
-        .count()
+    [
+        "BoxDeveloperTokenProvider",
+        "BoxCcgTokenProvider",
+        "BoxJwtTokenProvider",
+    ]
+    .iter()
+    .filter(|name| {
+        files
+            .iter()
+            .any(|f| f.content.contains(&format!("class {name}")))
+    })
+    .count()
 }
 
 fn apex_traceability(files: &[GeneratedView]) -> usize {

@@ -252,7 +252,7 @@ fn project_readme(build: &BuildInfo) -> String {
          ```\n\n\
          Apex needs no import statements — every generated class is visible in\n\
          the namespace. See [`docs/`](docs/README.md) for each endpoint.\n",
-        version = env!("CARGO_PKG_VERSION"),
+        version = build.engine,
         fingerprint = build.spec_fingerprint,
     )
 }

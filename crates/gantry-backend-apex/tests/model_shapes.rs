@@ -867,7 +867,11 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     );
     // 336 endpoint pages + 85 manager indexes + 1 top index + 3 topic guides
     // (auth/pagination/errors) = 425.
-    assert_eq!(docs.len(), 425, "endpoint + manager + top-index + guide docs");
+    assert_eq!(
+        docs.len(),
+        425,
+        "endpoint + manager + top-index + guide docs"
+    );
     // 5 base scaffolding + 4 Remote Site Settings + 1087 classes + 1087 metas
     // + 425 docs.
     assert_eq!(files.len(), 5 + 4 + (999 + 87 + 1) * 2 + 425);

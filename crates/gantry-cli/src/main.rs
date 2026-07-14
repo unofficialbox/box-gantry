@@ -330,12 +330,14 @@ fn generate_apex(specs: &[PathBuf]) -> Result<Vec<(String, String)>, ExitCode> {
         ExitCode::from(exit_codes::SPEC_ERROR)
     })?;
     match gantry_sema::analyze(&lowering.program) {
-        Ok(analysis) => Ok(
-            gantry_backend_apex::generate(&analysis, &gantry_manifest::apex(), &build)
-                .into_iter()
-                .map(|f| (f.path, f.content))
-                .collect(),
-        ),
+        Ok(analysis) => {
+            Ok(
+                gantry_backend_apex::generate(&analysis, &gantry_manifest::apex(), &build)
+                    .into_iter()
+                    .map(|f| (f.path, f.content))
+                    .collect(),
+            )
+        }
         Err(errors) => {
             let engine_bug = errors.iter().any(gantry_sema::SemaError::is_engine_bug);
             for error in &errors {
