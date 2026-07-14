@@ -159,16 +159,9 @@ fn real_spec_managers() -> Vec<GeneratedFile> {
 fn the_real_spec_yields_one_class_per_manager_and_a_method_per_operation() {
     let files = real_spec_managers();
 
-    // 85 managers + the Box client + 3 runtime stubs + one page class per
-    // paginated operation (D-131). Page classes are identified by content —
-    // a long page name is abbreviated with a hash, so it may not end in
-    // `Page`.
-    let page_classes = files
-        .iter()
-        .filter(|f| f.content.contains("public Boolean hasMore;"))
-        .count();
-    assert_eq!(page_classes, 64, "one page class per paged operation");
-    assert_eq!(files.len(), 85 + 1 + 3 + page_classes);
+    // 85 managers + the Box client + 3 runtime stubs. Pagination adds no
+    // classes — the base method's envelope is the page (D-131).
+    assert_eq!(files.len(), 85 + 1 + 3);
     let managers = files
         .iter()
         .filter(|f| {
@@ -200,32 +193,6 @@ fn the_real_spec_yields_one_class_per_manager_and_a_method_per_operation() {
             "class {name} exceeds the identifier limit"
         );
     }
-
-    // A page class is a typed slice + cursor + `hasMore`, and its manager
-    // paginate method delegates to the base method and reads the envelope
-    // (D-131). Folders' `getItems` is marker-paginated.
-    let page = files
-        .iter()
-        .find(|f| f.content.contains("public Boolean hasMore;"))
-        .expect("at least one page class");
-    assert!(page.content.contains("public List<"));
-    assert!(
-        page.content.contains("public String nextMarker;")
-            || page.content.contains("public Long nextOffset;")
-    );
-    let folders = files
-        .iter()
-        .find(|f| f.path.ends_with("/BoxFolders.cls"))
-        .expect("BoxFolders");
-    assert!(
-        folders.content.contains("getItemsPage("),
-        "the paged getItems gains a getItemsPage helper"
-    );
-    assert!(
-        folders.content.contains("= this.getItems(")
-            && folders.content.contains(".items = envelope.entries;"),
-        "the page helper delegates to the base method and reads the envelope"
-    );
 }
 
 #[test]

@@ -484,7 +484,8 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     // Every class has exactly one matching -meta.xml sidecar (source
     // format), so the tree deploys as-is. After dedupe (D-127): 898 model
     // classes + 85 managers + the Box client + 3 contract stubs + 4
-    // hand-written runtime classes + 64 pagination page classes (D-131) = 1055.
+    // hand-written runtime classes = 991. (Pagination adds no classes — the
+    // base method's envelope is the page, D-131.)
     let classes: Vec<&str> = files
         .iter()
         .filter(|f| f.path.ends_with(".cls"))
@@ -492,8 +493,8 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         .collect();
     assert_eq!(
         classes.len(),
-        1055,
-        "models + managers + client + stubs + runtime + pages"
+        991,
+        "models + managers + client + stubs + runtime"
     );
     // The hand-written runtime ships inside the deployable tree (Apex is one
     // flat namespace), behind the generated `BoxClient` contract.
@@ -552,8 +553,8 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     );
     // 336 endpoint pages + 85 manager indexes + 1 top index = 422.
     assert_eq!(docs.len(), 422, "endpoint + manager + top-index docs");
-    // 5 scaffolding + 1055 classes + 1055 metas + 422 docs.
-    assert_eq!(files.len(), 5 + 1055 * 2 + 422);
+    // 5 scaffolding + 991 classes + 991 metas + 422 docs.
+    assert_eq!(files.len(), 5 + 991 * 2 + 422);
 
     // Deterministic and path-sorted.
     let sorted: Vec<&String> = {
@@ -610,4 +611,17 @@ fn each_endpoint_has_a_markdown_doc_with_a_runnable_snippet() {
         body,
         "FileFull result = client.files.getById(fileId, null, null, null, null);",
     );
+    // A non-paged endpoint has no pagination section.
+    assert!(!body.contains("## Pagination"));
+
+    // A paged endpoint documents the cursor loop (no page classes — the
+    // envelope is the page, D-131). Folders' `getItems` is marker-paged.
+    let get_items = files
+        .iter()
+        .find(|f| f.path == "docs/folders/getItems.md")
+        .expect("docs/folders/getItems.md");
+    let paged = &get_items.content;
+    assert_contains(paged, "## Pagination");
+    assert_contains(paged, "while (String.isNotBlank(page.next_marker)) {");
+    assert_contains(paged, "page = client.folders.getItems(");
 }

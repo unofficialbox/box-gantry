@@ -32,7 +32,7 @@ backends + runtimes, not new engine.
 
 ```
 v1 — Go 🐹    ██████████  100%   SHIPPED 2026-07-13
-v2 — Apex ☁️  █████░░░░░   ~56%   in progress (M4) — models, SFDX loop, JSON, managers, VR-1.3 green; naming overhaul (immediate-context, short methods, dedupe → 991 classes); SFDX scaffolding + ApexDoc + per-endpoint docs (D-129); hand-written runtime — callable SDK (D-130); governor-limit-aware pagination (D-131)
+v2 — Apex ☁️  █████░░░░░   ~56%   in progress (M4) — models, SFDX loop, JSON, managers, VR-1.3 green; naming overhaul (immediate-context, short methods, dedupe → 991 classes); SFDX scaffolding + ApexDoc + per-endpoint docs (D-129); hand-written runtime — callable SDK (D-130); governor-limit-aware pagination — documented, no extra classes (D-131)
 v3 — Rust 🦀  ░░░░░░░░░░    0%   after (M5)
 ```
 

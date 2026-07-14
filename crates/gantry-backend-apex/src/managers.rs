@@ -11,14 +11,13 @@
 //! response into the model type; errors are exceptions (manifest
 //! `ErrorModel::Exceptions`), thrown by the runtime.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt::Write as _;
 
 use gantry_ir as ir;
 use gantry_ir::naming::{camel, pascal};
 use gantry_manifest::CapabilityManifest;
 use gantry_sema::Analysis;
-use gantry_synth::{PageStyle, PagedOperation};
 
 use crate::models::{ClassNames, apex_type, mint_unique};
 use crate::{CLASSES_DIR, GeneratedFile, safe_word};
@@ -42,45 +41,14 @@ pub fn generate_managers(
     let names = ClassNames::build(program, limit);
     let infos = manager_infos(analysis, &names, limit);
 
-    // Pagination is detected once, structurally, from the shared synth pass
-    // (FR-7.3) — the same source the Go backend uses.
-    let paged_ops = gantry_synth::detect_pagination(analysis);
-    let paged: HashMap<usize, &PagedOperation> =
-        paged_ops.iter().map(|p| (p.operation, p)).collect();
-
-    // Page-class names share the flat namespace, so mint them into a set of
-    // every name already taken (models + runtime + managers + client).
-    let mut used_classes: HashSet<String> = names.names().map(str::to_string).collect();
-    for reserved in RUNTIME_NAMES
-        .iter()
-        .chain(crate::runtime::RUNTIME_CLASS_NAMES)
-    {
-        used_classes.insert((*reserved).to_string());
-    }
-    for info in &infos {
-        used_classes.insert(info.class.clone());
-    }
-
     let mut files = Vec::new();
-    let mut pages: Vec<GeneratedFile> = Vec::new();
     for info in &infos {
         let op_indices = &analysis.managers[&info.manager];
         files.push(GeneratedFile {
             path: format!("{CLASSES_DIR}/{}.cls", info.class),
-            content: manager_class(
-                program,
-                &names,
-                &info.class,
-                &info.manager,
-                op_indices,
-                &paged,
-                limit,
-                &mut used_classes,
-                &mut pages,
-            ),
+            content: manager_class(program, &names, &info.class, &info.manager, op_indices),
         });
     }
-    files.extend(pages);
 
     let client_fields: Vec<(String, String)> = infos
         .iter()
@@ -134,17 +102,12 @@ pub(crate) fn manager_infos(
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
 fn manager_class(
     program: &ir::Program,
     names: &ClassNames,
     class: &str,
     manager: &str,
     op_indices: &[usize],
-    paged: &HashMap<usize, &PagedOperation>,
-    limit: usize,
-    used_classes: &mut HashSet<String>,
-    pages: &mut Vec<GeneratedFile>,
 ) -> String {
     let mut out = header();
     let _ = writeln!(
@@ -170,30 +133,7 @@ fn manager_class(
     for &index in op_indices {
         let op = &program.operations[index];
         out.push('\n');
-        let method_name = render_operation(&mut out, program, names, op, &mut used);
-        // A paginated operation gains a governor-limit-aware `…Page` helper
-        // and its own page class (D-131).
-        if let Some(page) = paged.get(&index) {
-            let page_class = mint_unique(
-                &format!("{class}{}Page", pascal(&method_name)),
-                limit,
-                used_classes,
-            );
-            out.push('\n');
-            render_paginate(
-                &mut out,
-                program,
-                names,
-                op,
-                &method_name,
-                &page_class,
-                page,
-            );
-            pages.push(GeneratedFile {
-                path: format!("{CLASSES_DIR}/{page_class}.cls"),
-                content: page_class_source(program, names, &page_class, &method_name, page),
-            });
-        }
+        render_operation(&mut out, program, names, op, &mut used);
     }
 
     let _ = writeln!(out, "}}");
@@ -274,16 +214,6 @@ impl OpSignature {
         args.join(", ")
     }
 
-    /// The argument names to forward this signature to another method
-    /// (a `…Page` helper delegating to the base method).
-    fn forward_args(&self) -> String {
-        let mut args: Vec<String> = self.params.iter().map(|p| p.name.clone()).collect();
-        if self.body_type.is_some() {
-            args.push("body".to_string());
-        }
-        args.join(", ")
-    }
-
     /// The ApexDoc block for the method (structural — the spec carries no
     /// per-operation prose in the IR, so this documents the wire shape).
     fn apexdoc(&self) -> String {
@@ -353,17 +283,15 @@ pub(crate) fn path_display(path: &[ir::PathSegment]) -> String {
     out
 }
 
-/// Render the operation's method; returns the (unique) method name so the
-/// caller can wire a pagination helper to it.
 fn render_operation(
     out: &mut String,
     program: &ir::Program,
     names: &ClassNames,
     op: &ir::Operation,
     used: &mut HashSet<String>,
-) -> String {
+) {
     let method_name = unique_method_name(op, used);
-    let sig = op_signature(program, names, op, method_name.clone());
+    let sig = op_signature(program, names, op, method_name);
 
     out.push_str(&sig.apexdoc());
     let _ = writeln!(
@@ -426,114 +354,6 @@ fn render_operation(
         let _ = writeln!(out, "        return {expr};");
     }
     let _ = writeln!(out, "    }}");
-    method_name
-}
-
-/// Render the governor-limit-aware `…Page` helper: it delegates to the base
-/// method for one page, then repackages the envelope's entries + cursor into
-/// a typed page object (D-131). Apex has no lazy iterators and governor
-/// limits forbid auto-fetching every page, so the caller loops explicitly:
-/// call, check `hasMore`, pass the cursor back.
-fn render_paginate(
-    out: &mut String,
-    program: &ir::Program,
-    names: &ClassNames,
-    op: &ir::Operation,
-    base_method: &str,
-    page_class: &str,
-    page: &PagedOperation,
-) {
-    let sig = op_signature(program, names, op, format!("{base_method}Page"));
-    let envelope = response_type(program, names, &op.response);
-    let entries_field = safe_word(page.entries_wire.as_str());
-    let cursor_field = safe_word(page.cursor_wire.as_str());
-    let cont = match page.style {
-        PageStyle::Marker => "pass `nextMarker` back as the cursor",
-        PageStyle::Offset => "pass `nextOffset` back as the cursor",
-    };
-
-    let _ = writeln!(
-        out,
-        "    /**\n     * Fetch one page of `{base_method}` (governor-limit-aware\n     \
-         * pagination). Read `hasMore` and {cont} to continue — Apex cannot\n     \
-         * lazily iterate, and governor limits cap callouts per transaction.\n     \
-         * @return `{page_class}`\n     */"
-    );
-    let _ = writeln!(
-        out,
-        "    public {page_class} {method}({args}) {{",
-        method = sig.method_name,
-        args = sig.arg_list(),
-    );
-    let _ = writeln!(
-        out,
-        "        {envelope} envelope = this.{base_method}({});",
-        sig.forward_args()
-    );
-    let _ = writeln!(out, "        {page_class} page = new {page_class}();");
-    let _ = writeln!(out, "        page.items = envelope.{entries_field};");
-    match page.style {
-        PageStyle::Marker => {
-            let _ = writeln!(out, "        page.nextMarker = envelope.{cursor_field};");
-            let _ = writeln!(
-                out,
-                "        page.hasMore = String.isNotBlank(envelope.{cursor_field});"
-            );
-        }
-        PageStyle::Offset => {
-            let _ = writeln!(out, "        Long current = 0;");
-            let _ = writeln!(
-                out,
-                "        if (envelope.{cursor_field} != null) current = envelope.{cursor_field};"
-            );
-            let _ = writeln!(
-                out,
-                "        Integer count = (envelope.{entries_field} == null) ? 0 : envelope.{entries_field}.size();"
-            );
-            let _ = writeln!(out, "        page.nextOffset = current + count;");
-            let _ = writeln!(out, "        page.hasMore = count > 0;");
-        }
-    }
-    let _ = writeln!(out, "        return page;");
-    let _ = writeln!(out, "    }}");
-}
-
-/// The per-operation page class: the typed slice + the next cursor + a
-/// `hasMore` flag (D-131). No generics in Apex, so one class per paged op.
-fn page_class_source(
-    program: &ir::Program,
-    names: &ClassNames,
-    page_class: &str,
-    base_method: &str,
-    page: &PagedOperation,
-) -> String {
-    let element = apex_type(program, names, &page.element);
-    let mut out = header();
-    let _ = writeln!(
-        out,
-        "/** One page of `{base_method}` results (governor-limit-aware\n \
-         * pagination). Loop while `hasMore`, feeding the cursor back. */"
-    );
-    let _ = writeln!(out, "public class {page_class} {{");
-    let _ = writeln!(out, "    /** The items on this page. */");
-    let _ = writeln!(out, "    public List<{element}> items;");
-    match page.style {
-        PageStyle::Marker => {
-            let _ = writeln!(
-                out,
-                "    /** The cursor for the next page; blank when exhausted. */"
-            );
-            let _ = writeln!(out, "    public String nextMarker;");
-        }
-        PageStyle::Offset => {
-            let _ = writeln!(out, "    /** The offset to request for the next page. */");
-            let _ = writeln!(out, "    public Long nextOffset;");
-        }
-    }
-    let _ = writeln!(out, "    /** Whether another page is available. */");
-    let _ = writeln!(out, "    public Boolean hasMore;");
-    let _ = writeln!(out, "}}");
-    out
 }
 
 /// The Apex return type for a response shape.

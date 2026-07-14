@@ -1032,7 +1032,7 @@ reserved in the flat-namespace minter so no generated class collides.
 Verified by the scratch-org compile loop (VR-1.3). New regression tests assert
 the runtime classes are present; 105 tests, fmt, clippy, determinism green.
 
-## D-131 — Governor-limit-aware Apex pagination (per-operation page classes)
+## D-131 — Governor-limit-aware Apex pagination (documented, no extra classes)
 
 **Context.** Box paginates by `marker` (opaque cursor + `next_marker`) or
 `offset` (numeric), detected structurally by the shared synth pass
@@ -1041,33 +1041,32 @@ each to a lazy `iter.Seq2` that auto-fetches every page. Apex can't: there are
 no lazy iterators, and the per-transaction callout governor limit (100) forbids
 auto-fetching an unbounded number of pages.
 
-**Decision.** Each paginated operation gains, alongside its plain method, a
-**`…Page` helper** and a **per-operation page class** (no generics in Apex, so
-one class per paged op — the page class name is minted through the same
-40-char / global-uniqueness minter as every other class):
+**Decision.** No sugar. The base method already returns the paginated
+envelope — the response struct carries both this page's `entries` and the
+cursor for the next page (`next_marker`, or the running `offset`). That
+envelope *is* the page, so an extra `…Page` helper and a per-operation page
+class would only re-wrap high-fidelity data in a lossy `List<Object>`. We keep
+the surface lean: pagination is supported by the regular method + envelope, and
+the explicit cursor loop is **documented** in each paged endpoint's `docs/`
+page (the `## Pagination` section) rather than generated as code.
 
 ```apex
-public class BoxFoldersGetItemsPage {
-    public List<Object> items;   // the typed slice
-    public String nextMarker;    // (or `Long nextOffset` for offset style)
-    public Boolean hasMore;
-}
-public BoxFoldersGetItemsPage getItemsPage(/* same signature as getItems */) {
-    Items envelope = this.getItems(...);          // delegate to the base method
-    BoxFoldersGetItemsPage page = new BoxFoldersGetItemsPage();
-    page.items = envelope.entries;
-    page.nextMarker = envelope.next_marker;
-    page.hasMore = String.isNotBlank(envelope.next_marker);
-    return page;
+// marker style — the envelope carries entries + next_marker
+Items page = client.folders.getItems(folderId, null /* marker */, limit);
+while (String.isNotBlank(page.next_marker)) {
+    // handle page.entries
+    page = client.folders.getItems(folderId, page.next_marker, limit);
 }
 ```
 
-The caller loops **explicitly**: call, check `hasMore`, feed the cursor back —
-one page per callout, staying within governor limits. The helper delegates to
-the (already tested) base method rather than rebuilding the request.
+The caller loops **explicitly**: call, check the cursor, feed it back — one
+page per callout, staying within governor limits. Offset style advances a
+client-side `Long offset` by `page.entries.size()` until a page is empty.
 
-**Consequences.** The real spec has **64 paginated operations** → 64 `…Page`
-helpers + 64 page classes; `generate --target apex` now ships **1,055 classes**
-(was 991). Reuses `gantry-synth` unchanged. Deterministic; all page-class names
-≤ 40 chars; no invalid identifiers. A `manager_shapes` regression pins the
-count, the delegation, and the page-class shape; 105 tests, fmt, clippy green.
+**Consequences.** `generate --target apex` still ships **991 classes** — no
+class-count churn for pagination. Reuses `gantry-synth`'s `detect_pagination`
+(the 64 paged ops) purely to flag the docs: the manager index gains a **Paged**
+column and each paged endpoint page gains a runnable `## Pagination` cursor
+loop, rendered from the same `OpSignature` the manager code is (name, param
+order, and envelope type can't drift). Deterministic; a `model_shapes`
+regression pins the pagination-doc section; 105 tests, fmt, clippy green.

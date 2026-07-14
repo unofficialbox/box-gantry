@@ -367,11 +367,12 @@ already proved it (85/85 managers lower, zero IR changes forced).
     exception), `BoxTokenProvider` + `BoxDeveloperTokenProvider`,
     `BoxApiException` — embedded into every generated project. The SDK is now
     callable. 991 classes; regression tests + VR-1.3.)
-33. ~~Governor-limit-aware pagination (per-operation page classes).~~ ✅
-    (D-131: each of the 64 paged ops gains a `…Page` helper + a page class
-    (`items` + `nextMarker`/`nextOffset` + `hasMore`) delegating to the base
-    method; the caller loops one page per callout. Reuses `gantry-synth`.
-    1,055 classes; regression tests + determinism.)
+33. ~~Governor-limit-aware pagination (documented, no extra classes).~~ ✅
+    (D-131: the base method's envelope already carries `entries` + the cursor,
+    so no `…Page` sugar — pagination is the regular method plus a documented
+    explicit cursor loop (one page per callout). Reuses `gantry-synth`'s
+    `detect_pagination` to flag the docs (Paged column + `## Pagination`
+    section). Still 991 classes; regression tests + determinism.)
 34. **Next**: CCG/JWT token providers (Crypto-signed, cached);
     chunked upload; the remaining serialization gaps (field↔wire remap,
     tri-state); the hand-written Apex runtime implementing `BoxClient`
