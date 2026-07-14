@@ -771,6 +771,21 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
             "missing scaffolding file {scaffold}"
         );
     }
+    // A Remote Site Setting per Box host — without these the deployed SDK can't
+    // make a single callout (Apex blocks unlisted endpoints).
+    for host in [
+        "Box_api_box_com",
+        "Box_upload_box_com",
+        "Box_account_box_com",
+        "Box_dl_boxcloud_com",
+    ] {
+        let path =
+            format!("force-app/main/default/remoteSiteSettings/{host}.remoteSiteSetting-meta.xml");
+        assert!(
+            files.iter().any(|f| f.path == path),
+            "missing remote site setting {host}"
+        );
+    }
     // One Markdown doc per endpoint, plus a per-manager index and the top
     // index — none of it under the package directory, so it never deploys.
     let docs: Vec<&str> = files
@@ -788,8 +803,9 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     );
     // 336 endpoint pages + 85 manager indexes + 1 top index = 422.
     assert_eq!(docs.len(), 422, "endpoint + manager + top-index docs");
-    // 5 scaffolding + 1085 classes + 1085 metas + 422 docs.
-    assert_eq!(files.len(), 5 + (999 + 87) * 2 + 422);
+    // 5 base scaffolding + 4 Remote Site Settings + 1086 classes + 1086 metas
+    // + 422 docs.
+    assert_eq!(files.len(), 5 + 4 + (999 + 87) * 2 + 422);
 
     // Deterministic and path-sorted.
     let sorted: Vec<&String> = {

@@ -152,7 +152,8 @@ effort.
 | Conformance checklist report (VR-3) | every CI run | report + release-blocking |
 | Round-trip suite (VR-4) | every commit | merge-blocking |
 | Apex scratch-org validate (VR-1.3) | per merge (M4+) | merge-blocking |
-| Live smoke vs Box dev account (VR-7) | per release + on demand | release-blocking |
+| Apex live smoke vs real Box (VR-1.4) | per release + on demand | release-blocking |
+| Live smoke vs Box dev account (VR-7, Go) | per release + on demand | release-blocking |
 | Spec-diff report (FR-9) | per spec update | informs SDK version bump |
 
 ## ⚠️ Risk register
@@ -420,4 +421,12 @@ already proved it (85/85 managers lower, zero IR changes forced).
     `fieldsToNull` (Apex field names) whose `denormalizeKeys` injects explicit
     nulls. Split "affected" into read (normalizeKeys/responses) vs write
     (denormalizeKeys/requests). 22 structs affected; no new classes, still 1,086.)
-41. **Next**: M5 — Rust backend + runtime (v3). Apex (M4) correctness is complete.
+41. ~~Apex live smoke (VR-1.4) + shipped Remote Site Settings.~~ ✅ (D-139: the
+    generator emits a `RemoteSiteSetting` per Box host so the deployed SDK can
+    actually make callouts; a manual workflow deploys the SDK to a scratch org and
+    runs anonymous Apex that mints a CCG token and calls `GET /users/me` +
+    `GET /folders/0/items` against live Box. The Apex analogue of Go's VR-7. Still
+    1,086 classes + 4 Remote Site Settings.)
+42. **Next**: M5 — Rust backend + runtime (v3). Apex (M4) is functionally
+    complete; remaining Apex work toward "shipped" is the packaged deliverable
+    (NF-8) and the formal conformance matrix (VR-3/4/6 equivalents).
