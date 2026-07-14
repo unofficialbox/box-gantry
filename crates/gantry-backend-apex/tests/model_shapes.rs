@@ -157,6 +157,84 @@ fn field_names_are_shaped_into_valid_apex_identifiers() {
     assert_contains(&go, "public Boolean x2fa_enabled; // wire: 2fa_enabled");
 }
 
+// --- field ↔ wire serialization remap ------------------------------------
+
+#[test]
+fn a_struct_with_a_renamed_field_gets_key_remap_methods() {
+    // `limit` → `limit_r` can't round-trip through native `JSON.deserialize`
+    // (which matches on the field name), so the struct is "affected" and gains
+    // `normalizeKeys` (wire → Apex) and `denormalizeKeys` (Apex → wire) that
+    // rename the key on the untyped JSON tree.
+    let go = only(vec![struct_decl(
+        "S",
+        vec![field("limit", ir::Type::Int64)],
+    )]);
+    assert_contains(
+        &go,
+        "public static Map<String, Object> normalizeKeys(Map<String, Object> raw) {",
+    );
+    assert_contains(&go, "if (raw.containsKey('limit')) {");
+    assert_contains(&go, "raw.put('limit_r', v);");
+    assert_contains(
+        &go,
+        "public static Map<String, Object> denormalizeKeys(Map<String, Object> raw) {",
+    );
+    assert_contains(&go, "if (raw.containsKey('limit_r')) {");
+    assert_contains(&go, "raw.put('limit', v);");
+}
+
+#[test]
+fn a_clean_struct_has_no_remap_methods() {
+    // Every field's Apex name equals its wire key, so native (de)serialization
+    // already round-trips — no remap code is generated (872 of 991 classes).
+    let go = only(vec![struct_decl(
+        "S",
+        vec![
+            field("id", ir::Type::String),
+            field("name", ir::Type::String),
+        ],
+    )]);
+    assert!(
+        !go.contains("normalizeKeys"),
+        "a clean struct must not carry remap methods:\n{go}"
+    );
+}
+
+#[test]
+fn remap_recurses_into_affected_children_only() {
+    // A parent that is itself clean but holds a list of an affected child is
+    // still affected (native deserialize would drop the child's keys), and its
+    // remap descends into the list, delegating to the child's remap.
+    let child = struct_decl("Child", vec![field("limit", ir::Type::Int64)]);
+    let parent = struct_decl(
+        "Parent",
+        vec![
+            field("id", ir::Type::String),
+            field(
+                "kids",
+                ir::Type::List(Box::new(ir::Type::Decl(ir::DeclId(0)))),
+            ),
+        ],
+    );
+    let files = render(vec![child, parent]);
+    let parent_src = &files
+        .iter()
+        .find(|f| f.path.ends_with("/Parent.cls"))
+        .expect("Parent class")
+        .content;
+    // The clean `id` field is not remapped; only the affected `kids` list is,
+    // and it delegates to the child's remap per element.
+    assert_contains(parent_src, "if (raw.containsKey('kids')) {");
+    assert_contains(
+        parent_src,
+        "wElem0 = Child.normalizeKeys((Map<String, Object>) wElem0);",
+    );
+    assert!(
+        !parent_src.contains("raw.remove('id')"),
+        "a matching field must not be remapped:\n{parent_src}"
+    );
+}
+
 // --- enums / unions / aliases --------------------------------------------
 
 #[test]

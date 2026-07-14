@@ -373,8 +373,13 @@ already proved it (85/85 managers lower, zero IR changes forced).
     explicit cursor loop (one page per callout). Reuses `gantry-synth`'s
     `detect_pagination` to flag the docs (Paged column + `## Pagination`
     section). Still 991 classes; regression tests + determinism.)
-34. **Next**: CCG/JWT token providers (Crypto-signed, cached);
-    chunked upload; the remaining serialization gaps (field↔wire remap,
-    tri-state); the hand-written Apex runtime implementing `BoxClient`
-    (`Http` + Crypto-JWT); generated test classes clearing the 75% gate.
-    Then M5 — Rust (v3).
+34. ~~Field ↔ wire serialization remap.~~ ✅ (D-132: Apex `JSON.deserialize`
+    matches on the field name with no wire-name mapping, so a renamed field
+    (`limit`→`limit_r`, `$parent`→`parent`, `Box__…` runs) silently dropped
+    values. Affected structs (119/991) now carry `normalizeKeys`/`denormalizeKeys`
+    that remap keys on the untyped tree — recursing only into affected children,
+    never touching free-form maps — around native (de)serialization; the managers
+    route both ways. Regression tests + determinism.)
+35. **Next**: CCG/JWT token providers (Crypto-signed, cached);
+    chunked upload; the remaining tri-state serialization gap (absent-vs-null);
+    generated test classes clearing the 75% gate. Then M5 — Rust (v3).

@@ -20,6 +20,7 @@ mod docs;
 mod managers;
 mod models;
 mod runtime;
+mod wire;
 
 pub use managers::generate_managers;
 pub use models::generate_models;

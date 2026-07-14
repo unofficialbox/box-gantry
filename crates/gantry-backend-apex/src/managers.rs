@@ -39,6 +39,7 @@ pub fn generate_managers(
         }
     };
     let names = ClassNames::build(program, limit);
+    let wire = crate::wire::Wire::build(program, &names);
     let infos = manager_infos(analysis, &names, limit);
 
     let mut files = Vec::new();
@@ -46,7 +47,14 @@ pub fn generate_managers(
         let op_indices = &analysis.managers[&info.manager];
         files.push(GeneratedFile {
             path: format!("{CLASSES_DIR}/{}.cls", info.class),
-            content: manager_class(program, &names, &info.class, &info.manager, op_indices),
+            content: manager_class(
+                program,
+                &names,
+                &wire,
+                &info.class,
+                &info.manager,
+                op_indices,
+            ),
         });
     }
 
@@ -105,6 +113,7 @@ pub(crate) fn manager_infos(
 fn manager_class(
     program: &ir::Program,
     names: &ClassNames,
+    wire: &crate::wire::Wire<'_>,
     class: &str,
     manager: &str,
     op_indices: &[usize],
@@ -133,7 +142,7 @@ fn manager_class(
     for &index in op_indices {
         let op = &program.operations[index];
         out.push('\n');
-        render_operation(&mut out, program, names, op, &mut used);
+        render_operation(&mut out, program, names, wire, op, &mut used);
     }
 
     let _ = writeln!(out, "}}");
@@ -287,6 +296,7 @@ fn render_operation(
     out: &mut String,
     program: &ir::Program,
     names: &ClassNames,
+    wire: &crate::wire::Wire<'_>,
     op: &ir::Operation,
     used: &mut HashSet<String>,
 ) {
@@ -344,16 +354,42 @@ fn render_operation(
             | ir::RequestMedia::JsonPatch
             | ir::RequestMedia::UrlEncoded
             | ir::RequestMedia::Multipart => {
-                let _ = writeln!(out, "        request.body = body;");
+                // A body whose type reaches an affected struct is serialized,
+                // then its keys are renamed to the wire shape (Apex → wire);
+                // otherwise the typed object serializes directly.
+                if wire.type_reaches_affected(&body.ty) {
+                    wire.emit_request_body(out, &body.ty);
+                } else {
+                    let _ = writeln!(out, "        request.body = body;");
+                }
             }
         }
     }
 
     let _ = writeln!(out, "        BoxResponse response = client.send(request);");
-    if let Some(expr) = deserialize_expr(program, names, &op.response) {
+    emit_return(out, program, names, wire, &op.response);
+    let _ = writeln!(out, "    }}");
+}
+
+/// Emit the response handling: `void` returns nothing; a JSON response whose
+/// type reaches an affected struct is key-remapped (wire → Apex) before native
+/// deserialize; everything else keeps the direct native path.
+fn emit_return(
+    out: &mut String,
+    program: &ir::Program,
+    names: &ClassNames,
+    wire: &crate::wire::Wire<'_>,
+    shape: &ir::ResponseShape,
+) {
+    if let ir::ResponseShape::Json(ty) = shape
+        && wire.type_reaches_affected(ty)
+    {
+        wire.emit_response(out, &apex_type(program, names, ty), ty);
+        return;
+    }
+    if let Some(expr) = deserialize_expr(program, names, shape) {
         let _ = writeln!(out, "        return {expr};");
     }
-    let _ = writeln!(out, "    }}");
 }
 
 /// The Apex return type for a response shape.
