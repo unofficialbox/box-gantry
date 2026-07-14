@@ -235,6 +235,53 @@ private class BoxHttpClientTest {
     }
 
     @isTest
+    static void suppressNullsOmitsNullKeysByDefault() {
+        // The default (suppressNulls = true): a null-valued key is dropped from
+        // the serialized body — an unset field stays absent (D-138).
+        SequenceMock mock = new SequenceMock(
+            new List<Integer>{ 200 },
+            new List<String>{ '{}' }
+        );
+        Test.setMock(HttpCalloutMock.class, mock);
+        CountingTokens tokens = new CountingTokens();
+
+        BoxRequest req = request('POST', 'api', '/things');
+        req.body = new Map<String, Object>{ 'keep' => 'x', 'drop' => null };
+
+        Test.startTest();
+        new BoxHttpClient(tokens).send(req);
+        Test.stopTest();
+
+        String body = mock.seen[0].getBody();
+        System.assert(body.contains('"keep"'), 'a set key is sent: ' + body);
+        System.assert(!body.contains('"drop"'), 'a null key is omitted: ' + body);
+    }
+
+    @isTest
+    static void explicitNullsAreSentWhenSuppressionIsOff() {
+        // A body routed through denormalizeKeys arrives as a reduced map and
+        // sets suppressNulls = false, so an intentional null reaches Box.
+        SequenceMock mock = new SequenceMock(
+            new List<Integer>{ 200 },
+            new List<String>{ '{}' }
+        );
+        Test.setMock(HttpCalloutMock.class, mock);
+        CountingTokens tokens = new CountingTokens();
+
+        BoxRequest req = request('POST', 'api', '/things');
+        req.body = new Map<String, Object>{ 'keep' => 'x', 'clear' => null };
+        req.suppressNulls = false;
+
+        Test.startTest();
+        new BoxHttpClient(tokens).send(req);
+        Test.stopTest();
+
+        String body = mock.seen[0].getBody();
+        System.assert(body.contains('"keep"'), 'a set key is sent: ' + body);
+        System.assert(body.contains('"clear":null'), 'an explicit null is sent: ' + body);
+    }
+
+    @isTest
     static void unknownBaseUrlThrowsBeforeAnyCallout() {
         SequenceMock mock = new SequenceMock(
             new List<Integer>{ 200 },

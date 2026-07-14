@@ -257,6 +257,28 @@ fn a_nullable_field_off_the_request_path_gets_no_explicit_null_control() {
 }
 
 #[test]
+fn the_null_control_field_dodges_a_colliding_schema_field() {
+    // A real schema field named `fieldsToNull` must not be shadowed by the
+    // control field (Apex identifiers are case-insensitive) nor have its value
+    // consumed by the control-key removal — the control name is disambiguated.
+    let s = struct_with_optional_body(
+        vec![
+            field("fieldsToNull", ir::Type::String),
+            field("note", ir::Type::Nullable(Box::new(ir::Type::String))),
+        ],
+        true,
+    );
+    assert_contains(&s, "public String fieldsToNull; // wire: fieldsToNull");
+    assert_contains(&s, "public Set<String> fieldsToNull2 = new Set<String>();");
+    // The removal targets the minted control name, not the real field.
+    assert_contains(&s, "Object toNull = raw.remove('fieldsToNull2');");
+    assert!(
+        !s.contains("raw.remove('fieldsToNull')"),
+        "the real `fieldsToNull` wire field must not be consumed as control:\n{s}"
+    );
+}
+
+#[test]
 fn a_clean_struct_has_no_remap_methods() {
     // Every field's Apex name equals its wire key, so native (de)serialization
     // already round-trips — no remap code is generated (872 of 991 classes).

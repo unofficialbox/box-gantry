@@ -154,21 +154,29 @@ fn render_decl(
             // a struct (or one transitively holding one) is "affected" and gets
             // generated `normalizeKeys`/`denormalizeKeys` that remap the keys on
             // the untyped tree (see `wire.rs`); the managers route through them.
-            let needs_hooks = wire.needs_hooks(id);
+            let read_hook = wire.needs_read_hook(id);
+            let write_hook = wire.needs_write_hook(id);
             let null_writable = wire.is_null_writable(id);
-            let remap_note = if needs_hooks {
+            // Describe only the hooks the class actually carries: `normalizeKeys`
+            // exists on the read path, `denormalizeKeys` on the write path.
+            let remap_note = if read_hook {
                 "\n * Some fields rename between the wire and Apex, so this class \
                  carries\n * `normalizeKeys`/`denormalizeKeys` (used by the managers) to \
                  remap\n * JSON keys around native (de)serialization."
+            } else if write_hook {
+                "\n * This class carries a `denormalizeKeys` write hook (used by the \
+                 managers)\n * to shape request bodies for the wire."
             } else {
                 ""
             };
-            let null_note = if null_writable {
-                "\n * Explicit null (D-138): to clear a field on update, add its Apex\n \
-                 * field name to `fieldsToNull` — the request sends JSON `null` for it;\n \
-                 * fields you leave unset stay absent."
-            } else {
-                ""
+            let control = null_writable.then(|| wire.null_control_name(s));
+            let null_note = match &control {
+                Some(control) => format!(
+                    "\n * Explicit null (D-138): to clear a field on update, add its Apex\n \
+                     * field name to `{control}` — the request sends JSON `null` for it;\n \
+                     * fields you leave unset stay absent."
+                ),
+                None => String::new(),
             };
             let _ = writeln!(
                 out,
@@ -186,14 +194,14 @@ fn render_decl(
                     field.wire_name
                 );
             }
-            if null_writable {
+            if let Some(control) = &control {
                 let _ = writeln!(
                     out,
                     "    // Explicit-null control (D-138): Apex field names to send as JSON \
-                     `null`.\n    public Set<String> fieldsToNull = new Set<String>();"
+                     `null`.\n    public Set<String> {control} = new Set<String>();"
                 );
             }
-            if needs_hooks {
+            if read_hook || write_hook {
                 out.push_str(&wire.hooks(id, name, s));
             }
             let _ = writeln!(out, "}}");

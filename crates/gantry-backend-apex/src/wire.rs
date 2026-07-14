@@ -149,14 +149,34 @@ impl<'a> Wire<'a> {
         }
     }
 
-    /// Does this struct need any generated hook (either direction)?
-    pub(crate) fn needs_hooks(&self, id: ir::DeclId) -> bool {
-        self.read_affected.contains(&id.0) || self.write_affected.contains(&id.0)
-    }
-
     /// Does this struct need `normalizeKeys` (the read path)? Used by union parse.
     pub(crate) fn needs_read_hook(&self, id: ir::DeclId) -> bool {
         self.read_affected.contains(&id.0)
+    }
+
+    /// Does this struct need `denormalizeKeys` (the write path)?
+    pub(crate) fn needs_write_hook(&self, id: ir::DeclId) -> bool {
+        self.write_affected.contains(&id.0)
+    }
+
+    /// The explicit-null control field's Apex name for a null-writable struct.
+    /// Normally `fieldsToNull`, but disambiguated (case-insensitively) if a real
+    /// schema field already sanitizes to that name — the control key must never
+    /// collide with a wire field (whose value `denormalizeKeys` would otherwise
+    /// consume). Deterministic: same field set → same name.
+    pub(crate) fn null_control_name(&self, s: &ir::StructDecl) -> String {
+        let taken: HashSet<String> = s
+            .fields
+            .iter()
+            .map(|f| safe_word(f.name.as_str()).to_ascii_lowercase())
+            .collect();
+        let mut name = "fieldsToNull".to_string();
+        let mut n = 2u32;
+        while taken.contains(&name.to_ascii_lowercase()) {
+            name = format!("fieldsToNull{n}");
+            n += 1;
+        }
+        name
     }
 
     /// Is this a body-reachable struct with a nullable field (carries
@@ -260,11 +280,16 @@ impl<'a> Wire<'a> {
     /// `fieldsToNull`, write `"<wire>": null` (Box clears it); then drop the
     /// control key so it never reaches the wire.
     fn emit_null_injection(&self, out: &mut String, s: &ir::StructDecl) {
+        let control = self.null_control_name(s);
         let _ = writeln!(
             out,
             "        // Explicit null (D-138): send `null` for each field the caller listed."
         );
-        let _ = writeln!(out, "        Object toNull = raw.remove('fieldsToNull');");
+        let _ = writeln!(
+            out,
+            "        Object toNull = raw.remove('{}');",
+            escape(&control)
+        );
         let _ = writeln!(out, "        if (toNull instanceof List<Object>) {{");
         let _ = writeln!(
             out,
