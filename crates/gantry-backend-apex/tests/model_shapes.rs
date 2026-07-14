@@ -405,6 +405,51 @@ fn discriminated_union_gets_deserialize_untyped_dispatch() {
 }
 
 #[test]
+fn a_union_variant_with_renamed_keys_is_normalized_before_dispatch() {
+    // The `file` variant is a clean struct; the `folder` variant has a renamed
+    // field (`limit`→`limit_r`), so it must be `normalizeKeys`'d before native
+    // deserialize — otherwise the union dispatch would drop its keys (D-132).
+    let files = render(vec![
+        struct_decl("File", vec![field("id", ir::Type::String)]),
+        struct_decl("Folder", vec![field("limit", ir::Type::Int64)]),
+        ir::Decl {
+            name: ident("Item"),
+            module: schemas(),
+            api_version: None,
+            kind: ir::DeclKind::Union(ir::UnionDecl {
+                discriminator: Some("type".into()),
+                variants: vec![
+                    ir::UnionVariant {
+                        discriminator_value: Some("file".into()),
+                        ty: ir::Type::Decl(ir::DeclId(0)),
+                    },
+                    ir::UnionVariant {
+                        discriminator_value: Some("folder".into()),
+                        ty: ir::Type::Decl(ir::DeclId(1)),
+                    },
+                ],
+                extensibility: ir::Extensibility::Open,
+            }),
+        },
+    ]);
+    let union = &files
+        .iter()
+        .find(|f| f.path == format!("{CLASSES}/Item.cls"))
+        .expect("union class")
+        .content;
+    // Clean variant: dispatched on the raw map.
+    assert_contains(
+        union,
+        "if (tag == 'file') return (File) JSON.deserialize(JSON.serialize(untyped), File.class);",
+    );
+    // Affected variant: keys normalized first.
+    assert_contains(
+        union,
+        "if (tag == 'folder') return (Folder) JSON.deserialize(JSON.serialize(Folder.normalizeKeys(untyped)), Folder.class);",
+    );
+}
+
+#[test]
 fn structural_union_erases_to_object() {
     let go = only(vec![ir::Decl {
         name: ident("AnyValue"),

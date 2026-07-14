@@ -1109,7 +1109,14 @@ denormalizeKeys`; the 872 clean classes keep the direct native path unchanged.
 **119** carry remap methods. Leans entirely on native type conversion — the
 generated code only moves keys. Deterministic; `model_shapes`/`manager_shapes`
 regressions pin the affected/clean split, the nested-recursion shape, and the
-both-way manager routing; fmt, clippy (`-D warnings`) green. Not yet covered:
-discriminated-union *variant* structs that are themselves affected (the union
-dispatches via `JSON.deserialize` inside `parse`) and the tri-state
-absent-vs-null distinction — both tracked as follow-ups.
+both-way manager routing; fmt, clippy (`-D warnings`) green.
+
+**Union variants (follow-up, done).** A discriminated union dispatches inside
+`parse` via `JSON.deserialize(JSON.serialize(untyped), Variant.class)`, which
+would drop an affected variant's renamed keys just like a bare response would.
+Each variant whose struct is affected (5 in the real spec — `FileFull`,
+`Folder`, `FolderFull`, `SearchResults`, `SearchResultsWithSharedLinks`) now
+routes through `Variant.normalizeKeys(untyped)` first; clean variants stay on
+the raw map. A `model_shapes` regression pins the mixed union (clean variant
+bare, affected variant normalized). Still open: the tri-state absent-vs-null
+distinction, tracked separately.

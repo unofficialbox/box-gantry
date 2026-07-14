@@ -220,13 +220,19 @@ fn render_decl(
             }
             let _ = writeln!(out, "}}");
         }
-        ir::DeclKind::Union(u) => render_union(&mut out, names, name, u),
+        ir::DeclKind::Union(u) => render_union(&mut out, names, wire, name, u),
         ir::DeclKind::Alias(_) => return None,
     }
     Some(out)
 }
 
-fn render_union(out: &mut String, names: &ClassNames, name: &str, u: &ir::UnionDecl) {
+fn render_union(
+    out: &mut String,
+    names: &ClassNames,
+    wire: &crate::wire::Wire<'_>,
+    name: &str,
+    u: &ir::UnionDecl,
+) {
     match &u.discriminator {
         Some(_) => {
             let _ = writeln!(
@@ -262,9 +268,17 @@ fn render_union(out: &mut String, names: &ClassNames, name: &str, u: &ir::UnionD
                     (&variant.discriminator_value, &variant.ty)
                     && let Some(variant_ty) = names.get(*id)
                 {
+                    // If the variant's keys need remapping (D-132), normalize
+                    // the untyped map first — otherwise native deserialize into
+                    // the variant would drop its renamed fields.
+                    let payload = if wire.is_affected(*id) {
+                        format!("{variant_ty}.normalizeKeys(untyped)")
+                    } else {
+                        "untyped".to_string()
+                    };
                     let _ = writeln!(
                         out,
-                        "        if (tag == '{}') return ({variant_ty}) JSON.deserialize(JSON.serialize(untyped), {variant_ty}.class);",
+                        "        if (tag == '{}') return ({variant_ty}) JSON.deserialize(JSON.serialize({payload}), {variant_ty}.class);",
                         escape(value)
                     );
                 }
