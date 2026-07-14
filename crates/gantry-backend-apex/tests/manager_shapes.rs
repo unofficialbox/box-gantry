@@ -268,6 +268,62 @@ fn null_writability_alone_routes_the_body_through_the_write_transform() {
     assert_contains(src, "request.suppressNulls = false;");
 }
 
+/// A one-manager program whose operation returns a struct with an `Object`
+/// (`JsonValue`) field, so the manager must route the response through the
+/// generated `deserialize` builder rather than native `JSON.deserialize`.
+fn object_response_sample() -> Vec<GeneratedFile> {
+    let mut program = ir::Program::default();
+    let envelope = program.add(ir::Decl {
+        name: ident("Envelope"),
+        module: ir::ModulePath(vec![ident("schemas")]),
+        api_version: None,
+        kind: ir::DeclKind::Struct(ir::StructDecl {
+            fields: vec![ir::Field {
+                name: ident("payload"),
+                wire_name: "payload".into(),
+                ty: ir::Type::JsonValue,
+            }],
+        }),
+    });
+    program.operations.push(ir::Operation {
+        name: ident("get_thing"),
+        variation: None,
+        manager: ident("things"),
+        api_version: None,
+        method: ir::HttpMethod::Get,
+        base_url: ir::BaseUrl::Api,
+        path: vec![ir::PathSegment::Literal("things".into())],
+        params: vec![],
+        request: None,
+        response: ir::ResponseShape::Json(ir::Type::Decl(envelope)),
+        deprecated: false,
+    });
+    let program = Box::leak(Box::new(program));
+    let analysis = gantry_sema::analyze(program).unwrap();
+    generate_managers(&analysis, &apex())
+}
+
+#[test]
+fn an_object_bearing_response_routes_through_the_deserialize_builder() {
+    let files = object_response_sample();
+    let src = &files
+        .iter()
+        .find(|f| f.path == format!("{CLASSES}/BoxThings.cls"))
+        .expect("BoxThings class")
+        .content;
+    assert_contains(
+        src,
+        "Object parsed = JSON.deserializeUntyped(response.body);",
+    );
+    assert_contains(src, "deserialized = Envelope.deserialize(parsed);");
+    assert_contains(src, "return deserialized;");
+    // It must NOT try native typed deserialize into the Object-bearing type.
+    assert!(
+        !src.contains("(Envelope) JSON.deserialize(response.body"),
+        "an object-bearing response must not use native typed deserialize:\n{src}"
+    );
+}
+
 // --- the whole real spec -------------------------------------------------
 
 fn fixture(name: &str) -> PathBuf {

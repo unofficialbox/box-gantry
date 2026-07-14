@@ -178,10 +178,18 @@ fn render_decl(
                 ),
                 None => String::new(),
             };
+            let object_note = if wire.is_object_bearing(id) {
+                "\n * Some fields are `Object` (a union or free-form JSON), which native\n \
+                 * `JSON.deserialize` can't populate, so this class carries a static\n \
+                 * `deserialize(Object)` the managers call to read a response (D-140)."
+            } else {
+                ""
+            };
             let _ = writeln!(
                 out,
                 "/** Model for the `{name}` schema ({count} field(s)). Fields\n \
-                 * carry their wire (JSON) name in a trailing comment.{remap_note}{null_note} */",
+                 * carry their wire (JSON) name in a trailing comment.\
+                 {remap_note}{null_note}{object_note} */",
                 count = s.fields.len()
             );
             let _ = writeln!(out, "public class {name} {{");
@@ -203,6 +211,12 @@ fn render_decl(
             }
             if read_hook || write_hook {
                 out.push_str(&wire.hooks(id, name, s));
+            }
+            // A struct that reaches an `Object` leaf (a union or free-form JSON)
+            // can't be populated by native typed deserialize, so it carries a
+            // `deserialize(Object)` builder the managers call (D-140).
+            if wire.is_object_bearing(id) {
+                out.push_str(&wire.emit_deserialize(id, name, s));
             }
             let _ = writeln!(out, "}}");
         }
@@ -291,17 +305,25 @@ fn render_union(
                     (&variant.discriminator_value, &variant.ty)
                     && let Some(variant_ty) = names.get(*id)
                 {
-                    // If the variant's keys need remapping (D-132), normalize
-                    // the untyped map first — otherwise native deserialize into
-                    // the variant would drop its renamed fields.
-                    let payload = if wire.needs_read_hook(*id) {
-                        format!("{variant_ty}.normalizeKeys(untyped)")
+                    // A variant that reaches an `Object` leaf builds through its
+                    // own `deserialize` (D-140); otherwise, if its keys rename
+                    // (D-132), normalize the untyped map first — else native
+                    // deserialize into the variant would drop its renamed fields.
+                    let expr = if wire.is_object_bearing(*id) {
+                        format!("{variant_ty}.deserialize(untyped)")
                     } else {
-                        "untyped".to_string()
+                        let payload = if wire.needs_read_hook(*id) {
+                            format!("{variant_ty}.normalizeKeys(untyped)")
+                        } else {
+                            "untyped".to_string()
+                        };
+                        format!(
+                            "({variant_ty}) JSON.deserialize(JSON.serialize({payload}), {variant_ty}.class)"
+                        )
                     };
                     let _ = writeln!(
                         out,
-                        "        if (tag == '{}') return ({variant_ty}) JSON.deserialize(JSON.serialize({payload}), {variant_ty}.class);",
+                        "        if (tag == '{}') return {expr};",
                         escape(value)
                     );
                 }

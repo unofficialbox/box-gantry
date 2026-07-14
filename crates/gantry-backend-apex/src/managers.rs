@@ -381,11 +381,18 @@ fn emit_return(
     wire: &crate::wire::Wire<'_>,
     shape: &ir::ResponseShape,
 ) {
-    if let ir::ResponseShape::Json(ty) = shape
-        && wire.type_reaches_read_affected(ty)
-    {
-        wire.emit_response(out, &apex_type(program, names, ty), ty);
-        return;
+    if let ir::ResponseShape::Json(ty) = shape {
+        // An `Object` leaf (union / free-form JSON) can't be populated by native
+        // typed deserialize, so build through the `deserialize` builders (D-140).
+        if wire.type_reaches_object_bearing(ty) {
+            wire.emit_response_deserialize(out, &apex_type(program, names, ty), ty);
+            return;
+        }
+        // Otherwise a renamed field still needs the key remap (D-132).
+        if wire.type_reaches_read_affected(ty) {
+            wire.emit_response(out, &apex_type(program, names, ty), ty);
+            return;
+        }
     }
     if let Some(expr) = deserialize_expr(program, names, shape) {
         let _ = writeln!(out, "        return {expr};");

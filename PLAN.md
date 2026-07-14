@@ -427,6 +427,13 @@ already proved it (85/85 managers lower, zero IR changes forced).
     runs anonymous Apex that mints a CCG token and calls `GET /users/me` +
     `GET /folders/0/items` against live Box. The Apex analogue of Go's VR-7. Still
     1,086 classes + 4 Remote Site Settings.)
-42. **Next**: M5 — Rust backend + runtime (v3). Apex (M4) is functionally
+42. ~~`Object`-field deserialization (unions / free-form JSON).~~ ✅ (D-140:
+    VR-1.4 caught that Apex's typed `JSON.deserialize` throws on a populated
+    `Object` field — so any response reaching a union/`JsonValue` leaf (e.g. a
+    folder listing's `entries`) failed at runtime. An object-bearing struct now
+    gets a `deserialize(Object)` builder that detaches the `Object` fields,
+    deserializes the typed shell, and reattaches them from the raw tree; managers
+    + union parse route through it. 105 structs; still 1,086 classes.)
+43. **Next**: M5 — Rust backend + runtime (v3). Apex (M4) is functionally
     complete; remaining Apex work toward "shipped" is the packaged deliverable
     (NF-8) and the formal conformance matrix (VR-3/4/6 equivalents).

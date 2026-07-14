@@ -37,7 +37,7 @@ use std::fmt::Write as _;
 
 use gantry_ir as ir;
 
-use crate::models::ClassNames;
+use crate::models::{ClassNames, apex_type};
 use crate::safe_word;
 
 /// Direction of a key remap: response bodies come off the wire (rename wire →
@@ -70,6 +70,11 @@ pub(crate) struct Wire<'a> {
     /// Body-reachable structs with a `Nullable` field — they carry `fieldsToNull`
     /// and inject explicit nulls on the write path.
     null_writable: HashSet<u32>,
+    /// Structs that transitively contain an `Object` leaf — a union or
+    /// `JsonValue` field. Apex's typed `JSON.deserialize` can't populate an
+    /// `Object` field (D-140), so these get a generated `deserialize(Object)`
+    /// builder used on the read path.
+    object_bearing: HashSet<u32>,
 }
 
 impl<'a> Wire<'a> {
@@ -109,6 +114,7 @@ impl<'a> Wire<'a> {
             read_affected: HashSet::new(),
             write_affected: HashSet::new(),
             null_writable,
+            object_bearing: HashSet::new(),
         };
         // Read set (fixpoint): a struct is read-affected if a field is
         // name-mismatched or its type reaches a read-affected struct.
@@ -119,7 +125,37 @@ impl<'a> Wire<'a> {
         let mut seed = wire.read_affected.clone();
         seed.extend(wire.null_writable.iter().copied());
         wire.write_affected = wire.close(seed);
+        // Object-bearing set (fixpoint): a struct is object-bearing if a field
+        // is an `Object` leaf (union / JsonValue) or reaches an object-bearing
+        // struct — those can't be populated by native typed deserialize.
+        wire.object_bearing = wire.close_object_bearing();
         wire
+    }
+
+    /// Close the object-bearing set: a struct joins if a field is an `Object`
+    /// leaf or its type reaches a struct already in the set.
+    fn close_object_bearing(&self) -> HashSet<u32> {
+        let mut set = HashSet::new();
+        loop {
+            let mut changed = false;
+            for (index, decl) in self.program.decls.iter().enumerate() {
+                let id = index as u32;
+                if set.contains(&id) {
+                    continue;
+                }
+                if let ir::DeclKind::Struct(s) = &decl.kind
+                    && s.fields
+                        .iter()
+                        .any(|f| self.type_reaches_object(&f.ty, &set))
+                {
+                    set.insert(id);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break set;
+            }
+        }
     }
 
     /// Close a struct-id set under "name-mismatch or reaches a member of the set"
@@ -218,6 +254,46 @@ impl<'a> Wire<'a> {
             | ir::Type::DateTime
             | ir::Type::Binary
             | ir::Type::JsonValue => false,
+        }
+    }
+
+    /// Does this struct need a generated `deserialize` builder (it reaches an
+    /// `Object` leaf)?
+    pub(crate) fn is_object_bearing(&self, id: ir::DeclId) -> bool {
+        self.object_bearing.contains(&id.0)
+    }
+
+    /// Does a response value of this type reach an `Object` leaf, so it must be
+    /// built via the `deserialize` path rather than native `JSON.deserialize`?
+    pub(crate) fn type_reaches_object_bearing(&self, ty: &ir::Type) -> bool {
+        self.type_reaches_object(ty, &self.object_bearing)
+    }
+
+    /// Does a value of this type reach an `Object` leaf (a union or `JsonValue`)
+    /// or a struct in `set` (the object-bearing structs, mid-fixpoint)? Peels the
+    /// tri-state and container wrappers; an alias resolves through.
+    fn type_reaches_object(&self, ty: &ir::Type, set: &HashSet<u32>) -> bool {
+        match ty {
+            ir::Type::JsonValue => true,
+            ir::Type::Optional(inner)
+            | ir::Type::Nullable(inner)
+            | ir::Type::List(inner)
+            | ir::Type::Map(inner) => self.type_reaches_object(inner, set),
+            ir::Type::Decl(id) => match &self.program.decl(*id).kind {
+                ir::DeclKind::Alias(inner) => self.type_reaches_object(inner, set),
+                // A union field erases to `Object` — the leaf that breaks native
+                // deserialize.
+                ir::DeclKind::Union(_) => true,
+                ir::DeclKind::Struct(_) => set.contains(&id.0),
+                ir::DeclKind::Enum(_) => false,
+            },
+            ir::Type::Bool
+            | ir::Type::Int64
+            | ir::Type::Float64
+            | ir::Type::String
+            | ir::Type::Date
+            | ir::Type::DateTime
+            | ir::Type::Binary => false,
         }
     }
 
@@ -460,6 +536,206 @@ impl<'a> Wire<'a> {
         self.emit_transform(out, "wireBody", ty, Dir::Denormalize, 0);
         let _ = writeln!(out, "        request.body = wireBody;");
         let _ = writeln!(out, "        request.suppressNulls = false;");
+    }
+
+    /// Is this type position an `Object` leaf — a union or `JsonValue` (peeling
+    /// only the tri-state / alias wrappers, not a list or map)?
+    fn is_object_leaf(&self, ty: &ir::Type) -> bool {
+        match ty {
+            ir::Type::JsonValue => true,
+            ir::Type::Optional(inner) | ir::Type::Nullable(inner) => self.is_object_leaf(inner),
+            ir::Type::Decl(id) => match &self.program.decl(*id).kind {
+                ir::DeclKind::Union(_) => true,
+                ir::DeclKind::Alias(inner) => self.is_object_leaf(inner),
+                ir::DeclKind::Struct(_) | ir::DeclKind::Enum(_) => false,
+            },
+            ir::Type::List(_)
+            | ir::Type::Map(_)
+            | ir::Type::Bool
+            | ir::Type::Int64
+            | ir::Type::Float64
+            | ir::Type::String
+            | ir::Type::Date
+            | ir::Type::DateTime
+            | ir::Type::Binary => false,
+        }
+    }
+
+    /// The `deserialize(Object)` builder for an object-bearing struct. Native
+    /// typed `JSON.deserialize` can't populate an `Object` field (a union or
+    /// free-form JSON), so the fields that reach an `Object` leaf are detached
+    /// from the untyped map, the natively-typed shell is deserialized (renamed
+    /// first, if read-affected), and the detached fields are reattached from the
+    /// raw tree — recursing into nested object-bearing structs (D-140).
+    pub(crate) fn emit_deserialize(
+        &self,
+        id: ir::DeclId,
+        class: &str,
+        s: &ir::StructDecl,
+    ) -> String {
+        let mut out = String::new();
+        let _ = writeln!(
+            out,
+            "    /** Build `{class}` from the untyped JSON tree. Apex's typed\n     \
+             * `JSON.deserialize` can't populate an `Object` field (a union or\n     \
+             * free-form JSON), so those are detached, the typed shell is\n     \
+             * deserialized, then they are reattached from the raw tree (D-140). */"
+        );
+        let _ = writeln!(
+            out,
+            "    public static {class} deserialize(Object rawInput) {{"
+        );
+        let _ = writeln!(out, "        if (rawInput == null) return null;");
+        let _ = writeln!(
+            out,
+            "        Map<String, Object> raw = ((Map<String, Object>) rawInput).clone();"
+        );
+        let detached: Vec<&ir::Field> = s
+            .fields
+            .iter()
+            .filter(|f| self.type_reaches_object_bearing(&f.ty))
+            .collect();
+        for field in &detached {
+            let _ = writeln!(
+                out,
+                "        Object d_{} = raw.remove('{}');",
+                safe_word(field.name.as_str()),
+                escape(&field.wire_name)
+            );
+        }
+        let shell = if self.read_affected.contains(&id.0) {
+            format!("{class}.normalizeKeys(raw)")
+        } else {
+            "raw".to_string()
+        };
+        let _ = writeln!(
+            out,
+            "        {class} result = ({class}) JSON.deserialize(JSON.serialize({shell}), {class}.class);"
+        );
+        for field in &detached {
+            let apex = safe_word(field.name.as_str());
+            self.emit_reattach(
+                &mut out,
+                &format!("result.{apex}"),
+                &format!("d_{apex}"),
+                &field.ty,
+                0,
+            );
+        }
+        let _ = writeln!(out, "        return result;");
+        let _ = writeln!(out, "    }}");
+        out
+    }
+
+    /// Emit statements that assign the reattached value of `src` (an untyped
+    /// `Object`) into `lval`, per the field type. `depth` keeps nested-loop
+    /// locals unique.
+    fn emit_reattach(&self, out: &mut String, lval: &str, src: &str, ty: &ir::Type, depth: usize) {
+        match ty {
+            ir::Type::Optional(inner) | ir::Type::Nullable(inner) => {
+                self.emit_reattach(out, lval, src, inner, depth);
+            }
+            // An `Object` leaf: assign the raw value (the caller dispatches a
+            // union with `<Union>.parse`).
+            ir::Type::JsonValue => {
+                let _ = writeln!(out, "        {lval} = {src};");
+            }
+            ir::Type::Decl(id) => match &self.program.decl(*id).kind {
+                ir::DeclKind::Alias(inner) => self.emit_reattach(out, lval, src, inner, depth),
+                ir::DeclKind::Union(_) => {
+                    let _ = writeln!(out, "        {lval} = {src};");
+                }
+                ir::DeclKind::Struct(_) if self.object_bearing.contains(&id.0) => {
+                    let child = self
+                        .names
+                        .get(*id)
+                        .expect("object-bearing struct has a name");
+                    let _ = writeln!(out, "        {lval} = {child}.deserialize({src});");
+                }
+                // A clean struct or enum is never in the detached set.
+                ir::DeclKind::Struct(_) | ir::DeclKind::Enum(_) => {}
+            },
+            ir::Type::List(inner) if self.is_object_leaf(inner) => {
+                let _ = writeln!(out, "        {lval} = (List<Object>) {src};");
+            }
+            ir::Type::List(inner) => {
+                let ai = apex_type(self.program, self.names, inner);
+                let (lst, elem, val) = (
+                    format!("dLst{depth}"),
+                    format!("dEl{depth}"),
+                    format!("dEv{depth}"),
+                );
+                // A null/absent source stays null; a non-list value fails loudly
+                // on the cast rather than silently deserializing as empty.
+                let _ = writeln!(out, "        if ({src} == null) {{");
+                let _ = writeln!(out, "            {lval} = null;");
+                let _ = writeln!(out, "        }} else {{");
+                let _ = writeln!(out, "            List<{ai}> {lst} = new List<{ai}>();");
+                let _ = writeln!(
+                    out,
+                    "            for (Object {elem} : (List<Object>) {src}) {{"
+                );
+                let _ = writeln!(out, "                {ai} {val};");
+                self.emit_reattach(out, &val, &elem, inner, depth + 1);
+                let _ = writeln!(out, "                {lst}.add({val});");
+                let _ = writeln!(out, "            }}");
+                let _ = writeln!(out, "            {lval} = {lst};");
+                let _ = writeln!(out, "        }}");
+            }
+            ir::Type::Map(inner) if self.is_object_leaf(inner) => {
+                let _ = writeln!(out, "        {lval} = (Map<String, Object>) {src};");
+            }
+            ir::Type::Map(inner) => {
+                let ai = apex_type(self.program, self.names, inner);
+                let (map, sub, key, val) = (
+                    format!("dMap{depth}"),
+                    format!("dSm{depth}"),
+                    format!("dK{depth}"),
+                    format!("dMv{depth}"),
+                );
+                // A null/absent source stays null; a non-map value fails loudly
+                // on the cast rather than silently deserializing as empty.
+                let _ = writeln!(out, "        if ({src} == null) {{");
+                let _ = writeln!(out, "            {lval} = null;");
+                let _ = writeln!(out, "        }} else {{");
+                let _ = writeln!(
+                    out,
+                    "            Map<String, {ai}> {map} = new Map<String, {ai}>();"
+                );
+                let _ = writeln!(
+                    out,
+                    "            Map<String, Object> {sub} = (Map<String, Object>) {src};"
+                );
+                let _ = writeln!(out, "            for (String {key} : {sub}.keySet()) {{");
+                let _ = writeln!(out, "                {ai} {val};");
+                self.emit_reattach(out, &val, &format!("{sub}.get({key})"), inner, depth + 1);
+                let _ = writeln!(out, "                {map}.put({key}, {val});");
+                let _ = writeln!(out, "            }}");
+                let _ = writeln!(out, "            {lval} = {map};");
+                let _ = writeln!(out, "        }}");
+            }
+            // Scalars never reach the detached set.
+            ir::Type::Bool
+            | ir::Type::Int64
+            | ir::Type::Float64
+            | ir::Type::String
+            | ir::Type::Date
+            | ir::Type::DateTime
+            | ir::Type::Binary => {}
+        }
+    }
+
+    /// Emit the response deserialization for a type that reaches an object-bearing
+    /// struct: parse untyped, then build the typed value through the `deserialize`
+    /// builders. `apex_ty` is the Apex return type. Writes the full `return …;`.
+    pub(crate) fn emit_response_deserialize(&self, out: &mut String, apex_ty: &str, ty: &ir::Type) {
+        let _ = writeln!(
+            out,
+            "        Object parsed = JSON.deserializeUntyped(response.body);"
+        );
+        let _ = writeln!(out, "        {apex_ty} deserialized;");
+        self.emit_reattach(out, "deserialized", "parsed", ty, 0);
+        let _ = writeln!(out, "        return deserialized;");
     }
 }
 
