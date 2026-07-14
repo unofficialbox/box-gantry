@@ -44,17 +44,22 @@ cargo run -p gantry-cli -- generate --target go --out out/go \
   fixtures/specs/openapi-v2026.0.json
 ```
 
-There is no single "generate everything" command — build **all** SDKs by
-looping over the targets:
+Build **several targets at once** by passing a comma-separated list (or
+repeating `--target`); use `all` for the whole fleet. With more than one target
+each SDK lands in its own `<out>/<target>/` subdirectory (`out/go`, `out/apex`):
 
 ```sh
-SPECS="fixtures/specs/openapi.json \
+# A subset — Go and Apex into out/go and out/apex
+cargo run -p gantry-cli -- generate --target go,apex --out out \
+  fixtures/specs/openapi.json \
   fixtures/specs/openapi-v2025.0.json \
-  fixtures/specs/openapi-v2026.0.json"
+  fixtures/specs/openapi-v2026.0.json
 
-for target in go apex; do
-  cargo run -p gantry-cli -- generate --target "$target" --out "out/$target" $SPECS
-done
+# Everything
+cargo run -p gantry-cli -- generate --target all --out out \
+  fixtures/specs/openapi.json \
+  fixtures/specs/openapi-v2025.0.json \
+  fixtures/specs/openapi-v2026.0.json
 ```
 
 To generate **and compile** the output with the target's real toolchain, use
