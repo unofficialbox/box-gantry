@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use gantry_backend_apex::{GeneratedFile, generate, generate_models};
+use gantry_backend_apex::{BuildInfo, GeneratedFile, generate, generate_models};
 
 const CLASSES: &str = "force-app/main/default/classes";
 use gantry_ir as ir;
@@ -208,7 +208,7 @@ fn struct_with_optional_body(fields: Vec<ir::Field>, as_body: bool) -> String {
     }
     let program = Box::leak(Box::new(program));
     let analysis = gantry_sema::analyze(program).expect("fixture must analyze");
-    let files = generate(&analysis, &apex());
+    let files = generate(&analysis, &apex(), &BuildInfo::new("testfp"));
     files
         .into_iter()
         .find(|f| f.path == format!("{CLASSES}/S.cls"))
@@ -753,7 +753,7 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     .unwrap();
     let program = Box::leak(Box::new(lowering.program));
     let analysis = gantry_sema::analyze(program).unwrap();
-    let files = generate(&analysis, &apex());
+    let files = generate(&analysis, &apex(), &BuildInfo::new("testfp"));
 
     // The project manifest exists and is valid JSON naming the source dir.
     let project = files
@@ -771,8 +771,8 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     // HTTP client's own HttpCalloutMock test) = 999
     // (pagination adds no classes — the base method's envelope is the page,
     // D-131). Plus the generated `@isTest` suite for the 75% coverage gate: 85
-    // per-manager tests + the mock client + the unions test = 87, for 1086
-    // classes total.
+    // per-manager tests + the mock client + the unions test = 87, and the
+    // `BoxBuildInfo` provenance class (NF-7, D-141) = 1, for 1087 classes total.
     let classes: Vec<&str> = files
         .iter()
         .filter(|f| f.path.ends_with(".cls"))
@@ -780,8 +780,8 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         .collect();
     assert_eq!(
         classes.len(),
-        999 + 87,
-        "models + managers + client + stubs + runtime + @isTest suite"
+        999 + 87 + 1,
+        "models + managers + client + stubs + runtime + @isTest suite + BoxBuildInfo"
     );
     // The generated test suite ships with the deployable tree.
     for test in ["BoxCalloutMock", "BoxFilesTest", "BoxUnionsTest"] {
@@ -865,11 +865,12 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         docs.iter().all(|d| d.ends_with(".md")),
         "docs must be Markdown only"
     );
-    // 336 endpoint pages + 85 manager indexes + 1 top index = 422.
-    assert_eq!(docs.len(), 422, "endpoint + manager + top-index docs");
-    // 5 base scaffolding + 4 Remote Site Settings + 1086 classes + 1086 metas
-    // + 422 docs.
-    assert_eq!(files.len(), 5 + 4 + (999 + 87) * 2 + 422);
+    // 336 endpoint pages + 85 manager indexes + 1 top index + 3 topic guides
+    // (auth/pagination/errors) = 425.
+    assert_eq!(docs.len(), 425, "endpoint + manager + top-index + guide docs");
+    // 5 base scaffolding + 4 Remote Site Settings + 1087 classes + 1087 metas
+    // + 425 docs.
+    assert_eq!(files.len(), 5 + 4 + (999 + 87 + 1) * 2 + 425);
 
     // Deterministic and path-sorted.
     let sorted: Vec<&String> = {
@@ -897,7 +898,7 @@ fn the_generated_test_suite_exercises_the_managers_through_a_mock() {
     .unwrap();
     let program = Box::leak(Box::new(lowering.program));
     let analysis = gantry_sema::analyze(program).unwrap();
-    let files = generate(&analysis, &apex());
+    let files = generate(&analysis, &apex(), &BuildInfo::new("testfp"));
     let get = |name: &str| {
         &files
             .iter()
@@ -944,14 +945,19 @@ fn each_endpoint_has_a_markdown_doc_with_a_runnable_snippet() {
     let op_count = lowering.program.operations.len();
     let program = Box::leak(Box::new(lowering.program));
     let analysis = gantry_sema::analyze(program).unwrap();
-    let files = generate(&analysis, &apex());
+    let files = generate(&analysis, &apex(), &BuildInfo::new("testfp"));
 
-    // One endpoint page per operation (the `docs/<manager>/README.md` indexes
-    // and `docs/README.md` are the non-endpoint Markdown).
+    // One endpoint page per operation. Endpoint pages live at
+    // `docs/<manager>/<op>.md`; the per-manager `README.md` indexes, the top
+    // `docs/README.md`, and the top-level topic guides (`docs/auth.md` etc.)
+    // are the non-endpoint Markdown, excluded by requiring a manager subpath.
     let endpoint_pages = files
         .iter()
         .filter(|f| {
-            f.path.starts_with("docs/") && f.path.ends_with(".md") && !f.path.ends_with("README.md")
+            f.path.starts_with("docs/")
+                && f.path.ends_with(".md")
+                && !f.path.ends_with("README.md")
+                && f.path["docs/".len()..].contains('/')
         })
         .count();
     assert_eq!(endpoint_pages, op_count, "one endpoint page per operation");

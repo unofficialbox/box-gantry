@@ -1462,3 +1462,61 @@ routing. fmt, clippy (`-D warnings`), determinism, full workspace green;
 on-platform via VR-1.3, and VR-1.4 re-run confirms `getItems` now round-trips a
 populated union list against real Box. This is exactly the class of correctness
 bug the live smoke exists to catch.
+
+## D-141 — Target-neutral conformance (VR-3 for Apex) + the two platform exclusions
+
+**Context.** The conformance checklist (VR-3) proves the generated SDK expresses
+the full R§1 contract — every manager, operation, paged surface, auth flow,
+test, doc, and traceability record. It was written for Go and, despite a
+target-neutral doc comment, measured the output with **Go-specific markers**
+(`managers/*.go`, `(ctx context.Context`, `serialization/serialization.go`,
+`buildinfo/buildinfo.go`). CI only ran `conform --target go`, so the Apex SDK —
+functionally complete and VR-1.3/VR-1.4 green — had **no machine-checked parity
+proof**, which the v2 acceptance criterion requires ("conformance parity with v1
+minus manifest-documented platform exclusions, each recorded in `DECISIONS.md`").
+
+**Decision.** Introduce a `TargetShape` in `gantry-verify`: a set of per-capability
+recognizers plus a list of documented platform exclusions. `conformance()` still
+derives the **expected** surface from the verified program (target-neutral) and
+now measures the **actual** surface through the shape, so one contract checks Go,
+Apex, and Rust by swapping recognizers, never by forking the checklist. A
+capability whose shortfall is fully covered by a documented exclusion is reported
+`Excluded` (n/a) and passes the gate; any larger shortfall still `Fail`s. The
+Apex shape measures the real `.cls` surface — 85 manager classes (the em-dash
+`resource manager —` ApexDoc), 336 operation methods (the HTTP-verb ApexDoc
+line), 64 paged surfaces (`## Pagination`), the generated `@isTest` suite, the
+three token-provider classes, `BoxBuildInfo`, and the four `docs/` guides.
+`conform --target apex` runs in CI alongside Go.
+
+Making the check honest surfaced two real gaps and two genuine platform
+exclusions:
+
+- **Traceability (fixed).** Apex stamped the engine version in every header but
+  carried **no spec fingerprint** (Go's `buildinfo` does). Threaded a `BuildInfo`
+  (engine + `SpecSet::fingerprint`) into `gantry_backend_apex::generate` and emit
+  `BoxBuildInfo.cls` — on-platform constants `ENGINE_VERSION`/`SPEC_FINGERPRINT`
+  (a pure-constant class, so it never affects the 75% coverage gate) — plus the
+  fingerprint in the project `README`.
+- **Docs guides (fixed).** Apex emitted only `docs/README.md`; added the three
+  cross-cutting topic guides (`docs/auth.md`, `docs/pagination.md`,
+  `docs/errors.md`), Apex-flavored (token providers, the D-131 cursor loop, the
+  exceptions error model). `.forceignore`d like the rest of `docs/`.
+- **Serialization (documented exclusion).** Apex erases the tri-state at the type
+  level — every reference is nullable and `Date` is native, so absent-vs-null is
+  handled inline by the wire remap (D-138). There is no `Nullable[T]`/`Date`
+  package to emit; the capability is genuinely N/A.
+- **Interactive OAuth (documented exclusion).** OAuth 2.0 authorization-code needs
+  a browser redirect/callback that server-side Apex cannot perform. The three
+  server-to-server flows (Developer Token, CCG, JWT) ship as runtime classes; the
+  auth guide documents that OAuth is unavailable on-platform.
+
+**Consequences.** `conform --target apex` reports **9 capabilities, 2 excluded, 0
+failing — PASS**: managers 85/85, operations 336/336, pagination 64/64,
+round-trip-tests 86, traceability 1, docs-guides 4, with serialization and one
+auth flow marked n/a against their recorded reasons. Apex gains one class
+(`BoxBuildInfo`, **1,087**) and three guide docs. A new
+`the_generated_apex_sdk_is_conformant` real-spec test plus five unit tests
+(including a documented-exclusion case) cover the harness. fmt, clippy
+(`-D warnings`), determinism, and the full workspace are green; VR-3 for Apex now
+gates every CI run. This closes the conformance half of the v2 "shipped" bar;
+the packaging/ship-artifact (NF-8) remains.

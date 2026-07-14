@@ -14,6 +14,8 @@ gantry-synth.workspace = true
 [dev-dependencies]
 gantry-spec.workspace = true
 gantry-backend-go.workspace = true
+gantry-backend-apex.workspace = true
+gantry-manifest.workspace = true
 
 [lints]
 workspace = true

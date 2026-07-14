@@ -1,16 +1,22 @@
-//! The conformance checklist (VR-3, TR-Go.6).
+//! The conformance checklist (VR-3, TR-Go.6, TR-Apex).
 //!
 //! Turns the R§1 capability contract into a machine-checkable, per-target
 //! checklist: it derives the *expected* surface from the verified program
 //! (managers, operations, paginated surfaces) and measures the *actual*
 //! surface from the generated files, capability by capability. Reported
 //! every CI run and release-blocking — a shortfall (a manager without a
-//! method, a paginated operation without an iterator) fails the gate
-//! instead of shipping a partial SDK.
+//! method, a paginated operation without a surface) fails the gate instead
+//! of shipping a partial SDK.
 //!
-//! The checklist reads a lightweight [`GeneratedView`] (path + content),
-//! not any backend's file type, so it stays target-neutral: the same
-//! contract will measure the Apex and Rust outputs when they exist.
+//! The checklist reads a lightweight [`GeneratedView`] (path + content), not
+//! any backend's file type, and takes a [`TargetShape`] that says how *that*
+//! target encodes each capability — so the same contract measures Go, Apex,
+//! and Rust by swapping recognizers, never by forking the checklist. A
+//! target may also declare **documented platform exclusions** (e.g. Apex
+//! erases the tri-state, so there is no serialization package): parity is
+//! then measured *minus* those, which is exactly the v2 acceptance criterion
+//! ("conformance parity with v1 minus manifest-documented platform
+//! exclusions, each recorded in `DECISIONS.md`").
 
 use std::fmt::Write as _;
 
@@ -27,8 +33,14 @@ pub struct GeneratedView<'a> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckStatus {
+    /// The output provides at least what the contract expects.
     Pass,
+    /// The output falls short, and the shortfall is *not* covered by a
+    /// documented platform exclusion — the release gate fails.
     Fail,
+    /// The output falls short, but the whole shortfall is a documented
+    /// platform exclusion (recorded in `DECISIONS.md`); the gate passes.
+    Excluded,
 }
 
 /// One capability's line in the checklist: what the contract expects, what
@@ -42,8 +54,39 @@ pub struct Check {
     /// The count present in the generated output.
     pub actual: usize,
     pub status: CheckStatus,
-    /// A human note — what the numbers mean, or what fell short.
+    /// A human note — what the numbers mean, or what fell short / is excluded.
     pub detail: String,
+}
+
+/// A documented platform exclusion: a capability that a target genuinely
+/// cannot (or need not) provide, with the count excused and a reason. Parity
+/// is measured minus these; each reason is also recorded in `DECISIONS.md`.
+#[derive(Debug, Clone, Copy)]
+pub struct Exclusion {
+    pub capability: &'static str,
+    /// How many of the expected units this exclusion excuses.
+    pub count: usize,
+    pub reason: &'static str,
+}
+
+/// How one target's generated output encodes each conformance capability.
+/// Every field measures the *actual* surface from the files; the *expected*
+/// surface is derived from the program by [`conformance`], so the two never
+/// drift. `exclusions` lists the documented platform exclusions for the
+/// target (empty for Go).
+#[derive(Debug, Clone, Copy)]
+pub struct TargetShape {
+    pub target: &'static str,
+    pub count_managers: fn(&[GeneratedView]) -> usize,
+    pub count_manager_docs: fn(&[GeneratedView]) -> usize,
+    pub count_operations: fn(&[GeneratedView]) -> usize,
+    pub count_pagination: fn(&[GeneratedView]) -> usize,
+    pub count_serialization: fn(&[GeneratedView]) -> usize,
+    pub count_round_trip_tests: fn(&[GeneratedView]) -> usize,
+    pub count_auth: fn(&[GeneratedView]) -> usize,
+    pub count_traceability: fn(&[GeneratedView]) -> usize,
+    pub count_guides: fn(&[GeneratedView]) -> usize,
+    pub exclusions: &'static [Exclusion],
 }
 
 /// The full per-target conformance report.
@@ -54,15 +97,25 @@ pub struct ConformanceReport {
 }
 
 impl ConformanceReport {
-    /// True when every capability clears its bar (the release gate).
+    /// True when no capability fails outright (documented exclusions pass —
+    /// they are the v2 "parity minus platform exclusions" allowance).
     pub fn passed(&self) -> bool {
-        self.checks.iter().all(|c| c.status == CheckStatus::Pass)
+        self.checks.iter().all(|c| c.status != CheckStatus::Fail)
     }
 
+    /// Capabilities that fail outright (excludes documented exclusions).
     pub fn failures(&self) -> usize {
         self.checks
             .iter()
             .filter(|c| c.status == CheckStatus::Fail)
+            .count()
+    }
+
+    /// Capabilities passing on a documented platform exclusion.
+    pub fn excluded(&self) -> usize {
+        self.checks
+            .iter()
+            .filter(|c| c.status == CheckStatus::Excluded)
             .count()
     }
 
@@ -71,9 +124,10 @@ impl ConformanceReport {
         let mut out = String::new();
         let _ = writeln!(
             out,
-            "conformance ({}): {} capabilities, {} failing — {}",
+            "conformance ({}): {} capabilities, {} excluded, {} failing — {}",
             self.target,
             self.checks.len(),
+            self.excluded(),
             self.failures(),
             if self.passed() { "PASS" } else { "FAIL" },
         );
@@ -81,10 +135,11 @@ impl ConformanceReport {
             let mark = match check.status {
                 CheckStatus::Pass => "ok  ",
                 CheckStatus::Fail => "FAIL",
+                CheckStatus::Excluded => "n/a ",
             };
             let _ = writeln!(
                 out,
-                "  {mark} {:<14} expected {:>4}, generated {:>4} — {}",
+                "  {mark} {:<16} expected {:>4}, generated {:>4} — {}",
                 check.capability, check.expected, check.actual, check.detail,
             );
         }
@@ -93,151 +148,127 @@ impl ConformanceReport {
 }
 
 /// Build the conformance checklist for a target from the verified program
-/// and its generated files.
+/// and its generated files, measured through the target's [`TargetShape`].
 pub fn conformance(
-    target: &str,
+    shape: &TargetShape,
     analysis: &Analysis<'_>,
     files: &[GeneratedView],
 ) -> ConformanceReport {
     let program = analysis.program;
-    let mut checks = Vec::new();
-
-    // Managers: every x-box-tag group must produce a manager file.
-    let manager_files = files.iter().filter(|f| is_manager_file(f.path)).count();
-    checks.push(count_check(
-        "managers",
-        analysis.managers.len(),
-        manager_files,
-        "x-box-tag groups → generated manager files",
-    ));
-
-    // Manager reference docs: one Markdown page per manager (FR-7.7).
-    let manager_docs = files
-        .iter()
-        .filter(|f| f.path.starts_with("docs/managers/") && f.path.ends_with(".md"))
-        .count();
-    checks.push(count_check(
-        "manager-docs",
-        analysis.managers.len(),
-        manager_docs,
-        "managers → reference doc pages",
-    ));
-
-    // Operations: one method per operation. Operation and pagination
-    // methods both take `(ctx context.Context`; subtract the paginators to
-    // isolate the plain per-operation methods.
-    let ctx_sigs = count_marker(files, is_manager_file, "(ctx context.Context");
-    let paginate_sigs = count_marker(files, is_manager_file, "Paginate(ctx context.Context");
-    let operation_methods = ctx_sigs.saturating_sub(paginate_sigs);
-    checks.push(count_check(
-        "operations",
-        program.operations.len(),
-        operation_methods,
-        "operations → generated methods",
-    ));
-
-    // Pagination: an iterator for every detected paginated surface (FR-7.3).
+    let managers = analysis.managers.len();
     let paged = detect_pagination(analysis).len();
-    checks.push(count_check(
-        "pagination",
-        paged,
-        paginate_sigs,
-        "paginated operations → iterators",
-    ));
 
-    // Serialization package: the tri-state wrapper and Date (D-110/D-112).
-    let serialization = files.iter().any(|f| {
-        f.path == "serialization/serialization.go"
-            && f.content.contains("Nullable[")
-            && f.content.contains("type Date")
-    });
-    checks.push(presence_check(
-        "serialization",
-        serialization,
-        "Nullable[T] tri-state + Date package",
-    ));
-
-    // Generated round-trip tests: the serialization test plus at least one
-    // per-module union test (FR-7.8, VR-4).
-    let has_serialization_test = files
-        .iter()
-        .any(|f| f.path == "serialization/serialization_test.go");
-    let union_tests = files
-        .iter()
-        .filter(|f| f.path.ends_with("roundtrip_test.go"))
-        .count();
-    // Require the serialization test present *and* at least one union test;
-    // when it is, the reported count is the number of union test files.
-    let round_trip_actual = if has_serialization_test {
-        union_tests
-    } else {
-        0
-    };
-    checks.push(count_check(
-        "round-trip-tests",
-        1,
-        round_trip_actual,
-        "serialization test + per-union round-trip tests",
-    ));
-
-    // Auth flows: all four Box flows surfaced in the generated auth guide
-    // (implemented in the hand-written runtime, FR-7.2).
-    let auth_flows = files
-        .iter()
-        .find(|f| f.path == "docs/auth.md")
-        .map(|guide| {
-            ["Developer Token", "Client Credentials", "JWT", "OAuth"]
-                .iter()
-                .filter(|name| guide.content.contains(**name))
-                .count()
-        })
-        .unwrap_or(0);
-    checks.push(count_check(
-        "auth-flows",
-        4,
-        auth_flows,
-        "Developer Token / CCG / JWT / OAuth surfaced",
-    ));
-
-    // Traceability: the buildinfo package carries the engine version and a
-    // non-empty spec fingerprint (NF-7), so a release is traceable to its
-    // inputs.
-    let traceable = files.iter().any(|f| {
-        f.path == "buildinfo/buildinfo.go"
-            && f.content.contains("EngineVersion")
-            && f.content.contains("SpecFingerprint")
-    });
-    checks.push(presence_check(
-        "traceability",
-        traceable,
-        "buildinfo: engine version + spec fingerprint",
-    ));
-
-    // Cross-cutting guides: the index and the three topic guides (FR-7.7).
-    let guides = [
-        "docs/README.md",
-        "docs/auth.md",
-        "docs/pagination.md",
-        "docs/errors.md",
-    ]
-    .iter()
-    .filter(|path| files.iter().any(|f| f.path == **path))
-    .count();
-    checks.push(count_check(
-        "docs-guides",
-        4,
-        guides,
-        "index + auth/pagination/errors guides",
-    ));
+    let checks = vec![
+        capability(
+            shape,
+            "managers",
+            managers,
+            (shape.count_managers)(files),
+            "x-box-tag groups → generated manager artifacts",
+        ),
+        capability(
+            shape,
+            "manager-docs",
+            managers,
+            (shape.count_manager_docs)(files),
+            "managers → reference doc pages",
+        ),
+        capability(
+            shape,
+            "operations",
+            program.operations.len(),
+            (shape.count_operations)(files),
+            "operations → generated methods",
+        ),
+        capability(
+            shape,
+            "pagination",
+            paged,
+            (shape.count_pagination)(files),
+            "paginated operations → paged surfaces",
+        ),
+        capability(
+            shape,
+            "serialization",
+            1,
+            (shape.count_serialization)(files),
+            "tri-state (absent/null/value) + Date support",
+        ),
+        capability(
+            shape,
+            "round-trip-tests",
+            1,
+            (shape.count_round_trip_tests)(files),
+            "generated round-trip / behavioral tests",
+        ),
+        capability(
+            shape,
+            "auth-flows",
+            4,
+            (shape.count_auth)(files),
+            "Developer Token / CCG / JWT / OAuth",
+        ),
+        capability(
+            shape,
+            "traceability",
+            1,
+            (shape.count_traceability)(files),
+            "engine version + spec fingerprint",
+        ),
+        capability(
+            shape,
+            "docs-guides",
+            4,
+            (shape.count_guides)(files),
+            "index + auth/pagination/errors guides",
+        ),
+    ];
 
     ConformanceReport {
-        target: target.to_string(),
+        target: shape.target.to_string(),
         checks,
     }
 }
 
-fn is_manager_file(path: &str) -> bool {
-    path.starts_with("managers/") && path.ends_with(".go") && path != "managers/helpers.go"
+/// Build one capability's [`Check`], honoring any documented platform
+/// exclusion for the target: a shortfall fully covered by an exclusion is
+/// [`CheckStatus::Excluded`] (passes), a larger shortfall is
+/// [`CheckStatus::Fail`].
+fn capability(
+    shape: &TargetShape,
+    capability: &'static str,
+    expected: usize,
+    actual: usize,
+    detail: &str,
+) -> Check {
+    let exclusion = shape
+        .exclusions
+        .iter()
+        .find(|e| e.capability == capability);
+    let excused = exclusion.map_or(0, |e| e.count);
+
+    let status = if actual >= expected {
+        CheckStatus::Pass
+    } else if actual + excused >= expected {
+        CheckStatus::Excluded
+    } else {
+        CheckStatus::Fail
+    };
+
+    let detail = match exclusion {
+        Some(e) if status == CheckStatus::Excluded => {
+            format!("{detail}; {} excluded — {}", e.count, e.reason)
+        }
+        _ => detail.to_string(),
+    };
+
+    Check {
+        capability,
+        expected,
+        actual,
+        status,
+        detail,
+    }
 }
 
 /// Sum a substring's occurrences across the files a predicate selects.
@@ -249,26 +280,256 @@ fn count_marker(files: &[GeneratedView], select: fn(&str) -> bool, marker: &str)
         .sum()
 }
 
-/// A capability met iff the output provides at least what the contract
-/// expects (never fewer — extra is fine, e.g. helper methods).
-fn count_check(capability: &'static str, expected: usize, actual: usize, detail: &str) -> Check {
-    let status = if actual >= expected {
-        CheckStatus::Pass
-    } else {
-        CheckStatus::Fail
-    };
-    Check {
-        capability,
-        expected,
-        actual,
-        status,
-        detail: detail.to_string(),
+// --- Go recognizers -------------------------------------------------------
+
+/// The Go conformance shape: measures the `.go` module layout Go emits.
+pub fn go_shape() -> TargetShape {
+    TargetShape {
+        target: "go",
+        count_managers: go_managers,
+        count_manager_docs: go_manager_docs,
+        count_operations: go_operations,
+        count_pagination: go_pagination,
+        count_serialization: go_serialization,
+        count_round_trip_tests: go_round_trip_tests,
+        count_auth: go_auth,
+        count_traceability: go_traceability,
+        count_guides: go_guides,
+        exclusions: &[],
     }
 }
 
-fn presence_check(capability: &'static str, present: bool, detail: &str) -> Check {
-    count_check(capability, 1, usize::from(present), detail)
+fn go_is_manager_file(path: &str) -> bool {
+    path.starts_with("managers/") && path.ends_with(".go") && path != "managers/helpers.go"
 }
+
+fn go_managers(files: &[GeneratedView]) -> usize {
+    files.iter().filter(|f| go_is_manager_file(f.path)).count()
+}
+
+fn go_manager_docs(files: &[GeneratedView]) -> usize {
+    files
+        .iter()
+        .filter(|f| f.path.starts_with("docs/managers/") && f.path.ends_with(".md"))
+        .count()
+}
+
+fn go_operations(files: &[GeneratedView]) -> usize {
+    // Operation and pagination methods both take `(ctx context.Context`;
+    // subtract the paginators to isolate the plain per-operation methods.
+    let ctx = count_marker(files, go_is_manager_file, "(ctx context.Context");
+    ctx.saturating_sub(go_pagination(files))
+}
+
+fn go_pagination(files: &[GeneratedView]) -> usize {
+    count_marker(files, go_is_manager_file, "Paginate(ctx context.Context")
+}
+
+fn go_serialization(files: &[GeneratedView]) -> usize {
+    usize::from(files.iter().any(|f| {
+        f.path == "serialization/serialization.go"
+            && f.content.contains("Nullable[")
+            && f.content.contains("type Date")
+    }))
+}
+
+fn go_round_trip_tests(files: &[GeneratedView]) -> usize {
+    // The serialization test must be present; then the reported count is the
+    // number of per-union round-trip test files (FR-7.8, VR-4).
+    if !files
+        .iter()
+        .any(|f| f.path == "serialization/serialization_test.go")
+    {
+        return 0;
+    }
+    files
+        .iter()
+        .filter(|f| f.path.ends_with("roundtrip_test.go"))
+        .count()
+}
+
+fn go_auth(files: &[GeneratedView]) -> usize {
+    files
+        .iter()
+        .find(|f| f.path == "docs/auth.md")
+        .map(|guide| {
+            AUTH_FLOWS
+                .iter()
+                .filter(|name| guide.content.contains(**name))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+fn go_traceability(files: &[GeneratedView]) -> usize {
+    usize::from(files.iter().any(|f| {
+        f.path == "buildinfo/buildinfo.go"
+            && f.content.contains("EngineVersion")
+            && f.content.contains("SpecFingerprint")
+    }))
+}
+
+fn go_guides(files: &[GeneratedView]) -> usize {
+    GUIDES
+        .iter()
+        .filter(|path| files.iter().any(|f| f.path == **path))
+        .count()
+}
+
+// --- Apex recognizers -----------------------------------------------------
+
+/// The Apex conformance shape: measures the flat-namespace `.cls` output and
+/// the `docs/` tree, and declares the two documented platform exclusions —
+/// the erased serialization layer (D-138/D-141) and interactive OAuth
+/// (D-141), each recorded in `DECISIONS.md`.
+pub fn apex_shape() -> TargetShape {
+    TargetShape {
+        target: "apex",
+        count_managers: apex_managers,
+        count_manager_docs: apex_manager_docs,
+        count_operations: apex_operations,
+        count_pagination: apex_pagination,
+        count_serialization: apex_serialization,
+        count_round_trip_tests: apex_round_trip_tests,
+        count_auth: apex_auth,
+        count_traceability: apex_traceability,
+        count_guides: apex_guides,
+        exclusions: APEX_EXCLUSIONS,
+    }
+}
+
+const APEX_EXCLUSIONS: &[Exclusion] = &[
+    Exclusion {
+        capability: "serialization",
+        count: 1,
+        reason: "Apex erases the tri-state at the type level (every reference is \
+                 nullable) and uses the native Date, so absent-vs-null is handled \
+                 inline by the wire remap (D-138) — there is no Nullable[T]/Date \
+                 package to emit (D-141)",
+    },
+    Exclusion {
+        capability: "auth-flows",
+        count: 1,
+        reason: "interactive OAuth 2.0 (authorization-code) needs a browser \
+                 redirect/callback that server-side Apex cannot perform; the three \
+                 server-to-server flows (Developer Token, CCG, JWT) ship (D-141)",
+    },
+];
+
+/// A generated Apex manager class: its ApexDoc header carries the em-dash
+/// `resource manager —` line (emitted only by the manager-class printer; the
+/// `Box` entry point says "per resource manager" without the em-dash).
+fn apex_is_manager_class(f: &GeneratedView) -> bool {
+    f.path.ends_with(".cls") && f.content.contains("resource manager \u{2014}")
+}
+
+fn apex_managers(files: &[GeneratedView]) -> usize {
+    files.iter().filter(|f| apex_is_manager_class(f)).count()
+}
+
+/// One per-manager reference index: `docs/<manager>/README.md` (the
+/// top-level `docs/README.md` has no inner path segment, so it is excluded).
+fn apex_is_manager_doc(path: &str) -> bool {
+    path.starts_with("docs/")
+        && path.ends_with("/README.md")
+        && path[..path.len() - "/README.md".len()].contains('/')
+}
+
+fn apex_manager_docs(files: &[GeneratedView]) -> usize {
+    files.iter().filter(|f| apex_is_manager_doc(f.path)).count()
+}
+
+fn apex_operations(files: &[GeneratedView]) -> usize {
+    // Every generated manager method opens its ApexDoc with the HTTP verb in
+    // backticks (`` * `GET /files/{id}` ``), one line per operation.
+    const VERBS: [&str; 7] = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"];
+    files
+        .iter()
+        .filter(|f| apex_is_manager_class(f))
+        .map(|f| {
+            VERBS
+                .iter()
+                .map(|verb| f.content.matches(&format!("* `{verb} ")).count())
+                .sum::<usize>()
+        })
+        .sum()
+}
+
+/// A generated per-endpoint doc page (`docs/<manager>/<op>.md`), excluding
+/// the per-manager and top-level `README.md` and the top-level guides.
+fn apex_is_endpoint_doc(path: &str) -> bool {
+    path.starts_with("docs/")
+        && path.ends_with(".md")
+        && !path.ends_with("/README.md")
+        && path["docs/".len()..].contains('/')
+}
+
+fn apex_pagination(files: &[GeneratedView]) -> usize {
+    // Paginated endpoints document the cursor loop under a `## Pagination`
+    // heading (D-131: no page classes — the envelope is the page).
+    files
+        .iter()
+        .filter(|f| apex_is_endpoint_doc(f.path) && f.content.contains("## Pagination"))
+        .count()
+}
+
+fn apex_serialization(_files: &[GeneratedView]) -> usize {
+    // Erased at the type level — see the documented exclusion above.
+    0
+}
+
+fn apex_round_trip_tests(files: &[GeneratedView]) -> usize {
+    // The generated @isTest suite: one per-manager test that drives every
+    // operation through the mock, plus the shared union-dispatch test.
+    files
+        .iter()
+        .filter(|f| {
+            f.path.ends_with(".cls")
+                && (f.content.contains("exercisesEveryOperation()")
+                    || f.content.contains("dispatchesEveryUnion()"))
+        })
+        .count()
+}
+
+fn apex_auth(files: &[GeneratedView]) -> usize {
+    // The three server-viable token providers ship as runtime classes; OAuth
+    // is the documented exclusion. Count the concrete provider classes.
+    ["BoxDeveloperTokenProvider", "BoxCcgTokenProvider", "BoxJwtTokenProvider"]
+        .iter()
+        .filter(|name| {
+            files
+                .iter()
+                .any(|f| f.content.contains(&format!("class {name}")))
+        })
+        .count()
+}
+
+fn apex_traceability(files: &[GeneratedView]) -> usize {
+    usize::from(files.iter().any(|f| {
+        f.path.ends_with("BoxBuildInfo.cls")
+            && f.content.contains("ENGINE_VERSION")
+            && f.content.contains("SPEC_FINGERPRINT")
+    }))
+}
+
+fn apex_guides(files: &[GeneratedView]) -> usize {
+    GUIDES
+        .iter()
+        .filter(|path| files.iter().any(|f| f.path == **path))
+        .count()
+}
+
+/// The four Box auth flows the R§1 contract expects to be surfaced.
+const AUTH_FLOWS: [&str; 4] = ["Developer Token", "Client Credentials", "JWT", "OAuth"];
+
+/// The cross-cutting guide set (FR-7.7): the index plus the three topic
+/// guides. Both targets emit these paths under `docs/`.
+const GUIDES: [&str; 4] = [
+    "docs/README.md",
+    "docs/auth.md",
+    "docs/pagination.md",
+    "docs/errors.md",
+];
 
 #[cfg(test)]
 mod tests {
@@ -352,7 +613,7 @@ mod tests {
         let program = program();
         let analysis = gantry_sema::analyze(&program).unwrap();
         let files = conformant_files();
-        let report = conformance("go", &analysis, &views(&files));
+        let report = conformance(&go_shape(), &analysis, &views(&files));
 
         assert!(report.passed(), "{}", report.report());
         assert_eq!(report.failures(), 0);
@@ -381,7 +642,7 @@ mod tests {
         // Drop one operation method from the manager file.
         files[0].1 = "func (c *FilesManager) GetFiles(ctx context.Context) {}\n".into();
 
-        let report = conformance("go", &analysis, &views(&files));
+        let report = conformance(&go_shape(), &analysis, &views(&files));
         assert!(!report.passed());
         let ops = report
             .checks
@@ -402,7 +663,7 @@ mod tests {
         let auth = files.iter_mut().find(|(p, _)| p == "docs/auth.md").unwrap();
         auth.1 = "Developer Token, Client Credentials".into();
 
-        let report = conformance("go", &analysis, &views(&files));
+        let report = conformance(&go_shape(), &analysis, &views(&files));
         assert!(!report.passed());
         let flows = report
             .checks
@@ -411,6 +672,39 @@ mod tests {
             .unwrap();
         assert_eq!(flows.expected, 4);
         assert_eq!(flows.actual, 2);
+        assert_eq!(flows.status, CheckStatus::Fail);
+    }
+
+    #[test]
+    fn a_documented_exclusion_passes_as_not_applicable() {
+        // A shape that excuses the whole `serialization` shortfall passes it
+        // as Excluded, not Fail — the "parity minus platform exclusions" rule.
+        let program = program();
+        let analysis = gantry_sema::analyze(&program).unwrap();
+        let mut files = conformant_files();
+        // Remove the serialization package entirely.
+        files.retain(|(p, _)| p != "serialization/serialization.go");
+
+        const EXCLUDED: &[Exclusion] = &[Exclusion {
+            capability: "serialization",
+            count: 1,
+            reason: "erased at the type level (test)",
+        }];
+        let mut shape = go_shape();
+        shape.exclusions = EXCLUDED;
+
+        let report = conformance(&shape, &analysis, &views(&files));
+        let serialization = report
+            .checks
+            .iter()
+            .find(|c| c.capability == "serialization")
+            .unwrap();
+        assert_eq!(serialization.status, CheckStatus::Excluded);
+        assert!(serialization.detail.contains("erased at the type level"));
+        // Excluded is not a failure — the gate still passes.
+        assert!(report.passed());
+        assert_eq!(report.failures(), 0);
+        assert_eq!(report.excluded(), 1);
     }
 
     #[test]
@@ -418,8 +712,8 @@ mod tests {
         let program = program();
         let analysis = gantry_sema::analyze(&program).unwrap();
         let files = conformant_files();
-        let once = conformance("go", &analysis, &views(&files)).report();
-        let twice = conformance("go", &analysis, &views(&files)).report();
+        let once = conformance(&go_shape(), &analysis, &views(&files)).report();
+        let twice = conformance(&go_shape(), &analysis, &views(&files)).report();
         assert_eq!(once, twice);
         assert!(once.contains("conformance (go)"));
         assert!(once.contains("PASS"));
