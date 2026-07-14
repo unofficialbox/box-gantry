@@ -1365,3 +1365,42 @@ generator tests for the injection and the response-only negative case. fmt, clip
 Apex correctness gap before M5 (Rust). A known limitation: because the tri-state
 erases (D-110), explicit null is opt-in through `fieldsToNull` (Apex can't infer
 "set to null" from a plain field), which is the honest ceiling of the platform.
+
+## D-139 — Apex live smoke (VR-1.4) + shipped Remote Site Settings
+
+**Context.** VR-1.3 proves the generated Apex SDK *compiles and deploys* on the
+platform, but not that it *works* — the Go SDK cleared a higher bar (VR-7: a live
+smoke against a real Box account). Two things blocked an Apex equivalent:
+
+1. **Callouts were impossible in any org.** Apex blocks a callout to any host
+   without a **Remote Site Setting** (or Named Credential); the generated project
+   shipped none, so every request would throw "Unauthorized endpoint" — the SDK
+   was undeployable-into-usefulness, not just untested.
+2. **Real callouts can't run in an Apex test.** Unit tests must mock callouts, so
+   the only way to exercise the SDK against live Box is *anonymous Apex*.
+
+**Decision.**
+- **Ship Remote Site Settings.** The generator now emits one
+  `RemoteSiteSetting` per Box host — `api.box.com`, `upload.box.com`,
+  `account.box.com`, `dl.boxcloud.com` (the D-106 base-URL classes collapsed to
+  origins) — under `force-app/main/default/remoteSiteSettings/`, added to the
+  wildcard `package.xml`. The runtime sets its own `Authorization: Bearer` header
+  and builds absolute URLs, so a Remote Site Setting (not a Named Credential) is
+  the right fit. This makes the SDK usable out of the box, independent of the
+  smoke.
+- **VR-1.4 live smoke** (`.github/workflows/apex-livesmoke.yml`, manual): deploy
+  the SDK to a fresh scratch org (a *real* deploy, not `--dry-run`) and run
+  anonymous Apex (`runtimes/apex/smoke/livesmoke.apex`) that mints a token via
+  **Client Credentials Grant** and makes two live calls — `GET /users/me`
+  (auth + typed deserialization) and `GET /folders/0/items` (pagination + the
+  `limit`→`limit_r` wire remap). Credentials come from repo secrets
+  (`BOX_CLIENT_ID`/`SECRET`/`ENTERPRISE_ID` + `SFDX_AUTH_URL`); absent any, the
+  job skips, so a dry run still passes. Success requires the run to succeed and a
+  `SMOKE OK` sentinel in the returned debug log.
+
+**Consequences.** The generated tree gains 4 Remote Site Setting files (no new
+classes — still **1,086**); `model_shapes` pins them and the file count. The
+smoke is the Apex analogue of Go's VR-7 and is the last major assurance gap
+before "shipped". CCG was chosen over the developer-token flow because it mints a
+real token (exercising the auth callout) and needs no per-org certificate the way
+JWT would in an ephemeral scratch org.

@@ -86,13 +86,51 @@ fn project_scaffolding() -> Vec<GeneratedFile> {
         path: path.to_string(),
         content,
     };
-    vec![
+    let mut files = vec![
         file("sfdx-project.json", sfdx_project_json()),
         file("config/project-scratch-def.json", scratch_def_json()),
         file(".forceignore", forceignore()),
         file("manifest/package.xml", package_xml()),
         file("README.md", project_readme()),
-    ]
+    ];
+    files.extend(remote_site_settings());
+    files
+}
+
+/// The Box hosts the runtime calls out to (the D-106 base-URL classes in
+/// `BoxHttpClient`, collapsed to distinct origins). Apex blocks any callout to a
+/// host without a Remote Site Setting, so a deploy without these can't make a
+/// single request. The runtime sets its own `Authorization: Bearer` header and
+/// builds absolute URLs, so a Remote Site Setting (not a Named Credential) is
+/// the right fit.
+const BOX_REMOTE_SITES: &[(&str, &str)] = &[
+    ("Box_api_box_com", "https://api.box.com"),
+    ("Box_upload_box_com", "https://upload.box.com"),
+    ("Box_account_box_com", "https://account.box.com"),
+    ("Box_dl_boxcloud_com", "https://dl.boxcloud.com"),
+];
+
+/// Ship a Remote Site Setting per Box host so the generated SDK can actually
+/// make callouts once deployed (otherwise every request throws "Unauthorized
+/// endpoint"). Deterministic; deployed by both source deploys and the wildcard
+/// `package.xml`.
+fn remote_site_settings() -> Vec<GeneratedFile> {
+    BOX_REMOTE_SITES
+        .iter()
+        .map(|(name, url)| GeneratedFile {
+            path: format!(
+                "force-app/main/default/remoteSiteSettings/{name}.remoteSiteSetting-meta.xml"
+            ),
+            content: format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+                 <RemoteSiteSetting xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n    \
+                 <disableProtocolSecurity>false</disableProtocolSecurity>\n    \
+                 <isActive>true</isActive>\n    \
+                 <url>{url}</url>\n\
+                 </RemoteSiteSetting>\n"
+            ),
+        })
+        .collect()
 }
 
 fn sfdx_project_json() -> String {
@@ -117,7 +155,7 @@ fn forceignore() -> String {
 /// deploys every generated Apex class.
 fn package_xml() -> String {
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Package xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n    <types>\n        <members>*</members>\n        <name>ApexClass</name>\n    </types>\n    <version>{APEX_API_VERSION}</version>\n</Package>\n"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Package xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n    <types>\n        <members>*</members>\n        <name>ApexClass</name>\n    </types>\n    <types>\n        <members>*</members>\n        <name>RemoteSiteSetting</name>\n    </types>\n    <version>{APEX_API_VERSION}</version>\n</Package>\n"
     )
 }
 
@@ -131,6 +169,7 @@ fn project_readme() -> String {
          ## Layout\n\n\
          | Path | What |\n|---|---|\n\
          | `force-app/main/default/classes/` | model, manager, and client classes (`.cls` + `-meta.xml`) |\n\
+         | `force-app/main/default/remoteSiteSettings/` | Remote Site Settings for the Box hosts, so callouts are allowed once deployed |\n\
          | `docs/` | one Markdown page per endpoint, with runnable snippets |\n\
          | `config/project-scratch-def.json` | scratch-org definition |\n\
          | `manifest/package.xml` | wildcard deploy manifest |\n\n\

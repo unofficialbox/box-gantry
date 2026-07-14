@@ -1,0 +1,100 @@
+# VR-1.4 — the Apex live smoke (runtime proof against real Box).
+#
+# VR-1.3 (apex-scratch.yml) proves the generated SDK *compiles and deploys* on
+# the platform. This proves it *works*: it deploys the SDK to a fresh scratch
+# org and runs anonymous Apex that mints a token via Client Credentials Grant
+# and makes two real Box calls (GET /users/me, GET /folders/0/items) — the Apex
+# analogue of the Go VR-7 live smoke. It is not a unit test: Apex tests can't
+# make real callouts, so the driver runs as anonymous Apex.
+#
+# Manual (workflow_dispatch): it needs a Dev Hub and real Box credentials, both
+# from repo secrets, never the repository. Absent any secret → the job skips, so
+# a dry run still passes.
+#
+# Set up (in addition to VR-1.3's SFDX_AUTH_URL): create a Box Custom App with
+# Client Credentials Grant enabled, authorized in the Box Admin Console, then
+# store its BOX_CLIENT_ID, BOX_CLIENT_SECRET, and BOX_ENTERPRISE_ID as repo
+# secrets.
+name: Apex live smoke (VR-1.4)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  live-smoke:
+    runs-on: ubuntu-latest
+    env:
+      SFDX_AUTH_URL: ${{ secrets.SFDX_AUTH_URL }}
+      BOX_CLIENT_ID: ${{ secrets.BOX_CLIENT_ID }}
+      BOX_CLIENT_SECRET: ${{ secrets.BOX_CLIENT_SECRET }}
+      BOX_ENTERPRISE_ID: ${{ secrets.BOX_ENTERPRISE_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Guard — a Dev Hub and Box CCG credentials are required
+        id: guard
+        run: |
+          if [ -z "$SFDX_AUTH_URL" ] || [ -z "$BOX_CLIENT_ID" ] \
+            || [ -z "$BOX_CLIENT_SECRET" ] || [ -z "$BOX_ENTERPRISE_ID" ]; then
+            echo "::notice::Missing SFDX_AUTH_URL or Box CCG secrets; skipping the live smoke."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.guard.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          # The Salesforce CLI's bundled undici needs Node >= 22.
+          node-version: '22'
+      - if: steps.guard.outputs.skip != 'true'
+        name: Install the Salesforce CLI
+        run: npm install --global @salesforce/cli
+      - if: steps.guard.outputs.skip != 'true'
+        name: Generate the Apex SDK (a deployable SFDX project)
+        run: >
+          cargo run -p gantry-cli -- generate --target apex --out apex-sdk
+          fixtures/specs/openapi.json
+          fixtures/specs/openapi-v2025.0.json
+          fixtures/specs/openapi-v2026.0.json
+      - if: steps.guard.outputs.skip != 'true'
+        name: Create a scratch org and deploy the SDK (classes + Remote Site Settings)
+        working-directory: apex-sdk
+        run: |
+          set -euo pipefail
+          printf '%s' "$SFDX_AUTH_URL" | sf org login sfdx-url --sfdx-url-stdin --set-default-dev-hub --alias devhub
+          sf org create scratch --target-dev-hub devhub \
+            --definition-file config/project-scratch-def.json \
+            --alias smoke-org --set-default --duration-days 1 --wait 20
+          # A real deploy (not --dry-run): the classes AND the Remote Site
+          # Settings must be live for the callouts to be permitted.
+          sf project deploy start --wait 30 --ignore-conflicts
+      - if: steps.guard.outputs.skip != 'true'
+        name: Run the live smoke (CCG auth + getMe + folder items)
+        working-directory: apex-sdk
+        run: |
+          set -euo pipefail
+          # Fill the driver's credential placeholders from the environment
+          # (literal replacement, no shell echo of the secret values).
+          node -e '
+            const fs = require("fs");
+            let s = fs.readFileSync("../runtimes/apex/smoke/livesmoke.apex", "utf8");
+            for (const k of ["BOX_CLIENT_ID", "BOX_CLIENT_SECRET", "BOX_ENTERPRISE_ID"]) {
+              s = s.split("${" + k + "}").join(process.env[k]);
+            }
+            fs.writeFileSync("smoke.apex", s);
+          '
+          # Anonymous Apex → real callouts. Require the run to succeed and the
+          # SMOKE OK sentinel to appear in the returned debug log.
+          sf apex run --file smoke.apex --target-org smoke-org --json > result.json
+          node -e '
+            const r = (JSON.parse(require("fs").readFileSync("result.json", "utf8")).result) || {};
+            const logs = r.logs || "";
+            const smoke = logs.split("\n").filter(l => l.includes("SMOKE"));
+            smoke.forEach(l => console.log(l.trim()));
+            if (!r.success || !logs.includes("SMOKE OK")) {
+              console.error("Live smoke FAILED: " + (r.exceptionMessage || "(no SMOKE OK sentinel)"));
+              process.exit(1);
+            }
+            console.log("Live smoke OK (VR-1.4)");
+          '
+      - if: always() && steps.guard.outputs.skip != 'true'
+        name: Delete the scratch org
+        working-directory: apex-sdk
+        run: sf org delete scratch --no-prompt --target-org smoke-org || true
