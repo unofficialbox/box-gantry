@@ -1,32 +1,31 @@
 // Hand-written Box Apex runtime (TR-Apex.6) — the chunked-upload orchestrator.
 //
-// Box's chunked upload is a three-step protocol: create an upload session, PUT
-// each part with its byte range and a per-part SHA-1 digest, then commit with
-// the whole-file SHA-1 and the ordered part list. The generated
-// `BoxChunkedUploads` manager exposes each raw call; this helper ties them
-// together — slicing, digesting, ranging, and committing — so a caller never
-// hand-rolls the fiddly, integrity-checked glue.
+// ⚠️ NOT USABLE FOR A REAL BOX CHUNKED UPLOAD ON APEX TODAY. Two independent
+// platform limits make an *actual* end-to-end chunked upload impossible in a
+// single Apex transaction, so treat this as a **correct reference
+// implementation of the protocol** — verified against mocked callouts — rather
+// than a production upload path. The real path needs an out-of-transaction,
+// `Queueable`-chained design (one part per transaction) *and* a byte-accurate
+// slicing mechanism; both are tracked as follow-ups (D-136).
 //
-// ── Apex platform limits (read before using) ────────────────────────────────
-// Two hard constraints bound what Apex can do here, so the helper stays honest
-// about them instead of failing obscurely:
+//   • **Heap.** The content is an in-memory `Blob`, and Apex heap is 6 MB sync /
+//     12 MB async — but Box only *offers* chunked upload for files ≥ 20 MB. No
+//     file is both ≥ 20 MB (so Box accepts it) and ≤ ~12 MB (so it fits heap),
+//     so there is no size at which a real upload succeeds.
+//   • **Slicing.** Apex has no `Blob` byte-slice; the base64-substring workaround
+//     only lands on a real byte boundary at a 3-byte-aligned `part_size`. Box's
+//     server-issued part sizes are powers of two (e.g. 8 MB), never divisible by
+//     3, so the multi-part path rejects every real session.
 //
-//  1. **Heap.** The content is an in-memory `Blob`; Apex heap is 6 MB
-//     synchronous / 12 MB asynchronous. Run chunked uploads from a `Queueable`
-//     or `Batchable` for the larger budget. The helper rejects content beyond a
-//     configurable ceiling (default ~4 MB, leaving room for the base64 slicing
-//     buffer) with a clear `BoxApiException`, rather than a raw `LimitException`.
-//     Files large enough to *need* Box's server part sizes therefore can't be
-//     uploaded in a single transaction — a platform limit, not a bug.
-//
-//  2. **Slicing.** Apex has no `Blob` byte-slice. The workaround — substring the
-//     base64 encoding at 4-char (3-byte) boundaries — only lands on a real byte
-//     boundary when the session's `part_size` is a multiple of 3. A single-part
-//     upload needs no slicing; a multi-part upload whose `part_size` isn't
-//     3-aligned is rejected with a clear message.
+// What it *does* do, correctly, for in-heap content with a 3-aligned part size
+// (the mocked-test scenario): Box's three-step protocol — create an upload
+// session, PUT each part with its byte range + per-part SHA-1 digest, then
+// commit with the whole-file SHA-1 and the ordered part list — over the
+// generated `BoxChunkedUploads` manager, failing loudly (a `BoxApiException`,
+// not a raw `LimitException`) at each limit above.
 public with sharing class BoxChunkedUpload {
-    // Default max in-heap content, well under the 12 MB async heap once the
-    // base64 slicing buffer (~1.33x) and a part copy are accounted for.
+    // The largest content this helper will attempt to hold in heap. Real Box
+    // chunked uploads (≥ 20 MB) exceed it by construction — see the class note.
     private static final Integer DEFAULT_MAX_CONTENT_BYTES = 4 * 1024 * 1024;
 
     private final Box client;
@@ -91,8 +90,24 @@ public with sharing class BoxChunkedUpload {
         }
     }
 
-    // Slice → digest → PUT each part, then commit with the whole-file digest.
+    // Any failure after the session is created leaves an orphaned session (and
+    // its already-uploaded parts) consuming quota until Box expires it. Abort it
+    // best-effort on failure, without letting a cleanup error mask the original.
     private Files run(UploadSession session, Blob content) {
+        try {
+            return attempt(session, content);
+        } catch (Exception failure) {
+            try {
+                this.client.chunkedUploads.deleteFilesUploadSessionsById(session.id);
+            } catch (Exception ignored) {
+                // best-effort cleanup — keep the original failure
+            }
+            throw failure;
+        }
+    }
+
+    // Slice → digest → PUT each part, then commit with the whole-file digest.
+    private Files attempt(UploadSession session, Blob content) {
         Integer total = content.size();
         Long partSize = session.part_size;
         if (partSize == null || partSize <= 0) {

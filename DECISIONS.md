@@ -1252,14 +1252,20 @@ slices the content into `part_size` parts, PUTs each with `Digest: sha=<base64
 sha1>` and `Content-Range`, then commits with the whole-file digest and the part
 list, returning the `Files` envelope.
 
-It stays **honest about the limits** rather than failing obscurely: content past
-a configurable in-heap ceiling (default ~4 MB, `withMaxContentBytes`) is rejected
-with a clear `BoxApiException` pointing at async heap; and because Apex can only
-slice a `Blob` by substringing its base64 at 3-byte boundaries, a *multi-part*
-upload whose `part_size` isn't a multiple of 3 is rejected too. So genuinely
-large files (Box's ≥ 20 MB / 8 MB-part territory) can't be uploaded in a single
-Apex transaction — a documented platform constraint, not a bug; the helper serves
-the in-heap case correctly.
+**A reference implementation, not a working upload path (CodeRabbit review).**
+The two limits don't just bound the helper — they exclude it entirely for *real*
+Box uploads, and the code/docs now say so plainly. Box only offers chunked
+upload for files ≥ 20 MB, but a ≥ 20 MB `Blob` can't fit the 6/12 MB heap, so no
+size satisfies both Box's minimum and Apex's ceiling; and Box's server-issued
+part sizes are powers of two, never divisible by 3, so the base64-slice guard
+rejects every real session. `BoxChunkedUpload` therefore stands as a **correct,
+mock-verified reference implementation** of the protocol — failing loudly (a
+`BoxApiException`, never a raw `LimitException`) at each limit — while the
+production path (an out-of-transaction, `Queueable`-chained uploader plus a
+byte-accurate slicing mechanism) is a tracked follow-up. Two review nits are
+also folded in: the session is aborted best-effort on a mid-upload failure (no
+orphaned session), and the test asserts distinct per-part `Content-Range`,
+digest, and byte size plus the ordered commit part list.
 
 **Consequences.** Runtime grows 9 → 11 classes (`BoxChunkedUpload` +
 `BoxChunkedUploadTest`), so `generate --target apex` ships **1,085 classes**. The

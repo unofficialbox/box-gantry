@@ -397,10 +397,12 @@ already proved it (85/85 managers lower, zero IR changes forced).
     (`Crypto.signWithCertificate` — key never in Apex/source) and exchanges the
     `jwt-bearer` grant, caching like CCG. `@TestVisible` signing seam makes the
     exchange `HttpCalloutMock`-testable. 1,083 classes. On-platform via VR-1.3.)
-38. ~~Chunked upload.~~ ✅ (D-136: `BoxChunkedUpload` runtime helper orchestrates
-    create-session → PUT parts (SHA-1 digest + `Content-Range`) → commit, on an
-    in-heap `Blob`. Honest about Apex limits — rejects content past a heap ceiling
-    and multi-part uploads whose `part_size` isn't 3-aligned (Apex has no `Blob`
-    slice). `HttpCalloutMock` test across all three endpoints. 1,085 classes.)
+38. ~~Chunked upload (reference implementation).~~ ✅ (D-136: `BoxChunkedUpload`
+    orchestrates create-session → PUT parts (SHA-1 digest + `Content-Range`) →
+    commit. Two Apex limits exclude *real* Box uploads (≥ 20 MB files exceed the
+    6/12 MB heap; power-of-two part sizes aren't 3-aligned for Apex's base64
+    slice), so it's a correct, mock-verified reference — failing loudly at each
+    limit, aborting the session on failure — pending a `Queueable`-chained path.
+    `HttpCalloutMock` test across all three endpoints. 1,085 classes.)
 39. **Next**: the remaining tri-state serialization gap (absent-vs-null);
     `BoxHttpClient` `HttpCalloutMock` coverage. Then M5 — Rust (v3).

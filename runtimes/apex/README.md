@@ -56,8 +56,26 @@ BoxTokenProvider auth = new BoxJwtTokenProvider(
 
 ### Chunked upload
 
-`BoxChunkedUpload` runs Box's three-step protocol (create session → PUT each part
-with its byte range + SHA-1 digest → commit with the whole-file digest):
+> ⚠️ **Not usable for a real Box chunked upload on Apex today.** `BoxChunkedUpload`
+> is a **correct reference implementation** of Box's three-step protocol (create
+> session → PUT each part with its byte range + SHA-1 digest → commit with the
+> whole-file digest), verified against mocked callouts — but two independent
+> platform limits make an actual upload impossible in a single transaction:
+>
+> - **Heap vs. Box's threshold.** Box only offers chunked upload for files
+>   ≥ 20 MB, but Apex heap is 6 MB sync / 12 MB async and the content is an
+>   in-memory `Blob`. No file is simultaneously ≥ 20 MB (so Box accepts it) and
+>   ≤ ~12 MB (so it fits heap) — there is no size at which a real upload succeeds.
+> - **No `Blob` slice.** Apex can't slice a `Blob` at arbitrary byte offsets; the
+>   base64-substring workaround only lands on a real boundary at a 3-byte-aligned
+>   `part_size`, and Box's server-issued part sizes are powers of two (never
+>   divisible by 3), so the multi-part path rejects every real session.
+>
+> A production path needs an out-of-transaction, `Queueable`-chained design (one
+> part per transaction) **and** a byte-accurate slicing mechanism — a tracked
+> follow-up. The helper still fails loudly (a `BoxApiException`, never a raw
+> `LimitException`) at each limit, and `withMaxContentBytes(...)` tunes the
+> in-heap ceiling for the mocked/reference scenario.
 
 ```apex
 Box client = new Box(new BoxHttpClient(auth));
@@ -66,17 +84,6 @@ FileFull uploaded = result.entries[0];
 // or a new version of an existing file:
 // new BoxChunkedUpload(client).uploadVersion(content, 'big.bin', fileId);
 ```
-
-**Apex limits bound this** (the helper fails loudly rather than obscurely):
-
-- The content is an in-memory `Blob`, and Apex heap is 6 MB sync / **12 MB
-  async** — so run uploads from a `Queueable`/`Batchable`. Content beyond a
-  configurable ceiling (default ~4 MB, `withMaxContentBytes(...)`) is rejected.
-  Files large enough to need Box's server part sizes can't be uploaded in a
-  single transaction — a platform limit.
-- Apex has no native `Blob` byte-slice; the base64 workaround only lands on real
-  byte boundaries when the session's `part_size` is a multiple of 3. A
-  multi-part upload with a non-aligned part size is rejected with a clear error.
 
 ## Governor limits
 
