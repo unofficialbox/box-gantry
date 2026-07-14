@@ -1389,8 +1389,10 @@ smoke against a real Box account). Two things blocked an Apex equivalent:
   the right fit. This makes the SDK usable out of the box, independent of the
   smoke.
 - **VR-1.4 live smoke** (`.github/workflows/apex-livesmoke.yml`, manual): deploy
-  the SDK to a fresh scratch org (a *real* deploy, not `--dry-run`) and run
-  anonymous Apex (`runtimes/apex/smoke/livesmoke.apex`) that mints a token via
+  the SDK to the configured org (the Dev Hub `SFDX_AUTH_URL` authorizes — no
+  scratch org, so the daily signup limit never applies; the classes persist and
+  are overwritten each run) with a *real* deploy, then run anonymous Apex
+  (`runtimes/apex/smoke/livesmoke.apex`) that mints a token via
   **Client Credentials Grant** and makes two live calls — `GET /users/me`
   (auth + typed deserialization) and `GET /folders/0/items` (pagination + the
   `limit`→`limit_r` wire remap). Credentials come from repo secrets
@@ -1403,4 +1405,6 @@ classes — still **1,086**); `model_shapes` pins them and the file count. The
 smoke is the Apex analogue of Go's VR-7 and is the last major assurance gap
 before "shipped". CCG was chosen over the developer-token flow because it mints a
 real token (exercising the auth callout) and needs no per-org certificate the way
-JWT would in an ephemeral scratch org.
+JWT would. Both VR-1.3 and VR-1.4 target the configured org directly rather than
+spinning up a scratch org, so the Dev Hub's daily scratch-org signup limit is
+never on the critical path.
