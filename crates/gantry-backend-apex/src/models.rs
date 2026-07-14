@@ -154,18 +154,34 @@ fn render_decl(
             // a struct (or one transitively holding one) is "affected" and gets
             // generated `normalizeKeys`/`denormalizeKeys` that remap the keys on
             // the untyped tree (see `wire.rs`); the managers route through them.
-            let affected = wire.is_affected(id);
-            let remap_note = if affected {
+            let read_hook = wire.needs_read_hook(id);
+            let write_hook = wire.needs_write_hook(id);
+            let null_writable = wire.is_null_writable(id);
+            // Describe only the hooks the class actually carries: `normalizeKeys`
+            // exists on the read path, `denormalizeKeys` on the write path.
+            let remap_note = if read_hook {
                 "\n * Some fields rename between the wire and Apex, so this class \
                  carries\n * `normalizeKeys`/`denormalizeKeys` (used by the managers) to \
                  remap\n * JSON keys around native (de)serialization."
+            } else if write_hook {
+                "\n * This class carries a `denormalizeKeys` write hook (used by the \
+                 managers)\n * to shape request bodies for the wire."
             } else {
                 ""
+            };
+            let control = null_writable.then(|| wire.null_control_name(s));
+            let null_note = match &control {
+                Some(control) => format!(
+                    "\n * Explicit null (D-138): to clear a field on update, add its Apex\n \
+                     * field name to `{control}` — the request sends JSON `null` for it;\n \
+                     * fields you leave unset stay absent."
+                ),
+                None => String::new(),
             };
             let _ = writeln!(
                 out,
                 "/** Model for the `{name}` schema ({count} field(s)). Fields\n \
-                 * carry their wire (JSON) name in a trailing comment.{remap_note} */",
+                 * carry their wire (JSON) name in a trailing comment.{remap_note}{null_note} */",
                 count = s.fields.len()
             );
             let _ = writeln!(out, "public class {name} {{");
@@ -178,8 +194,15 @@ fn render_decl(
                     field.wire_name
                 );
             }
-            if affected {
-                out.push_str(&wire.remap_methods(name, s));
+            if let Some(control) = &control {
+                let _ = writeln!(
+                    out,
+                    "    // Explicit-null control (D-138): Apex field names to send as JSON \
+                     `null`.\n    public Set<String> {control} = new Set<String>();"
+                );
+            }
+            if read_hook || write_hook {
+                out.push_str(&wire.hooks(id, name, s));
             }
             let _ = writeln!(out, "}}");
         }
@@ -271,7 +294,7 @@ fn render_union(
                     // If the variant's keys need remapping (D-132), normalize
                     // the untyped map first — otherwise native deserialize into
                     // the variant would drop its renamed fields.
-                    let payload = if wire.is_affected(*id) {
+                    let payload = if wire.needs_read_hook(*id) {
                         format!("{variant_ty}.normalizeKeys(untyped)")
                     } else {
                         "untyped".to_string()

@@ -179,16 +179,18 @@ fn a_renamed_field_routes_through_the_key_remap_both_ways() {
         .expect("BoxSearch class");
     let src = &manager.content;
 
-    // Request: serialize the body, remap Apex → wire, hand the map to the runtime.
+    // Request: reduce the body to its set keys, remap Apex → wire, hand the map
+    // to the runtime with null-suppression off.
     assert_contains(
         src,
-        "Object wireBody = JSON.deserializeUntyped(JSON.serialize(body));",
+        "Object wireBody = JSON.deserializeUntyped(JSON.serialize(body, true));",
     );
     assert_contains(
         src,
         "wireBody = Paged.denormalizeKeys((Map<String, Object>) wireBody);",
     );
     assert_contains(src, "request.body = wireBody;");
+    assert_contains(src, "request.suppressNulls = false;");
 
     // Response: parse untyped, remap wire → Apex, then native-deserialize.
     assert_contains(
@@ -203,6 +205,67 @@ fn a_renamed_field_routes_through_the_key_remap_both_ways() {
         src,
         "return (Paged) JSON.deserialize(JSON.serialize(parsed), Paged.class);",
     );
+}
+
+/// A one-manager program whose operation sends a struct with **no** renamed
+/// fields but one `Nullable` field, so null-writability alone must route the
+/// body through the write transform.
+fn null_only_sample() -> Vec<GeneratedFile> {
+    let mut program = ir::Program::default();
+    let patch = program.add(ir::Decl {
+        name: ident("Patch"),
+        module: ir::ModulePath(vec![ident("schemas")]),
+        api_version: None,
+        kind: ir::DeclKind::Struct(ir::StructDecl {
+            fields: vec![ir::Field {
+                name: ident("note"),
+                wire_name: "note".into(),
+                ty: ir::Type::Nullable(Box::new(ir::Type::String)),
+            }],
+        }),
+    });
+    program.operations.push(ir::Operation {
+        name: ident("patch_thing"),
+        variation: None,
+        manager: ident("things"),
+        api_version: None,
+        method: ir::HttpMethod::Put,
+        base_url: ir::BaseUrl::Api,
+        path: vec![ir::PathSegment::Literal("things".into())],
+        params: vec![],
+        request: Some(ir::RequestBody {
+            media: ir::RequestMedia::Json,
+            ty: ir::Type::Decl(patch),
+        }),
+        response: ir::ResponseShape::None,
+        deprecated: false,
+    });
+    let program = Box::leak(Box::new(program));
+    let analysis = gantry_sema::analyze(program).unwrap();
+    generate_managers(&analysis, &apex())
+}
+
+#[test]
+fn null_writability_alone_routes_the_body_through_the_write_transform() {
+    // No field renames — the only reason `Patch` is write-affected is its
+    // `Nullable` field. The manager must still reduce, denormalize, and drop
+    // null-suppression so an explicit null can reach Box.
+    let files = null_only_sample();
+    let src = &files
+        .iter()
+        .find(|f| f.path == format!("{CLASSES}/BoxThings.cls"))
+        .expect("BoxThings class")
+        .content;
+    assert_contains(
+        src,
+        "Object wireBody = JSON.deserializeUntyped(JSON.serialize(body, true));",
+    );
+    assert_contains(
+        src,
+        "wireBody = Patch.denormalizeKeys((Map<String, Object>) wireBody);",
+    );
+    assert_contains(src, "request.body = wireBody;");
+    assert_contains(src, "request.suppressNulls = false;");
 }
 
 // --- the whole real spec -------------------------------------------------

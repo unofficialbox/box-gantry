@@ -1310,3 +1310,58 @@ ships **1,086 classes**. `model_shapes` pins the new count; fmt, clippy
 (`-D warnings`), determinism green. As hand-written Apex it's confirmed
 on-platform by VR-1.3. This closes the last untested runtime class — every
 runtime `.cls` now has direct callout coverage.
+
+## D-138 — Explicit null (absent-vs-null) is the serializer's concern
+
+**Context.** D-110 split the tri-state structurally: `Optional<T>` = the key may
+be **absent**, `Nullable<T>` = the wire value may be an explicit **null**, and it
+recorded that "Apex erases both at the type level and handles the difference in
+serializers." Box uses an explicit JSON `null` to *clear* a field on update, and
+an absent key to leave it unchanged — two different requests. But the Apex
+runtime serialized every body with `JSON.serialize(body, true)` (suppress-nulls),
+so an explicit `null` was indistinguishable from an unset field: **you could not
+clear a Box field.** The type erasure (D-110) means a plain Apex instance field
+is `null` whether the caller never touched it or set it to clear — the intent has
+to be carried out of band.
+
+**Decision.** Move the null policy from the runtime into the generated managers,
+and give the caller a way to express "send explicit null":
+
+- **Runtime.** `BoxRequest` gains `Boolean suppressNulls = true`; `BoxHttpClient`
+  serializes `JSON.serialize(request.body, request.suppressNulls)`. The default
+  keeps the 105 simple body paths byte-identical.
+- **Managers.** A body whose type reaches a **write-affected** struct is reduced
+  to a `Map` of only its set keys (`JSON.serialize(body, true)` → untyped), key-
+  remapped Apex → wire, then handed to the runtime with `suppressNulls = false` —
+  the map now carries exactly the intended keys, including any intentional nulls.
+- **Models.** A struct that is (a) reachable from a JSON request body and (b) has
+  a `Nullable` field ("null-writable") gains `public Set<String> fieldsToNull`;
+  the caller adds the Apex field name of a field to clear. Its `denormalizeKeys`
+  injects `"<wire>": null` for each listed `Nullable` field, then drops the
+  control key so it never reaches Box. Only `Nullable` fields are injectable — an
+  absent-only (`Optional`) field left unset simply stays absent.
+- **Read vs write split.** The D-132 "affected" notion splits: **read-affected**
+  (name-mismatch or transitively contains one) still drives `normalizeKeys` and
+  the response/union-parse path; **write-affected** (read-affected ∪ null-writable
+  ∪ their containers) drives `denormalizeKeys` and the request path. The transform
+  recurses only into the direction-appropriate set, so responses are untouched by
+  the null machinery.
+
+Usage:
+
+```apex
+PutIdBody7 body = new PutIdBody7();
+body.name = 'New name';              // set → sent
+body.fieldsToNull.add('enterprise'); // explicit null → Box clears it
+// every other field is unset → absent, unchanged
+```
+
+**Consequences.** In the real spec 22 structs are body-reachable with a nullable
+field (of 146 null-bearing / 608 structs), so the surface is small and no new
+classes are added — `generate --target apex` still ships **1,086 classes**. Class
+content changes only; `model_shapes`/`manager_shapes` pin the new shape, plus new
+generator tests for the injection and the response-only negative case. fmt, clippy
+(`-D warnings`), determinism green; on-platform via VR-1.3. This closes the last
+Apex correctness gap before M5 (Rust). A known limitation: because the tri-state
+erases (D-110), explicit null is opt-in through `fieldsToNull` (Apex can't infer
+"set to null" from a plain field), which is the honest ceiling of the platform.
