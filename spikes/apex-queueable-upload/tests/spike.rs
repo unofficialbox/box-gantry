@@ -10,8 +10,12 @@ fn assert_has(needle: &str) {
 /// Assert `first` appears before `second` in the sketch — a light structural
 /// check (substring presence alone can't prove ordering).
 fn assert_before(first: &str, second: &str) {
-    let a = SKETCH.find(first).unwrap_or_else(|| panic!("missing: {first}"));
-    let b = SKETCH.find(second).unwrap_or_else(|| panic!("missing: {second}"));
+    let a = SKETCH
+        .find(first)
+        .unwrap_or_else(|| panic!("missing: {first}"));
+    let b = SKETCH
+        .find(second)
+        .unwrap_or_else(|| panic!("missing: {second}"));
     assert!(a < b, "expected `{first}` before `{second}`");
 }
 
@@ -32,13 +36,19 @@ fn it_handles_exactly_one_part_per_transaction() {
     assert_has("fetchRange(this.nextOffset, len)");
     assert_has("this.nextOffset += len;");
     // Order within a part: fetch the range, then PUT it.
-    assert_before("Blob partBytes = fetchRange", "updateFilesUploadSessionsById");
+    assert_before(
+        "Blob partBytes = fetchRange",
+        "updateFilesUploadSessionsById",
+    );
 }
 
 #[test]
 fn the_phases_run_in_protocol_order() {
     // create session → upload parts → commit, defined in that order.
-    assert_before("private void createSession()", "private void uploadNextPart()");
+    assert_before(
+        "private void createSession()",
+        "private void uploadNextPart()",
+    );
     assert_before("private void uploadNextPart()", "private void commit()");
 }
 
