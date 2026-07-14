@@ -411,5 +411,13 @@ already proved it (85/85 managers lower, zero IR changes forced).
     `HttpRequest` has no `getHeader()`), the bounded-retry exhaustion throw, and
     non-2xx → `BoxApiException` with the raw body. Closes the last untested runtime
     class. 1,086 classes; on-platform via VR-1.3.)
-40. **Next**: the remaining tri-state serialization gap (absent-vs-null).
-    Then M5 — Rust (v3).
+40. ~~The tri-state serialization gap (absent-vs-null).~~ ✅ (D-138: Box clears a
+    field with an explicit JSON `null` vs. leaves it unchanged when absent, but the
+    runtime suppressed all nulls. Moved the null policy from `BoxHttpClient` into
+    the managers (`BoxRequest.suppressNulls`, default true); a body reaching a
+    write-affected struct is reduced to its set keys + remapped + handed over with
+    suppression off. A body-reachable struct with a `Nullable` field gains
+    `fieldsToNull` (Apex field names) whose `denormalizeKeys` injects explicit
+    nulls. Split "affected" into read (normalizeKeys/responses) vs write
+    (denormalizeKeys/requests). 22 structs affected; no new classes, still 1,086.)
+41. **Next**: M5 — Rust backend + runtime (v3). Apex (M4) correctness is complete.

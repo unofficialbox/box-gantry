@@ -179,16 +179,18 @@ fn a_renamed_field_routes_through_the_key_remap_both_ways() {
         .expect("BoxSearch class");
     let src = &manager.content;
 
-    // Request: serialize the body, remap Apex → wire, hand the map to the runtime.
+    // Request: reduce the body to its set keys, remap Apex → wire, hand the map
+    // to the runtime with null-suppression off.
     assert_contains(
         src,
-        "Object wireBody = JSON.deserializeUntyped(JSON.serialize(body));",
+        "Object wireBody = JSON.deserializeUntyped(JSON.serialize(body, true));",
     );
     assert_contains(
         src,
         "wireBody = Paged.denormalizeKeys((Map<String, Object>) wireBody);",
     );
     assert_contains(src, "request.body = wireBody;");
+    assert_contains(src, "request.suppressNulls = false;");
 
     // Response: parse untyped, remap wire → Apex, then native-deserialize.
     assert_contains(

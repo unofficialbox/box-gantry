@@ -183,6 +183,79 @@ fn a_struct_with_a_renamed_field_gets_key_remap_methods() {
     assert_contains(&go, "raw.put('limit', v);");
 }
 
+/// Render the full SDK for a program with a single struct optionally used as a
+/// POST request body, returning the struct's class source.
+fn struct_with_optional_body(fields: Vec<ir::Field>, as_body: bool) -> String {
+    let mut program = ir::Program::default();
+    let s = program.add(struct_decl("S", fields));
+    if as_body {
+        program.operations.push(ir::Operation {
+            name: ident("post_s"),
+            variation: None,
+            manager: ident("things"),
+            api_version: None,
+            method: ir::HttpMethod::Post,
+            base_url: ir::BaseUrl::Api,
+            path: vec![ir::PathSegment::Literal("things".into())],
+            params: vec![],
+            request: Some(ir::RequestBody {
+                media: ir::RequestMedia::Json,
+                ty: ir::Type::Decl(s),
+            }),
+            response: ir::ResponseShape::None,
+            deprecated: false,
+        });
+    }
+    let program = Box::leak(Box::new(program));
+    let analysis = gantry_sema::analyze(program).expect("fixture must analyze");
+    let files = generate(&analysis, &apex());
+    files
+        .into_iter()
+        .find(|f| f.path == format!("{CLASSES}/S.cls"))
+        .expect("S class")
+        .content
+}
+
+#[test]
+fn a_nullable_field_on_a_body_struct_gets_explicit_null_control() {
+    // `note` is `Nullable` (the wire value may be an explicit `null`) and `S` is
+    // a request body, so `S` gains a `fieldsToNull` control field and its
+    // `denormalizeKeys` injects an explicit `null` for `note` when listed, then
+    // drops the control key. The absent-only `id` field gets no injection.
+    let s = struct_with_optional_body(
+        vec![
+            field("id", ir::Type::String),
+            field("note", ir::Type::Nullable(Box::new(ir::Type::String))),
+        ],
+        true,
+    );
+    assert_contains(&s, "public Set<String> fieldsToNull = new Set<String>();");
+    assert_contains(&s, "Object toNull = raw.remove('fieldsToNull');");
+    assert_contains(&s, "if (nfName == 'note') raw.put('note', null);");
+    // An absent-only field is never force-nulled.
+    assert!(
+        !s.contains("raw.put('id', null)"),
+        "a non-nullable field must not be injectable as null:\n{s}"
+    );
+}
+
+#[test]
+fn a_nullable_field_off_the_request_path_gets_no_explicit_null_control() {
+    // The same struct with a `Nullable` field, but never used as a request body,
+    // has no explicit-null concern — no `fieldsToNull`, no injection.
+    let s = struct_with_optional_body(
+        vec![field(
+            "note",
+            ir::Type::Nullable(Box::new(ir::Type::String)),
+        )],
+        false,
+    );
+    assert!(
+        !s.contains("fieldsToNull"),
+        "a response-only struct must not carry explicit-null control:\n{s}"
+    );
+}
+
 #[test]
 fn a_clean_struct_has_no_remap_methods() {
     // Every field's Apex name equals its wire key, so native (de)serialization

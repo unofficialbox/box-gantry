@@ -95,9 +95,13 @@ public with sharing class BoxHttpClient implements BoxClient {
             req.setBodyAsBlob(request.binaryBody);
         } else if (request.body != null) {
             req.setHeader('Content-Type', 'application/json');
-            // Suppress nulls: Box treats an absent key and a null value
-            // differently, and the default is "leave unset".
-            req.setBody(JSON.serialize(request.body, true));
+            // Box treats an absent key and an explicit null differently. The
+            // manager decides which each field is: by default nulls are
+            // suppressed (an unset field stays absent), but a body routed
+            // through denormalizeKeys pre-reduces to a map of only the intended
+            // keys — including any explicit nulls the caller requested (D-138) —
+            // and sets suppressNulls = false so those nulls reach Box.
+            req.setBody(JSON.serialize(request.body, request.suppressNulls));
         }
         return new Http().send(req);
     }

@@ -357,7 +357,7 @@ fn render_operation(
                 // A body whose type reaches an affected struct is serialized,
                 // then its keys are renamed to the wire shape (Apex → wire);
                 // otherwise the typed object serializes directly.
-                if wire.type_reaches_affected(&body.ty) {
+                if wire.type_reaches_write_affected(&body.ty) {
                     wire.emit_request_body(out, &body.ty);
                 } else {
                     let _ = writeln!(out, "        request.body = body;");
@@ -382,7 +382,7 @@ fn emit_return(
     shape: &ir::ResponseShape,
 ) {
     if let ir::ResponseShape::Json(ty) = shape
-        && wire.type_reaches_affected(ty)
+        && wire.type_reaches_read_affected(ty)
     {
         wire.emit_response(out, &apex_type(program, names, ty), ty);
         return;
@@ -482,6 +482,10 @@ fn runtime_stubs() -> Vec<GeneratedFile> {
          \x20   public Map<String, String> headers = new Map<String, String>();\n\
          \x20   public Object body;\n\
          \x20   public Blob binaryBody;\n\
+         \x20   // Suppress null fields when serializing `body` (the default). A\n\
+         \x20   // body routed through denormalizeKeys sets this false so injected\n\
+         \x20   // explicit nulls (D-138) survive; the map already omits unset keys.\n\
+         \x20   public Boolean suppressNulls = true;\n\
          }}\n",
         header = header()
     );
