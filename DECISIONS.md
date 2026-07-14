@@ -1233,3 +1233,41 @@ determinism green. On-platform compile is confirmed by VR-1.3 when the
 scratch-org quota permits. Remaining runtime follow-up: `BoxHttpClient`'s own
 `HttpCalloutMock` coverage. The tri-state absent-vs-null distinction is the last
 open serialization item.
+
+## D-136 — Chunked-upload orchestrator (Apex runtime), bounded by platform limits
+
+**Context.** Box's chunked upload is a three-step protocol — create an upload
+session, PUT each part with its byte range + a per-part SHA-1 digest, then commit
+with the whole-file SHA-1 and the ordered part list. The generated
+`BoxChunkedUploads` manager exposes each raw call, but hand-wiring the digests,
+`Content-Range` headers, slicing, and commit is exactly the error-prone glue a
+caller shouldn't write. Two Apex platform limits, though, bound what's possible:
+**heap** (6 MB sync / 12 MB async — the content is an in-memory `Blob`) and the
+absence of any native **`Blob` byte-slice**.
+
+**Decision.** Add `BoxChunkedUpload` (hand-written runtime) that orchestrates the
+protocol — `upload(content, name, folderId)` for a new file,
+`uploadVersion(content, name, fileId)` for a new version. It creates the session,
+slices the content into `part_size` parts, PUTs each with `Digest: sha=<base64
+sha1>` and `Content-Range`, then commits with the whole-file digest and the part
+list, returning the `Files` envelope.
+
+It stays **honest about the limits** rather than failing obscurely: content past
+a configurable in-heap ceiling (default ~4 MB, `withMaxContentBytes`) is rejected
+with a clear `BoxApiException` pointing at async heap; and because Apex can only
+slice a `Blob` by substringing its base64 at 3-byte boundaries, a *multi-part*
+upload whose `part_size` isn't a multiple of 3 is rejected too. So genuinely
+large files (Box's ≥ 20 MB / 8 MB-part territory) can't be uploaded in a single
+Apex transaction — a documented platform constraint, not a bug; the helper serves
+the in-heap case correctly.
+
+**Consequences.** Runtime grows 9 → 11 classes (`BoxChunkedUpload` +
+`BoxChunkedUploadTest`), so `generate --target apex` ships **1,085 classes**. The
+test uses `HttpCalloutMock` across the three endpoints with a 3-aligned part size
+to exercise the multi-part slice/digest/range/commit path, plus the oversize and
+non-aligned rejections. `model_shapes` pins the packaging; fmt, clippy
+(`-D warnings`), determinism green. As hand-written Apex it's confirmed on-platform
+by VR-1.3 when the scratch-org quota permits. The helper references the generated
+`BoxChunkedUploads` surface by name (create/update/commit + the session/part
+models), so it's coupled to those generated identifiers — acceptable for a Box-
+specific runtime that ships embedded with each generation.

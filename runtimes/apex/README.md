@@ -20,6 +20,7 @@ embeds it at build time.
 | `BoxCachingTokenProvider` | abstract base: token cache, refresh-before-expiry, error normalization |
 | `BoxCcgTokenProvider` | Client Credentials Grant: mint + cache a server-to-server token (no crypto) |
 | `BoxJwtTokenProvider` | JWT server auth: RS256-signed assertion via an org-stored key (`Crypto.signWithCertificate`) |
+| `BoxChunkedUpload` | orchestrates Box's create-session → PUT parts → commit protocol (SHA-1 digests, byte ranges) |
 | `BoxApiException` | the error type carrying HTTP status + response body |
 
 ## Usage
@@ -52,6 +53,30 @@ BoxTokenProvider auth = new BoxJwtTokenProvider(
     'PUBLIC_KEY_ID',   // the JWT `kid` Box assigned the registered key
     'BoxAppKey');      // the Cert & Key Management unique name of the RSA key
 ```
+
+### Chunked upload
+
+`BoxChunkedUpload` runs Box's three-step protocol (create session → PUT each part
+with its byte range + SHA-1 digest → commit with the whole-file digest):
+
+```apex
+Box client = new Box(new BoxHttpClient(auth));
+Files result = new BoxChunkedUpload(client).upload(content, 'big.bin', folderId);
+FileFull uploaded = result.entries[0];
+// or a new version of an existing file:
+// new BoxChunkedUpload(client).uploadVersion(content, 'big.bin', fileId);
+```
+
+**Apex limits bound this** (the helper fails loudly rather than obscurely):
+
+- The content is an in-memory `Blob`, and Apex heap is 6 MB sync / **12 MB
+  async** — so run uploads from a `Queueable`/`Batchable`. Content beyond a
+  configurable ceiling (default ~4 MB, `withMaxContentBytes(...)`) is rejected.
+  Files large enough to need Box's server part sizes can't be uploaded in a
+  single transaction — a platform limit.
+- Apex has no native `Blob` byte-slice; the base64 workaround only lands on real
+  byte boundaries when the session's `part_size` is a multiple of 3. A
+  multi-part upload with a non-aligned part size is rejected with a clear error.
 
 ## Governor limits
 
