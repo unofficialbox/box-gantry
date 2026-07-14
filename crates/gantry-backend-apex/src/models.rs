@@ -43,10 +43,11 @@ pub fn generate_models(
     };
     let program = analysis.program;
     let names = ClassNames::build(program, identifier_limit as usize);
+    let wire = crate::wire::Wire::build(program, &names);
 
     let mut files = Vec::new();
     for (index, decl) in program.decls.iter().enumerate() {
-        if let Some(content) = render_decl(program, &names, ir::DeclId(index as u32), decl) {
+        if let Some(content) = render_decl(program, &names, &wire, ir::DeclId(index as u32), decl) {
             let name = names
                 .get(ir::DeclId(index as u32))
                 .expect("rendered decl has a name");
@@ -136,6 +137,7 @@ pub(crate) fn mint_unique(base: &str, limit: usize, used: &mut HashSet<String>) 
 fn render_decl(
     program: &ir::Program,
     names: &ClassNames,
+    wire: &crate::wire::Wire<'_>,
     id: ir::DeclId,
     decl: &ir::Decl,
 ) -> Option<String> {
@@ -146,10 +148,24 @@ fn render_decl(
     );
     match &decl.kind {
         ir::DeclKind::Struct(s) => {
+            // A field whose Apex identifier differs from its wire key (a
+            // reserved word, `$`-prefix, `__` run, …) can't round-trip through
+            // native `JSON.deserialize`, which matches on the field name. Such
+            // a struct (or one transitively holding one) is "affected" and gets
+            // generated `normalizeKeys`/`denormalizeKeys` that remap the keys on
+            // the untyped tree (see `wire.rs`); the managers route through them.
+            let affected = wire.is_affected(id);
+            let remap_note = if affected {
+                "\n * Some fields rename between the wire and Apex, so this class \
+                 carries\n * `normalizeKeys`/`denormalizeKeys` (used by the managers) to \
+                 remap\n * JSON keys around native (de)serialization."
+            } else {
+                ""
+            };
             let _ = writeln!(
                 out,
                 "/** Model for the `{name}` schema ({count} field(s)). Fields\n \
-                 * carry their wire (JSON) name in a trailing comment. */",
+                 * carry their wire (JSON) name in a trailing comment.{remap_note} */",
                 count = s.fields.len()
             );
             let _ = writeln!(out, "public class {name} {{");
@@ -161,6 +177,9 @@ fn render_decl(
                     "    public {ty} {field_name}; // wire: {}",
                     field.wire_name
                 );
+            }
+            if affected {
+                out.push_str(&wire.remap_methods(name, s));
             }
             let _ = writeln!(out, "}}");
         }

@@ -1070,3 +1070,46 @@ column and each paged endpoint page gains a runnable `## Pagination` cursor
 loop, rendered from the same `OpSignature` the manager code is (name, param
 order, and envelope type can't drift). Deterministic; a `model_shapes`
 regression pins the pagination-doc section; 105 tests, fmt, clippy green.
+
+## D-132 — Apex field ↔ wire serialization remap
+
+**Context.** Apex's `JSON.deserialize(body, T.class)` matches JSON keys to
+instance-variable names (case-insensitively) with **no** wire-name mapping —
+there is no `@JsonProperty` equivalent. But Box wire keys routinely can't *be*
+Apex identifiers: reserved words (`limit`, `value`, `from`, `group`, …, ~90 of
+them), `$`-prefixed metadata keys (`$parent`, `$id`, `$template`, …), `__` runs
+(`Box__Security__Classification__Key`), and digit-leading keys. The name is
+shaped to a legal identifier (`limit`→`limit_r`, `$parent`→`parent`,
+`Box__…`→`Box_…`), at which point native deserialize **silently drops** the
+value on read and emits the wrong key on write. Until now the wire name lived
+only in a `// wire:` comment — informational, unused at runtime.
+
+**Decision.** The only thing broken is the **key names**; native
+`JSON.deserialize` still converts every value type (dates, blobs, nested
+structs, lists) correctly once the keys match. So remap keys on the *untyped*
+JSON tree, type-directed, around native (de)serialization — no hand-rolled
+per-type value marshaling. A struct is **affected** iff it has a name-mismatched
+field or transitively contains an affected struct (fixpoint). Only affected
+structs get two generated statics:
+
+```apex
+public static Map<String, Object> normalizeKeys(Map<String, Object> raw) { … } // wire → Apex (read)
+public static Map<String, Object> denormalizeKeys(Map<String, Object> raw) { … } // Apex → wire (write)
+```
+
+Each renames only its own mismatched keys and recurses **only** into affected
+children (structs, and lists/maps of them). Free-form `Object`/`Map<String,
+Object>` fields — which carry keys like `$id` as *data* — are never touched, so
+metadata blobs pass through intact. The managers route an affected response
+through `deserializeUntyped → normalizeKeys → serialize → deserialize(T.class)`
+and an affected request body through `serialize → deserializeUntyped →
+denormalizeKeys`; the 872 clean classes keep the direct native path unchanged.
+
+**Consequences.** Correctness fix, no class-count change (**991 classes**);
+**119** carry remap methods. Leans entirely on native type conversion — the
+generated code only moves keys. Deterministic; `model_shapes`/`manager_shapes`
+regressions pin the affected/clean split, the nested-recursion shape, and the
+both-way manager routing; fmt, clippy (`-D warnings`) green. Not yet covered:
+discriminated-union *variant* structs that are themselves affected (the union
+dispatches via `JSON.deserialize` inside `parse`) and the tri-state
+absent-vs-null distinction — both tracked as follow-ups.

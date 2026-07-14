@@ -132,6 +132,79 @@ fn the_client_wires_every_manager_and_the_stubs_exist() {
     );
 }
 
+/// A one-manager program whose operation both sends and returns a struct with
+/// a renamed field (`limit` → `limit_r`), so the manager must route through the
+/// generated key remap on both the request and response paths.
+fn remap_sample() -> Vec<GeneratedFile> {
+    let mut program = ir::Program::default();
+    let paged = program.add(ir::Decl {
+        name: ident("Paged"),
+        module: ir::ModulePath(vec![ident("schemas")]),
+        api_version: None,
+        kind: ir::DeclKind::Struct(ir::StructDecl {
+            fields: vec![ir::Field {
+                name: ident("limit"),
+                wire_name: "limit".into(),
+                ty: ir::Type::Int64,
+            }],
+        }),
+    });
+    program.operations.push(ir::Operation {
+        name: ident("post_search"),
+        variation: None,
+        manager: ident("search"),
+        api_version: None,
+        method: ir::HttpMethod::Post,
+        base_url: ir::BaseUrl::Api,
+        path: vec![ir::PathSegment::Literal("search".into())],
+        params: vec![],
+        request: Some(ir::RequestBody {
+            media: ir::RequestMedia::Json,
+            ty: ir::Type::Decl(paged),
+        }),
+        response: ir::ResponseShape::Json(ir::Type::Decl(paged)),
+        deprecated: false,
+    });
+    let program = Box::leak(Box::new(program));
+    let analysis = gantry_sema::analyze(program).unwrap();
+    generate_managers(&analysis, &apex())
+}
+
+#[test]
+fn a_renamed_field_routes_through_the_key_remap_both_ways() {
+    let files = remap_sample();
+    let manager = files
+        .iter()
+        .find(|f| f.path == format!("{CLASSES}/BoxSearch.cls"))
+        .expect("BoxSearch class");
+    let src = &manager.content;
+
+    // Request: serialize the body, remap Apex → wire, hand the map to the runtime.
+    assert_contains(
+        src,
+        "Object wireBody = JSON.deserializeUntyped(JSON.serialize(body));",
+    );
+    assert_contains(
+        src,
+        "wireBody = Paged.denormalizeKeys((Map<String, Object>) wireBody);",
+    );
+    assert_contains(src, "request.body = wireBody;");
+
+    // Response: parse untyped, remap wire → Apex, then native-deserialize.
+    assert_contains(
+        src,
+        "Object parsed = JSON.deserializeUntyped(response.body);",
+    );
+    assert_contains(
+        src,
+        "parsed = Paged.normalizeKeys((Map<String, Object>) parsed);",
+    );
+    assert_contains(
+        src,
+        "return (Paged) JSON.deserialize(JSON.serialize(parsed), Paged.class);",
+    );
+}
+
 // --- the whole real spec -------------------------------------------------
 
 fn fixture(name: &str) -> PathBuf {
