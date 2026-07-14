@@ -122,6 +122,7 @@ dependencies = [
  "gantry-manifest",
  "gantry-sema",
  "gantry-spec",
+ "gantry-synth",
  "serde_json",
 ]
 

@@ -484,7 +484,8 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     // Every class has exactly one matching -meta.xml sidecar (source
     // format), so the tree deploys as-is. After dedupe (D-127): 898 model
     // classes + 85 managers + the Box client + 3 contract stubs + 4
-    // hand-written runtime classes = 991.
+    // hand-written runtime classes = 991. (Pagination adds no classes — the
+    // base method's envelope is the page, D-131.)
     let classes: Vec<&str> = files
         .iter()
         .filter(|f| f.path.ends_with(".cls"))
@@ -610,4 +611,17 @@ fn each_endpoint_has_a_markdown_doc_with_a_runnable_snippet() {
         body,
         "FileFull result = client.files.getById(fileId, null, null, null, null);",
     );
+    // A non-paged endpoint has no pagination section.
+    assert!(!body.contains("## Pagination"));
+
+    // A paged endpoint documents the cursor loop (no page classes — the
+    // envelope is the page, D-131). Folders' `getItems` is marker-paged.
+    let get_items = files
+        .iter()
+        .find(|f| f.path == "docs/folders/getItems.md")
+        .expect("docs/folders/getItems.md");
+    let paged = &get_items.content;
+    assert_contains(paged, "## Pagination");
+    assert_contains(paged, "while (String.isNotBlank(page.next_marker)) {");
+    assert_contains(paged, "page = client.folders.getItems(");
 }

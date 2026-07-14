@@ -159,7 +159,8 @@ fn real_spec_managers() -> Vec<GeneratedFile> {
 fn the_real_spec_yields_one_class_per_manager_and_a_method_per_operation() {
     let files = real_spec_managers();
 
-    // 85 managers + the Box client + 3 runtime stubs.
+    // 85 managers + the Box client + 3 runtime stubs. Pagination adds no
+    // classes — the base method's envelope is the page (D-131).
     assert_eq!(files.len(), 85 + 1 + 3);
     let managers = files
         .iter()
