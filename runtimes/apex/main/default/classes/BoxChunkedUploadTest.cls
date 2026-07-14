@@ -69,8 +69,10 @@ private class BoxChunkedUploadTest {
         System.assertEquals('bytes 6-8/9', mock.partRanges[1], 'second part range');
         System.assertNotEquals(mock.partDigests[0], mock.partDigests[1], 'per-part digests differ');
         // The commit lists both parts, in order.
-        Map<String, Object> commit = (Map<String, Object>) JSON.deserializeUntyped(mock.commitBody);
-        System.assertEquals(2, ((List<Object>) commit.get('parts')).size(), 'both parts committed');
+        // `commit` is an Apex reserved word (the DML statement); name the parsed
+        // body `committed`.
+        Map<String, Object> committed = (Map<String, Object>) JSON.deserializeUntyped(mock.commitBody);
+        System.assertEquals(2, ((List<Object>) committed.get('parts')).size(), 'both parts committed');
         System.assertNotEquals(null, result);
         System.assertEquals(1, result.entries.size(), 'the committed file is returned');
     }

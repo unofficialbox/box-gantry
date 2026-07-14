@@ -48,7 +48,15 @@ public with sharing class BoxHttpClient implements BoxClient {
         // as always-returning, hence the explicit bound and trailing throw.
         Boolean refreshed = false;
         Integer transientRetries = 0;
-        Integer maxAttempts = this.maxRetries + 2;
+        Integer plannedAttempts = this.maxRetries + 2;
+        // Never plan more attempts than the per-transaction callout budget can
+        // fund. Each attempt makes at least one callout, and a caching token
+        // provider adds a mint callout (initial, and again after a 401
+        // invalidate). Clamp to the remaining budget — reserving one callout for
+        // that mint — so the loop can't overrun the 100-callout limit and hit an
+        // uncatchable LimitException instead of a BoxApiException.
+        Integer budget = Limits.getLimitCallouts() - Limits.getCallouts();
+        Integer maxAttempts = Math.min(plannedAttempts, Math.max(1, budget - 1));
         for (Integer attempt = 0; attempt < maxAttempts; attempt++) {
             HttpResponse res = callout(request, url);
             Integer status = res.getStatusCode();

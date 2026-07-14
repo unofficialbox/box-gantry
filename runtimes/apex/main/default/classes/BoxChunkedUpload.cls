@@ -156,14 +156,16 @@ public with sharing class BoxChunkedUpload {
         }
 
         String wholeDigest = 'sha=' + EncodingUtil.base64Encode(Crypto.generateDigest('SHA1', content));
-        PostFilesUploadSessionsIdCommitBody commit = new PostFilesUploadSessionsIdCommitBody();
-        commit.parts = parts;
+        // `commit` is an Apex reserved word (the DML statement), so the local
+        // that holds the commit body is named `commitBody`.
+        PostFilesUploadSessionsIdCommitBody commitBody = new PostFilesUploadSessionsIdCommitBody();
+        commitBody.parts = parts;
         return this.client.chunkedUploads.commitFilesUploadSessionsById(
             session.id,
             wholeDigest,
             null,
             null,
-            commit
+            commitBody
         );
     }
 }
