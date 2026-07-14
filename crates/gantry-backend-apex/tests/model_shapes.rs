@@ -607,8 +607,10 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     // Every class has exactly one matching -meta.xml sidecar (source
     // format), so the tree deploys as-is. After dedupe (D-127): 898 model
     // classes + 85 managers + the Box client + 3 contract stubs + 4
-    // hand-written runtime classes = 991. (Pagination adds no classes — the
-    // base method's envelope is the page, D-131.)
+    // hand-written runtime classes = 991 (pagination adds no classes — the
+    // base method's envelope is the page, D-131). Plus the generated `@isTest`
+    // suite for the 75% coverage gate: 85 per-manager tests + the mock client
+    // + the unions test = 87, for 1078 classes total.
     let classes: Vec<&str> = files
         .iter()
         .filter(|f| f.path.ends_with(".cls"))
@@ -616,9 +618,18 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         .collect();
     assert_eq!(
         classes.len(),
-        991,
-        "models + managers + client + stubs + runtime"
+        991 + 87,
+        "models + managers + client + stubs + runtime + @isTest suite"
     );
+    // The generated test suite ships with the deployable tree.
+    for test in ["BoxCalloutMock", "BoxFilesTest", "BoxUnionsTest"] {
+        assert!(
+            classes
+                .iter()
+                .any(|c| *c == format!("force-app/main/default/classes/{test}.cls")),
+            "missing test class {test}"
+        );
+    }
     // The hand-written runtime ships inside the deployable tree (Apex is one
     // flat namespace), behind the generated `BoxClient` contract.
     for runtime in [
@@ -676,8 +687,8 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     );
     // 336 endpoint pages + 85 manager indexes + 1 top index = 422.
     assert_eq!(docs.len(), 422, "endpoint + manager + top-index docs");
-    // 5 scaffolding + 991 classes + 991 metas + 422 docs.
-    assert_eq!(files.len(), 5 + 991 * 2 + 422);
+    // 5 scaffolding + 1078 classes + 1078 metas + 422 docs.
+    assert_eq!(files.len(), 5 + (991 + 87) * 2 + 422);
 
     // Deterministic and path-sorted.
     let sorted: Vec<&String> = {
@@ -690,6 +701,52 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         sorted,
         "generate() output must be path-sorted"
     );
+}
+
+#[test]
+fn the_generated_test_suite_exercises_the_managers_through_a_mock() {
+    let lowering = gantry_spec::lower(
+        &SpecSet::load(&[
+            fixture("openapi.json"),
+            fixture("openapi-v2025.0.json"),
+            fixture("openapi-v2026.0.json"),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    let program = Box::leak(Box::new(lowering.program));
+    let analysis = gantry_sema::analyze(program).unwrap();
+    let files = generate(&analysis, &apex());
+    let get = |name: &str| {
+        &files
+            .iter()
+            .find(|f| f.path == format!("{CLASSES}/{name}.cls"))
+            .unwrap_or_else(|| panic!("missing {name}"))
+            .content
+    };
+
+    // The mock implements the runtime contract with no real callout.
+    let mock = get("BoxCalloutMock");
+    assert_contains(mock, "@isTest");
+    assert_contains(mock, "public class BoxCalloutMock implements BoxClient {");
+    assert_contains(mock, "public BoxResponse send(BoxRequest request) {");
+
+    // A per-manager test constructs the manager with the mock and drives every
+    // operation inside a Test.startTest/stopTest window.
+    let files_test = get("BoxFilesTest");
+    assert_contains(files_test, "@isTest\nprivate class BoxFilesTest {");
+    assert_contains(files_test, "BoxCalloutMock mock = new BoxCalloutMock();");
+    assert_contains(files_test, "BoxFiles svc = new BoxFiles(mock);");
+    assert_contains(files_test, "Test.startTest();");
+    assert_contains(files_test, "svc.getById(");
+    assert_contains(files_test, "Test.stopTest();");
+    // A binary (Blob) response is fed as a Blob, an array response as `[]`.
+    assert_contains(files_test, "mock.bodyBlob = Blob.valueOf('x');");
+
+    // The unions test drives each discriminated union's parse dispatch.
+    let unions = get("BoxUnionsTest");
+    assert_contains(unions, "@isTest\nprivate class BoxUnionsTest {");
+    assert_contains(unions, ".parse(new Map<String, Object>{");
 }
 
 #[test]
