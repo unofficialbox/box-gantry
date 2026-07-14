@@ -11,4 +11,12 @@ public interface BoxTokenProvider {
      * implementation may cache and refresh transparently.
      */
     String getAccessToken();
+
+    /**
+     * Discard any cached token so the next `getAccessToken()` mints a fresh
+     * one. The HTTP client calls this before its single 401 re-attempt, so a
+     * token revoked before its expiry still recovers. A static-token provider
+     * has nothing to discard and treats this as a no-op.
+     */
+    void invalidate();
 }

@@ -387,6 +387,15 @@ already proved it (85/85 managers lower, zero IR changes forced).
     managers + the D-132 remap + union dispatch, from the same IR. 1,078 classes;
     regression tests + determinism. On-platform ≥75% confirmed by VR-1.3;
     also normalizes the union-variant follow-up from D-132.)
-36. **Next**: CCG/JWT token providers (Crypto-signed, cached); chunked upload;
-    the remaining tri-state serialization gap (absent-vs-null);
-    `HttpCalloutMock` runtime coverage. Then M5 — Rust (v3).
+36. ~~Client Credentials Grant token provider.~~ ✅ (D-134: `BoxCcgTokenProvider`
+    mints + caches a server-to-server token (no crypto), refreshing a minute
+    before expiry; `BoxTokenProvider` gains `invalidate()` so the client's 401
+    re-attempt actually re-mints. `HttpCalloutMock` test covers
+    mint/cache/invalidate/error. 1,080 classes. On-platform via VR-1.3.)
+37. ~~JWT (server auth) token provider.~~ ✅ (D-135: `BoxJwtTokenProvider` builds
+    + RS256-signs a JWT assertion through a Salesforce-stored key
+    (`Crypto.signWithCertificate` — key never in Apex/source) and exchanges the
+    `jwt-bearer` grant, caching like CCG. `@TestVisible` signing seam makes the
+    exchange `HttpCalloutMock`-testable. 1,083 classes. On-platform via VR-1.3.)
+38. **Next**: chunked upload; the remaining tri-state serialization gap
+    (absent-vs-null); `BoxHttpClient` `HttpCalloutMock` coverage. Then M5 — Rust (v3).

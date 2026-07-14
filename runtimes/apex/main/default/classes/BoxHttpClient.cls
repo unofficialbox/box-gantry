@@ -41,17 +41,23 @@ public with sharing class BoxHttpClient implements BoxClient {
 
     public BoxResponse send(BoxRequest request) {
         String url = buildUrl(request);
+        // The 401 refresh re-attempt is tracked separately from the transient
+        // retry budget, so it always gets its one shot even when maxRetries is 0.
         Boolean refreshed = false;
-        for (Integer attempt = 0; attempt <= this.maxRetries; attempt++) {
+        Integer transientRetries = 0;
+        while (true) {
             HttpResponse res = callout(request, url);
             Integer status = res.getStatusCode();
             // A single 401 re-attempt gives a caching token provider a chance
-            // to refresh; a persistent 401 falls through to the error below.
+            // to refresh: discard the (now-rejected) token so the next callout
+            // mints a fresh one. A persistent 401 falls through to the error.
             if (status == 401 && !refreshed) {
                 refreshed = true;
+                this.tokens.invalidate();
                 continue;
             }
-            if (isRetriable(status) && attempt < this.maxRetries) {
+            if (isRetriable(status) && transientRetries < this.maxRetries) {
+                transientRetries++;
                 continue;
             }
             if (status < 200 || status >= 300) {
@@ -59,7 +65,6 @@ public with sharing class BoxHttpClient implements BoxClient {
             }
             return toResponse(res);
         }
-        throw new BoxApiException('Box API request failed: retries exhausted.');
     }
 
     private HttpResponse callout(BoxRequest request, String url) {

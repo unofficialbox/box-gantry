@@ -1156,3 +1156,80 @@ the actual ≥ 75% is confirmed on-platform by VR-1.3 (scratch-org quota permitt
 its own tests under `runtimes/apex/**`; runtime callout-coverage via
 `HttpCalloutMock` is a follow-up. Tri-state absent-vs-null remains the last open
 serialization item.
+
+## D-134 — Client Credentials Grant token provider (Apex runtime auth)
+
+**Context.** The runtime shipped only `BoxDeveloperTokenProvider` — a fixed
+developer token that expires in ~60 minutes, unusable for a real integration. Of
+Box's server-to-server flows, **Client Credentials Grant (CCG)** needs only the
+app's client id/secret (no signing key), so it works on any org; **JWT** needs
+`Crypto`-signed assertions and is heavier. CCG is the right first production
+auth.
+
+**Decision.** Add `BoxCcgTokenProvider` (hand-written runtime, TR-Apex.6). It
+POSTs `grant_type=client_credentials` with the client id/secret and the subject
+(`enterprise`/`user` + id) to `oauth2/token`, then **caches** the access token
+and refreshes it a minute before its `expires_in` so a token never lapses
+mid-request. It reads `expires_in` through its string form (JSON numbers decode
+as Integer/Long/Decimal), defaulting to Box's usual hour.
+
+The `BoxTokenProvider` interface gains **`invalidate()`** — the missing half of
+the 401-refresh the interface already documented. `BoxHttpClient` now calls
+`this.tokens.invalidate()` before its single 401 re-attempt, so a token revoked
+*ahead* of its expiry (which the expiry cache alone wouldn't catch) is discarded
+and re-minted. `BoxDeveloperTokenProvider.invalidate()` is a no-op (a static
+token can't refresh).
+
+**Consequences.** The SDK now authenticates server-to-server without a
+hardcoded developer token. Runtime grows from 4 to 6 classes
+(`BoxCcgTokenProvider` + `BoxCcgTokenProviderTest`), so `generate --target apex`
+ships **1,080 classes** (993 base + the 87-class `@isTest` suite). The CCG test
+uses `HttpCalloutMock` to cover mint / cache / invalidate / non-2xx — seeding the
+runtime-test coverage that D-133 deferred (`BoxHttpClient`'s own `HttpCalloutMock`
+coverage is still a follow-up, as is JWT). As hand-written Apex, on-platform
+compile is confirmed by VR-1.3 when the scratch-org quota permits;
+`model_shapes` pins the packaging, and generation stays deterministic.
+
+## D-135 — JWT (server auth) token provider
+
+**Context.** After CCG (D-134), the other Box server-to-server flow is **JWT**:
+prove possession of an RSA private key by signing a short-lived JWT assertion
+(RS256) and exchanging it for a token. Some Box apps are provisioned JWT-only, so
+the SDK needs it. The hard part is key handling — Apex's `Crypto.sign` can't
+decrypt Box's passphrase-protected PEM, and a raw private key must never sit in
+Apex or source.
+
+**Decision.** Add `BoxJwtTokenProvider` that signs through **Salesforce
+Certificate and Key Management**: the developer imports the RSA key into the org
+and registers the public key with Box (which returns a public-key id); the
+provider signs with `Crypto.signWithCertificate('RSA-SHA256', …, certDevName)`
+and tags the JWT header `kid` with the public-key id. The key stays in the
+platform keystore — never in Apex, never in the SDK. It builds
+`base64url(header).base64url(claims).signature` (claims: `iss`/`sub`/
+`box_sub_type`/`aud`/a random `jti`/`exp` = now + 45s), POSTs the
+`jwt-bearer` grant, and reuses the same cache-and-refresh shape as CCG.
+
+Signing is a `@TestVisible protected virtual` seam so the token exchange is
+testable: `BoxJwtTokenProviderTest` overrides it with a fixed signature and drives
+mint / cache / invalidate / non-2xx through `HttpCalloutMock`. The one line that
+needs a real org certificate (`signWithCertificate`) is the only path a test
+can't reach.
+
+The two providers' identical cache-and-refresh logic — token cache,
+refresh-before-expiry, `invalidate()`, and the token-endpoint exchange — is
+factored into an abstract **`BoxCachingTokenProvider`** base; each provider
+supplies only its `tokenRequestBody()`. That base also normalizes every exchange
+failure (callout, non-2xx, unparseable body, missing/mistyped token) to
+`BoxApiException` in one place, so callers (and `BoxHttpClient`'s 401 path) never
+see a raw `CalloutException`/`TypeException`. A related fix: `BoxHttpClient` now
+tracks the single 401 refresh re-attempt separately from the transient-retry
+budget, so the refresh still fires when `maxRetries` is 0.
+
+**Consequences.** The SDK now supports both server-to-server flows. Runtime grows
+4 → 9 classes (the caching base, the CCG + JWT providers, and their tests), so
+`generate --target apex` ships **1,083 classes** (996 base + the 87-class
+`@isTest` suite). `model_shapes` pins the packaging; fmt, clippy (`-D warnings`),
+determinism green. On-platform compile is confirmed by VR-1.3 when the
+scratch-org quota permits. Remaining runtime follow-up: `BoxHttpClient`'s own
+`HttpCalloutMock` coverage. The tri-state absent-vs-null distinction is the last
+open serialization item.

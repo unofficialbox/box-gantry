@@ -17,4 +17,9 @@ public with sharing class BoxDeveloperTokenProvider implements BoxTokenProvider 
     public String getAccessToken() {
         return this.token;
     }
+
+    /** A fixed developer token can't be refreshed — nothing to discard. */
+    public void invalidate() {
+        // no-op
+    }
 }
