@@ -606,12 +606,12 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
 
     // Every class has exactly one matching -meta.xml sidecar (source
     // format), so the tree deploys as-is. After dedupe (D-127): 898 model
-    // classes + 85 managers + the Box client + 3 contract stubs + 6
-    // hand-written runtime classes (incl. the CCG provider + its test, D-134)
-    // = 993 (pagination adds no classes — the base method's envelope is the
-    // page, D-131). Plus the generated `@isTest` suite for the 75% coverage
-    // gate: 85 per-manager tests + the mock client + the unions test = 87, for
-    // 1080 classes total.
+    // classes + 85 managers + the Box client + 3 contract stubs + 8
+    // hand-written runtime classes (incl. the CCG + JWT providers + their
+    // tests, D-134/D-135) = 995 (pagination adds no classes — the base
+    // method's envelope is the page, D-131). Plus the generated `@isTest`
+    // suite for the 75% coverage gate: 85 per-manager tests + the mock client
+    // + the unions test = 87, for 1082 classes total.
     let classes: Vec<&str> = files
         .iter()
         .filter(|f| f.path.ends_with(".cls"))
@@ -619,7 +619,7 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         .collect();
     assert_eq!(
         classes.len(),
-        993 + 87,
+        995 + 87,
         "models + managers + client + stubs + runtime + @isTest suite"
     );
     // The generated test suite ships with the deployable tree.
@@ -638,6 +638,7 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         "BoxTokenProvider",
         "BoxDeveloperTokenProvider",
         "BoxCcgTokenProvider",
+        "BoxJwtTokenProvider",
         "BoxApiException",
     ] {
         assert!(
@@ -689,8 +690,8 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     );
     // 336 endpoint pages + 85 manager indexes + 1 top index = 422.
     assert_eq!(docs.len(), 422, "endpoint + manager + top-index docs");
-    // 5 scaffolding + 1080 classes + 1080 metas + 422 docs.
-    assert_eq!(files.len(), 5 + (993 + 87) * 2 + 422);
+    // 5 scaffolding + 1082 classes + 1082 metas + 422 docs.
+    assert_eq!(files.len(), 5 + (995 + 87) * 2 + 422);
 
     // Deterministic and path-sorted.
     let sorted: Vec<&String> = {

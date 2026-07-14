@@ -18,6 +18,8 @@ pub(crate) const RUNTIME_CLASS_NAMES: &[&str] = &[
     "BoxDeveloperTokenProvider",
     "BoxCcgTokenProvider",
     "BoxCcgTokenProviderTest",
+    "BoxJwtTokenProvider",
+    "BoxJwtTokenProviderTest",
     "BoxApiException",
     "BoxHttpClient",
 ];
@@ -42,6 +44,14 @@ pub(crate) fn runtime_classes() -> Vec<GeneratedFile> {
         (
             "BoxCcgTokenProviderTest",
             include_str!("../../../runtimes/apex/main/default/classes/BoxCcgTokenProviderTest.cls"),
+        ),
+        (
+            "BoxJwtTokenProvider",
+            include_str!("../../../runtimes/apex/main/default/classes/BoxJwtTokenProvider.cls"),
+        ),
+        (
+            "BoxJwtTokenProviderTest",
+            include_str!("../../../runtimes/apex/main/default/classes/BoxJwtTokenProviderTest.cls"),
         ),
         (
             "BoxApiException",

@@ -1189,3 +1189,37 @@ runtime-test coverage that D-133 deferred (`BoxHttpClient`'s own `HttpCalloutMoc
 coverage is still a follow-up, as is JWT). As hand-written Apex, on-platform
 compile is confirmed by VR-1.3 when the scratch-org quota permits;
 `model_shapes` pins the packaging, and generation stays deterministic.
+
+## D-135 — JWT (server auth) token provider
+
+**Context.** After CCG (D-134), the other Box server-to-server flow is **JWT**:
+prove possession of an RSA private key by signing a short-lived JWT assertion
+(RS256) and exchanging it for a token. Some Box apps are provisioned JWT-only, so
+the SDK needs it. The hard part is key handling — Apex's `Crypto.sign` can't
+decrypt Box's passphrase-protected PEM, and a raw private key must never sit in
+Apex or source.
+
+**Decision.** Add `BoxJwtTokenProvider` that signs through **Salesforce
+Certificate and Key Management**: the developer imports the RSA key into the org
+and registers the public key with Box (which returns a public-key id); the
+provider signs with `Crypto.signWithCertificate('RSA-SHA256', …, certDevName)`
+and tags the JWT header `kid` with the public-key id. The key stays in the
+platform keystore — never in Apex, never in the SDK. It builds
+`base64url(header).base64url(claims).signature` (claims: `iss`/`sub`/
+`box_sub_type`/`aud`/a random `jti`/`exp` = now + 45s), POSTs the
+`jwt-bearer` grant, and reuses the same cache-and-refresh shape as CCG.
+
+Signing is a `@TestVisible protected virtual` seam so the token exchange is
+testable: `BoxJwtTokenProviderTest` overrides it with a fixed signature and drives
+mint / cache / invalidate / non-2xx through `HttpCalloutMock`. The one line that
+needs a real org certificate (`signWithCertificate`) is the only path a test
+can't reach.
+
+**Consequences.** The SDK now supports both server-to-server flows. Runtime grows
+6 → 8 classes (`BoxJwtTokenProvider` + `BoxJwtTokenProviderTest`), so
+`generate --target apex` ships **1,082 classes** (995 base + the 87-class
+`@isTest` suite). `model_shapes` pins the packaging; fmt, clippy (`-D warnings`),
+determinism green. On-platform compile is confirmed by VR-1.3 when the
+scratch-org quota permits. Remaining runtime follow-up: `BoxHttpClient`'s own
+`HttpCalloutMock` coverage. The tri-state absent-vs-null distinction is the last
+open serialization item.

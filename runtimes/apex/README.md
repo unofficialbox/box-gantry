@@ -18,6 +18,7 @@ embeds it at build time.
 | `BoxTokenProvider` | auth-token contract (`getAccessToken()` + `invalidate()`) |
 | `BoxDeveloperTokenProvider` | simplest flow: a fixed developer token |
 | `BoxCcgTokenProvider` | Client Credentials Grant: mint + cache a server-to-server token (no crypto) |
+| `BoxJwtTokenProvider` | JWT server auth: RS256-signed assertion via an org-stored key (`Crypto.signWithCertificate`) |
 | `BoxApiException` | the error type carrying HTTP status + response body |
 
 ## Usage
@@ -38,6 +39,18 @@ Store the client secret in a **Named Credential** or protected Custom Metadata,
 never in source. `BoxCcgTokenProvider` caches the access token and refreshes it a
 minute before expiry; on a `401` the HTTP client calls `invalidate()` so a
 prematurely-revoked token is re-minted on the next attempt.
+
+For the **JWT** flow, import the app's RSA private key into Salesforce
+**Certificate and Key Management** and register the public key with Box (Box
+returns a public-key id). The private key never touches Apex — signing goes
+through the stored certificate by name:
+
+```apex
+BoxTokenProvider auth = new BoxJwtTokenProvider(
+    'CLIENT_ID', 'CLIENT_SECRET', 'enterprise', 'ENTERPRISE_ID',
+    'PUBLIC_KEY_ID',   // the JWT `kid` Box assigned the registered key
+    'BoxAppKey');      // the Cert & Key Management unique name of the RSA key
+```
 
 ## Governor limits
 
