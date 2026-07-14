@@ -1279,3 +1279,34 @@ by VR-1.3 when the scratch-org quota permits. The helper references the generate
 `BoxChunkedUploads` surface by name (create/update/commit + the session/part
 models), so it's coupled to those generated identifiers — acceptable for a Box-
 specific runtime that ships embedded with each generation.
+
+## D-137 — HttpCalloutMock coverage for the Apex HTTP client
+
+**Context.** `BoxHttpClient` is the one runtime class that turns a structural
+`BoxRequest` into a real Salesforce callout — URL building, the bearer token,
+transient retries, the single 401 refresh, the bounded retry budget, and mapping
+a non-2xx response to `BoxApiException`. Every other runtime class (the token
+providers, the chunked-upload helper) shipped with its own `HttpCalloutMock`
+test, but the HTTP client itself did not — and VR-1.3 had just caught two real
+compile bugs in its `send()` loop (a `while (true)` that Apex won't treat as
+always-returning, and a retry bound that could overrun the 100-callout limit),
+so the exact method every generated manager depends on was the least-tested.
+
+**Decision.** Add `BoxHttpClientTest` (hand-written runtime, embedded like the
+rest) driving the client's callout paths through an `HttpCalloutMock`: a
+2xx success (asserting the built endpoint = base-URL class + path + encoded
+query, and the method), a 401 that refreshes once and then succeeds, a
+persistent 401 that gives up, a transient 5xx retried to success, exhausted
+transient retries surfacing the last status, a non-retriable 4xx carrying the
+raw error body, JSON-body serialization with `overrideBaseUrl`, an unknown
+base-URL class rejected before any callout, and a null token provider rejected
+at construction. Because Apex's `HttpRequest` exposes no `getHeader()`, the
+`Authorization`/refresh behaviour is asserted through a counting token provider
+(a token read per attempt; `invalidate()` before the 401 re-attempt) rather than
+by inspecting the sent header.
+
+**Consequences.** Runtime grows 11 → 12 classes, so `generate --target apex`
+ships **1,086 classes**. `model_shapes` pins the new count; fmt, clippy
+(`-D warnings`), determinism green. As hand-written Apex it's confirmed
+on-platform by VR-1.3. This closes the last untested runtime class — every
+runtime `.cls` now has direct callout coverage.
