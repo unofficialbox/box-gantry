@@ -380,6 +380,13 @@ already proved it (85/85 managers lower, zero IR changes forced).
     that remap keys on the untyped tree — recursing only into affected children,
     never touching free-form maps — around native (de)serialization; the managers
     route both ways. Regression tests + determinism.)
-35. **Next**: CCG/JWT token providers (Crypto-signed, cached);
-    chunked upload; the remaining tri-state serialization gap (absent-vs-null);
-    generated test classes clearing the 75% gate. Then M5 — Rust (v3).
+35. ~~Generated Apex test suite for the 75% coverage deploy gate.~~ ✅
+    (D-133: `mandated_test_coverage` drives an `@isTest` suite — a mock
+    `BoxClient`, one `Box<Manager>Test` per manager driving every operation
+    through it, and a `BoxUnionsTest` for the union `parse` dispatch. Exercises
+    managers + the D-132 remap + union dispatch, from the same IR. 1,078 classes;
+    regression tests + determinism. On-platform ≥75% confirmed by VR-1.3;
+    also normalizes the union-variant follow-up from D-132.)
+36. **Next**: CCG/JWT token providers (Crypto-signed, cached); chunked upload;
+    the remaining tri-state serialization gap (absent-vs-null);
+    `HttpCalloutMock` runtime coverage. Then M5 — Rust (v3).

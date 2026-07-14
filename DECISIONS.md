@@ -1120,3 +1120,39 @@ routes through `Variant.normalizeKeys(untyped)` first; clean variants stay on
 the raw map. A `model_shapes` regression pins the mixed union (clean variant
 bare, affected variant normalized). Still open: the tri-state absent-vs-null
 distinction, tracked separately.
+
+## D-133 — Generated Apex test suite for the 75% coverage deploy gate
+
+**Context.** Salesforce refuses a production deploy unless ≥ 75% of the org's
+Apex lines are covered by running tests (`mandated_test_coverage: Some(75)` on
+the Apex manifest — a first-class capability axis, not a Go/Rust concept). A
+generated SDK that can't clear the gate can't be deployed, so the SDK must ship
+its own tests. Apex tests also can't make real callouts, so any code behind the
+`BoxClient` contract needs a mock.
+
+**Decision.** Generate an `@isTest` suite (`tests.rs`), emitted only when the
+manifest mandates coverage, that **exercises** the generated layer from the same
+IR it covers (so it never drifts):
+
+- **`BoxCalloutMock`** — an `@isTest` `BoxClient` returning a caller-tunable
+  canned `BoxResponse` (no callout), recording the last request.
+- **`Box<Manager>Test`** (one per manager, 85) — a single method that constructs
+  the manager with the mock and calls **every** operation inside
+  `Test.startTest/stopTest`, shaping the canned body to each return type (`[]`
+  for array responses, a `Blob` for binary, `{}` otherwise) and passing
+  syntactic placeholders for arguments (scalars as literals, containers empty, a
+  model body via its no-arg constructor). This covers request-building,
+  deserialization, and — through the response/body types — the D-132 key remap
+  (a non-null model body also exercises `denormalizeKeys`).
+- **`BoxUnionsTest`** — drives each discriminated union's `parse` dispatch with a
+  known tag (selects a variant) and an unknown tag (open-union fallthrough).
+
+**Consequences.** `generate --target apex` now ships **1,078 classes** (was 991:
++85 manager tests, +the mock, +the unions test). Deterministic; a `model_shapes`
+regression pins the mock/​manager-test/union-test shapes and the file counts;
+fmt, clippy (`-D warnings`) green. Line coverage is a *platform* measurement, so
+the actual ≥ 75% is confirmed on-platform by VR-1.3 (scratch-org quota permitting
+— the generated tests compile-check there too). The hand-written runtime keeps
+its own tests under `runtimes/apex/**`; runtime callout-coverage via
+`HttpCalloutMock` is a follow-up. Tri-state absent-vs-null remains the last open
+serialization item.

@@ -20,6 +20,7 @@ mod docs;
 mod managers;
 mod models;
 mod runtime;
+mod tests;
 mod wire;
 
 pub use managers::generate_managers;
@@ -56,6 +57,9 @@ pub fn generate(analysis: &Analysis<'_>, manifest: &CapabilityManifest) -> Vec<G
     // The hand-written runtime deploys alongside the generated classes (Apex
     // is one flat namespace), behind the generated `BoxClient` contract.
     classes.extend(runtime::runtime_classes());
+    // Generated `@isTest` classes exercise the code above so a production
+    // deploy clears the platform's mandated coverage gate (TR-Apex).
+    classes.extend(tests::generate_tests(analysis, manifest));
     let class_meta = class_meta_xml();
     for class in classes {
         files.push(GeneratedFile {
