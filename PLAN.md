@@ -404,5 +404,12 @@ already proved it (85/85 managers lower, zero IR changes forced).
     slice), so it's a correct, mock-verified reference — failing loudly at each
     limit, aborting the session on failure — pending a `Queueable`-chained path.
     `HttpCalloutMock` test across all three endpoints. 1,085 classes.)
-39. **Next**: the remaining tri-state serialization gap (absent-vs-null);
-    `BoxHttpClient` `HttpCalloutMock` coverage. Then M5 — Rust (v3).
+39. ~~`BoxHttpClient` `HttpCalloutMock` coverage.~~ ✅ (D-137: `BoxHttpClientTest`
+    drives the client's own callout paths through an `HttpCalloutMock` — URL/query
+    building, JSON-body serialization + `overrideBaseUrl`, transient 5xx/429 retry,
+    the single 401 refresh (asserted via a counting token provider, since Apex's
+    `HttpRequest` has no `getHeader()`), the bounded-retry exhaustion throw, and
+    non-2xx → `BoxApiException` with the raw body. Closes the last untested runtime
+    class. 1,086 classes; on-platform via VR-1.3.)
+40. **Next**: the remaining tri-state serialization gap (absent-vs-null).
+    Then M5 — Rust (v3).
