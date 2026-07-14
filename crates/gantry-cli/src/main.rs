@@ -42,11 +42,16 @@ enum Command {
     Generate {
         #[arg(required = true, value_name = "SPEC")]
         specs: Vec<PathBuf>,
-        /// Target language (manifest key). `go` is complete; `apex` emits
+        /// Target language(s) (manifest key). `go` is complete; `apex` emits
         /// the model layer as a deployable SFDX project (M4, in progress).
-        #[arg(long, value_parser = ["go", "apex"])]
-        target: String,
-        /// Output directory (created if missing).
+        /// Accepts a comma-separated list or repeated flags to build several
+        /// at once (`--target go,apex`); `all` expands to every target. A
+        /// single target writes into `--out` directly; two or more each land
+        /// in their own `<out>/<target>/` subdirectory.
+        #[arg(long, required = true, value_parser = ["go", "apex", "all"], value_delimiter = ',')]
+        target: Vec<String>,
+        /// Output directory (created if missing). With more than one target,
+        /// each SDK lands in a `<out>/<target>/` subdirectory.
         #[arg(long)]
         out: PathBuf,
     },
@@ -224,9 +229,53 @@ fn write_files(root: &Path, files: &[gantry_backend_go::GeneratedFile]) -> std::
     Ok(())
 }
 
-fn generate(specs: &[PathBuf], target: &str, out: &Path) -> ExitCode {
-    // Both backends emit (path, content); dispatch on the target and write
-    // a common shape.
+/// Every target `all` expands to, in output order.
+const ALL_TARGETS: &[&str] = &["go", "apex"];
+
+fn generate(specs: &[PathBuf], targets: &[String], out: &Path) -> ExitCode {
+    let resolved = resolve_targets(targets);
+    // A single target writes into `--out` directly (the common case). Two or
+    // more each land in their own `<out>/<target>/` subdirectory so the fleet
+    // never collides. The spec set is lowered once per target — cheap next to
+    // codegen, and it keeps each backend's path independent.
+    let multiple = resolved.len() > 1;
+    for target in resolved {
+        let dir = if multiple {
+            out.join(target)
+        } else {
+            out.to_path_buf()
+        };
+        match generate_one(specs, target, &dir) {
+            ExitCode::SUCCESS => {}
+            code => return code,
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// Expand `all`, then dedupe while preserving first-seen order, so
+/// `--target go,apex`, `--target all`, and `--target apex,apex` all resolve to
+/// a clean target list. `all` anywhere in the list wins the whole set.
+fn resolve_targets(targets: &[String]) -> Vec<&'static str> {
+    if targets.iter().any(|t| t == "all") {
+        return ALL_TARGETS.to_vec();
+    }
+    let mut resolved: Vec<&'static str> = Vec::new();
+    for target in targets {
+        // Map to the ALL_TARGETS `'static` spelling so downstream paths and
+        // the `generate_one` dispatch share one source of truth.
+        if let Some(known) = ALL_TARGETS.iter().find(|t| **t == target.as_str())
+            && !resolved.contains(known)
+        {
+            resolved.push(known);
+        }
+    }
+    resolved
+}
+
+/// Generate one target into `out`. Both backends emit `(path, content)`;
+/// dispatch on the target and write a common shape.
+fn generate_one(specs: &[PathBuf], target: &str, out: &Path) -> ExitCode {
     let files: Vec<(String, String)> = match target {
         "go" => match generate_files(specs, "go") {
             Ok(files) => files.into_iter().map(|f| (f.path, f.content)).collect(),
@@ -243,7 +292,7 @@ fn generate(specs: &[PathBuf], target: &str, out: &Path) -> ExitCode {
         return ExitCode::from(exit_codes::ENGINE_BUG);
     }
     println!(
-        "ok  generated {count} file(s) into {out}",
+        "ok  generated {count} {target} file(s) into {out}",
         count = files.len(),
         out = out.display()
     );
@@ -447,4 +496,36 @@ fn check(specs: &[PathBuf]) -> ExitCode {
         docs = set.documents.len(),
     );
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ALL_TARGETS, resolve_targets};
+
+    fn resolve(args: &[&str]) -> Vec<&'static str> {
+        resolve_targets(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn a_single_target_resolves_to_itself() {
+        assert_eq!(resolve(&["apex"]), vec!["apex"]);
+    }
+
+    #[test]
+    fn a_subset_keeps_first_seen_order() {
+        assert_eq!(resolve(&["apex", "go"]), vec!["apex", "go"]);
+    }
+
+    #[test]
+    fn all_expands_to_every_target() {
+        assert_eq!(resolve(&["all"]), ALL_TARGETS.to_vec());
+        // `all` anywhere wins the whole set, in canonical order.
+        assert_eq!(resolve(&["apex", "all"]), ALL_TARGETS.to_vec());
+    }
+
+    #[test]
+    fn duplicates_are_removed() {
+        assert_eq!(resolve(&["apex", "apex"]), vec!["apex"]);
+        assert_eq!(resolve(&["go", "apex", "go"]), vec!["go", "apex"]);
+    }
 }
