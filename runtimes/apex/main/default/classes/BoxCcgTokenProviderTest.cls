@@ -70,9 +70,23 @@ private class BoxCcgTokenProviderTest {
 
     @isTest
     static void blankArgumentsThrow() {
+        // One case per validation branch: blank id/secret, blank subject.
+        assertConstructionThrows('', 'secret', 'enterprise', '1', 'blank client id');
+        assertConstructionThrows('id', '', 'enterprise', '1', 'blank client secret');
+        assertConstructionThrows('id', 'secret', '', '1', 'blank subject type');
+        assertConstructionThrows('id', 'secret', 'enterprise', '', 'blank subject id');
+    }
+
+    static void assertConstructionThrows(
+        String clientId,
+        String clientSecret,
+        String subjectType,
+        String subjectId,
+        String label
+    ) {
         try {
-            new BoxCcgTokenProvider('', 'secret', 'enterprise', '1');
-            System.assert(false, 'a blank client id must throw');
+            new BoxCcgTokenProvider(clientId, clientSecret, subjectType, subjectId);
+            System.assert(false, label + ' must throw');
         } catch (BoxApiException e) {
             System.assert(true);
         }

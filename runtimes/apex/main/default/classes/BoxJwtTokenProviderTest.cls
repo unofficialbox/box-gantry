@@ -83,9 +83,34 @@ private class BoxJwtTokenProviderTest {
 
     @isTest
     static void blankArgumentsThrow() {
+        // One case per validation branch: id/secret, subject, key/cert.
+        assertConstructionThrows('', 'secret', 'enterprise', '1', 'kid', 'Cert', 'blank client id');
+        assertConstructionThrows('id', '', 'enterprise', '1', 'kid', 'Cert', 'blank client secret');
+        assertConstructionThrows('id', 'secret', '', '1', 'kid', 'Cert', 'blank subject type');
+        assertConstructionThrows('id', 'secret', 'enterprise', '', 'kid', 'Cert', 'blank subject id');
+        assertConstructionThrows('id', 'secret', 'enterprise', '1', '', 'Cert', 'blank public key id');
+        assertConstructionThrows('id', 'secret', 'enterprise', '1', 'kid', '', 'blank certificate name');
+    }
+
+    static void assertConstructionThrows(
+        String clientId,
+        String clientSecret,
+        String subjectType,
+        String subjectId,
+        String publicKeyId,
+        String certDevName,
+        String label
+    ) {
         try {
-            new BoxJwtTokenProvider('id', 'secret', 'enterprise', '1', '', 'BoxAppKey');
-            System.assert(false, 'a blank public key id must throw');
+            new BoxJwtTokenProvider(
+                clientId,
+                clientSecret,
+                subjectType,
+                subjectId,
+                publicKeyId,
+                certDevName
+            );
+            System.assert(false, label + ' must throw');
         } catch (BoxApiException e) {
             System.assert(true);
         }

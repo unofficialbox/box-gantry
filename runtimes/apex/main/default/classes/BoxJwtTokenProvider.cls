@@ -8,13 +8,11 @@
 // Salesforce **Certificate and Key Management** and registers the matching
 // public key with Box (yielding a public-key id); this provider signs through
 // that stored certificate by name (`Crypto.signWithCertificate`) and tags the
-// JWT header with the public-key id so Box picks the right key. Like CCG, the
-// access token is cached and refreshed a minute before expiry; `invalidate()`
-// drops the cache for the client's 401 re-attempt.
-public virtual with sharing class BoxJwtTokenProvider implements BoxTokenProvider {
-    private static final String TOKEN_URL = 'https://api.box.com/oauth2/token';
+// JWT header with the public-key id so Box picks the right key. Caching,
+// refresh, `invalidate()`, and error normalization live in the base; this class
+// supplies the signed assertion as the request body.
+public virtual with sharing class BoxJwtTokenProvider extends BoxCachingTokenProvider {
     private static final String JWT_GRANT = 'urn:ietf:params:oauth:grant-type:jwt-bearer';
-    private static final Long EXPIRY_SKEW_SECONDS = 60;
     // The assertion lifetime; Box rejects an `exp` more than 60s ahead.
     private static final Long ASSERTION_TTL_SECONDS = 45;
 
@@ -25,9 +23,6 @@ public virtual with sharing class BoxJwtTokenProvider implements BoxTokenProvide
     private final String publicKeyId;
     private final String certDevName;
     private Integer timeoutMs = 60000;
-
-    private String cachedToken;
-    private Long expiresAtMillis;
 
     /**
      * @param clientId     the Box app's client id
@@ -70,52 +65,16 @@ public virtual with sharing class BoxJwtTokenProvider implements BoxTokenProvide
         return this;
     }
 
-    public String getAccessToken() {
-        if (
-            this.cachedToken != null &&
-            this.expiresAtMillis != null &&
-            System.currentTimeMillis() < this.expiresAtMillis
-        ) {
-            return this.cachedToken;
-        }
-        return this.mint();
+    protected override Integer timeoutMillis() {
+        return this.timeoutMs;
     }
 
-    /** Drop the cached token so the next `getAccessToken()` re-mints. */
-    public void invalidate() {
-        this.cachedToken = null;
-        this.expiresAtMillis = null;
-    }
-
-    private String mint() {
+    protected override String tokenRequestBody() {
         String assertion = this.buildAssertion();
-        HttpRequest req = new HttpRequest();
-        req.setEndpoint(TOKEN_URL);
-        req.setMethod('POST');
-        req.setTimeout(this.timeoutMs);
-        req.setHeader('Content-Type', 'application/x-www-form-urlencoded');
-        req.setBody(
-            'grant_type=' + EncodingUtil.urlEncode(JWT_GRANT, 'UTF-8') +
+        return 'grant_type=' + EncodingUtil.urlEncode(JWT_GRANT, 'UTF-8') +
             '&assertion=' + EncodingUtil.urlEncode(assertion, 'UTF-8') +
             '&client_id=' + EncodingUtil.urlEncode(this.clientId, 'UTF-8') +
-            '&client_secret=' + EncodingUtil.urlEncode(this.clientSecret, 'UTF-8')
-        );
-
-        HttpResponse res = new Http().send(req);
-        Integer status = res.getStatusCode();
-        if (status < 200 || status >= 300) {
-            throw BoxApiException.fromResponse(status, res.getBody());
-        }
-
-        Map<String, Object> parsed = (Map<String, Object>) JSON.deserializeUntyped(res.getBody());
-        String token = (String) parsed.get('access_token');
-        if (String.isBlank(token)) {
-            throw new BoxApiException('The token response contained no access_token.');
-        }
-        this.cachedToken = token;
-        this.expiresAtMillis =
-            System.currentTimeMillis() + (expiresInSeconds(parsed) - EXPIRY_SKEW_SECONDS) * 1000;
-        return token;
+            '&client_secret=' + EncodingUtil.urlEncode(this.clientSecret, 'UTF-8');
     }
 
     /** The signed `header.claims.signature` assertion. */
@@ -169,19 +128,5 @@ public virtual with sharing class BoxJwtTokenProvider implements BoxTokenProvide
             .replace('+', '-')
             .replace('/', '_')
             .replace('=', '');
-    }
-
-    // `expires_in` decodes as Integer/Long/Decimal; read it through its string
-    // form, defaulting to Box's usual hour when absent.
-    private static Long expiresInSeconds(Map<String, Object> parsed) {
-        Object raw = parsed.get('expires_in');
-        if (raw == null) {
-            return 3600;
-        }
-        try {
-            return Long.valueOf(String.valueOf(raw));
-        } catch (Exception e) {
-            return 3600;
-        }
     }
 }

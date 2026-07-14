@@ -1215,9 +1215,19 @@ mint / cache / invalidate / non-2xx through `HttpCalloutMock`. The one line that
 needs a real org certificate (`signWithCertificate`) is the only path a test
 can't reach.
 
+The two providers' identical cache-and-refresh logic — token cache,
+refresh-before-expiry, `invalidate()`, and the token-endpoint exchange — is
+factored into an abstract **`BoxCachingTokenProvider`** base; each provider
+supplies only its `tokenRequestBody()`. That base also normalizes every exchange
+failure (callout, non-2xx, unparseable body, missing/mistyped token) to
+`BoxApiException` in one place, so callers (and `BoxHttpClient`'s 401 path) never
+see a raw `CalloutException`/`TypeException`. A related fix: `BoxHttpClient` now
+tracks the single 401 refresh re-attempt separately from the transient-retry
+budget, so the refresh still fires when `maxRetries` is 0.
+
 **Consequences.** The SDK now supports both server-to-server flows. Runtime grows
-6 → 8 classes (`BoxJwtTokenProvider` + `BoxJwtTokenProviderTest`), so
-`generate --target apex` ships **1,082 classes** (995 base + the 87-class
+4 → 9 classes (the caching base, the CCG + JWT providers, and their tests), so
+`generate --target apex` ships **1,083 classes** (996 base + the 87-class
 `@isTest` suite). `model_shapes` pins the packaging; fmt, clippy (`-D warnings`),
 determinism green. On-platform compile is confirmed by VR-1.3 when the
 scratch-org quota permits. Remaining runtime follow-up: `BoxHttpClient`'s own

@@ -396,6 +396,6 @@ already proved it (85/85 managers lower, zero IR changes forced).
     + RS256-signs a JWT assertion through a Salesforce-stored key
     (`Crypto.signWithCertificate` — key never in Apex/source) and exchanges the
     `jwt-bearer` grant, caching like CCG. `@TestVisible` signing seam makes the
-    exchange `HttpCalloutMock`-testable. 1,082 classes. On-platform via VR-1.3.)
+    exchange `HttpCalloutMock`-testable. 1,083 classes. On-platform via VR-1.3.)
 38. **Next**: chunked upload; the remaining tri-state serialization gap
     (absent-vs-null); `BoxHttpClient` `HttpCalloutMock` coverage. Then M5 — Rust (v3).
