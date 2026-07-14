@@ -16,6 +16,8 @@ use crate::{CLASSES_DIR, GeneratedFile};
 pub(crate) const RUNTIME_CLASS_NAMES: &[&str] = &[
     "BoxTokenProvider",
     "BoxDeveloperTokenProvider",
+    "BoxCcgTokenProvider",
+    "BoxCcgTokenProviderTest",
     "BoxApiException",
     "BoxHttpClient",
 ];
@@ -32,6 +34,14 @@ pub(crate) fn runtime_classes() -> Vec<GeneratedFile> {
             include_str!(
                 "../../../runtimes/apex/main/default/classes/BoxDeveloperTokenProvider.cls"
             ),
+        ),
+        (
+            "BoxCcgTokenProvider",
+            include_str!("../../../runtimes/apex/main/default/classes/BoxCcgTokenProvider.cls"),
+        ),
+        (
+            "BoxCcgTokenProviderTest",
+            include_str!("../../../runtimes/apex/main/default/classes/BoxCcgTokenProviderTest.cls"),
         ),
         (
             "BoxApiException",

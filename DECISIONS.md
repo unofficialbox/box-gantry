@@ -1156,3 +1156,36 @@ the actual ≥ 75% is confirmed on-platform by VR-1.3 (scratch-org quota permitt
 its own tests under `runtimes/apex/**`; runtime callout-coverage via
 `HttpCalloutMock` is a follow-up. Tri-state absent-vs-null remains the last open
 serialization item.
+
+## D-134 — Client Credentials Grant token provider (Apex runtime auth)
+
+**Context.** The runtime shipped only `BoxDeveloperTokenProvider` — a fixed
+developer token that expires in ~60 minutes, unusable for a real integration. Of
+Box's server-to-server flows, **Client Credentials Grant (CCG)** needs only the
+app's client id/secret (no signing key), so it works on any org; **JWT** needs
+`Crypto`-signed assertions and is heavier. CCG is the right first production
+auth.
+
+**Decision.** Add `BoxCcgTokenProvider` (hand-written runtime, TR-Apex.6). It
+POSTs `grant_type=client_credentials` with the client id/secret and the subject
+(`enterprise`/`user` + id) to `oauth2/token`, then **caches** the access token
+and refreshes it a minute before its `expires_in` so a token never lapses
+mid-request. It reads `expires_in` through its string form (JSON numbers decode
+as Integer/Long/Decimal), defaulting to Box's usual hour.
+
+The `BoxTokenProvider` interface gains **`invalidate()`** — the missing half of
+the 401-refresh the interface already documented. `BoxHttpClient` now calls
+`this.tokens.invalidate()` before its single 401 re-attempt, so a token revoked
+*ahead* of its expiry (which the expiry cache alone wouldn't catch) is discarded
+and re-minted. `BoxDeveloperTokenProvider.invalidate()` is a no-op (a static
+token can't refresh).
+
+**Consequences.** The SDK now authenticates server-to-server without a
+hardcoded developer token. Runtime grows from 4 to 6 classes
+(`BoxCcgTokenProvider` + `BoxCcgTokenProviderTest`), so `generate --target apex`
+ships **1,080 classes** (993 base + the 87-class `@isTest` suite). The CCG test
+uses `HttpCalloutMock` to cover mint / cache / invalidate / non-2xx — seeding the
+runtime-test coverage that D-133 deferred (`BoxHttpClient`'s own `HttpCalloutMock`
+coverage is still a follow-up, as is JWT). As hand-written Apex, on-platform
+compile is confirmed by VR-1.3 when the scratch-org quota permits;
+`model_shapes` pins the packaging, and generation stays deterministic.

@@ -46,9 +46,11 @@ public with sharing class BoxHttpClient implements BoxClient {
             HttpResponse res = callout(request, url);
             Integer status = res.getStatusCode();
             // A single 401 re-attempt gives a caching token provider a chance
-            // to refresh; a persistent 401 falls through to the error below.
+            // to refresh: discard the (now-rejected) token so the next callout
+            // mints a fresh one. A persistent 401 falls through to the error.
             if (status == 401 && !refreshed) {
                 refreshed = true;
+                this.tokens.invalidate();
                 continue;
             }
             if (isRetriable(status) && attempt < this.maxRetries) {

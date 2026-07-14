@@ -15,17 +15,29 @@ embeds it at build time.
 | `BoxClient` (generated) | the contract the managers call: `BoxResponse send(BoxRequest)` |
 | `BoxRequest` / `BoxResponse` (generated) | structural request/response data |
 | `BoxHttpClient` | `implements BoxClient` — real HTTP callout, base-URL resolution, retries, non-2xx → exception |
-| `BoxTokenProvider` | auth-token contract (`getAccessToken()`) |
+| `BoxTokenProvider` | auth-token contract (`getAccessToken()` + `invalidate()`) |
 | `BoxDeveloperTokenProvider` | simplest flow: a fixed developer token |
+| `BoxCcgTokenProvider` | Client Credentials Grant: mint + cache a server-to-server token (no crypto) |
 | `BoxApiException` | the error type carrying HTTP status + response body |
 
 ## Usage
 
 ```apex
+// Quick testing — a fixed developer token (~60 min lifetime):
 BoxTokenProvider auth = new BoxDeveloperTokenProvider('DEVELOPER_TOKEN');
+
+// Production — Client Credentials Grant (server-to-server, auto-refreshing):
+BoxTokenProvider auth = new BoxCcgTokenProvider(
+    'CLIENT_ID', 'CLIENT_SECRET', 'enterprise', 'ENTERPRISE_ID');
+
 Box client = new Box(new BoxHttpClient(auth));
 FileFull f = client.files.getById(fileId, null, null, null, null);
 ```
+
+Store the client secret in a **Named Credential** or protected Custom Metadata,
+never in source. `BoxCcgTokenProvider` caches the access token and refreshes it a
+minute before expiry; on a `401` the HTTP client calls `invalidate()` so a
+prematurely-revoked token is re-minted on the next attempt.
 
 ## Governor limits
 
@@ -33,8 +45,9 @@ Apex has no `sleep`, so the retry policy is **immediate** (no backoff) and
 bounded by the per-transaction callout limit (100). Retries cover `429` and
 `5xx`; a single `401` re-attempt lets a caching token provider refresh.
 Callers needing true backoff should drive retries across transactions (e.g. a
-`Queueable`). Client-Credentials and JWT token providers (with `Crypto`-based
-signing and token caching) land in later runtime slices.
+`Queueable`). The JWT token provider (with `Crypto`-based assertion signing)
+lands in a later runtime slice; Client Credentials Grant is available now
+(`BoxCcgTokenProvider`).
 
 > Verified by the scratch-org compile loop (VR-1.3): these classes deploy and
 > compile as part of every generated project.
