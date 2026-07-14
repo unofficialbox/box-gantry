@@ -1408,3 +1408,44 @@ real token (exercising the auth callout) and needs no per-org certificate the wa
 JWT would. Both VR-1.3 and VR-1.4 target the configured org directly rather than
 spinning up a scratch org, so the Dev Hub's daily scratch-org signup limit is
 never on the critical path.
+## D-140 — `Object`-field deserialization (unions / free-form JSON)
+
+**Context.** VR-1.4 (the live smoke, D-139) immediately earned its keep: CCG auth
+and `GET /users/me` worked end-to-end against real Box, but `GET /folders/0/items`
+threw `System.JSONException: Apex Type unsupported in JSON: Object`. Apex's typed
+`JSON.deserialize(str, T.class)` **cannot populate a field typed `Object`** when
+the JSON provides a value for it. Structural unions and `JsonValue` erase to
+`Object` (a union field renders as `Object`; the caller dispatches with
+`<Union>.parse`), so `Items.entries` is `List<Object>` — and the moment a real
+response carries entries, deserialization fails. The mocked `@isTest` suite
+returned *empty* lists, so it never populated an `Object` element; only the live
+smoke, with real data, exposed it. In the spec **105 of 608 structs** are
+object-bearing and **75 of 275 JSON operations** reach one — a widespread runtime
+gap, invisible to compile-checks and mocks.
+
+**Decision.** A struct that transitively reaches an `Object` leaf (a union or
+`JsonValue`) is **object-bearing** and gets a generated static
+`deserialize(Object)` — the read-path analogue of the D-132/D-138 machinery.
+It **detaches** the fields that reach an `Object` (so native typed deserialize
+never sees them), deserializes the **typed shell** (renamed first via
+`normalizeKeys` if the struct is also read-affected), then **reattaches** the
+detached fields from the raw untyped tree:
+
+- an `Object` leaf (union / `JsonValue`) → assigned raw (the caller inspects it /
+  calls `<Union>.parse`);
+- `List<Object>` / `Map<String, Object>` → reattached whole with a cast;
+- a nested object-bearing struct → recurses into that struct's `deserialize`;
+- `List`/`Map` of object-bearing structs → looped element-by-element.
+
+Managers route a response reaching an object-bearing struct through the builder
+(`JSON.deserializeUntyped` → `deserialize`), taking priority over the D-132 remap
+path; the union `parse` dispatch routes an object-bearing variant through its
+`deserialize` too.
+
+**Consequences.** 105 structs gain a `deserialize` builder (no new classes —
+still **1,086**); `model_shapes`/`manager_shapes` gain generator tests for the
+detach/reattach, the `List<Object>` reattach, nested recursion, and the manager
+routing. fmt, clippy (`-D warnings`), determinism, full workspace green;
+on-platform via VR-1.3, and VR-1.4 re-run confirms `getItems` now round-trips a
+populated union list against real Box. This is exactly the class of correctness
+bug the live smoke exists to catch.

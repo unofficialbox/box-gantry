@@ -330,6 +330,70 @@ fn remap_recurses_into_affected_children_only() {
     );
 }
 
+// --- Object-field deserialization (D-140) ---------------------------------
+
+#[test]
+fn an_object_leaf_field_gets_a_deserialize_builder() {
+    // A `JsonValue` field erases to `Object`, which native `JSON.deserialize`
+    // can't populate. The struct gets a `deserialize(Object)` that detaches the
+    // field, deserializes the typed shell, and reattaches the raw value (D-140).
+    let go = only(vec![struct_decl(
+        "S",
+        vec![
+            field("id", ir::Type::String),
+            field("data", ir::Type::JsonValue),
+        ],
+    )]);
+    assert_contains(&go, "public static S deserialize(Object rawInput) {");
+    assert_contains(&go, "Object __d_data = raw.remove('data');");
+    assert_contains(
+        &go,
+        "S result = (S) JSON.deserialize(JSON.serialize(raw), S.class);",
+    );
+    assert_contains(&go, "result.data = __d_data;");
+    // A clean scalar field stays in the typed shell — never detached.
+    assert!(
+        !go.contains("__d_id"),
+        "a clean field must not be detached:\n{go}"
+    );
+}
+
+#[test]
+fn a_list_of_object_leaves_reattaches_as_a_raw_list() {
+    // `List<Object>` is reattached whole (the elements are inspected at the call
+    // site); no per-element work.
+    let go = only(vec![struct_decl(
+        "S",
+        vec![field(
+            "items",
+            ir::Type::List(Box::new(ir::Type::JsonValue)),
+        )],
+    )]);
+    assert_contains(&go, "result.items = (List<Object>) __d_items;");
+}
+
+#[test]
+fn a_nested_object_bearing_struct_deserializes_through_the_child() {
+    // A parent that holds an object-bearing child is itself object-bearing, and
+    // its builder recurses into the child's `deserialize` for that field.
+    let child = struct_decl("Child", vec![field("data", ir::Type::JsonValue)]);
+    let parent = struct_decl(
+        "Parent",
+        vec![
+            field("id", ir::Type::String),
+            field("child", ir::Type::Decl(ir::DeclId(0))),
+        ],
+    );
+    let files = render(vec![child, parent]);
+    let parent_src = &files
+        .iter()
+        .find(|f| f.path.ends_with("/Parent.cls"))
+        .expect("Parent class")
+        .content;
+    assert_contains(parent_src, "Object __d_child = raw.remove('child');");
+    assert_contains(parent_src, "result.child = Child.deserialize(__d_child);");
+}
+
 // --- enums / unions / aliases --------------------------------------------
 
 #[test]
