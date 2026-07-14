@@ -1,0 +1,10 @@
+[package]
+name = "apex-queueable-upload-spike"
+description = "Throwaway spike — feasibility of a Queueable-chained Apex chunked upload past the D-136 heap/slice limits"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

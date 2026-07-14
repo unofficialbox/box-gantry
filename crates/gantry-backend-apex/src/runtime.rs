@@ -21,6 +21,8 @@ pub(crate) const RUNTIME_CLASS_NAMES: &[&str] = &[
     "BoxCcgTokenProviderTest",
     "BoxJwtTokenProvider",
     "BoxJwtTokenProviderTest",
+    "BoxChunkedUpload",
+    "BoxChunkedUploadTest",
     "BoxApiException",
     "BoxHttpClient",
 ];
@@ -57,6 +59,14 @@ pub(crate) fn runtime_classes() -> Vec<GeneratedFile> {
         (
             "BoxJwtTokenProviderTest",
             include_str!("../../../runtimes/apex/main/default/classes/BoxJwtTokenProviderTest.cls"),
+        ),
+        (
+            "BoxChunkedUpload",
+            include_str!("../../../runtimes/apex/main/default/classes/BoxChunkedUpload.cls"),
+        ),
+        (
+            "BoxChunkedUploadTest",
+            include_str!("../../../runtimes/apex/main/default/classes/BoxChunkedUploadTest.cls"),
         ),
         (
             "BoxApiException",

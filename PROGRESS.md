@@ -9,10 +9,10 @@ parentheses); status is tracked in [`PLAN.md`](./PLAN.md). Last updated
 ## Overall
 
 ```text
-████████░░  83%
+████████░░  84%
 ```
 
-**~83% complete by effort** — **v1 (Go SDK) is shipped**; v2 (Apex) is
+**~84% complete by effort** — **v1 (Go SDK) is shipped**; v2 (Apex) is
 underway (models, native-JSON, managers/client, serialization remap, server
 auth, generated tests, and **VR-1.3 green** — the generated classes compile on
 the Salesforce platform); v3 (Rust) remains. The large shared cost
@@ -24,15 +24,15 @@ backends + runtimes, not new engine.
 | | Human-equiv hrs | Agent-hrs | Complete |
 |---|---:|---:|---:|
 | **v1 — Go** 🐹 | 2,090 | 630 | **100%** |
-| v2 — Apex ☁️ | 640 | 194 | ~70% |
+| v2 — Apex ☁️ | 640 | 194 | ~73% |
 | v3 — Rust 🦀 | 380 | 114 | 0% |
-| **Total** | **3,110** | **938** | **~83%** |
+| **Total** | **3,110** | **938** | **~84%** |
 
 ## By SDK target
 
 ```text
 v1 — Go 🐹    ██████████  100%   SHIPPED 2026-07-13
-v2 — Apex ☁️  ███████░░░   ~70%   in progress (M4) — models, SFDX loop, JSON, managers, VR-1.3 green; naming overhaul (immediate-context, short methods, dedupe → 991 classes); SFDX scaffolding + ApexDoc + per-endpoint docs (D-129); hand-written runtime — callable SDK (D-130); governor-limit-aware pagination — documented, no extra classes (D-131); field↔wire serialization remap + union variants (D-132); generated @isTest suite for the 75% gate (D-133); CCG + JWT server-to-server auth → 1,083 classes (D-134/D-135)
+v2 — Apex ☁️  ███████░░░   ~73%   in progress (M4) — models, SFDX loop, JSON, managers, VR-1.3 green; naming overhaul (immediate-context, short methods, dedupe → 991 classes); SFDX scaffolding + ApexDoc + per-endpoint docs (D-129); hand-written runtime — callable SDK (D-130); governor-limit-aware pagination — documented, no extra classes (D-131); field↔wire serialization remap + union variants (D-132); generated @isTest suite for the 75% gate (D-133); CCG + JWT server-to-server auth (D-134/D-135); chunked-upload orchestrator → 1,085 classes (D-136)
 v3 — Rust 🦀  ░░░░░░░░░░    0%   after (M5)
 ```
 

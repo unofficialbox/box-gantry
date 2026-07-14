@@ -53,6 +53,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "apex-queueable-upload-spike"
+version = "0.1.0"
+
+[[package]]
 name = "apex-spike"
 version = "0.1.0"
 dependencies = [

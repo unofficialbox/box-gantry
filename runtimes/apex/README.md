@@ -20,6 +20,7 @@ embeds it at build time.
 | `BoxCachingTokenProvider` | abstract base: token cache, refresh-before-expiry, error normalization |
 | `BoxCcgTokenProvider` | Client Credentials Grant: mint + cache a server-to-server token (no crypto) |
 | `BoxJwtTokenProvider` | JWT server auth: RS256-signed assertion via an org-stored key (`Crypto.signWithCertificate`) |
+| `BoxChunkedUpload` | orchestrates Box's create-session → PUT parts → commit protocol (SHA-1 digests, byte ranges) |
 | `BoxApiException` | the error type carrying HTTP status + response body |
 
 ## Usage
@@ -51,6 +52,39 @@ BoxTokenProvider auth = new BoxJwtTokenProvider(
     'CLIENT_ID', 'CLIENT_SECRET', 'enterprise', 'ENTERPRISE_ID',
     'PUBLIC_KEY_ID',   // the JWT `kid` Box assigned the registered key
     'BoxAppKey');      // the Cert & Key Management unique name of the RSA key
+```
+
+### Chunked upload
+
+> ⚠️ **Not usable for a real Box chunked upload on Apex today.** `BoxChunkedUpload`
+> is a **correct reference implementation** of Box's three-step protocol (create
+> session → PUT each part with its byte range + SHA-1 digest → commit with the
+> whole-file digest), verified against mocked callouts — but two independent
+> platform limits make an actual upload impossible in a single transaction:
+>
+> - **Heap vs. Box's threshold (the airtight blocker).** Box only offers chunked
+>   upload for files ≥ 20 MB, but Apex heap is 6 MB sync / 12 MB async and the
+>   content is an in-memory `Blob`. No file is simultaneously ≥ 20 MB (so Box
+>   accepts it) and ≤ ~12 MB (so it fits heap) — there is no size at which a real
+>   upload succeeds, independent of the slicing limit below.
+> - **No `Blob` slice.** Apex can't slice a `Blob` at arbitrary byte offsets; the
+>   base64-substring workaround only lands on a real boundary at a 3-byte-aligned
+>   `part_size`. Box sets `part_size` from the session (not documented to be any
+>   particular value), but the sizes it issues in practice — e.g. 8 MB — are
+>   powers of two, which aren't divisible by 3, so the multi-part path rejects them.
+>
+> A production path needs an out-of-transaction, `Queueable`-chained design (one
+> part per transaction) **and** a byte-accurate slicing mechanism — a tracked
+> follow-up. The helper still fails loudly (a `BoxApiException`, never a raw
+> `LimitException`) at each limit, and `withMaxContentBytes(...)` tunes the
+> in-heap ceiling for the mocked/reference scenario.
+
+```apex
+Box client = new Box(new BoxHttpClient(auth));
+Files result = new BoxChunkedUpload(client).upload(content, 'big.bin', folderId);
+FileFull uploaded = result.entries[0];
+// or a new version of an existing file:
+// new BoxChunkedUpload(client).uploadVersion(content, 'big.bin', fileId);
 ```
 
 ## Governor limits
