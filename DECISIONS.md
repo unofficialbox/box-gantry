@@ -1442,6 +1442,19 @@ Managers route a response reaching an object-bearing struct through the builder
 path; the union `parse` dispatch routes an object-bearing variant through its
 `deserialize` too.
 
+**On-platform corrections (caught by VR-1.3).** The first cut named the reattach
+temporaries with a leading double underscore (`__d_entries`, `__lst0`, …), which
+Apex forbids — identifiers must begin with a letter and may not contain `__`
+(reserved for managed-package namespaces). The dry-run deploy failed with
+`Invalid character in identifier`. Fixed to letter-prefixed names (`d_<field>`
+for the detached field temp; `dLst`/`dEl`/`dEv`/`dMap`/`dSm`/`dK`/`dMv` for the
+loop locals), mirroring the D-132 `w`-prefix convention. Separately, the
+collection-rebuild branches assigned a fresh empty `List`/`Map` when the source
+was null or absent, so a nullable/optional collection of object-bearing structs
+deserialized as empty rather than null; they now guard `src == null` → assign
+`null`, and cast directly (a malformed non-container value fails loudly on the
+cast instead of silently emptying).
+
 **Consequences.** 105 structs gain a `deserialize` builder (no new classes —
 still **1,086**); `model_shapes`/`manager_shapes` gain generator tests for the
 detach/reattach, the `List<Object>` reattach, nested recursion, and the manager

@@ -598,7 +598,7 @@ impl<'a> Wire<'a> {
         for field in &detached {
             let _ = writeln!(
                 out,
-                "        Object __d_{} = raw.remove('{}');",
+                "        Object d_{} = raw.remove('{}');",
                 safe_word(field.name.as_str()),
                 escape(&field.wire_name)
             );
@@ -617,7 +617,7 @@ impl<'a> Wire<'a> {
             self.emit_reattach(
                 &mut out,
                 &format!("result.{apex}"),
-                &format!("__d_{apex}"),
+                &format!("d_{apex}"),
                 &field.ty,
                 0,
             );
@@ -661,12 +661,16 @@ impl<'a> Wire<'a> {
             ir::Type::List(inner) => {
                 let ai = apex_type(self.program, self.names, inner);
                 let (lst, elem, val) = (
-                    format!("__lst{depth}"),
-                    format!("__el{depth}"),
-                    format!("__ev{depth}"),
+                    format!("dLst{depth}"),
+                    format!("dEl{depth}"),
+                    format!("dEv{depth}"),
                 );
-                let _ = writeln!(out, "        List<{ai}> {lst} = new List<{ai}>();");
-                let _ = writeln!(out, "        if ({src} instanceof List<Object>) {{");
+                // A null/absent source stays null; a non-list value fails loudly
+                // on the cast rather than silently deserializing as empty.
+                let _ = writeln!(out, "        if ({src} == null) {{");
+                let _ = writeln!(out, "            {lval} = null;");
+                let _ = writeln!(out, "        }} else {{");
+                let _ = writeln!(out, "            List<{ai}> {lst} = new List<{ai}>();");
                 let _ = writeln!(
                     out,
                     "            for (Object {elem} : (List<Object>) {src}) {{"
@@ -675,8 +679,8 @@ impl<'a> Wire<'a> {
                 self.emit_reattach(out, &val, &elem, inner, depth + 1);
                 let _ = writeln!(out, "                {lst}.add({val});");
                 let _ = writeln!(out, "            }}");
+                let _ = writeln!(out, "            {lval} = {lst};");
                 let _ = writeln!(out, "        }}");
-                let _ = writeln!(out, "        {lval} = {lst};");
             }
             ir::Type::Map(inner) if self.is_object_leaf(inner) => {
                 let _ = writeln!(out, "        {lval} = (Map<String, Object>) {src};");
@@ -684,16 +688,20 @@ impl<'a> Wire<'a> {
             ir::Type::Map(inner) => {
                 let ai = apex_type(self.program, self.names, inner);
                 let (map, sub, key, val) = (
-                    format!("__map{depth}"),
-                    format!("__sm{depth}"),
-                    format!("__k{depth}"),
-                    format!("__mv{depth}"),
+                    format!("dMap{depth}"),
+                    format!("dSm{depth}"),
+                    format!("dK{depth}"),
+                    format!("dMv{depth}"),
                 );
+                // A null/absent source stays null; a non-map value fails loudly
+                // on the cast rather than silently deserializing as empty.
+                let _ = writeln!(out, "        if ({src} == null) {{");
+                let _ = writeln!(out, "            {lval} = null;");
+                let _ = writeln!(out, "        }} else {{");
                 let _ = writeln!(
                     out,
-                    "        Map<String, {ai}> {map} = new Map<String, {ai}>();"
+                    "            Map<String, {ai}> {map} = new Map<String, {ai}>();"
                 );
-                let _ = writeln!(out, "        if ({src} instanceof Map<String, Object>) {{");
                 let _ = writeln!(
                     out,
                     "            Map<String, Object> {sub} = (Map<String, Object>) {src};"
@@ -703,8 +711,8 @@ impl<'a> Wire<'a> {
                 self.emit_reattach(out, &val, &format!("{sub}.get({key})"), inner, depth + 1);
                 let _ = writeln!(out, "                {map}.put({key}, {val});");
                 let _ = writeln!(out, "            }}");
+                let _ = writeln!(out, "            {lval} = {map};");
                 let _ = writeln!(out, "        }}");
-                let _ = writeln!(out, "        {lval} = {map};");
             }
             // Scalars never reach the detached set.
             ir::Type::Bool

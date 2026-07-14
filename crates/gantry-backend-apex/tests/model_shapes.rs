@@ -345,15 +345,15 @@ fn an_object_leaf_field_gets_a_deserialize_builder() {
         ],
     )]);
     assert_contains(&go, "public static S deserialize(Object rawInput) {");
-    assert_contains(&go, "Object __d_data = raw.remove('data');");
+    assert_contains(&go, "Object d_data = raw.remove('data');");
     assert_contains(
         &go,
         "S result = (S) JSON.deserialize(JSON.serialize(raw), S.class);",
     );
-    assert_contains(&go, "result.data = __d_data;");
+    assert_contains(&go, "result.data = d_data;");
     // A clean scalar field stays in the typed shell — never detached.
     assert!(
-        !go.contains("__d_id"),
+        !go.contains("d_id"),
         "a clean field must not be detached:\n{go}"
     );
 }
@@ -369,7 +369,7 @@ fn a_list_of_object_leaves_reattaches_as_a_raw_list() {
             ir::Type::List(Box::new(ir::Type::JsonValue)),
         )],
     )]);
-    assert_contains(&go, "result.items = (List<Object>) __d_items;");
+    assert_contains(&go, "result.items = (List<Object>) d_items;");
 }
 
 #[test]
@@ -390,8 +390,8 @@ fn a_nested_object_bearing_struct_deserializes_through_the_child() {
         .find(|f| f.path.ends_with("/Parent.cls"))
         .expect("Parent class")
         .content;
-    assert_contains(parent_src, "Object __d_child = raw.remove('child');");
-    assert_contains(parent_src, "result.child = Child.deserialize(__d_child);");
+    assert_contains(parent_src, "Object d_child = raw.remove('child');");
+    assert_contains(parent_src, "result.child = Child.deserialize(d_child);");
 }
 
 // --- enums / unions / aliases --------------------------------------------
