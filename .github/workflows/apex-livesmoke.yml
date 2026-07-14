@@ -82,16 +82,25 @@ jobs:
             }
             fs.writeFileSync("smoke.apex", s);
           '
-          # Anonymous Apex → real callouts. Require the run to succeed and the
-          # SMOKE OK sentinel to appear in the returned debug log.
-          sf apex run --file smoke.apex --target-org target --json > result.json
+          # Anonymous Apex → real callouts. `sf apex run --json` writes a result
+          # envelope even on failure but exits non-zero, so capture it (|| true)
+          # rather than let `set -e` abort before the diagnostic parser runs —
+          # a runtime/callout failure is exactly what this smoke must explain.
+          sf apex run --file smoke.apex --target-org target --json > result.json || true
           node -e '
             const fs = require("fs");
-            const parsed = JSON.parse(fs.readFileSync("result.json", "utf8"));
-            const r = parsed.result || {};
+            let parsed = {};
+            try {
+              parsed = JSON.parse(fs.readFileSync("result.json", "utf8"));
+            } catch (e) {
+              console.error("Live smoke FAILED: no parseable CLI output");
+              process.exit(1);
+            }
+            // Success puts the run under `result`; a CLI-level error puts it
+            // under `data`. Read logs/flags from whichever is present, and
+            // resolve the message from there or the top-level envelope.
+            const r = parsed.result || parsed.data || {};
             const logs = r.logs || "";
-            // The failure payload is shaped differently across CLI error paths;
-            // resolve the message from the result envelope or the top level.
             const detail = r.exceptionMessage || parsed.message || parsed.name
               || "(no SMOKE OK sentinel)";
             logs.split("\n").filter(l => l.includes("SMOKE")).forEach(l => console.log(l.trim()));
