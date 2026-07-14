@@ -9,10 +9,10 @@ parentheses); status is tracked in [`PLAN.md`](./PLAN.md). Last updated
 ## Overall
 
 ```
-████████░░  78%
+████████░░  79%
 ```
 
-**~78% complete by effort** — **v1 (Go SDK) is shipped**; v2 (Apex) is
+**~79% complete by effort** — **v1 (Go SDK) is shipped**; v2 (Apex) is
 underway (models, native-JSON, managers/client, and **VR-1.3 green** — all
 1,419 generated classes compile on the Salesforce platform); v3 (Rust)
 remains. The large shared cost
@@ -24,15 +24,15 @@ backends + runtimes, not new engine.
 | | Human-equiv hrs | Agent-hrs | Complete |
 |---|---:|---:|---:|
 | **v1 — Go** 🐹 | 2,090 | 630 | **100%** |
-| v2 — Apex ☁️ | 640 | 194 | ~52% |
+| v2 — Apex ☁️ | 640 | 194 | ~56% |
 | v3 — Rust 🦀 | 380 | 114 | 0% |
-| **Total** | **3,110** | **938** | **~78%** |
+| **Total** | **3,110** | **938** | **~79%** |
 
 ## By SDK target
 
 ```
 v1 — Go 🐹    ██████████  100%   SHIPPED 2026-07-13
-v2 — Apex ☁️  █████░░░░░   ~52%   in progress (M4) — models, SFDX loop, JSON, managers, VR-1.3 green; naming overhaul (immediate-context, short methods, dedupe → 991 classes); SFDX scaffolding + ApexDoc + per-endpoint docs (D-129); hand-written runtime — callable SDK (D-130)
+v2 — Apex ☁️  █████░░░░░   ~56%   in progress (M4) — models, SFDX loop, JSON, managers, VR-1.3 green; naming overhaul (immediate-context, short methods, dedupe → 991 classes); SFDX scaffolding + ApexDoc + per-endpoint docs (D-129); hand-written runtime — callable SDK (D-130); governor-limit-aware pagination (D-131)
 v3 — Rust 🦀  ░░░░░░░░░░    0%   after (M5)
 ```
 
