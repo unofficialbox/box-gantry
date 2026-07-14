@@ -23,6 +23,51 @@ target toolchain), `conform` (the R§1 capability checklist), and `diff` (the
 breaking-change report between two spec sets). The **Go SDK (v1) is shipped**;
 Apex (v2) and Rust (v3) are next — see [`PROGRESS.md`](./PROGRESS.md).
 
+## Generating SDKs
+
+`generate` emits **one** target per run — `--target` takes a single manifest
+key (`go` is complete; `apex` is in progress) and `--out` the output directory.
+The trailing arguments are the spec set: the base spec plus each versioned
+overlay, ingested together.
+
+```sh
+# One SDK — Apex into ./out/apex
+cargo run -p gantry-cli -- generate --target apex --out out/apex \
+  fixtures/specs/openapi.json \
+  fixtures/specs/openapi-v2025.0.json \
+  fixtures/specs/openapi-v2026.0.json
+
+# Another target — Go into ./out/go (same spec set)
+cargo run -p gantry-cli -- generate --target go --out out/go \
+  fixtures/specs/openapi.json \
+  fixtures/specs/openapi-v2025.0.json \
+  fixtures/specs/openapi-v2026.0.json
+```
+
+There is no single "generate everything" command — build **all** SDKs by
+looping over the targets:
+
+```sh
+SPECS="fixtures/specs/openapi.json \
+  fixtures/specs/openapi-v2025.0.json \
+  fixtures/specs/openapi-v2026.0.json"
+
+for target in go apex; do
+  cargo run -p gantry-cli -- generate --target "$target" --out "out/$target" $SPECS
+done
+```
+
+To generate **and compile** the output with the target's real toolchain, use
+`verify` instead (Go today; Apex compiles on the Salesforce platform via the
+`apex-scratch` workflow, VR-1.3):
+
+```sh
+cargo run -p gantry-cli -- verify --target go \
+  fixtures/specs/openapi.json \
+  fixtures/specs/openapi-v2025.0.json \
+  fixtures/specs/openapi-v2026.0.json
+```
+
 ## Documents
 
 Start here:
