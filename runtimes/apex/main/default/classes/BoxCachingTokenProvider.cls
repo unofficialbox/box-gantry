@@ -6,7 +6,9 @@
 // callout/parse failures to `BoxApiException` — is identical. This abstract base
 // owns all of that; a subclass supplies just `tokenRequestBody()`.
 public abstract with sharing class BoxCachingTokenProvider implements BoxTokenProvider {
-    protected static final String TOKEN_URL = 'https://api.box.com/oauth2/token';
+    // `public` (not `protected`): Apex forbids `protected static` fields, and a
+    // subclass (JWT) reads this constant. A URL constant is safe to expose.
+    public static final String TOKEN_URL = 'https://api.box.com/oauth2/token';
     // Refresh this many seconds before the reported expiry, so a token never
     // lapses in flight.
     private static final Long EXPIRY_SKEW_SECONDS = 60;

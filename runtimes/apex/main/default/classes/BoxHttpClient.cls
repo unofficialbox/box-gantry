@@ -43,9 +43,13 @@ public with sharing class BoxHttpClient implements BoxClient {
         String url = buildUrl(request);
         // The 401 refresh re-attempt is tracked separately from the transient
         // retry budget, so it always gets its one shot even when maxRetries is 0.
+        // The loop is bounded (1 refresh + maxRetries transient + a final
+        // attempt) so the method provably returns — Apex rejects `while (true)`
+        // as always-returning, hence the explicit bound and trailing throw.
         Boolean refreshed = false;
         Integer transientRetries = 0;
-        while (true) {
+        Integer maxAttempts = this.maxRetries + 2;
+        for (Integer attempt = 0; attempt < maxAttempts; attempt++) {
             HttpResponse res = callout(request, url);
             Integer status = res.getStatusCode();
             // A single 401 re-attempt gives a caching token provider a chance
@@ -65,6 +69,7 @@ public with sharing class BoxHttpClient implements BoxClient {
             }
             return toResponse(res);
         }
+        throw new BoxApiException('Box API request failed: retries exhausted.');
     }
 
     private HttpResponse callout(BoxRequest request, String url) {

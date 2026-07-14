@@ -98,7 +98,7 @@ public virtual with sharing class BoxJwtTokenProvider extends BoxCachingTokenPro
                         'iss' => this.clientId,
                         'sub' => this.subjectId,
                         'box_sub_type' => this.subjectType,
-                        'aud' => TOKEN_URL,
+                        'aud' => BoxCachingTokenProvider.TOKEN_URL,
                         // A random nonce, so an assertion can't be replayed.
                         'jti' => EncodingUtil.convertToHex(Crypto.generateAesKey(128)),
                         'exp' => nowSeconds + ASSERTION_TTL_SECONDS
