@@ -71,8 +71,9 @@ enum Command {
     Conform {
         #[arg(required = true, value_name = "SPEC")]
         specs: Vec<PathBuf>,
-        /// Target language (manifest key).
-        #[arg(long, value_parser = ["go"])]
+        /// Target language (manifest key). `go` and `apex` are both measured
+        /// against the same R§1 capability contract.
+        #[arg(long, value_parser = ["go", "apex"])]
         target: String,
     },
     /// Diff two spec sets and report breaking vs compatible changes and the
@@ -102,7 +103,6 @@ fn main() -> ExitCode {
 /// the checklist; exits 4 when any capability falls short of the R§1
 /// contract, 0 when the SDK is fully conformant.
 fn conform(specs: &[PathBuf], target: &str) -> ExitCode {
-    assert_eq!(target, "go", "clap restricts --target to known manifests");
     let set = match gantry_spec::SpecSet::load(specs) {
         Ok(set) => set,
         Err(err) => {
@@ -117,7 +117,6 @@ fn conform(specs: &[PathBuf], target: &str) -> ExitCode {
             return ExitCode::from(exit_codes::SPEC_ERROR);
         }
     };
-    let build = gantry_backend_go::BuildInfo::new(set.fingerprint());
     let analysis = match gantry_sema::analyze(&program) {
         Ok(analysis) => analysis,
         Err(errors) => {
@@ -132,21 +131,39 @@ fn conform(specs: &[PathBuf], target: &str) -> ExitCode {
             });
         }
     };
-    let files = match gantry_backend_go::generate(&analysis, &build) {
-        Ok(files) => files,
-        Err(err) => {
-            eprintln!("error: {err}");
-            return ExitCode::from(exit_codes::ENGINE_BUG);
+
+    // Generate the target's SDK and measure it through that target's shape,
+    // so one contract checks every backend (VR-3).
+    let (files, shape): (Vec<(String, String)>, gantry_verify::TargetShape) = match target {
+        "go" => {
+            let build = gantry_backend_go::BuildInfo::new(set.fingerprint());
+            match gantry_backend_go::generate(&analysis, &build) {
+                Ok(files) => (
+                    files.into_iter().map(|f| (f.path, f.content)).collect(),
+                    gantry_verify::go_shape(),
+                ),
+                Err(err) => {
+                    eprintln!("error: {err}");
+                    return ExitCode::from(exit_codes::ENGINE_BUG);
+                }
+            }
         }
+        "apex" => {
+            let build = gantry_backend_apex::BuildInfo::new(set.fingerprint());
+            let files = gantry_backend_apex::generate(&analysis, &gantry_manifest::apex(), &build)
+                .into_iter()
+                .map(|f| (f.path, f.content))
+                .collect();
+            (files, gantry_verify::apex_shape())
+        }
+        other => unreachable!("clap restricts --target to known manifests, got {other:?}"),
     };
+
     let views: Vec<gantry_verify::GeneratedView> = files
         .iter()
-        .map(|f| gantry_verify::GeneratedView {
-            path: &f.path,
-            content: &f.content,
-        })
+        .map(|(path, content)| gantry_verify::GeneratedView { path, content })
         .collect();
-    let report = gantry_verify::conformance(target, &analysis, &views);
+    let report = gantry_verify::conformance(&shape, &analysis, &views);
     print!("{}", report.report());
     if report.passed() {
         ExitCode::SUCCESS
@@ -303,14 +320,24 @@ fn generate_one(specs: &[PathBuf], target: &str, out: &Path) -> ExitCode {
 /// `apex()` manifest; no toolchain runs here (the scratch-org deploy loop
 /// is the VR-1.3 gate).
 fn generate_apex(specs: &[PathBuf]) -> Result<Vec<(String, String)>, ExitCode> {
-    let program = lower_program(specs)?;
-    match gantry_sema::analyze(&program) {
-        Ok(analysis) => Ok(
-            gantry_backend_apex::generate(&analysis, &gantry_manifest::apex())
-                .into_iter()
-                .map(|f| (f.path, f.content))
-                .collect(),
-        ),
+    let set = gantry_spec::SpecSet::load(specs).map_err(|err| {
+        eprintln!("error: {err}");
+        ExitCode::from(exit_codes::SPEC_ERROR)
+    })?;
+    let build = gantry_backend_apex::BuildInfo::new(set.fingerprint());
+    let lowering = gantry_spec::lower(&set).map_err(|err| {
+        eprintln!("error: {err}");
+        ExitCode::from(exit_codes::SPEC_ERROR)
+    })?;
+    match gantry_sema::analyze(&lowering.program) {
+        Ok(analysis) => {
+            Ok(
+                gantry_backend_apex::generate(&analysis, &gantry_manifest::apex(), &build)
+                    .into_iter()
+                    .map(|f| (f.path, f.content))
+                    .collect(),
+            )
+        }
         Err(errors) => {
             let engine_bug = errors.iter().any(gantry_sema::SemaError::is_engine_bug);
             for error in &errors {

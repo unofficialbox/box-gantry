@@ -11,7 +11,10 @@
 pub mod conformance;
 pub mod diff;
 
-pub use conformance::{Check, CheckStatus, ConformanceReport, GeneratedView, conformance};
+pub use conformance::{
+    Check, CheckStatus, ConformanceReport, Exclusion, GeneratedView, TargetShape, apex_shape,
+    conformance, go_shape,
+};
 pub use diff::{Change, ChangeKind, Severity, SpecDiff, VersionBump, diff};
 
 #[cfg(test)]
