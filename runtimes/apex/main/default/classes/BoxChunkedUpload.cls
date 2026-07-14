@@ -8,14 +8,16 @@
 // `Queueable`-chained design (one part per transaction) *and* a byte-accurate
 // slicing mechanism; both are tracked as follow-ups (D-136).
 //
-//   • **Heap.** The content is an in-memory `Blob`, and Apex heap is 6 MB sync /
-//     12 MB async — but Box only *offers* chunked upload for files ≥ 20 MB. No
-//     file is both ≥ 20 MB (so Box accepts it) and ≤ ~12 MB (so it fits heap),
-//     so there is no size at which a real upload succeeds.
+//   • **Heap (the airtight blocker).** The content is an in-memory `Blob`, and
+//     Apex heap is 6 MB sync / 12 MB async — but Box only *offers* chunked
+//     upload for files ≥ 20 MB. No file is both ≥ 20 MB (so Box accepts it) and
+//     ≤ ~12 MB (so it fits heap), so there is no size at which a real upload
+//     succeeds — independent of everything below.
 //   • **Slicing.** Apex has no `Blob` byte-slice; the base64-substring workaround
-//     only lands on a real byte boundary at a 3-byte-aligned `part_size`. Box's
-//     server-issued part sizes are powers of two (e.g. 8 MB), never divisible by
-//     3, so the multi-part path rejects every real session.
+//     only lands on a real byte boundary at a 3-byte-aligned `part_size`. Box
+//     sets `part_size` from the session (not documented to be any particular
+//     value), but the sizes it issues in practice — e.g. 8 MB — are powers of
+//     two, which aren't divisible by 3, so the multi-part path rejects those.
 //
 // What it *does* do, correctly, for in-heap content with a 3-aligned part size
 // (the mocked-test scenario): Box's three-step protocol — create an upload

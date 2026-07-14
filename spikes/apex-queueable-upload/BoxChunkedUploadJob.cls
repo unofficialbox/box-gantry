@@ -79,6 +79,12 @@ public with sharing class BoxChunkedUploadJob implements Queueable, Database.All
         UploadSession session = this.client.chunkedUploads.createFilesUploadSessions(body);
         this.sessionId = session.id;
         this.partSize = session.part_size;
+        // Reject a part size that would loop forever (0) or blow the async heap.
+        // (A real impl measures the heap budget; a fixed cap keeps the spike
+        // honest.) See the src/lib.rs hardening checklist.
+        if (this.partSize == null || this.partSize <= 0 || this.partSize > 8 * 1024 * 1024) {
+            throw new BoxApiException('Unusable session part size: ' + this.partSize);
+        }
     }
 
     private void uploadNextPart() {
@@ -97,15 +103,24 @@ public with sharing class BoxChunkedUploadJob implements Queueable, Database.All
     }
 
     // Fetch exactly [offset, offset+len) from the source — the source, not Apex,
-    // does the slicing. Expect 206 Partial Content; a 200 means the source
-    // ignored `Range` and would drop the whole file in heap (the real impl must
-    // detect that and abort).
+    // does the slicing. Only 206 Partial Content is safe: a 200 means the source
+    // ignored `Range` and would drop the whole file in heap. A real impl also
+    // validates the `Content-Range` + body length and pins the source version
+    // (ETag / If-Range) so a mid-upload change can't corrupt the commit — see the
+    // src/lib.rs hardening checklist.
     private Blob fetchRange(Long offset, Long len) {
         HttpRequest req = new HttpRequest();
         req.setEndpoint(this.sourceUrl);
         req.setMethod('GET');
         req.setHeader('Range', 'bytes=' + offset + '-' + (offset + len - 1));
         HttpResponse res = new Http().send(req);
+        if (res.getStatusCode() != 206) {
+            throw new BoxApiException(
+                'Range fetch did not return 206 Partial Content (got ' +
+                res.getStatusCode() +
+                '); the source must support ranged reads.'
+            );
+        }
         return res.getBodyAsBlob();
     }
 

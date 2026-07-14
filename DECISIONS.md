@@ -1253,12 +1253,14 @@ sha1>` and `Content-Range`, then commits with the whole-file digest and the part
 list, returning the `Files` envelope.
 
 **A reference implementation, not a working upload path (CodeRabbit review).**
-The two limits don't just bound the helper — they exclude it entirely for *real*
-Box uploads, and the code/docs now say so plainly. Box only offers chunked
-upload for files ≥ 20 MB, but a ≥ 20 MB `Blob` can't fit the 6/12 MB heap, so no
-size satisfies both Box's minimum and Apex's ceiling; and Box's server-issued
-part sizes are powers of two, never divisible by 3, so the base64-slice guard
-rejects every real session. `BoxChunkedUpload` therefore stands as a **correct,
+The heap limit alone excludes the helper for *real* Box uploads, and the
+code/docs now say so plainly. Box only offers chunked upload for files ≥ 20 MB,
+but a ≥ 20 MB `Blob` can't fit the 6/12 MB heap, so no size satisfies both Box's
+minimum and Apex's ceiling — this is the airtight blocker, independent of
+slicing. (The slicing limit is secondary: Box sets `part_size` from the session,
+not documented to be any particular value, but the sizes it issues in practice —
+e.g. 8 MB — are powers of two, which aren't 3-aligned, so the base64-slice guard
+rejects those.) `BoxChunkedUpload` therefore stands as a **correct,
 mock-verified reference implementation** of the protocol — failing loudly (a
 `BoxApiException`, never a raw `LimitException`) at each limit — while the
 production path (an out-of-transaction, `Queueable`-chained uploader plus a

@@ -62,14 +62,16 @@ BoxTokenProvider auth = new BoxJwtTokenProvider(
 > whole-file digest), verified against mocked callouts — but two independent
 > platform limits make an actual upload impossible in a single transaction:
 >
-> - **Heap vs. Box's threshold.** Box only offers chunked upload for files
->   ≥ 20 MB, but Apex heap is 6 MB sync / 12 MB async and the content is an
->   in-memory `Blob`. No file is simultaneously ≥ 20 MB (so Box accepts it) and
->   ≤ ~12 MB (so it fits heap) — there is no size at which a real upload succeeds.
+> - **Heap vs. Box's threshold (the airtight blocker).** Box only offers chunked
+>   upload for files ≥ 20 MB, but Apex heap is 6 MB sync / 12 MB async and the
+>   content is an in-memory `Blob`. No file is simultaneously ≥ 20 MB (so Box
+>   accepts it) and ≤ ~12 MB (so it fits heap) — there is no size at which a real
+>   upload succeeds, independent of the slicing limit below.
 > - **No `Blob` slice.** Apex can't slice a `Blob` at arbitrary byte offsets; the
 >   base64-substring workaround only lands on a real boundary at a 3-byte-aligned
->   `part_size`, and Box's server-issued part sizes are powers of two (never
->   divisible by 3), so the multi-part path rejects every real session.
+>   `part_size`. Box sets `part_size` from the session (not documented to be any
+>   particular value), but the sizes it issues in practice — e.g. 8 MB — are
+>   powers of two, which aren't divisible by 3, so the multi-part path rejects them.
 >
 > A production path needs an out-of-transaction, `Queueable`-chained design (one
 > part per transaction) **and** a byte-accurate slicing mechanism — a tracked
