@@ -27,7 +27,9 @@ Apex (v2) is essentially complete, and Rust (v3) then TypeScript (v4) are next
 ## Generating SDKs
 
 `generate` emits **one** target per run — `--target` takes a single manifest
-key (`go` is complete; `apex` is in progress) and `--out` the output directory.
+key and `--out` the output directory. Two targets are implemented in the CLI
+today: `go` (shipped) and `apex` (near-complete); `rust` (v3) and `typescript`
+(v4) are planned and not yet selectable.
 The trailing arguments are the spec set: the base spec plus each versioned
 overlay, ingested together.
 

@@ -16,7 +16,7 @@ updated **2026-07-15**.
 essentially complete (models, native-JSON, managers/client, serialization
 remap, server auth, generated tests, **VR-1.3 green** on-platform, **VR-1.4**
 live smoke, **VR-3 conformance parity** (D-141), and the **NF-8 ship artifact**
-— an unlocked 2GP package, defined and built in CI (D-142)); v3 (Rust) and v4
+— an unlocked 2GP package, defined with its CI build job wired (D-142)); v3 (Rust) and v4
 (TypeScript) remain. TypeScript was added as a fourth target (D-143), which
 expands total scope — so the overall figure steps down from ~84% to ~78% by
 effort even though **no work was lost**. The large shared cost — the whole
@@ -88,7 +88,7 @@ Ship artifact (NF-8)        ██████████  100%   tagged Go-mod
 
 **M4 — Apex (v2) is ~92% and essentially complete:** full backend + runtime,
 VR-1.3 on-platform + VR-1.4 live smoke green, VR-3 conformance parity (D-141),
-and the NF-8 unlocked-2GP ship artifact defined + built in CI (D-142). The only
+and the NF-8 unlocked-2GP ship artifact defined + the CI build job wired (D-142). The only
 open item is the first `apex-package.yml` dispatch to mint the initial version
 on-platform.
 

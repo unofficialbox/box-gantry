@@ -466,11 +466,13 @@ already proved it (85/85 managers lower, zero IR changes forced).
     addition, positioned **after Rust**. TypeScript 7's Go-native compiler makes
     `tsc --noEmit` a fast per-commit gate (VR-1.5), and the type system is the
     strongest IR fit yet — `oneOf` → discriminated unions, tri-state →
-    `?:`/`| null` with no wrapper, no platform limits. Recorded across
+    `?:`/`| null` with no wrapper, no Apex-style platform limits. Recorded across
     `NEW_ENGINE_REQUIREMENTS.md` (TR-TypeScript + v4 release + roll-up),
-    `PROGRESS.md`, and this plan; +300 (90) hrs → total 3,430 (1,034), overall
-    ~84% → ~78% by effort from the added scope. No engine code yet — M6 work.)
+    `PROGRESS.md`, and this plan; +320 (96) hrs including VR-1.5 → total 3,430
+    (1,034), overall ~84% → ~78% by effort from the added scope. No engine code
+    yet — M6 work.)
 47. **Next**: M5 — Rust backend + runtime (v3), then **M6 — TypeScript** (v4).
     Apex (M4, v2) is conformance-proven (D-141) with its ship artifact defined
-    and built in CI (D-142) — v2's "shipped" bar is met bar the first on-platform
+    and its CI build job wired (D-142) — v2's "shipped" bar is met bar the first
+    on-platform
     package-build dispatch.
