@@ -59,6 +59,17 @@ private class BoxHttpClientTest {
         }
     }
 
+    // A typed request body with a nullable field — the shape the default
+    // (suppressNulls = true) path always receives. Generated managers only set
+    // `request.body` directly (leaving suppression on) for a typed model object;
+    // a raw Map only ever reaches the runtime via denormalizeKeys, which sets
+    // suppressNulls = false. `JSON.serialize(apexObject, true)` drops null Apex
+    // object fields, which is what "an unset field stays absent" means here.
+    private class TypedBody {
+        public String keep;
+        public String drop;
+    }
+
     // Build a bare request; a test fills in query/body/headers as needed.
     private static BoxRequest request(String method, String baseUrl, String path) {
         BoxRequest r = new BoxRequest();
@@ -236,8 +247,11 @@ private class BoxHttpClientTest {
 
     @isTest
     static void suppressNullsOmitsNullKeysByDefault() {
-        // The default (suppressNulls = true): a null-valued key is dropped from
-        // the serialized body — an unset field stays absent (D-138).
+        // The default (suppressNulls = true) path receives a typed model object;
+        // a null-valued field is dropped from the serialized body — an unset
+        // field stays absent (D-138). Note this is Apex object-field suppression:
+        // `JSON.serialize(x, true)` drops null Apex object fields, not null Map
+        // entries, and the default path only ever carries a typed object.
         SequenceMock mock = new SequenceMock(
             new List<Integer>{ 200 },
             new List<String>{ '{}' }
@@ -246,7 +260,10 @@ private class BoxHttpClientTest {
         CountingTokens tokens = new CountingTokens();
 
         BoxRequest req = request('POST', 'api', '/things');
-        req.body = new Map<String, Object>{ 'keep' => 'x', 'drop' => null };
+        TypedBody payload = new TypedBody();
+        payload.keep = 'x';
+        payload.drop = null;
+        req.body = payload;
 
         Test.startTest();
         new BoxHttpClient(tokens).send(req);
@@ -254,7 +271,7 @@ private class BoxHttpClientTest {
 
         String body = mock.seen[0].getBody();
         System.assert(body.contains('"keep"'), 'a set key is sent: ' + body);
-        System.assert(!body.contains('"drop"'), 'a null key is omitted: ' + body);
+        System.assert(!body.contains('"drop"'), 'a null field is omitted: ' + body);
     }
 
     @isTest

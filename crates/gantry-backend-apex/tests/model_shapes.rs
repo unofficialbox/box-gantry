@@ -860,8 +860,9 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         "Box_account_box_com",
         "Box_dl_boxcloud_com",
     ] {
-        let path =
-            format!("force-app/main/default/remoteSiteSettings/{host}.remoteSiteSetting-meta.xml");
+        // Source-format suffix `.remoteSite-meta.xml` (SDR registry canonical),
+        // not the MDAPI `.remoteSiteSetting` — required by 2GP packaging (D-144).
+        let path = format!("force-app/main/default/remoteSiteSettings/{host}.remoteSite-meta.xml");
         assert!(
             files.iter().any(|f| f.path == path),
             "missing remote site setting {host}"
