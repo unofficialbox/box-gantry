@@ -9,8 +9,8 @@ on its code or its output.
 
 **Scope assumptions:** zero existing users; zero obligations to the six
 legacy SDK targets; SDK targets are **Go** (first), **Salesforce Apex**
-(second), **Rust** (third); the engine is implemented in **Rust**
-(assessment §6, D-101) and lives in this repository.
+(second), **Rust** (third), and **TypeScript** (fourth, D-143); the engine is
+implemented in **Rust** (assessment §6, D-101) and lives in this repository.
 
 ## 🔑 Legend
 
@@ -39,14 +39,17 @@ legacy SDK targets; SDK targets are **Go** (first), **Salesforce Apex**
 | FR-8 CLI / driver | 60 (18) | 0% |
 | FR-9 Spec evolution | 60 (18) | 0% |
 | NF Non-functional | 170 (51) | 13% |
-| VR Verification | 260 (78) | 11% |
+| VR Verification | 280 (84) | 11% |
 | TR-Go | 280 (84) | 50% |
 | TR-Apex | 580 (176) | 0% |
 | TR-Rust | 360 (108) | 0% |
-| **TOTAL** | **3,110 (938)** | **~18%** |
+| TR-TypeScript | 300 (90) | 0% |
+| **TOTAL** | **3,430 (1,034)** | **~16%** |
 
 > Hours are effort, not calendar: with agent-driven parallelism the calendar
-> path is PLAN.md (~6–8 months to v1). The ~18% reflects that the Go
+> path is PLAN.md (~6–8 months to v1). This roll-up is the project-start
+> snapshot (superseded by [`PROGRESS.md`](./PROGRESS.md) for live status); the
+> ~16% reflected that the Go
 > lowering design, fixture semantics, verification-loop procedure, and
 > feature designs (D-003…D-013) exist in box-codegen as prior art to
 > consult — the code in this repository starts at zero lines, and nothing
@@ -222,6 +225,24 @@ these requirements make that a first-class workflow rather than an afterthought.
 | TR-Rust.4 | MUST | `cargo check` + `clippy` clean; rustfmt-clean output | §4 | ❌ | 40 (12) |
 | TR-Rust.5 | MUST | Hand-written Rust runtime: `reqwest`+`tokio` networking with retry/backoff, auth token management, streaming body support; implemented against the FR-5 contract | FR-5, §4 | ❌ | 100 (30) |
 
+### TR-TypeScript 🟦 (v4) — 300 hrs 👤 (90 🤖) — 0% complete
+
+TypeScript is the fourth target (D-143). It is the strongest structural fit for
+the IR of any target so far — the type system expresses the IR's own shapes
+almost directly — so the work concentrates on the runtime and the module/packaging
+surface, not on bridging a type-system mismatch. The verification gate is the
+**TypeScript 7 native (Go-ported) compiler** (`tsc --noEmit`), whose ~10× speedup
+makes a full-spec type-check a fast per-commit signal, the TS analogue of `go build`
+(VR-1.5).
+
+| ID | Level | Requirement | Source | Status | Hrs 👤 (🤖) |
+|---|---|---|---|---|---|
+| TR-TS.1 | MUST | `oneOf`/polymorphic types as discriminated unions (`{ type: 'a' } \| { type: 'b' }`); unknown discriminators retained via a catch-all member; open enums as string-literal unions widened with `(string & {})` | §4 | ❌ | 60 (18) |
+| TR-TS.2 | MUST | Tri-state optionality mapped to the type system directly: absent → `field?: T`, explicit null → `T \| null`, so the absent-vs-null distinction needs no wrapper type | §4 | ❌ | 40 (12) |
+| TR-TS.3 | MUST | `Promise`-based async API; `Error`-subclass error model (`BoxApiError` carrying status + parsed body); optional-heavy requests take an options object, not positional params | §4 | ❌ | 60 (18) |
+| TR-TS.4 | MUST | ESM output; `tsc --noEmit` clean under `strict`; formatter-clean (Prettier) by construction; ships type declarations (`.d.ts`) and both ESM/CJS entry points | §4 | ❌ | 40 (12) |
+| TR-TS.5 | MUST | Hand-written TypeScript runtime: `fetch`-based networking (Node ≥ 20 / undici) with retry/backoff + `401` refresh, auth token management, streaming request/response bodies, multipart upload assembly; implemented against the FR-5 contract | FR-5, §4 | ❌ | 100 (30) |
+
 ## 6. 🚫 Non-goals
 
 | # | Non-goal |
@@ -238,9 +259,10 @@ these requirements make that a first-class workflow rather than an afterthought.
 | **v1 — Go SDK** 🐹 | Engine core (FR-1…FR-9, NF), verification harnesses (VR-1.1, VR-2…VR-7), TR-Go | Full real spec (base + 2025.0 + 2026.0) generates; `go build` + `go vet` + gofmt clean; per-node fixture suite green; generated per-manager tests compile and pass; reference docs generated for every manager plus the auth/pagination/errors guides; VR-3 conformance checklist covers the full R§1 contract; round-trip + determinism green; VR-7 live smoke green (one call per auth flow + upload/download/paginate); FR-9 spec-diff runs across the versioned specs; ship artifact: tagged Go module (NF-8) | 2,090 (630) | ~23% |
 | **v2 — Apex SDK** ☁️ | TR-Apex, VR-1.3 harness | Full scratch-org deploy validation green **including generated tests** (75% coverage gate); conformance parity with v1 minus manifest-documented platform exclusions, each recorded in `DECISIONS.md`; VR-7 live smoke green from a scratch org; packaging decision recorded and ship artifact produced (NF-8) | 640 (194) | 0% |
 | **v3 — Rust SDK** 🦀 | TR-Rust, VR-1.2 harness | `cargo check` + `clippy` + rustfmt clean; conformance parity with v1; round-trip suite green incl. unknown-discriminator retention; generated tests pass and docs generated (same bar as v1); VR-7 live smoke green; `cargo publish --dry-run` clean (NF-8) | 380 (114) | 0% |
-| **TOTAL** | | | **3,110 (938)** | **~18%** |
+| **v4 — TypeScript SDK** 🟦 | TR-TypeScript, VR-1.5 harness | `tsc --noEmit` clean under `strict` + Prettier-clean; conformance parity with v1; round-trip suite green incl. unknown-discriminator retention; generated tests pass and docs generated (same bar as v1); VR-7 live smoke green; `npm publish --dry-run` clean + shipped `.d.ts`/dual ESM-CJS (NF-8) | 320 (96) | 0% |
+| **TOTAL** | | | **3,430 (1,034)** | **~16%** |
 
 > The release rows decompose exactly: v1 = FR-1…FR-9 + NF + TR-Go +
-> VR minus {VR-1.2, VR-1.3}; v2 = TR-Apex + VR-1.3; v3 = TR-Rust + VR-1.2.
-> The VR-7 live-smoke harness is built in v1 and reused (with per-target
-> entries) in v2 and v3.
+> VR minus {VR-1.2, VR-1.3, VR-1.5}; v2 = TR-Apex + VR-1.3; v3 = TR-Rust +
+> VR-1.2; v4 = TR-TypeScript + VR-1.5. The VR-7 live-smoke harness is built in
+> v1 and reused (with per-target entries) in v2, v3, and v4.

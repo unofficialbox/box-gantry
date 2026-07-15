@@ -137,9 +137,10 @@ lowering; async-first runtime on `reqwest`+`tokio`; builders; `cargo
 check`+`clippy`+`rustfmt` gates; `cargo publish --dry-run`.
 **Exit = v3 acceptance criteria** (R§7).
 
-**Calendar to three shipped SDKs: ~10–13.5 months** (v1 ~6–8, v2 ~2.5–3.5,
-v3 ~1–2), against ~3,110 human-equivalent hours (~19 engineer-months) of
-effort.
+**Calendar to four shipped SDKs: ~11–15.5 months** (v1 ~6–8, v2 ~2.5–3.5,
+v3 ~1–2, v4 ~1–2), against ~3,430 human-equivalent hours (~21 engineer-months)
+of effort. (TypeScript v4 added in D-143; the original three-SDK path was
+~10–13.5 months / ~3,110 hrs.)
 
 ## 🔬 Verification cadence
 
@@ -461,6 +462,15 @@ already proved it (85/85 managers lower, zero IR changes forced).
     (compiles + runs every generated test in the `unbox` namespace), and surface
     the installable `04t…` id in the job summary. First dispatch validates it
     on-platform, like VR-1.3/1.4.)
-46. **Next**: M5 — Rust backend + runtime (v3). Apex (M4) is conformance-proven
-    (D-141) and its ship artifact is now both defined and built in CI (D-142) —
-    v2's "shipped" bar is met bar the first on-platform package-build dispatch.
+46. ~~Add TypeScript as the fourth SDK target (v4 / M6).~~ ✅ (D-143: a roadmap
+    addition, positioned **after Rust**. TypeScript 7's Go-native compiler makes
+    `tsc --noEmit` a fast per-commit gate (VR-1.5), and the type system is the
+    strongest IR fit yet — `oneOf` → discriminated unions, tri-state →
+    `?:`/`| null` with no wrapper, no platform limits. Recorded across
+    `NEW_ENGINE_REQUIREMENTS.md` (TR-TypeScript + v4 release + roll-up),
+    `PROGRESS.md`, and this plan; +300 (90) hrs → total 3,430 (1,034), overall
+    ~84% → ~78% by effort from the added scope. No engine code yet — M6 work.)
+47. **Next**: M5 — Rust backend + runtime (v3), then **M6 — TypeScript** (v4).
+    Apex (M4, v2) is conformance-proven (D-141) with its ship artifact defined
+    and built in CI (D-142) — v2's "shipped" bar is met bar the first on-platform
+    package-build dispatch.

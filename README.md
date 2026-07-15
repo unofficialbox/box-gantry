@@ -2,8 +2,8 @@
 
 A net-new SDK generator, written in Rust, that consumes the Box OpenAPI
 specification and generates Box SDKs — **Go** (v1), **Salesforce Apex**
-(v2), **Rust** (v3). No dependencies on existing SDKs or existing
-developers; box-codegen is consultable prior art only.
+(v2), **Rust** (v3), and **TypeScript** (v4). No dependencies on existing SDKs
+or existing developers; box-codegen is consultable prior art only.
 
 ## Quickstart
 
@@ -21,7 +21,8 @@ The `gantry` CLI has five subcommands: `check` (ingest + validate a spec
 set), `generate` (emit an SDK), `verify` (generate then compile with the
 target toolchain), `conform` (the R§1 capability checklist), and `diff` (the
 breaking-change report between two spec sets). The **Go SDK (v1) is shipped**;
-Apex (v2) and Rust (v3) are next — see [`PROGRESS.md`](./PROGRESS.md).
+Apex (v2) is essentially complete, and Rust (v3) then TypeScript (v4) are next
+— see [`PROGRESS.md`](./PROGRESS.md).
 
 ## Generating SDKs
 
