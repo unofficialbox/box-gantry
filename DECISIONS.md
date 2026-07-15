@@ -1747,3 +1747,12 @@ full workspace suite, and the double-generate determinism check all green. The
 on-platform coverage lift is measured by re-dispatching `apex-package.yml`; the
 target is ≥ 75% so the next version is promotable past beta. No runtime or
 generated-model change — this adds test classes only.
+
+**Outcome (2026-07-15).** The re-dispatched `apex-package.yml` built version
+`0.1.0.2` with on-platform coverage **99%** (`HasPassedCodeCoverageCheck: true`)
+— up from 56% — minting a **promotable** `SubscriberPackageVersionId
+04tNS000000UGfFYAW` (`Package2VersionId 05iNS00000019FlYAI`). The wire-hook suite
+closed the gap in one shot: every generated `@isTest` passed on-platform, and the
+version now clears the 75% gate required to promote from beta to `released`. NF-8
+is complete end-to-end — a promotable ship artifact, built and coverage-verified
+by CI.
