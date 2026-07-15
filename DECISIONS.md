@@ -1822,3 +1822,66 @@ added to `gantry_ir::naming`. No CLI/CI wiring yet (the backend test is the gate
 for now) — `--target rust`, conformance (`rust_shape`), and the `ci.yml` steps
 join when the surface is broad enough to conform. Engine `cargo fmt` + workspace
 `clippy -D warnings` + all tests green.
+
+## D-148 — Rust backend, slice 2: typed discriminated unions (TR-Rust.1)
+
+**Context.** Slice 1 (D-147) lowered every union to a transparent
+`serde_json::Value` newtype — correct but untyped. TR-Rust.1 wants `oneOf` as
+native enums with a serde tagged representation and unknown discriminators
+retained via a catch-all. The blocker is that serde's own internally-tagged
+representation (`#[serde(tag = "type")]`) is *wrong* here: Box variant structs
+carry their own discriminator field (`UserBase` has `type`), so serde would
+strip it for the tag on the way in and re-emit it on the way out — a duplicate
+`type` key. It also has no catch-all that *retains* an unknown tag's data
+(`#[serde(other)]` is unit-only). The Go backend already solved the same
+problem with hand-written `MarshalJSON`/`UnmarshalJSON` that delegate to the
+variant (whose own field is the tag) and dispatch on a probe.
+
+**Decision.** Mirror the Go dispatch with hand-written `serde` impls. A union
+with a discriminator whose every variant pairs a discriminator value with a
+decl-backed type lowers to:
+
+```rust
+#[derive(Clone, Debug, PartialEq)]
+pub enum AiAgentAllowedEntity {
+    User(UserBase),
+    Group(GroupBase),
+    Unknown(serde_json::Value), // open unions only
+}
+impl serde::Serialize for … {          // delegate to the active variant;
+    …match self { Self::User(inner) => inner.serialize(serializer), … }
+}
+impl<'de> serde::Deserialize<'de> for … {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let tag = value.get("type").and_then(Value::as_str).map(str::to_owned);
+    match tag.as_deref() { Some("user") => …from_value(value)…, _ => Unknown(value) }
+}
+```
+
+- **Variant name** = `constant(discriminator_value)` (`ai_agent_ask` →
+  `AiAgentAsk`), de-duplicated per enum and seeded so none collides with
+  `Unknown`. **Variant type** = the decl.
+- **Serialize** delegates to the active variant, so the discriminator travels
+  in the variant's own field — nothing is injected or duplicated.
+- **Deserialize** peeks at the discriminator, `from_value`s into the matched
+  variant, and (open) retains an unrecognized tag verbatim in `Unknown` or
+  (closed) errors. The tag is copied to an owned `String` first so `value` can
+  move into the matched arm.
+- **Structural unions** (no discriminator, or a non-decl variant) keep the
+  slice-1 transparent `serde_json::Value` newtype — the Go structural fallback.
+
+The real spec has 23 discriminated unions (all open) and 19 structural ones.
+
+**rustfmt-clean by construction.** The generated `Deserialize` builds the tag
+via a method chain that always exceeds rustfmt's `chain_width` (60), so the
+printer emits the broken-per-call form directly rather than a single line.
+
+**Verification.** `tests/union_roundtrip.rs` (VR-4) generates a synthetic SDK
+with an open and a closed union, compiles it, and runs real round-trips: known
+dispatch, unknown-discriminator retention + re-serialization, and closed-union
+rejection. Plus fast structural unit tests for all three lowering paths, and
+the full-spec VR-1.2 compile gate (all 23 real unions compile clean).
+
+**Consequences.** No new dependency (serde_json already present). Union match
+arms remain enumerated, not wildcarded (NF-1). Typed date/time, managers, and
+the runtime are the next slices.
