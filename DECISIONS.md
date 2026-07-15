@@ -1557,8 +1557,14 @@ Packaging section documents the one-time `sf package create` and the per-version
 **Scope of this slice (configure + record).** Namespace + package wired into the
 generated project, decision recorded here, packaging flow documented, and the
 sfdx-project shape covered by a `model_shapes` assertion. No new CI job and no
-new secrets: producing a version needs the `unbox` namespace **linked to the Dev
-Hub** and its auth available to CI — a follow-up once that linkage is confirmed.
+new secrets. The `unbox` namespace is now **linked to the configured Dev Hub's
+Namespace Registry**, and the existing `SFDX_AUTH_URL` secret authenticates to
+that same Dev Hub — so producing a version is unblocked with no new secret. The
+remaining follow-up is the CI build job itself: a self-bootstrapping
+`apex-package.yml` that creates the package if absent (capturing its `0Ho…` id),
+runs `sf package version create` against the Dev Hub, and surfaces the installable
+`04t…` version. (Dev Hub and namespace-org operational details live in the private
+ops runbook, not here.)
 
 **Consequences.** The Apex ship artifact is now defined and producible on demand;
 `sf package version create` builds it from the generated project. No class-count
