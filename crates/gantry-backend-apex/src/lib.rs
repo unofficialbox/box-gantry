@@ -208,10 +208,12 @@ fn remote_site_settings() -> Vec<GeneratedFile> {
 
 /// The SFDX project descriptor. Carries the `unbox` namespace and the
 /// unlocked-2GP package definition (NF-8, D-142) so `sf package version
-/// create` builds the ship artifact; `packageAliases` is filled by the
-/// one-time `sf package create` (see the README's Packaging section). The
-/// `.NEXT` build segment auto-increments per version; the major.minor is set
-/// from the FR-9 spec-diff at release.
+/// create` builds the ship artifact. `packageAliases` is emitted empty: this
+/// file is regenerated on every build, so it never persists the alias `sf
+/// package create` writes — the durable handle is the `0Ho…` package id, which
+/// the release build passes to `sf package version create --package 0Ho…` (see
+/// the README's Packaging section). The `.NEXT` build segment auto-increments
+/// per version; the major.minor is set from the FR-9 spec-diff at release.
 fn sfdx_project_json() -> String {
     format!(
         "{{\n  \"packageDirectories\": [\n    {{\n      \"path\": \"force-app\",\n      \"default\": true,\n      \"package\": \"{APEX_PACKAGE_NAME}\",\n      \"versionName\": \"ver 0.1\",\n      \"versionNumber\": \"0.1.0.NEXT\"\n    }}\n  ],\n  \"name\": \"box-gantry-apex\",\n  \"namespace\": \"{APEX_NAMESPACE}\",\n  \"sfdcLoginUrl\": \"https://login.salesforce.com\",\n  \"sourceApiVersion\": \"{APEX_API_VERSION}\",\n  \"packageAliases\": {{}}\n}}\n"
@@ -267,14 +269,16 @@ fn project_readme(build: &BuildInfo) -> String {
          or rename members freely. One-time, against your Dev Hub (the namespace must\n\
          be linked to it):\n\n\
          ```bash\n\
-         # Registers the package and writes its 0Ho id into packageAliases.\n\
          sf package create --name \"{package}\" --package-type Unlocked \\\n\
          \x20   --path force-app --target-dev-hub myHub\n\
          ```\n\n\
-         Then build a version — this compiles + validates the whole SDK in the\n\
+         This prints the package id (`0Ho…`). **Save it** — this SFDX project is\n\
+         regenerated on every build, which rewrites `sfdx-project.json` and clears\n\
+         `packageAliases`, so the `0Ho…` id (not the by-name alias) is the durable\n\
+         handle. Then build a version by id — this compiles + runs every test in the\n\
          namespace and yields the installable ship artifact (a `04t` version id):\n\n\
          ```bash\n\
-         sf package version create --package \"{package}\" --installation-key-bypass \\\n\
+         sf package version create --package 0Ho... --installation-key-bypass \\\n\
          \x20   --code-coverage --wait 60 --target-dev-hub myHub\n\
          ```\n\n\
          `versionNumber` in `sfdx-project.json` auto-increments its `.NEXT` build\n\

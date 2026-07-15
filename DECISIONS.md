@@ -1526,8 +1526,8 @@ the packaging/ship-artifact (NF-8) remains.
 **Context.** NF-8 requires each release to define its ship artifact and the
 pipeline to produce it, with the packaging decision recorded here. Go ships a
 tagged Go module; Apex needs its own answer. A namespace org is now registered:
-namespace **`unbox`**, package name **"Unbox Salesforce SDK"** (org `00D8Y…`,
-`kyle+namespace@unofficialbox.dev`).
+namespace **`unbox`**, package name **"Unbox Salesforce SDK"** (org `00D8Y…`; the
+registration login lives in the private ops runbook, not here).
 
 **Decision.** Ship the Apex SDK as an **unlocked second-generation (2GP)
 package** under the `unbox` namespace — not a managed package. The SDK is

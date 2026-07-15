@@ -769,16 +769,16 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         parsed["packageDirectories"][0]["package"],
         "Unbox Salesforce SDK"
     );
-    assert!(
-        parsed["packageDirectories"][0]["versionNumber"]
-            .as_str()
-            .is_some_and(|v| v.ends_with(".NEXT")),
-        "versionNumber should auto-increment its build segment"
+    // `.NEXT` auto-increments the build segment; major.minor is set at release
+    // from the FR-9 spec-diff.
+    assert_eq!(
+        parsed["packageDirectories"][0]["versionNumber"],
+        "0.1.0.NEXT"
     );
-    assert!(
-        parsed.get("packageAliases").is_some(),
-        "packageAliases present for `sf package create` to fill"
-    );
+    // Emitted as an empty object: the generated project is overwritten on every
+    // run, so it carries no persisted alias — the durable handle is the `0Ho…`
+    // package id supplied to the release build (D-142).
+    assert_eq!(parsed["packageAliases"], serde_json::json!({}));
 
     // Every class has exactly one matching -meta.xml sidecar (source
     // format), so the tree deploys as-is. After dedupe (D-127): 898 model
