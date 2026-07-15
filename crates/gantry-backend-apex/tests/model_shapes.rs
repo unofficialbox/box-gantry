@@ -788,8 +788,12 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     // HTTP client's own HttpCalloutMock test) = 999
     // (pagination adds no classes — the base method's envelope is the page,
     // D-131). Plus the generated `@isTest` suite for the 75% coverage gate: 85
-    // per-manager tests + the mock client + the unions test = 87, and the
-    // `BoxBuildInfo` provenance class (NF-7, D-141) = 1, for 1087 classes total.
+    // per-manager tests + the mock client + the unions test = 87, the
+    // `BoxBuildInfo` provenance class (NF-7, D-141) = 1, and the model wire-hook
+    // suite = 4 (D-146): the 220 structs that carry a generated wire static
+    // (`normalizeKeys`/`denormalizeKeys`/`deserialize`) exercised with populated
+    // inputs, chunked ≤ 60 structs per class so no method overruns Apex's
+    // compiled-size limit. 999 + 87 + 1 + 4 = 1091 classes total.
     let classes: Vec<&str> = files
         .iter()
         .filter(|f| f.path.ends_with(".cls"))
@@ -797,8 +801,8 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         .collect();
     assert_eq!(
         classes.len(),
-        999 + 87 + 1,
-        "models + managers + client + stubs + runtime + @isTest suite + BoxBuildInfo"
+        999 + 87 + 1 + 4,
+        "models + managers + client + stubs + runtime + @isTest suite + BoxBuildInfo + wire-hook suite"
     );
     // The generated test suite ships with the deployable tree.
     for test in ["BoxCalloutMock", "BoxFilesTest", "BoxUnionsTest"] {
@@ -890,9 +894,9 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         425,
         "endpoint + manager + top-index + guide docs"
     );
-    // 5 base scaffolding + 4 Remote Site Settings + 1087 classes + 1087 metas
+    // 5 base scaffolding + 4 Remote Site Settings + 1091 classes + 1091 metas
     // + 425 docs.
-    assert_eq!(files.len(), 5 + 4 + (999 + 87 + 1) * 2 + 425);
+    assert_eq!(files.len(), 5 + 4 + (999 + 87 + 1 + 4) * 2 + 425);
 
     // Deterministic and path-sorted.
     let sorted: Vec<&String> = {
