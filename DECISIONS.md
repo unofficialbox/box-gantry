@@ -1520,3 +1520,49 @@ auth flow marked n/a against their recorded reasons. Apex gains one class
 (`-D warnings`), determinism, and the full workspace are green; VR-3 for Apex now
 gates every CI run. This closes the conformance half of the v2 "shipped" bar;
 the packaging/ship-artifact (NF-8) remains.
+
+## D-142 — Apex ship artifact: unlocked 2GP package (NF-8)
+
+**Context.** NF-8 requires each release to define its ship artifact and the
+pipeline to produce it, with the packaging decision recorded here. Go ships a
+tagged Go module; Apex needs its own answer. A namespace org is now registered:
+namespace **`unbox`**, package name **"Unbox Salesforce SDK"** (org `00D8Y…`,
+`kyle+namespace@unofficialbox.dev`).
+
+**Decision.** Ship the Apex SDK as an **unlocked second-generation (2GP)
+package** under the `unbox` namespace — not a managed package. The SDK is
+regenerated wholesale from the Box spec on every version; a **managed** package
+permanently locks its released global/public members (you cannot remove or
+rename them), which fights a spec-driven regenerator the moment Box removes or
+renames a field. An **unlocked** package is namespaced and upgradable in place
+but imposes no such lock, so each regenerated version is free to add, remove,
+and rename members — the right fit for a generated, versioned artifact that
+tracks an upstream spec. (Unlocked also skips the security review and keeps the
+source visible, both fine for an SDK.)
+
+The generated SFDX project now carries the packaging identity: `sfdx-project.json`
+sets `namespace: "unbox"` and a `packageDirectories` entry naming the package with
+`versionNumber: "0.1.0.NEXT"` (the `.NEXT` build segment auto-increments; the
+major.minor comes from the FR-9 spec-diff — a breaking change is a major bump).
+`packageAliases` is emitted empty for the one-time `sf package create` to fill.
+The namespace is a separate prefix (`unbox.ClassName`), so it does **not** eat
+into the 40-char Apex identifier budget — no name-mangling change. A plain source
+deploy to a non-namespace org (VR-1.3's Dev Hub dry-run) ignores the namespace,
+so the compile gate is unaffected; the namespace + members are exercised for real
+by `sf package version create`, which compiles the whole SDK in the namespace and
+emits the installable `04t` version — the ship artifact. The generated README's
+Packaging section documents the one-time `sf package create` and the per-version
+`sf package version create`/`sf package install` flow.
+
+**Scope of this slice (configure + record).** Namespace + package wired into the
+generated project, decision recorded here, packaging flow documented, and the
+sfdx-project shape covered by a `model_shapes` assertion. No new CI job and no
+new secrets: producing a version needs the `unbox` namespace **linked to the Dev
+Hub** and its auth available to CI — a follow-up once that linkage is confirmed.
+
+**Consequences.** The Apex ship artifact is now defined and producible on demand;
+`sf package version create` builds it from the generated project. No class-count
+change (still **1,087**); output stays deterministic. fmt, clippy (`-D warnings`),
+and the full workspace are green. This closes NF-8 for Apex bar the CI wiring of
+the build step; with VR-3 (D-141) already green, v2's remaining "shipped" work is
+the CI package-build job (secrets/Dev-Hub-linkage dependent).

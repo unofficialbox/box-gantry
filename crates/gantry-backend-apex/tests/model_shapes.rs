@@ -762,6 +762,23 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         .expect("sfdx-project.json");
     let parsed: serde_json::Value = serde_json::from_str(&project.content).expect("valid JSON");
     assert_eq!(parsed["packageDirectories"][0]["path"], "force-app");
+    // NF-8 (D-142): the namespace + unlocked-package definition ride on the
+    // generated project so `sf package version create` builds the ship artifact.
+    assert_eq!(parsed["namespace"], "unbox");
+    assert_eq!(
+        parsed["packageDirectories"][0]["package"],
+        "Unbox Salesforce SDK"
+    );
+    assert!(
+        parsed["packageDirectories"][0]["versionNumber"]
+            .as_str()
+            .is_some_and(|v| v.ends_with(".NEXT")),
+        "versionNumber should auto-increment its build segment"
+    );
+    assert!(
+        parsed.get("packageAliases").is_some(),
+        "packageAliases present for `sf package create` to fill"
+    );
 
     // Every class has exactly one matching -meta.xml sidecar (source
     // format), so the tree deploys as-is. After dedupe (D-127): 898 model
