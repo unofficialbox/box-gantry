@@ -1756,3 +1756,69 @@ closed the gap in one shot: every generated `@isTest` passed on-platform, and th
 version now clears the 75% gate required to promote from beta to `released`. NF-8
 is complete end-to-end — a promotable ship artifact, built and coverage-verified
 by CI.
+
+## D-147 — Rust backend, slice 1: the model layer (M5, TR-Rust)
+
+**Context.** M5 opens the third target (v3, Rust). The architecture map
+confirmed backends are not a trait but a free `generate(...)` returning
+`Vec<GeneratedFile>`, dispatched by a string `match` on `--target`; the `rust()`
+manifest already exists (`Result`/`Async`/`Hierarchical`). The full backend is
+large (models, serde-tagged unions, async managers/client, the `reqwest`/`tokio`
+runtime, tests, docs), so it lands in reviewed slices. This is slice 1: the
+model layer plus its compile gate (VR-1.2), the foundation everything else
+compiles against.
+
+**Decision.** A new `gantry-backend-rust` crate mirrors the Apex signature
+(`generate(&Analysis, &CapabilityManifest, &BuildInfo)`), emitting a
+self-contained SDK crate: `Cargo.toml` (serde + serde_json), `src/lib.rs`
+(module tree + `buildinfo` provenance, NF-7), `src/serde_helpers.rs`, and a
+`models` module. Lowerings:
+
+- **Module tree.** One Rust module per IR module. API versions redefine names
+  (`ClientError` exists in the base document *and* in `2025.0`, 712/168/20
+  decls across the three modules) and the modules share no cross-references, so
+  each IR module becomes its own flat-sibling Rust module
+  (`[schemas, v2025_0]` → `schemas_v2025_0`) rather than one namespace — bare
+  `PascalCase` names stay collision-free within a module and never clash across.
+- **Structs** → `#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]`.
+  Field identifiers are `snake_case` (the IR name may arrive camelCased) with a
+  `#[serde(rename = "<wire>")]` whenever the serde default name diverges; Rust
+  keywords become raw identifiers (`r#type`), the four that cannot be raw get a
+  trailing underscore.
+- **Tri-state (D-110)**: `Optional<Nullable<T>>` → `Option<Option<T>>` with
+  `#[serde(default, skip_serializing_if = "Option::is_none", deserialize_with =
+  "double_option")]`, so absent (`None`), explicit `null` (`Some(None)`), and a
+  value (`Some(Some(v))`) stay distinct on the wire. Bare `Optional<T>` →
+  `Option<T>` + skip-if-none; bare `Nullable<T>` → `Option<T>` (key always
+  present). The `double_option` helper is generated once and imported per module
+  on demand.
+- **Open enums** → a transparent newtype over `String` with the known values as
+  associated constants (case-only duplicates like `ASC`/`asc` get suffixed
+  constant names) — unknown values round-trip for free (TR-Rust.1, string case),
+  the Rust analogue of Go's `type X string`. **Closed enums** → a real `enum`
+  with per-variant `rename`, rejecting unknowns.
+- **Unions** lower, *for this slice only*, to a transparent `serde_json::Value`
+  newtype: it compiles, round-trips every value, and retains unknown
+  discriminators. The typed serde-tagged representation (TR-Rust.1, the headline
+  union feature) is the next slice — kept out of this PR because getting the
+  tagged-enum + catch-all retention right is its own reviewed unit. Date/time
+  are RFC 3339 `String` in the interim, typed alongside serialization.
+
+**rustfmt-clean by construction (TR-Rust.4).** The printer replicates rustfmt's
+wrapping rather than post-processing: field-level `#[serde(...)]` attributes
+inline up to 84 columns (`max_width` 100 minus the 16 rustfmt reserves at field
+indent) and otherwise break one argument per line; over-long field and `const`
+lines wrap the same way rustfmt would. Verified against the full real spec.
+
+**Verification (VR-1.2).** `crates/gantry-backend-rust/tests/compile_output.rs`
+generates the full base+2025.0+2026.0 spec and runs `cargo fmt --check` +
+`cargo check` + `clippy -D warnings` on the output — the real-toolchain gate,
+the Rust analogue of Go's VR-1.1. Plus a determinism check and fast structural
+unit tests (no toolchain). Match arms in the lowering are enumerated, never
+wildcarded, so a new IR type breaks this backend at compile time (NF-1, FR-2.1).
+
+**Consequences.** New crate wired into the workspace; a shared `snake()` helper
+added to `gantry_ir::naming`. No CLI/CI wiring yet (the backend test is the gate
+for now) — `--target rust`, conformance (`rust_shape`), and the `ci.yml` steps
+join when the surface is broad enough to conform. Engine `cargo fmt` + workspace
+`clippy -D warnings` + all tests green.

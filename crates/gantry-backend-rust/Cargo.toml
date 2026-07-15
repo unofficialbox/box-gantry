@@ -1,0 +1,19 @@
+[package]
+name = "gantry-backend-rust"
+description = "Rust lowering + printer (FR-6, TR-Rust)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gantry-ir.workspace = true
+gantry-manifest.workspace = true
+gantry-sema.workspace = true
+gantry-synth.workspace = true
+
+[dev-dependencies]
+gantry-spec.workspace = true
+
+[lints]
+workspace = true
