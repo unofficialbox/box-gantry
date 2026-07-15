@@ -1,0 +1,115 @@
+# NF-8 — build the Apex ship artifact: an unlocked 2GP package version.
+#
+# Generates the Apex SDK and runs `sf package version create` against the Dev
+# Hub that SFDX_AUTH_URL authorizes (the `unbox` namespace is linked to that
+# Dev Hub's Namespace Registry — D-142). The output is the installable `04t…`
+# SubscriberPackageVersionId, surfaced in the job summary.
+#
+# Manual (workflow_dispatch): package-version builds are slow and count against
+# the Dev Hub's version-create limits, so this is not a per-push gate. The auth
+# comes from a repo secret, never the repository; without it the job skips.
+#
+# The generated `sfdx-project.json` ships with an empty `packageAliases` (it is
+# regenerated every build), so the durable handle is the package's `0Ho…` id.
+# This job resolves that id from the Dev Hub — creating the package on the first
+# run — then injects it as the package alias just before the version build.
+name: Apex package build (NF-8)
+
+on:
+  workflow_dispatch:
+
+# The package name must match the generated sfdx-project.json (APEX_PACKAGE_NAME).
+env:
+  PACKAGE_NAME: Unbox Salesforce SDK
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    env:
+      SFDX_AUTH_URL: ${{ secrets.SFDX_AUTH_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Guard — a Dev Hub is required
+        id: guard
+        run: |
+          if [ -z "$SFDX_AUTH_URL" ]; then
+            echo "::notice::No SFDX_AUTH_URL secret; skipping the package build."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.guard.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          # The Salesforce CLI's bundled undici needs Node >= 22.
+          node-version: '22'
+      - if: steps.guard.outputs.skip != 'true'
+        name: Install the Salesforce CLI
+        # Pinned to the v2 major so the job can't silently drift on a new major.
+        run: npm install --global @salesforce/cli@2
+      - if: steps.guard.outputs.skip != 'true'
+        name: Generate the Apex SDK (a deployable SFDX project)
+        run: >
+          cargo run -p gantry-cli -- generate --target apex --out apex-sdk
+          fixtures/specs/openapi.json
+          fixtures/specs/openapi-v2025.0.json
+          fixtures/specs/openapi-v2026.0.json
+      - if: steps.guard.outputs.skip != 'true'
+        name: Build the unlocked package version
+        working-directory: apex-sdk
+        run: |
+          set -euo pipefail
+          printf '%s' "$SFDX_AUTH_URL" | sf org login sfdx-url --sfdx-url-stdin --set-default-dev-hub --alias devhub
+
+          # Resolve the package's 0Ho id from the Dev Hub; create it on first run.
+          # (The name is unique per Dev Hub, so a repeat run reuses the same id.)
+          pkg_id="$(sf package list --target-dev-hub devhub --json \
+            | jq -r --arg n "$PACKAGE_NAME" 'first(.result[] | select(.Name == $n) | .Id) // empty')"
+          if [ -z "$pkg_id" ]; then
+            echo "Package '$PACKAGE_NAME' not found on the Dev Hub — creating it."
+            # Strip the generated package association so `sf package create` writes
+            # a clean one, then read back the new 0Ho id.
+            jq 'del(.packageDirectories[0].package, .packageDirectories[0].versionName, .packageDirectories[0].versionNumber)' \
+              sfdx-project.json > sfdx-project.tmp && mv sfdx-project.tmp sfdx-project.json
+            pkg_id="$(sf package create --name "$PACKAGE_NAME" --package-type Unlocked \
+              --path force-app --target-dev-hub devhub --json | jq -r '.result.Id')"
+          fi
+          echo "Package id: $pkg_id"
+
+          # The generated project carries an empty packageAliases; inject the id so
+          # `sf package version create` can resolve the package (D-142). Also ensure
+          # the default directory is associated with the package + version number.
+          jq --arg n "$PACKAGE_NAME" --arg id "$pkg_id" '
+            .packageAliases[$n] = $id
+            | .packageDirectories[0].package = $n
+            | .packageDirectories[0].versionName = (.packageDirectories[0].versionName // "ver 0.1")
+            | .packageDirectories[0].versionNumber = (.packageDirectories[0].versionNumber // "0.1.0.NEXT")
+          ' sfdx-project.json > sfdx-project.tmp && mv sfdx-project.tmp sfdx-project.json
+
+          # Build the version — compiles + runs every generated test in the
+          # namespace, then emits the installable 04t… id. `|| true` so a failure
+          # is diagnosed below rather than aborting before the JSON is captured.
+          sf package version create --package "$PACKAGE_NAME" --installation-key-bypass \
+            --code-coverage --wait 90 --target-dev-hub devhub --json > version.json || true
+          cat version.json
+
+          status="$(jq -r '.status // 1' version.json)"
+          subscriber_id="$(jq -r '.result.SubscriberPackageVersionId // empty' version.json)"
+          if [ "$status" != "0" ] || [ -z "$subscriber_id" ]; then
+            echo "::error::package version create failed"
+            jq -r '.message // .result.Error // "(no message)"' version.json || true
+            exit 1
+          fi
+
+          {
+            echo "## Apex package version built (NF-8)"
+            echo ""
+            echo "- Package: \`$PACKAGE_NAME\` (\`$pkg_id\`)"
+            echo "- Version id: \`$subscriber_id\`"
+            echo ""
+            echo "Install with:"
+            echo ""
+            echo '```bash'
+            echo "sf package install --package $subscriber_id --target-org yourOrg --wait 20"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

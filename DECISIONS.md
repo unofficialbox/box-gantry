@@ -1557,14 +1557,20 @@ Packaging section documents the one-time `sf package create` and the per-version
 **Scope of this slice (configure + record).** Namespace + package wired into the
 generated project, decision recorded here, packaging flow documented, and the
 sfdx-project shape covered by a `model_shapes` assertion. No new CI job and no
-new secrets. The `unbox` namespace is now **linked to the configured Dev Hub's
+new secrets. The `unbox` namespace is **linked to the configured Dev Hub's
 Namespace Registry**, and the existing `SFDX_AUTH_URL` secret authenticates to
-that same Dev Hub — so producing a version is unblocked with no new secret. The
-remaining follow-up is the CI build job itself: a self-bootstrapping
-`apex-package.yml` that creates the package if absent (capturing its `0Ho…` id),
-runs `sf package version create` against the Dev Hub, and surfaces the installable
-`04t…` version. (Dev Hub and namespace-org operational details live in the private
-ops runbook, not here.)
+that same Dev Hub — so producing a version needs no new secret. (Dev Hub and
+namespace-org operational details live in the private ops runbook, not here.)
+
+**The build job.** `apex-package.yml` (manual `workflow_dispatch` — version
+builds are slow and count against Dev Hub limits, so not a per-push gate)
+generates the SDK, auths the Dev Hub, resolves the package `0Ho…` id (creating
+the package on the first run), injects that id as the alias the regenerated
+`sfdx-project.json` omits, then runs `sf package version create` — which compiles
+and runs every generated test in the `unbox` namespace — and surfaces the
+installable `04t…` `SubscriberPackageVersionId` in the job summary. Like VR-1.3
+and VR-1.4, the workflow is validated by its first dispatch (no Salesforce
+toolchain runs in unit CI).
 
 **Consequences.** The Apex ship artifact is now defined and producible on demand;
 `sf package version create` builds it from the generated project. No class-count

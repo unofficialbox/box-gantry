@@ -454,7 +454,13 @@ already proved it (85/85 managers lower, zero IR changes forced).
     is now linked to the configured Dev Hub and `SFDX_AUTH_URL` authenticates to
     it, so the CI package-build job is unblocked (no new secret) and is the next
     follow-up. 1,087 classes; deterministic.)
-45. **Next (follow-up)**: wire the Apex package-build CI job — a self-bootstrapping
-    `apex-package.yml` (create-package-if-missing → `sf package version create` →
-    output the `04t…` id). This produces the NF-8 ship artifact in CI, closing the
-    last piece of v2's "shipped" bar. Then **M5 — Rust backend + runtime (v3)**.
+45. ~~Wire the Apex package-build CI job (NF-8).~~ ✅ (D-142: `apex-package.yml`,
+    a manual (`workflow_dispatch`) job — auth the Dev Hub via `SFDX_AUTH_URL`,
+    resolve the package `0Ho…` id (creating it on first run), inject it as the
+    alias the regenerated project omits, run `sf package version create`
+    (compiles + runs every generated test in the `unbox` namespace), and surface
+    the installable `04t…` id in the job summary. First dispatch validates it
+    on-platform, like VR-1.3/1.4.)
+46. **Next**: M5 — Rust backend + runtime (v3). Apex (M4) is conformance-proven
+    (D-141) and its ship artifact is now both defined and built in CI (D-142) —
+    v2's "shipped" bar is met bar the first on-platform package-build dispatch.
