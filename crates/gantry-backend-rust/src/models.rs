@@ -33,6 +33,12 @@ pub fn generate_models(analysis: &Analysis<'_>, build: &BuildInfo) -> Vec<Genera
         .map(|(path, indices)| (module_name(path), path, indices.as_slice()))
         .collect();
     named.sort_by(|a, b| a.0.cmp(&b.0));
+    // Flattening a module path with `_` is not injective (`[a_b]` and `[a, b]`
+    // collapse), so allocate collision-free module names deterministically.
+    let mut used_modules: Vec<String> = Vec::new();
+    for entry in &mut named {
+        entry.0 = dedupe(&mut used_modules, std::mem::take(&mut entry.0));
+    }
 
     let mut files = vec![GeneratedFile {
         path: "src/models/mod.rs".to_string(),
@@ -51,12 +57,19 @@ fn module_name(module: &ir::ModulePath) -> String {
     if module.0.is_empty() {
         return "root".to_string();
     }
-    module
+    let joined = module
         .0
         .iter()
         .map(|segment| sanitize_lower(segment.as_str()))
         .collect::<Vec<_>>()
-        .join("_")
+        .join("_");
+    // A single-segment path that lands on a keyword (`type`) would emit an
+    // invalid `pub mod type;` — suffix it.
+    if RUST_KEYWORDS.contains(&joined.as_str()) || RAW_UNSAFE.contains(&joined.as_str()) {
+        format!("{joined}_")
+    } else {
+        joined
+    }
 }
 
 fn sanitize_lower(text: &str) -> String {
@@ -149,8 +162,13 @@ impl Printer<'_> {
             return;
         }
         let _ = writeln!(self.body, "pub struct {name} {{");
+        // Distinct source names can normalize to the same Rust identifier
+        // (`displayName` and `display_name` both → `display_name`); a per-struct
+        // allocator keeps them distinct so the crate compiles.
+        let mut used: Vec<String> = Vec::new();
         for field in &s.fields {
-            let (ident, serde_name) = field_ident(field.name.as_str());
+            let base = dedupe(&mut used, field_base(field.name.as_str()));
+            let (ident, serde_name) = keyword_wrap(&base);
             let form = self.field_form(&field.ty);
             if matches!(form, FieldForm::TriState(_)) {
                 self.uses_double_option = true;
@@ -185,14 +203,7 @@ impl Printer<'_> {
                 // duplicates so both wire values keep a named constant.
                 let mut used: Vec<String> = Vec::new();
                 for value in &e.values {
-                    let base = constant_ident(value);
-                    let mut const_name = base.clone();
-                    let mut suffix = 2;
-                    while used.contains(&const_name) {
-                        const_name = format!("{base}_{suffix}");
-                        suffix += 1;
-                    }
-                    used.push(const_name.clone());
+                    let const_name = dedupe(&mut used, constant_ident(value));
                     let line = format!("    pub const {const_name}: &'static str = {value:?};");
                     if line.len() <= 100 {
                         let _ = writeln!(self.body, "{line}");
@@ -208,8 +219,12 @@ impl Printer<'_> {
                     "#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]\n",
                 );
                 let _ = writeln!(self.body, "pub enum {name} {{");
+                // Distinct values can normalize to the same variant identifier
+                // (`foo-bar` and `foo_bar`); keep them apart. The serde rename
+                // always names the exact wire value, so dispatch stays correct.
+                let mut used: Vec<String> = Vec::new();
                 for value in &e.values {
-                    let variant = variant_ident(value);
+                    let variant = dedupe(&mut used, variant_ident(value));
                     let _ = writeln!(self.body, "    #[serde(rename = {value:?})]");
                     let _ = writeln!(self.body, "    {variant},");
                 }
@@ -392,19 +407,37 @@ fn type_name(name: &str) -> String {
     }
 }
 
-/// A struct field identifier + the name serde uses for it by default (the
-/// identifier minus any raw `r#` prefix). Rust keywords become raw
-/// identifiers; the few that cannot (`self`, `crate`, `super`, `Self`) get a
-/// trailing underscore.
-fn field_ident(name: &str) -> (String, String) {
-    let sanitized = sanitize_ident(&snake(name));
-    if RAW_UNSAFE.contains(&sanitized.as_str()) {
-        (format!("{sanitized}_"), format!("{sanitized}_"))
-    } else if RUST_KEYWORDS.contains(&sanitized.as_str()) {
-        (format!("r#{sanitized}"), sanitized.clone())
+/// The normalized `snake_case` body of a field identifier, before keyword
+/// wrapping and per-scope de-duplication.
+fn field_base(name: &str) -> String {
+    sanitize_ident(&snake(name))
+}
+
+/// Wrap an already-unique identifier base into (token, serde-default-name):
+/// Rust keywords become raw identifiers; the few that cannot (`self`, `crate`,
+/// `super`, `Self`) get a trailing underscore. De-duplication runs *before*
+/// this, so a suffixed base like `type_2` is never a keyword here.
+fn keyword_wrap(base: &str) -> (String, String) {
+    if RAW_UNSAFE.contains(&base) {
+        (format!("{base}_"), format!("{base}_"))
+    } else if RUST_KEYWORDS.contains(&base) {
+        (format!("r#{base}"), base.to_string())
     } else {
-        (sanitized.clone(), sanitized)
+        (base.to_string(), base.to_string())
     }
+}
+
+/// Allocate a collision-free name in a scope: returns `base` if unused, else
+/// `base_2`, `base_3`, … Deterministic given a stable iteration order (FR-6.2).
+fn dedupe(used: &mut Vec<String>, base: String) -> String {
+    let mut candidate = base.clone();
+    let mut n = 2;
+    while used.contains(&candidate) {
+        candidate = format!("{base}_{n}");
+        n += 1;
+    }
+    used.push(candidate.clone());
+    candidate
 }
 
 /// Sanitize an arbitrary name into a valid Rust identifier body (no keyword
@@ -574,6 +607,54 @@ mod tests {
         // Keyword field → raw identifier; serde default name already matches
         // the wire, so no rename.
         assert!(out.contains("pub r#type: String,"));
+    }
+
+    #[test]
+    fn colliding_field_names_are_disambiguated() {
+        let mut p = ir::Program::default();
+        // Two distinct wire names that normalize to the same Rust ident.
+        let s = add(
+            &mut p,
+            DeclKind::Struct(StructDecl {
+                fields: vec![
+                    Field {
+                        name: ident("displayName"),
+                        wire_name: "displayName".into(),
+                        ty: Type::String,
+                    },
+                    Field {
+                        name: ident("display_name"),
+                        wire_name: "display_name".into(),
+                        ty: Type::String,
+                    },
+                ],
+            }),
+            "Widget",
+        );
+        let out = render(&p, &[s]);
+        assert!(out.contains("pub display_name: String,"), "{out}");
+        assert!(out.contains("pub display_name_2: String,"), "{out}");
+        // The suffixed field still serializes to its own wire name.
+        assert!(out.contains(r#"rename = "display_name""#));
+    }
+
+    #[test]
+    fn colliding_closed_enum_variants_are_disambiguated() {
+        let mut p = ir::Program::default();
+        let e = add(
+            &mut p,
+            DeclKind::Enum(EnumDecl {
+                values: vec!["foo-bar".into(), "foo_bar".into()],
+                extensibility: Extensibility::Closed,
+            }),
+            "Kind",
+        );
+        let out = render(&p, &[e]);
+        assert!(out.contains(r#"#[serde(rename = "foo-bar")]"#), "{out}");
+        assert!(out.contains(r#"#[serde(rename = "foo_bar")]"#), "{out}");
+        // Both variants present, one suffixed — the crate compiles.
+        assert!(out.contains("FooBar,"));
+        assert!(out.contains("FooBar_2,"));
     }
 
     #[test]

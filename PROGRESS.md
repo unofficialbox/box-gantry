@@ -9,10 +9,10 @@ updated **2026-07-15**.
 ## Overall
 
 ```text
-████████░░  ~78%
+████████░░  ~79%
 ```
 
-**~78% complete by effort** — **v1 (Go SDK) is shipped**; v2 (Apex) is
+**~79% complete by effort** — **v1 (Go SDK) is shipped**; v2 (Apex) is
 essentially complete (models, native-JSON, managers/client, serialization
 remap, server auth, generated tests, **VR-1.3 green** on-platform, **VR-1.4**
 live smoke, **VR-3 conformance parity** (D-141), and the **NF-8 ship artifact**
