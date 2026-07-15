@@ -1684,3 +1684,19 @@ correct; the test's premise was not.
 proceeds to mint the first installable `04t…` version, closing NF-8 end-to-end.
 Documents the Apex platform gotcha so a future Map-bodied runtime path (if one is
 ever added) knows `JSON.serialize(map, true)` will not strip its nulls.
+
+**Outcome (2026-07-15).** The re-dispatched `apex-package.yml` built the first
+version successfully: `SubscriberPackageVersionId 04tNS000000UGaPYAW`
+(`Package2VersionId 05iNS00000019E9YAI`, version `0.1.0.1`, 2,181 metadata files),
+with **all namespace tests green** (`"Error": []`) — proving the whole
+generate → source-convert → compile → test → package pipeline on-platform. NF-8
+(mint an installable ship artifact) is met.
+
+One release-gate follow-up surfaced, not a blocker for beta install: on-platform
+**code coverage came back 56%** (`HasPassedCodeCoverageCheck: false`). A version
+installs as a beta at any coverage, but Salesforce requires **≥ 75%** to *promote*
+it to `released` (the same 75% gate D-133's generated tests target for a production
+deploy). The generated `@isTest` suite covers the runtime and exercised managers,
+but not enough of the ~1,087-class generated surface to clear 75% org-wide.
+Raising generated-test breadth to promote past beta is tracked as the remaining
+Apex item in `PROGRESS.md`; it does not affect installability of the beta `04t`.
