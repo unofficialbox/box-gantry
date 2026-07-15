@@ -1649,3 +1649,38 @@ create`. One-line generator change plus the matching `model_shapes` assertion.
 green. The package already exists on the Dev Hub, so the next dispatch skips
 creation, injects the alias, and proceeds to the actual version build. No
 class-count change.
+
+## D-145 — `JSON.serialize(x, true)` suppresses Apex-object nulls, not Map nulls
+
+**Context.** With the D-144 suffix fixed, the next `apex-package.yml` dispatch got
+into `sf package version create`, which — unlike the lenient VR-1.3/1.4 deploy —
+runs **every** test in the namespace on-platform. Exactly one failed:
+
+> `Apex Test Failure: unbox.BoxHttpClientTest.suppressNullsOmitsNullKeysByDefault:
+> line 257 … Assertion Failed: a null key is omitted: {"drop":null,"keep":"x"}`
+
+The test synthesized a body of `new Map<String, Object>{ 'keep' => 'x', 'drop' => null }`
+with the default `suppressNulls = true` and asserted the null key was dropped. But
+Apex's `JSON.serialize(obj, suppressApexObjectNulls)` only suppresses null **fields
+of Apex objects** — it does *not* drop null **entries of a `Map<String, Object>`**.
+So on-platform the null map entry was serialized (`{"drop":null,…}`) and the
+assertion failed. This never surfaced off-platform because Rust/CI never runs the
+Apex; the packaging path is the first place the runtime executes on a real org.
+
+Crucially, the test misrepresented the real runtime contract. The generated
+managers only assign `request.body` directly (leaving `suppressNulls = true`) for a
+**typed model object** (`managers.rs` line 363); a raw `Map` only ever reaches the
+runtime via the D-138 denormalizeKeys path, which sets `suppressNulls = false`. A
+`Map` + `suppressNulls = true` is a combination generated code never produces.
+
+**Decision.** Correct the test to exercise the real default path — a typed body
+(`TypedBody { keep; drop; }`) with `drop = null`. `JSON.serialize(typedObj, true)`
+drops the null field, so the "an unset field stays absent" assertion holds. The
+denormalize path stays covered by `explicitNullsAreSentWhenSuppressionIsOff`
+(Map + `suppressNulls = false`). No runtime behavior change — the runtime was
+correct; the test's premise was not.
+
+**Consequences.** The sole on-platform test failure is resolved; the next dispatch
+proceeds to mint the first installable `04t…` version, closing NF-8 end-to-end.
+Documents the Apex platform gotcha so a future Map-bodied runtime path (if one is
+ever added) knows `JSON.serialize(map, true)` will not strip its nulls.
