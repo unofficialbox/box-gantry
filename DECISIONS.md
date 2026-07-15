@@ -1579,3 +1579,44 @@ deterministic. fmt, clippy (`-D warnings`), and the full workspace are green. Wi
 VR-3 (D-141) green and the build job wired, NF-8 for Apex is met — the only
 remaining step is the workflow's first manual dispatch (which mints the initial
 `04t…` version on-platform), the same first-dispatch validation VR-1.3/1.4 use.
+
+## D-143 — TypeScript as the fourth SDK target (v4)
+
+**Context.** With v1 (Go) shipped, v2 (Apex) essentially complete, and v3 (Rust)
+next, a fourth target is added to the roadmap: **TypeScript**, positioned *after*
+Rust (v4 / M6). The trigger is TypeScript 7.0 (GA 2026-07-08, codename "Project
+Corsa"), which is a **native port of the compiler to Go** — a file-by-file rewrite
+of the old JavaScript ("Strada") codebase that preserves type-checking semantics
+but runs ~10× faster (Microsoft's VS Code benchmark: 125.7s → 10.6s, ~11.9×) with
+6–26% less memory.
+
+**Decision.** Adopt TypeScript as a first-party target (not a plugin — non-goal 3
+still stands for *third-party* languages). Two things make it attractive:
+
+- **Best IR fit of any target.** The type system expresses the IR's own shapes
+  almost directly — `oneOf` → discriminated unions (`{ type: 'a' } | { type: 'b' }`),
+  unknown discriminators → a catch-all member, open enums → string-literal unions,
+  and the tri-state maps to the type system with **no wrapper**: absent is
+  `field?: T`, explicit null is `T | null`. None of Apex's erasure/dispatch work
+  and none of Rust's borrow/lifetime concerns apply. The effort concentrates on the
+  runtime and the packaging surface, so TR-TypeScript is estimated a touch below
+  Rust: **300 (90) hrs**.
+- **A fast verification gate.** TypeScript 7's Go-native `tsc --noEmit` type-checks
+  the full generated SDK quickly enough to be a per-commit signal — the TS analogue
+  of Go's `go build` (VR-1.5). ("Backed by Go" is about compiler *speed*; the
+  generated SDK is ordinary TypeScript.)
+
+The v4 acceptance criteria mirror v1/v3: `tsc --noEmit` clean under `strict`,
+Prettier-clean, conformance parity with v1, round-trip (incl. unknown-discriminator
+retention), generated tests + docs, VR-7 live smoke, and an NF-8 ship artifact
+(`npm publish --dry-run` clean, shipped `.d.ts`, dual ESM/CJS).
+
+**Consequences.** A roadmap/spec addition only — **no engine code yet** (M6 is
+after M5/Rust). Recorded in `NEW_ENGINE_REQUIREMENTS.md` (scope line, roll-up row,
+a TR-TypeScript section, a v4 release row, VR bumped for VR-1.5), `PROGRESS.md`
+(v4 row + milestone M6), `PLAN.md`, `README.md`, and `SCOPE.md`. Total scope grows
+**3,110 (938) → 3,430 (1,034)** hrs; because v4 starts at 0%, the overall
+effort-weighted figure steps **~84% → ~78%** even though no completed work was
+lost. The three-target IR (FR-2) was designed to absorb new targets through
+manifest + lowering + printer only (FR-6.1); TypeScript is the first test of that
+beyond the original three.

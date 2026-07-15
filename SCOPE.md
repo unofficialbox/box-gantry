@@ -20,6 +20,7 @@ and docs.
 | 1 | Go | v1 |
 | 2 | Salesforce Apex | v2 |
 | 3 | Rust | v3 |
+| 4 | TypeScript | v4 |
 
 ## Hard boundaries
 
