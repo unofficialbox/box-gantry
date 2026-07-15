@@ -65,6 +65,18 @@ pub(crate) const CLASSES_DIR: &str = "force-app/main/default/classes";
 /// The Salesforce API version the generated metadata targets.
 pub(crate) const APEX_API_VERSION: &str = "62.0";
 
+/// The registered package namespace the shipped SDK deploys under (NF-8,
+/// D-142). Set on the generated SFDX project so scratch orgs and the 2GP
+/// package build carry it; a plain source deploy to a non-namespace org
+/// ignores it. Apex class names are unaffected — the namespace is a separate
+/// prefix (`unbox.ClassName`), so the 40-char identifier budget is untouched.
+pub(crate) const APEX_NAMESPACE: &str = "unbox";
+
+/// The 2GP **unlocked** package the SDK ships as (NF-8, D-142). Unlocked (not
+/// managed) so the spec-regenerated surface can add, remove, and rename
+/// members across versions without a managed package's global-member lock.
+pub(crate) const APEX_PACKAGE_NAME: &str = "Unbox Salesforce SDK";
+
 /// Generate the complete Apex SDK as a deployable SFDX project: the project
 /// scaffolding (`sfdx-project.json`, `config/project-scratch-def.json`,
 /// `.forceignore`, `manifest/package.xml`, `README.md`), every model and
@@ -194,9 +206,17 @@ fn remote_site_settings() -> Vec<GeneratedFile> {
         .collect()
 }
 
+/// The SFDX project descriptor. Carries the `unbox` namespace and the
+/// unlocked-2GP package definition (NF-8, D-142) so `sf package version
+/// create` builds the ship artifact. `packageAliases` is emitted empty: this
+/// file is regenerated on every build, so it never persists the alias `sf
+/// package create` writes — the durable handle is the `0Ho…` package id, which
+/// the release build passes to `sf package version create --package 0Ho…` (see
+/// the README's Packaging section). The `.NEXT` build segment auto-increments
+/// per version; the major.minor is set from the FR-9 spec-diff at release.
 fn sfdx_project_json() -> String {
     format!(
-        "{{\n  \"packageDirectories\": [{{ \"path\": \"force-app\", \"default\": true }}],\n  \"name\": \"box-gantry-apex\",\n  \"namespace\": \"\",\n  \"sfdcLoginUrl\": \"https://login.salesforce.com\",\n  \"sourceApiVersion\": \"{APEX_API_VERSION}\"\n}}\n"
+        "{{\n  \"packageDirectories\": [\n    {{\n      \"path\": \"force-app\",\n      \"default\": true,\n      \"package\": \"{APEX_PACKAGE_NAME}\",\n      \"versionName\": \"ver 0.1\",\n      \"versionNumber\": \"0.1.0.NEXT\"\n    }}\n  ],\n  \"name\": \"box-gantry-apex\",\n  \"namespace\": \"{APEX_NAMESPACE}\",\n  \"sfdcLoginUrl\": \"https://login.salesforce.com\",\n  \"sourceApiVersion\": \"{APEX_API_VERSION}\",\n  \"packageAliases\": {{}}\n}}\n"
     )
 }
 
@@ -236,12 +256,35 @@ fn project_readme(build: &BuildInfo) -> String {
          | `force-app/main/default/remoteSiteSettings/` | Remote Site Settings for the Box hosts, so callouts are allowed once deployed |\n\
          | `docs/` | one Markdown page per endpoint, with runnable snippets |\n\
          | `config/project-scratch-def.json` | scratch-org definition |\n\
-         | `manifest/package.xml` | wildcard deploy manifest |\n\n\
+         | `manifest/package.xml` | wildcard deploy manifest |\n\
+         | `sfdx-project.json` | project + unlocked-package definition (namespace `{namespace}`) |\n\n\
          ## Deploy\n\n\
          ```bash\n\
          sf org create scratch -f config/project-scratch-def.json -a box-sdk\n\
          sf project deploy start -x manifest/package.xml -o box-sdk\n\
          ```\n\n\
+         ## Packaging (unlocked 2GP)\n\n\
+         The SDK ships as the unlocked package **`{package}`** under the `{namespace}`\n\
+         namespace. Unlocked (not managed) so a regenerated version can add, remove,\n\
+         or rename members freely. One-time, against your Dev Hub (the namespace must\n\
+         be linked to it):\n\n\
+         ```bash\n\
+         sf package create --name \"{package}\" --package-type Unlocked \\\n\
+         \x20   --path force-app --target-dev-hub myHub\n\
+         ```\n\n\
+         This prints the package id (`0Ho…`). **Save it** — this SFDX project is\n\
+         regenerated on every build, which rewrites `sfdx-project.json` and clears\n\
+         `packageAliases`, so the `0Ho…` id (not the by-name alias) is the durable\n\
+         handle. Then build a version by id — this compiles + runs every test in the\n\
+         namespace and yields the installable ship artifact (a `04t` version id):\n\n\
+         ```bash\n\
+         sf package version create --package 0Ho... --installation-key-bypass \\\n\
+         \x20   --code-coverage --wait 60 --target-dev-hub myHub\n\
+         ```\n\n\
+         `versionNumber` in `sfdx-project.json` auto-increments its `.NEXT` build\n\
+         segment; set the major.minor from the engine's spec-diff (a breaking change\n\
+         is a major bump). Install with\n\
+         `sf package install --package 04t... --target-org yourOrg`.\n\n\
          ## Use\n\n\
          The `Box` class is the single entry point — one field per resource\n\
          manager. Construct it with a `BoxClient` (the hand-written runtime\n\
@@ -254,6 +297,8 @@ fn project_readme(build: &BuildInfo) -> String {
          the namespace. See [`docs/`](docs/README.md) for each endpoint.\n",
         version = build.engine,
         fingerprint = build.spec_fingerprint,
+        namespace = APEX_NAMESPACE,
+        package = APEX_PACKAGE_NAME,
     )
 }
 

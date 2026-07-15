@@ -443,6 +443,18 @@ already proved it (85/85 managers lower, zero IR changes forced).
     `BuildInfo` threaded through `generate`) and the three cross-cutting docs
     guides — and documented the two genuine platform exclusions: erased
     serialization (D-138) and interactive OAuth. 1,087 classes.)
-44. **Next**: M5 — Rust backend + runtime (v3). Apex (M4) is functionally
-    complete and conformance-proven; the one remaining Apex "shipped" item is
-    the packaged deliverable + packaging decision (NF-8).
+44. ~~Apex ship artifact: unlocked 2GP package (NF-8).~~ ✅ (D-142: ship the
+    Apex SDK as an **unlocked** 2GP package under the registered `unbox`
+    namespace ("Unbox Salesforce SDK") — unlocked, not managed, so the
+    spec-regenerated surface can add/remove/rename members without a managed
+    package's global-member lock. The generated `sfdx-project.json` now carries
+    the namespace + package definition (`0.1.0.NEXT`, major.minor from the FR-9
+    diff); the README documents the `sf package create` / `sf package version
+    create` / `sf package install` flow. Configure + record slice. The namespace
+    is now linked to the configured Dev Hub and `SFDX_AUTH_URL` authenticates to
+    it, so the CI package-build job is unblocked (no new secret) and is the next
+    follow-up. 1,087 classes; deterministic.)
+45. **Next (follow-up)**: wire the Apex package-build CI job — a self-bootstrapping
+    `apex-package.yml` (create-package-if-missing → `sf package version create` →
+    output the `04t…` id). This produces the NF-8 ship artifact in CI, closing the
+    last piece of v2's "shipped" bar. Then **M5 — Rust backend + runtime (v3)**.
