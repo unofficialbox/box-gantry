@@ -186,14 +186,16 @@ const BOX_REMOTE_SITES: &[(&str, &str)] = &[
 /// Ship a Remote Site Setting per Box host so the generated SDK can actually
 /// make callouts once deployed (otherwise every request throws "Unauthorized
 /// endpoint"). Deterministic; deployed by both source deploys and the wildcard
-/// `package.xml`.
+/// `package.xml`. The source-format file suffix is `.remoteSite-meta.xml` — the
+/// SDR registry's canonical suffix for the `RemoteSiteSetting` type. (The
+/// MDAPI-style `.remoteSiteSetting` suffix is tolerated by `sf project deploy
+/// start` but rejected by `sf package version create`'s strict source→MDAPI
+/// conversion, D-144.)
 fn remote_site_settings() -> Vec<GeneratedFile> {
     BOX_REMOTE_SITES
         .iter()
         .map(|(name, url)| GeneratedFile {
-            path: format!(
-                "force-app/main/default/remoteSiteSettings/{name}.remoteSiteSetting-meta.xml"
-            ),
+            path: format!("force-app/main/default/remoteSiteSettings/{name}.remoteSite-meta.xml"),
             content: format!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
                  <RemoteSiteSetting xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n    \

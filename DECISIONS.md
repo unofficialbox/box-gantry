@@ -1620,3 +1620,32 @@ effort-weighted figure steps **~84% → ~78%** even though no completed work was
 lost. The three-target IR (FR-2) was designed to absorb new targets through
 manifest + lowering + printer only (FR-6.1); TypeScript is the first test of that
 beyond the original three.
+
+## D-144 — Remote Site Setting source-format suffix (2GP packaging fix)
+
+**Context.** The first `apex-package.yml` dispatch (D-142) got all the way through
+auth and package creation — it registered the unlocked package **"Unbox Salesforce
+SDK"** (`0Ho…`) on the Dev Hub — then `sf package version create` failed:
+
+> `TypeInferenceError: …/remoteSiteSettings/Box_account_box_com.remoteSiteSetting-meta.xml:
+> Could not infer a metadata type — Did you mean ".remoteSite-meta.xml" …?`
+
+The generated Remote Site Settings (D-139) used the file suffix
+`.remoteSiteSetting-meta.xml`. That mixes the MDAPI type suffix with the source
+`-meta.xml` convention; the SDR registry's canonical **source-format** suffix for
+`RemoteSiteSetting` is `remoteSite`, i.e. `<name>.remoteSite-meta.xml`. The 2GP
+build does a strict source→MDAPI conversion and rejects the unrecognized suffix.
+
+Notably `sf project deploy start` (VR-1.3/1.4) is *lenient* and tolerated the wrong
+suffix, so the bug hid behind two green harnesses — the packaging path is the first
+strict validator of the source-format layout, exactly the kind of gap the
+first-dispatch validation exists to catch (cf. VR-1.4 → D-140).
+
+**Decision.** Emit `remoteSiteSettings/<host>.remoteSite-meta.xml` (the canonical
+SDR suffix), recognized by both `sf project deploy start` and `sf package version
+create`. One-line generator change plus the matching `model_shapes` assertion.
+
+**Consequences.** fmt, clippy (`-D warnings`), 132 workspace tests, and determinism
+green. The package already exists on the Dev Hub, so the next dispatch skips
+creation, injects the alias, and proceeds to the actual version build. No
+class-count change.
