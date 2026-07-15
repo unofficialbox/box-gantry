@@ -30,6 +30,34 @@ pub fn camel(text: &str) -> String {
     }
 }
 
+/// `displayName` → `display_name`, `colorID` → `color_id`,
+/// `Box__Security__Key` → `box_security_key`. Splits on case boundaries and
+/// separators (`_`, `-`, space), collapsing runs. Used where a target's
+/// idiom is snake_case (Rust fields, TR-Rust.4) even though the IR name may
+/// arrive camelCased from the spec.
+pub fn snake(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 4);
+    let mut prev_word_char = false;
+    for c in text.chars() {
+        if c == '_' || c == '-' || c == ' ' {
+            if prev_word_char {
+                out.push('_');
+            }
+            prev_word_char = false;
+        } else if c.is_ascii_uppercase() {
+            if prev_word_char {
+                out.push('_');
+            }
+            out.extend(c.to_lowercase());
+            prev_word_char = false;
+        } else {
+            out.push(c);
+            prev_word_char = c.is_ascii_lowercase() || c.is_ascii_digit();
+        }
+    }
+    out.trim_matches('_').to_string()
+}
+
 /// A constant-friendly name from an arbitrary enum value:
 /// `viewer uploader` → `ViewerUploader`, `2025.0` → `V20250`.
 pub fn constant(value: &str) -> String {
@@ -59,5 +87,15 @@ mod tests {
         assert_eq!(constant("viewer uploader"), "ViewerUploader");
         assert_eq!(constant("2025.0"), "V20250");
         assert_eq!(constant("editor"), "Editor");
+    }
+
+    #[test]
+    fn snake_case() {
+        assert_eq!(snake("displayName"), "display_name");
+        assert_eq!(snake("colorID"), "color_id");
+        assert_eq!(snake("Box__Security__Key"), "box_security_key");
+        assert_eq!(snake("can_edit"), "can_edit");
+        assert_eq!(snake("type"), "type");
+        assert_eq!(snake("-leading-trailing-"), "leading_trailing");
     }
 }

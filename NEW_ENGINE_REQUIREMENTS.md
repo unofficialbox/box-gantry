@@ -42,9 +42,9 @@ implemented in **Rust** (assessment §6, D-101) and lives in this repository.
 | VR Verification | 280 (84) | 11% |
 | TR-Go | 280 (84) | 50% |
 | TR-Apex | 580 (176) | 0% |
-| TR-Rust | 360 (108) | 0% |
+| TR-Rust | 360 (108) | ~8% |
 | TR-TypeScript | 300 (90) | 0% |
-| **TOTAL** | **3,430 (1,034)** | **~16%** |
+| **TOTAL** | **3,430 (1,034)** | **~17%** |
 
 > Hours are effort, not calendar: with agent-driven parallelism the calendar
 > path is PLAN.md (~6–8 months to v1). This roll-up is the project-start
@@ -181,7 +181,7 @@ these requirements make that a first-class workflow rather than an afterthought.
 | ID | Level | Requirement | Source | Status | Hrs 👤 (🤖) |
 |---|---|---|---|---|---|
 | VR-1.1 | MUST | Go: generate full real spec (base + versioned) → `go build ./...` + `go vet ./...` clean in CI, from the backend's first week (the G-1 loop, rebuilt here) | G-1 | 🔶 | 30 (9) |
-| VR-1.2 | MUST | Rust: `cargo check` + `clippy` clean in CI | §4 | ❌ | 20 (6) |
+| VR-1.2 | MUST | Rust: `cargo check` + `clippy` clean in CI | §4 | 🔶 | 20 (6) |
 | VR-1.3 | MUST | Apex: syntax check (apex-parser / Code Analyzer) per commit; full `sf project deploy validate` (compile + tests) against a scratch org at least per merge | §4 | ❌ | 60 (18) |
 | VR-2 | MUST | Per-node lowering fixtures (IR fragment → expected source) per backend; the 54-case box-codegen Go suite's case list and expected semantics inform the initial Go set, authored fresh against the new IR | §7 | 🔶 | 40 (12) |
 | VR-3 | MUST | R§1 capability contract as a machine-checkable per-target checklist (operation/manager counts, auth flows, paged surfaces), reported every CI run | §2 | ❌ | 30 (9) |
@@ -215,7 +215,7 @@ these requirements make that a first-class workflow rather than an afterthought.
 | TR-Apex.5 | MUST | Generated test classes clear the 75% coverage deployment gate and ship with the SDK | §4 | ❌ | 100 (32) |
 | TR-Apex.6 | MUST | Hand-written Apex runtime: `Http`-based networking with retry within callout budgets, Crypto-based JWT (RS256) signing with org key storage, pluggable token storage, multipart body assembly | FR-5, §4 | ❌ | 120 (36) |
 
-### TR-Rust 🦀 (v3) — 360 hrs 👤 (108 🤖) — 0% complete
+### TR-Rust 🦀 (v3) — 360 hrs 👤 (108 🤖) — ~8% complete
 
 | ID | Level | Requirement | Source | Status | Hrs 👤 (🤖) |
 |---|---|---|---|---|---|
@@ -258,9 +258,9 @@ makes a full-spec type-check a fast per-commit signal, the TS analogue of `go bu
 |---|---|---|---|---|
 | **v1 — Go SDK** 🐹 | Engine core (FR-1…FR-9, NF), verification harnesses (VR-1.1, VR-2…VR-7), TR-Go | Full real spec (base + 2025.0 + 2026.0) generates; `go build` + `go vet` + gofmt clean; per-node fixture suite green; generated per-manager tests compile and pass; reference docs generated for every manager plus the auth/pagination/errors guides; VR-3 conformance checklist covers the full R§1 contract; round-trip + determinism green; VR-7 live smoke green (one call per auth flow + upload/download/paginate); FR-9 spec-diff runs across the versioned specs; ship artifact: tagged Go module (NF-8) | 2,090 (630) | ~23% |
 | **v2 — Apex SDK** ☁️ | TR-Apex, VR-1.3 harness | Full scratch-org deploy validation green **including generated tests** (75% coverage gate); conformance parity with v1 minus manifest-documented platform exclusions, each recorded in `DECISIONS.md`; VR-7 live smoke green from a scratch org; packaging decision recorded and ship artifact produced (NF-8) | 640 (194) | 0% |
-| **v3 — Rust SDK** 🦀 | TR-Rust, VR-1.2 harness | `cargo check` + `clippy` + rustfmt clean; conformance parity with v1; round-trip suite green incl. unknown-discriminator retention; generated tests pass and docs generated (same bar as v1); VR-7 live smoke green; `cargo publish --dry-run` clean (NF-8) | 380 (114) | 0% |
+| **v3 — Rust SDK** 🦀 | TR-Rust, VR-1.2 harness | `cargo check` + `clippy` + rustfmt clean; conformance parity with v1; round-trip suite green incl. unknown-discriminator retention; generated tests pass and docs generated (same bar as v1); VR-7 live smoke green; `cargo publish --dry-run` clean (NF-8) | 380 (114) | ~8% |
 | **v4 — TypeScript SDK** 🟦 | TR-TypeScript, VR-1.5 harness | `tsc --noEmit` clean under `strict` + Prettier-clean; conformance parity with v1; round-trip suite green incl. unknown-discriminator retention; generated tests pass and docs generated (same bar as v1); VR-7 live smoke green; `npm publish --dry-run` clean + shipped `.d.ts`/dual ESM-CJS, with a package-import smoke loading the built package through **both** its ESM (`import`) and CJS (`require`) entry points (NF-8) | 320 (96) | 0% |
-| **TOTAL** | | | **3,430 (1,034)** | **~16%** |
+| **TOTAL** | | | **3,430 (1,034)** | **~17%** |
 
 > The release rows decompose exactly: v1 = FR-1…FR-9 + NF + TR-Go +
 > VR minus {VR-1.2, VR-1.3, VR-1.5}; v2 = TR-Apex + VR-1.3; v3 = TR-Rust +

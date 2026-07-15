@@ -143,6 +143,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gantry-backend-rust"
+version = "0.1.0"
+dependencies = [
+ "gantry-ir",
+ "gantry-manifest",
+ "gantry-sema",
+ "gantry-spec",
+ "gantry-synth",
+]
+
+[[package]]
 name = "gantry-cli"
 version = "0.1.0"
 dependencies = [

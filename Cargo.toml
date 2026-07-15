@@ -17,6 +17,7 @@ gantry-contract = { path = "crates/gantry-contract" }
 gantry-synth = { path = "crates/gantry-synth" }
 gantry-backend-go = { path = "crates/gantry-backend-go" }
 gantry-backend-apex = { path = "crates/gantry-backend-apex" }
+gantry-backend-rust = { path = "crates/gantry-backend-rust" }
 gantry-verify = { path = "crates/gantry-verify" }
 
 serde = { version = "1", features = ["derive"] }
