@@ -9,10 +9,10 @@ updated **2026-07-15**.
 ## Overall
 
 ```text
-████████░░  ~79%
+████████░░  ~80%
 ```
 
-**~79% complete by effort** — **v1 (Go SDK) is shipped**; v2 (Apex) is
+**~80% complete by effort** — **v1 (Go SDK) is shipped**; v2 (Apex) is
 essentially complete (models, native-JSON, managers/client, serialization
 remap, server auth, generated tests, **VR-1.3 green** on-platform, **VR-1.4**
 live smoke, **VR-3 conformance parity** (D-141), and the **NF-8 ship artifact**
@@ -28,16 +28,16 @@ v2/v3/v4, so the remainder is mostly target-specific backends + runtimes.
 |---|---:|---:|---:|
 | **v1 — Go** 🐹 | 2,090 | 630 | **100%** |
 | v2 — Apex ☁️ | 640 | 194 | ~95% |
-| v3 — Rust 🦀 | 380 | 114 | ~8% |
+| v3 — Rust 🦀 | 380 | 114 | ~15% |
 | v4 — TypeScript 🟦 | 320 | 96 | 0% |
-| **Total** | **3,430** | **1,034** | **~79%** |
+| **Total** | **3,430** | **1,034** | **~80%** |
 
 ## By SDK target
 
 ```text
 v1 — Go 🐹    ██████████  100%   SHIPPED 2026-07-13
 v2 — Apex ☁️  █████████▓   ~95%   near-shipped (M4) — models, SFDX loop, JSON, managers, VR-1.3 green; naming overhaul (immediate-context, short methods, dedupe → 991 classes); SFDX scaffolding + ApexDoc + per-endpoint docs (D-129); hand-written runtime — callable SDK (D-130); governor-limit-aware pagination — documented, no extra classes (D-131); field↔wire serialization remap + union variants (D-132); generated @isTest suite for the 75% gate (D-133); CCG + JWT server-to-server auth (D-134/D-135); chunked-upload orchestrator → 1,085 classes (D-136); HttpCalloutMock coverage for the HTTP client → 1,086 classes (D-137); explicit-null (absent-vs-null) serialization via `fieldsToNull` (D-138); live smoke vs real Box (VR-1.4) + shipped Remote Site Settings (D-139); Object-field deserialization for unions/free-form JSON (D-140); target-neutral VR-3 conformance green in CI + spec-fingerprint traceability + cross-cutting docs guides → 1,087 classes (D-141); NF-8 ship artifact — unlocked 2GP package under the `unbox` namespace, defined + packaging flow documented, and the CI package-build job wired (`apex-package.yml`: create/resolve → `sf package version create` → `04t` id) (D-142); RSS source-format suffix + suppress-nulls test corrected under the strict packaging path (D-144/D-145); generated wire-hook test suite lifting on-platform coverage **56% → 99%** (D-146) → 1,087 → 1,091 classes; **promotable version minted on-platform — `04tNS000000UGfFYAW` v0.1.0.2, all namespace tests green, `HasPassedCodeCoverageCheck: true`**. NF-8 complete end-to-end.
-v3 — Rust 🦀  █░░░░░░░░░    ~8%   started (M5) — model layer: one Rust module per IR module (collision-safe across API versions, D-147); serde structs, `Option<Option<T>>` tri-state via `double_option`, open enums as `String` newtypes + consts, closed enums, aliases; rustfmt-clean by construction + `cargo check`/`clippy -D warnings` gate on the full spec (VR-1.2). Next: typed serde-tagged unions (TR-Rust.1), async managers/client, `reqwest`/`tokio` runtime (TR-Rust.5), tests + docs, CLI/CI wiring
+v3 — Rust 🦀  ██░░░░░░░░    ~15%   started (M5) — model layer: one Rust module per IR module (collision-safe across API versions, D-147); serde structs, `Option<Option<T>>` tri-state via `double_option`, open enums as `String` newtypes + consts, closed enums, aliases; **typed discriminated unions** — hand-written `Serialize`/`Deserialize` dispatching on the tag, open-union `Unknown(Value)` retention, closed-union rejection (TR-Rust.1, D-148); rustfmt-clean by construction + `cargo check`/`clippy -D warnings` gate on the full spec (VR-1.2) + generated-union round-trip test (VR-4). Next: async managers/client + `reqwest`/`tokio` runtime (TR-Rust.3/.5), typed date/time, tests + docs, CLI/CI wiring
 v4 — TypeScript 🟦  ░░░░░░░░░░    0%   after (M6) — Go-native TS 7 compiler as the `tsc --noEmit` gate; discriminated unions + `?:`/`| null` tri-state map straight onto the IR (D-143)
 ```
 
@@ -51,7 +51,7 @@ v4 — TypeScript 🟦  ░░░░░░░░░░    0%   after (M6) — Go
 | **M3** — Go backend, runtime, verification (FR-6–FR-9, TR-Go, VR) | lowering + printer, feature synthesis, Go runtime, full VR suite, CLI | ✅ 2026-07-13 |
 | **M3.5** — Apex spike | throwaway lowering to de-risk the IR for Apex (D-108) | ✅ |
 | **M4** — Apex backend + scratch-org harness (TR-Apex, VR-1.3) | flat-namespace lowering, no-generics, governor limits, Apex runtime, 75% test gate | 🔄 ~95% — models + SFDX loop + native JSON + managers/client (D-120–123); **VR-1.3 green** on-platform (D-124); immediate-context naming + dedupe (D-125–127); runtime + docs (D-129/130); pagination (D-131); serialization remap + unions (D-132); @isTest suite (D-133); CCG/JWT auth (D-134/135); chunked upload (D-136); mock coverage (D-137); explicit-null (D-138); **VR-1.4 live smoke** + Remote Site Settings (D-139); Object-field deserialization (D-140); **VR-3 conformance parity** + traceability + guides → 1,087 classes (D-141); **NF-8** unlocked-2GP ship artifact defined + CI build job (D-142); **promotable version minted on-platform** — wire-hook test suite lifted coverage **56% → 99%** (`HasPassedCodeCoverageCheck: true`), `04tNS000000UGfFYAW` v0.1.0.2, all tests green (D-144/D-145/D-146) → 1,091 classes. **NF-8 complete end-to-end.** |
-| **M5** — Rust backend + runtime (TR-Rust, VR-1.2) | serde-tagged enums, `Result`/`Option`, async reqwest/tokio runtime | 🔄 ~8% — model layer: module-per-IR-module (collision-safe across API versions), serde structs, `Option<Option<T>>` tri-state, open-enum `String` newtypes, closed enums, aliases; rustfmt-clean by construction + `cargo check`/`clippy` gate on the full spec (VR-1.2, D-147). Next: typed serde-tagged unions, async managers/client + `reqwest`/`tokio` runtime, tests + docs |
+| **M5** — Rust backend + runtime (TR-Rust, VR-1.2) | serde-tagged enums, `Result`/`Option`, async reqwest/tokio runtime | 🔄 ~15% — model layer: module-per-IR-module (collision-safe across API versions), serde structs, `Option<Option<T>>` tri-state, open-enum `String` newtypes, closed enums, aliases (D-147); **typed discriminated unions** with tag-dispatching `Serialize`/`Deserialize`, open-union unknown retention + closed rejection (TR-Rust.1, D-148); rustfmt-clean by construction + VR-1.2 compile gate + VR-4 union round-trip. Next: async managers/client + `reqwest`/`tokio` runtime, typed date/time, tests + docs |
 | **M6** — TypeScript backend + runtime (TR-TypeScript, VR-1.5) | discriminated-union lowering, `?:`/`\| null` tri-state, `Promise`-based fetch runtime, TS 7 (Go-native) `tsc` gate | ⬜ 0% (D-143) |
 
 ## v1 (Go SDK) — requirement coverage
@@ -102,13 +102,18 @@ version now clears the 75% gate to promote from beta to `released`.
 module per IR module (names collide across API versions, so they can't share a
 namespace), serde structs with `snake_case` fields + wire renames, the
 `Option<Option<T>>` tri-state, open enums as `String` newtypes and closed enums
-as real `enum`s, aliases, and `buildinfo` provenance. It's rustfmt-clean by
-construction and passes `cargo check` + `clippy -D warnings` on the full spec —
-the VR-1.2 gate, enforced by a backend test that runs the real toolchain. Next
-slices: typed serde-tagged unions with unknown-discriminator retention
-(TR-Rust.1), the async managers/client with builders (TR-Rust.3), the
-hand-written `reqwest`/`tokio` runtime (TR-Rust.5), generated tests + docs, and
-the CLI (`--target rust`) + `ci.yml` wiring. **Then M6 — TypeScript (v4)**
+as real `enum`s, aliases, and `buildinfo` provenance. Slice 2 added **typed
+discriminated unions** (TR-Rust.1, D-148): hand-written `Serialize`/
+`Deserialize` that dispatch on the discriminator (serde's own tagging would
+double-emit the tag the variant already carries), with open unions retaining an
+unrecognized tag in `Unknown(serde_json::Value)` and closed unions rejecting it;
+structural unions stay a `Value` newtype. It's rustfmt-clean by construction and
+passes `cargo check` + `clippy -D warnings` on the full spec (VR-1.2) plus a
+generated-union round-trip test (VR-4), enforced by backend tests that run the
+real toolchain. Next slices: the async managers/client with builders
+(TR-Rust.3), the hand-written `reqwest`/`tokio` runtime (TR-Rust.5), typed
+date/time, generated tests + docs, and the CLI (`--target rust`) + `ci.yml`
+wiring. **Then M6 — TypeScript (v4)**
 (D-143): discriminated-union lowering, `?:`/`| null`
 tri-state, a `Promise`-based `fetch` runtime, and the TypeScript 7 Go-native
 `tsc --noEmit` gate (VR-1.5). The three-target IR (FR-2) was built to absorb new

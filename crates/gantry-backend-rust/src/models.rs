@@ -233,15 +233,163 @@ impl Printer<'_> {
         }
     }
 
-    /// Interim union lowering (see the crate doc): a transparent newtype over
-    /// `serde_json::Value`. It compiles, round-trips every value, and retains
-    /// unknown discriminators for free. The serialization slice replaces this
-    /// with typed serde-tagged enums (TR-Rust.1).
-    fn union_decl(&mut self, name: &str, _u: &ir::UnionDecl) {
+    /// Union lowering (TR-Rust.1). A union that carries a discriminator and
+    /// whose every variant pairs a discriminator value with a decl-backed type
+    /// lowers to a typed `enum` with hand-written `Serialize`/`Deserialize`
+    /// that dispatch on the tag (mirroring the Go backend, D-147 lineage):
+    /// serialize delegates to the active variant — whose own field carries the
+    /// discriminator, so no tag is injected or duplicated — and deserialize
+    /// peeks at the tag and routes to the variant. Open unions retain an
+    /// unrecognized tag in an `Unknown(serde_json::Value)` variant (round-trip
+    /// safe, VR-4); closed unions reject it.
+    ///
+    /// The typed form is only sound when every variant's struct actually
+    /// carries the discriminator field — that field *is* the serialized tag, so
+    /// a variant missing it would drop the discriminator on round-trip. Any
+    /// union that doesn't meet the bar (no discriminator, a non-decl variant,
+    /// or a variant whose decl lacks the discriminator field) is structural and
+    /// lowers to a transparent `serde_json::Value` newtype — callers inspect
+    /// the raw value.
+    fn union_decl(&mut self, name: &str, u: &ir::UnionDecl) {
+        let discriminated: Option<Vec<(&str, ir::DeclId)>> = match &u.discriminator {
+            Some(discriminator) => u
+                .variants
+                .iter()
+                .map(|v| match (&v.discriminator_value, &v.ty) {
+                    (Some(value), ir::Type::Decl(id))
+                        if self.decl_carries_field(*id, discriminator) =>
+                    {
+                        Some((value.as_str(), *id))
+                    }
+                    _ => None,
+                })
+                .collect(),
+            None => None,
+        };
+        match (discriminated, &u.discriminator) {
+            (Some(variants), Some(discriminator)) => {
+                self.discriminated_union(name, discriminator, &variants, u.extensibility);
+            }
+            _ => self.structural_union(name),
+        }
+    }
+
+    /// Whether a declaration is a struct with a field serialized under
+    /// `wire_name` — i.e. it carries its own discriminator, the invariant the
+    /// typed-union serialization relies on.
+    fn decl_carries_field(&self, id: ir::DeclId, wire_name: &str) -> bool {
+        matches!(
+            &self.program.decl(id).kind,
+            ir::DeclKind::Struct(s) if s.fields.iter().any(|f| f.wire_name == wire_name)
+        )
+    }
+
+    /// The structural fallback: a transparent newtype over `serde_json::Value`.
+    fn structural_union(&mut self, name: &str) {
         self.body
             .push_str("#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]\n");
         self.body.push_str("#[serde(transparent)]\n");
         let _ = writeln!(self.body, "pub struct {name}(pub serde_json::Value);\n");
+    }
+
+    fn discriminated_union(
+        &mut self,
+        name: &str,
+        discriminator: &str,
+        variants: &[(&str, ir::DeclId)],
+        extensibility: ir::Extensibility,
+    ) {
+        let open = matches!(extensibility, ir::Extensibility::Open);
+        // Variant identifier from the discriminator value (`ai_agent_ask` →
+        // `AiAgentAsk`), de-duplicated and kept clear of the `Unknown` arm.
+        let mut used: Vec<String> = if open {
+            vec!["Unknown".to_string()]
+        } else {
+            Vec::new()
+        };
+        let rows: Vec<(String, String, &str)> = variants
+            .iter()
+            .map(|(value, id)| {
+                let variant = dedupe(&mut used, variant_ident(value));
+                let ty = type_name(self.program.decl(*id).name.as_str());
+                (variant, ty, *value)
+            })
+            .collect();
+
+        // The enum. serde derives are hand-written below, so only the value
+        // traits are derived here.
+        self.body.push_str("#[derive(Clone, Debug, PartialEq)]\n");
+        let _ = writeln!(self.body, "pub enum {name} {{");
+        for (variant, ty, _) in &rows {
+            let _ = writeln!(self.body, "    {variant}({ty}),");
+        }
+        if open {
+            self.body.push_str(
+                "    /// An unrecognized discriminator, retained verbatim (open union).\n",
+            );
+            self.body.push_str("    Unknown(serde_json::Value),\n");
+        }
+        self.body.push_str("}\n\n");
+
+        // Serialize: delegate to the active variant; its own discriminator
+        // field is the tag, so nothing is injected.
+        let _ = writeln!(self.body, "impl serde::Serialize for {name} {{");
+        self.body.push_str(
+            "    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {\n",
+        );
+        self.body.push_str("        match self {\n");
+        for (variant, _, _) in &rows {
+            let _ = writeln!(
+                self.body,
+                "            Self::{variant}(inner) => inner.serialize(serializer),"
+            );
+        }
+        if open {
+            self.body
+                .push_str("            Self::Unknown(inner) => inner.serialize(serializer),\n");
+        }
+        self.body.push_str("        }\n    }\n}\n\n");
+
+        // Deserialize: peek at the tag, route to the variant, retain unknowns.
+        let _ = writeln!(self.body, "impl<'de> serde::Deserialize<'de> for {name} {{");
+        self.body.push_str(
+            "    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {\n",
+        );
+        self.body
+            .push_str("        let value = serde_json::Value::deserialize(deserializer)?;\n");
+        // rustfmt always breaks this method chain (it exceeds chain_width),
+        // so emit the broken form directly (clean by construction).
+        self.body.push_str("        let tag = value\n");
+        let _ = writeln!(self.body, "            .get({discriminator:?})");
+        self.body
+            .push_str("            .and_then(serde_json::Value::as_str)\n");
+        self.body.push_str("            .map(str::to_owned);\n");
+        self.body.push_str("        match tag.as_deref() {\n");
+        for (variant, _, value) in &rows {
+            let _ = writeln!(
+                self.body,
+                "            Some({value:?}) => Ok(Self::{variant}("
+            );
+            self.body.push_str(
+                "                serde_json::from_value(value).map_err(serde::de::Error::custom)?,\n",
+            );
+            self.body.push_str("            )),\n");
+        }
+        if open {
+            self.body
+                .push_str("            _ => Ok(Self::Unknown(value)),\n");
+        } else {
+            let _ = writeln!(
+                self.body,
+                "            other => Err(serde::de::Error::custom(format!(",
+            );
+            let _ = writeln!(
+                self.body,
+                "                \"unrecognized {discriminator} discriminator: {{other:?}}\""
+            );
+            self.body.push_str("            ))),\n");
+        }
+        self.body.push_str("        }\n    }\n}\n\n");
     }
 
     /// A bare type expression (no field-level optionality wrapping).
@@ -537,7 +685,8 @@ const RAW_UNSAFE: &[&str] = &["self", "crate", "super", "Self"];
 mod tests {
     use super::*;
     use gantry_ir::{
-        Decl, DeclKind, EnumDecl, Extensibility, Field, Identifier, ModulePath, StructDecl, Type,
+        Decl, DeclId, DeclKind, EnumDecl, Extensibility, Field, Identifier, ModulePath, StructDecl,
+        Type, UnionDecl, UnionVariant,
     };
 
     fn ident(s: &str) -> Identifier {
@@ -689,6 +838,124 @@ mod tests {
         let out = render(&p, &[e]);
         assert!(out.contains("pub enum Mode {"), "{out}");
         assert!(out.contains(r#"#[serde(rename = "on")]"#));
+    }
+
+    /// Build two variant structs (`Dog`/`Cat`, both carrying the `kind`
+    /// discriminator field) and a union over them, returning the render.
+    fn render_union(discriminator: Option<&str>, ext: Extensibility) -> String {
+        let mut p = ir::Program::default();
+        for name in ["Dog", "Cat"] {
+            add(
+                &mut p,
+                DeclKind::Struct(StructDecl {
+                    fields: vec![Field {
+                        name: ident("kind"),
+                        wire_name: "kind".into(),
+                        ty: Type::String,
+                    }],
+                }),
+                name,
+            );
+        }
+        let u = add(
+            &mut p,
+            DeclKind::Union(UnionDecl {
+                discriminator: discriminator.map(str::to_string),
+                variants: vec![
+                    UnionVariant {
+                        discriminator_value: Some("dog".into()),
+                        ty: Type::Decl(DeclId(0)),
+                    },
+                    UnionVariant {
+                        discriminator_value: Some("cat".into()),
+                        ty: Type::Decl(DeclId(1)),
+                    },
+                ],
+                extensibility: ext,
+            }),
+            "Pet",
+        );
+        render(&p, &[0, 1, u])
+    }
+
+    #[test]
+    fn open_discriminated_union_dispatches_and_retains_unknown() {
+        let out = render_union(Some("kind"), Extensibility::Open);
+        assert!(out.contains("pub enum Pet {"), "{out}");
+        assert!(out.contains("Dog(Dog),"));
+        assert!(out.contains("Cat(Cat),"));
+        assert!(out.contains("Unknown(serde_json::Value),"));
+        assert!(out.contains("impl serde::Serialize for Pet {"));
+        assert!(out.contains("Self::Dog(inner) => inner.serialize(serializer),"));
+        assert!(out.contains("impl<'de> serde::Deserialize<'de> for Pet {"));
+        assert!(out.contains(r#".get("kind")"#));
+        assert!(out.contains(r#"Some("dog") => Ok(Self::Dog("#));
+        assert!(out.contains("_ => Ok(Self::Unknown(value)),"));
+    }
+
+    #[test]
+    fn closed_discriminated_union_rejects_unknown() {
+        let out = render_union(Some("kind"), Extensibility::Closed);
+        assert!(out.contains("pub enum Pet {"), "{out}");
+        // No catch-all retention variant.
+        assert!(!out.contains("Unknown(serde_json::Value),"), "{out}");
+        assert!(out.contains("other => Err(serde::de::Error::custom(format!("));
+        assert!(out.contains("unrecognized kind discriminator"));
+    }
+
+    #[test]
+    fn non_discriminated_union_is_structural() {
+        let out = render_union(None, Extensibility::Open);
+        assert!(out.contains("#[serde(transparent)]"), "{out}");
+        assert!(out.contains("pub struct Pet(pub serde_json::Value);"));
+        assert!(!out.contains("pub enum Pet"));
+    }
+
+    #[test]
+    fn union_with_a_tagless_variant_falls_back_to_structural() {
+        // `Fish` lacks the `kind` discriminator field, so the typed form would
+        // drop the tag on round-trip; the union must lower structurally.
+        let mut p = ir::Program::default();
+        let dog = add(
+            &mut p,
+            DeclKind::Struct(StructDecl {
+                fields: vec![Field {
+                    name: ident("kind"),
+                    wire_name: "kind".into(),
+                    ty: Type::String,
+                }],
+            }),
+            "Dog",
+        );
+        let fish = add(
+            &mut p,
+            DeclKind::Struct(StructDecl { fields: vec![] }),
+            "Fish",
+        );
+        let u = add(
+            &mut p,
+            DeclKind::Union(UnionDecl {
+                discriminator: Some("kind".into()),
+                variants: vec![
+                    UnionVariant {
+                        discriminator_value: Some("dog".into()),
+                        ty: Type::Decl(DeclId(dog as u32)),
+                    },
+                    UnionVariant {
+                        discriminator_value: Some("fish".into()),
+                        ty: Type::Decl(DeclId(fish as u32)),
+                    },
+                ],
+                extensibility: Extensibility::Open,
+            }),
+            "Pet",
+        );
+        let out = render(&p, &[dog, fish, u]);
+        assert!(
+            out.contains("pub struct Pet(pub serde_json::Value);"),
+            "{out}"
+        );
+        assert!(!out.contains("pub enum Pet"), "{out}");
     }
 
     #[test]

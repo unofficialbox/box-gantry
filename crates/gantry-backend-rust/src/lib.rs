@@ -1,24 +1,27 @@
 //! The Rust backend: lowering + printer (FR-6, TR-Rust).
 //!
-//! Generates the SDK crate tree. This first slice emits the **model layer**:
-//! the `models` module mirrors the IR module tree one Rust module per IR
-//! module (names collide across API versions, so they may not share a
-//! namespace — D-147), lowering structs, string enums, and aliases to
-//! `serde`-derived Rust types. Optionality is `Option<T>`; the absent-vs-null
-//! tri-state (`Optional<Nullable<T>>`, D-110) maps to `Option<Option<T>>`
-//! with a `double_option` deserializer so absence and explicit `null` stay
-//! distinct on the wire.
+//! Generates the SDK crate tree's **model layer**: the `models` module mirrors
+//! the IR module tree one Rust module per IR module (names collide across API
+//! versions, so they may not share a namespace — D-147), lowering structs,
+//! string enums, unions, and aliases to `serde` Rust types.
+//!
+//! - **Optionality** is `Option<T>`; the absent-vs-null tri-state
+//!   (`Optional<Nullable<T>>`, D-110) maps to `Option<Option<T>>` with a
+//!   `double_option` deserializer so absence and explicit `null` stay distinct.
+//! - **Unions** (TR-Rust.1, D-148): a discriminated union with decl-backed
+//!   variants lowers to a typed `enum` with hand-written `Serialize`/
+//!   `Deserialize` that dispatch on the tag; open unions retain an unrecognized
+//!   tag in an `Unknown(serde_json::Value)` variant (round-trip safe), closed
+//!   unions reject it. Structural unions stay a `serde_json::Value` newtype.
 //!
 //! Output is deterministic (FR-6.2, sorted by path) and rustfmt-clean by
 //! construction (TR-Rust.4, G-17), verified by the real toolchain
-//! (`cargo fmt --check` + `cargo check` + `clippy -D warnings` — VR-1.2).
+//! (`cargo fmt --check` + `cargo check` + `clippy -D warnings` — VR-1.2) plus a
+//! generated-union round-trip test (VR-4).
 //!
-//! Not yet emitted (later M5 slices): typed serde-tagged unions with
-//! unknown-discriminator retention (TR-Rust.1), typed date/time, managers +
-//! async client (TR-Rust.3), the `reqwest`/`tokio` runtime (TR-Rust.5), and
-//! generated tests + docs. Unions lower to a transparent `serde_json::Value`
-//! newtype in the interim — it compiles and round-trips every value, and the
-//! typed representation replaces it in the serialization slice.
+//! Not yet emitted (later M5 slices): typed date/time, managers + async client
+//! (TR-Rust.3), the `reqwest`/`tokio` runtime (TR-Rust.5), and generated tests
+//! + docs.
 
 mod models;
 
