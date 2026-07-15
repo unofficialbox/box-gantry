@@ -25,14 +25,16 @@ env:
 jobs:
   package:
     runs-on: ubuntu-latest
-    env:
-      SFDX_AUTH_URL: ${{ secrets.SFDX_AUTH_URL }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
       - name: Guard — a Dev Hub is required
         id: guard
+        # Scope the credential to only the steps that need it — checkout, the CLI
+        # install, and `cargo run` never see it.
+        env:
+          SFDX_AUTH_URL: ${{ secrets.SFDX_AUTH_URL }}
         run: |
           if [ -z "$SFDX_AUTH_URL" ]; then
             echo "::notice::No SFDX_AUTH_URL secret; skipping the package build."
@@ -57,6 +59,8 @@ jobs:
       - if: steps.guard.outputs.skip != 'true'
         name: Build the unlocked package version
         working-directory: apex-sdk
+        env:
+          SFDX_AUTH_URL: ${{ secrets.SFDX_AUTH_URL }}
         run: |
           set -euo pipefail
           printf '%s' "$SFDX_AUTH_URL" | sf org login sfdx-url --sfdx-url-stdin --set-default-dev-hub --alias devhub

@@ -1572,9 +1572,10 @@ installable `04t…` `SubscriberPackageVersionId` in the job summary. Like VR-1.
 and VR-1.4, the workflow is validated by its first dispatch (no Salesforce
 toolchain runs in unit CI).
 
-**Consequences.** The Apex ship artifact is now defined and producible on demand;
-`sf package version create` builds it from the generated project. No class-count
-change (still **1,087**); output stays deterministic. fmt, clippy (`-D warnings`),
-and the full workspace are green. This closes NF-8 for Apex bar the CI wiring of
-the build step; with VR-3 (D-141) already green, v2's remaining "shipped" work is
-the CI package-build job (secrets/Dev-Hub-linkage dependent).
+**Consequences.** The Apex ship artifact is defined, producible on demand, and
+built by CI (`apex-package.yml`); `sf package version create` compiles it from the
+generated project. No class-count change (still **1,087**); output stays
+deterministic. fmt, clippy (`-D warnings`), and the full workspace are green. With
+VR-3 (D-141) green and the build job wired, NF-8 for Apex is met — the only
+remaining step is the workflow's first manual dispatch (which mints the initial
+`04t…` version on-platform), the same first-dispatch validation VR-1.3/1.4 use.
