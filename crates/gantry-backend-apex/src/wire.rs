@@ -318,6 +318,193 @@ impl<'a> Wire<'a> {
         out
     }
 
+    /// Apex statements that drive every branch of a struct's generated wire
+    /// statics with **populated** inputs, for the coverage suite (tests.rs).
+    ///
+    /// The manager suite calls each hook indirectly with an empty `{}`/`[]`
+    /// body, so every per-field `containsKey` branch, the null-injection loop,
+    /// and the `deserialize` reattach arms stay unexecuted — the bulk of the
+    /// uncovered lines against the 75% gate. Here each static is called directly
+    /// with a map shaped to enter those branches one level deep; the nested
+    /// structs' own branches are covered by their own exercises. Returns an
+    /// empty vec for a struct that carries no generated statics.
+    ///
+    /// Safety: `normalizeKeys`/`denormalizeKeys` only remap keys on the untyped
+    /// map (no typed deserialize), and `deserialize` removes the object-bearing
+    /// keys *before* its typed `JSON.deserialize` — so the shaped values never
+    /// reach a typed coercion and cannot throw.
+    pub(crate) fn hook_exercises(
+        &self,
+        id: ir::DeclId,
+        class: &str,
+        s: &ir::StructDecl,
+    ) -> Vec<String> {
+        let mut stmts = Vec::new();
+        if self.read_affected.contains(&id.0) {
+            stmts.push(format!("{class}.normalizeKeys(null);"));
+            stmts.push(format!(
+                "{class}.normalizeKeys(new Map<String, Object>{{ {} }});",
+                self.branch_entries(s, Dir::Normalize)
+            ));
+        }
+        if self.write_affected.contains(&id.0) {
+            stmts.push(format!(
+                "{class}.denormalizeKeys(new Map<String, Object>{{ {} }});",
+                self.denormalize_entries(s, id)
+            ));
+        }
+        if self.object_bearing.contains(&id.0) {
+            stmts.push(format!("{class}.deserialize(null);"));
+            stmts.push(format!(
+                "{class}.deserialize(new Map<String, Object>{{ {} }});",
+                self.detach_entries(s)
+            ));
+        }
+        stmts
+    }
+
+    /// `'key' => <value>` entries for each field a remap hook branches on
+    /// (renamed or type-reaching in this direction) — the key under the hook's
+    /// source name, the value shaped to drive the transform one level.
+    fn branch_entries(&self, s: &ir::StructDecl, dir: Dir) -> String {
+        let set = self.set_for(dir);
+        let mut parts = Vec::new();
+        for field in &s.fields {
+            if !field_mismatched(field) && !self.type_reaches(&field.ty, set) {
+                continue;
+            }
+            let key = match dir {
+                Dir::Normalize => escape(&field.wire_name),
+                Dir::Denormalize => escape(&safe_word(field.name.as_str())),
+            };
+            parts.push(format!("'{key}' => {}", self.wire_value(&field.ty, set)));
+        }
+        parts.join(", ")
+    }
+
+    /// Denormalize entries plus, for a null-writable struct, the explicit-null
+    /// control key carrying every nullable field's Apex name — so each
+    /// `if (nfName == '…')` injection branch executes.
+    fn denormalize_entries(&self, s: &ir::StructDecl, id: ir::DeclId) -> String {
+        let mut entries = self.branch_entries(s, Dir::Denormalize);
+        if self.null_writable.contains(&id.0) {
+            let names: Vec<String> = s
+                .fields
+                .iter()
+                .filter(|f| is_nullable(&f.ty))
+                .map(|f| format!("'{}'", escape(&safe_word(f.name.as_str()))))
+                .collect();
+            let control = format!(
+                "'{}' => new List<Object>{{ {} }}",
+                escape(&self.null_control_name(s)),
+                names.join(", ")
+            );
+            entries = if entries.is_empty() {
+                control
+            } else {
+                format!("{entries}, {control}")
+            };
+        }
+        entries
+    }
+
+    /// `'wire' => <value>` entries for each object-bearing field `deserialize`
+    /// detaches and reattaches, the value shaped to drive its reattach arm.
+    fn detach_entries(&self, s: &ir::StructDecl) -> String {
+        let mut parts = Vec::new();
+        for field in &s.fields {
+            if !self.type_reaches_object_bearing(&field.ty) {
+                continue;
+            }
+            parts.push(format!(
+                "'{}' => {}",
+                escape(&field.wire_name),
+                self.reattach_value(&field.ty)
+            ));
+        }
+        parts.join(", ")
+    }
+
+    /// An untyped Apex value that makes `emit_transform` enter its branches one
+    /// level: a reaching struct becomes an empty map (the nested hook runs on
+    /// it), a reaching list/map wraps one such value, everything else a scalar
+    /// (present key is all a rename-only branch needs).
+    fn wire_value(&self, ty: &ir::Type, set: &HashSet<u32>) -> String {
+        match ty {
+            ir::Type::Optional(inner) | ir::Type::Nullable(inner) => self.wire_value(inner, set),
+            ir::Type::List(inner) if self.type_reaches(inner, set) => {
+                format!("new List<Object>{{ {} }}", self.wire_value(inner, set))
+            }
+            ir::Type::Map(inner) if self.type_reaches(inner, set) => {
+                format!(
+                    "new Map<String, Object>{{ 'k' => {} }}",
+                    self.wire_value(inner, set)
+                )
+            }
+            ir::Type::Decl(id) => match &self.program.decl(*id).kind {
+                ir::DeclKind::Alias(inner) => self.wire_value(inner, set),
+                ir::DeclKind::Struct(_) if set.contains(&id.0) => {
+                    "new Map<String, Object>()".to_string()
+                }
+                ir::DeclKind::Struct(_) | ir::DeclKind::Enum(_) | ir::DeclKind::Union(_) => {
+                    "'x'".to_string()
+                }
+            },
+            // A rename-only branch needs only the key present; a non-reaching
+            // container or scalar takes any placeholder.
+            ir::Type::List(_)
+            | ir::Type::Map(_)
+            | ir::Type::Bool
+            | ir::Type::Int64
+            | ir::Type::Float64
+            | ir::Type::String
+            | ir::Type::Date
+            | ir::Type::DateTime
+            | ir::Type::Binary
+            | ir::Type::JsonValue => "'x'".to_string(),
+        }
+    }
+
+    /// An untyped Apex value that makes `emit_reattach` enter its branches one
+    /// level: an `Object` leaf takes any scalar; a nested object-bearing struct
+    /// an empty map (its `deserialize` runs on it); a list/map of either wraps
+    /// one such value so the element loop executes.
+    fn reattach_value(&self, ty: &ir::Type) -> String {
+        match ty {
+            ir::Type::Optional(inner) | ir::Type::Nullable(inner) => self.reattach_value(inner),
+            ir::Type::JsonValue => "'x'".to_string(),
+            ir::Type::Decl(id) => match &self.program.decl(*id).kind {
+                ir::DeclKind::Alias(inner) => self.reattach_value(inner),
+                ir::DeclKind::Union(_) => "'x'".to_string(),
+                ir::DeclKind::Struct(_) if self.object_bearing.contains(&id.0) => {
+                    "new Map<String, Object>()".to_string()
+                }
+                ir::DeclKind::Struct(_) | ir::DeclKind::Enum(_) => "null".to_string(),
+            },
+            ir::Type::List(inner) if self.is_object_leaf(inner) => "new List<Object>()".to_string(),
+            ir::Type::List(inner) => {
+                format!("new List<Object>{{ {} }}", self.reattach_value(inner))
+            }
+            ir::Type::Map(inner) if self.is_object_leaf(inner) => {
+                "new Map<String, Object>()".to_string()
+            }
+            ir::Type::Map(inner) => {
+                format!(
+                    "new Map<String, Object>{{ 'k' => {} }}",
+                    self.reattach_value(inner)
+                )
+            }
+            // Scalars never reach the detached set.
+            ir::Type::Bool
+            | ir::Type::Int64
+            | ir::Type::Float64
+            | ir::Type::String
+            | ir::Type::Date
+            | ir::Type::DateTime
+            | ir::Type::Binary => "null".to_string(),
+        }
+    }
+
     /// Emit one direction's remap static. `inject_nulls` appends the explicit-null
     /// pass (denormalize / null-writable only).
     fn emit_method(

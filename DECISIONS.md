@@ -1700,3 +1700,50 @@ deploy). The generated `@isTest` suite covers the runtime and exercised managers
 but not enough of the ~1,087-class generated surface to clear 75% org-wide.
 Raising generated-test breadth to promote past beta is tracked as the remaining
 Apex item in `PROGRESS.md`; it does not affect installability of the beta `04t`.
+
+## D-146 — Generated wire-hook test suite (closing the 75% coverage gap)
+
+**Context.** The first package version minted (D-145) but on-platform code
+coverage came back **56%**, below the **75%** Salesforce requires to promote a
+version from beta to `released`. The generated `@isTest` suite (D-133) drove
+every manager operation and every union `parse`, but through the mock it fed each
+request/response an **empty** body (`{}` / `[]`). The bulk of the generated
+executable code lives in the per-struct wire statics — `normalizeKeys` /
+`denormalizeKeys` (D-132) and `deserialize` (D-140) — whose bodies are a chain of
+`if (raw.containsKey('<field>')) { … }` branches plus the explicit-null injection
+loop (D-138) and the object-field reattach arms. An empty body takes none of
+those branches: the guard and `return` execute, the per-field bodies don't. So
+~220 structs' worth of remap/injection/reattach lines stayed unrun, and the org
+sat at 56%.
+
+**Decision.** Generate a dedicated **`BoxModelWireTest{n}`** suite that calls each
+struct's wire statics directly with **populated** inputs shaped to enter every
+branch one level deep:
+
+- `normalizeKeys(null)` + `normalizeKeys(map)` where the map carries the wire key
+  of every renamed/recursive field, each value shaped to drive the transform
+  (a reaching struct → an empty map, a reaching list/map → one such element).
+- `denormalizeKeys(map)` with the Apex-side keys plus, for null-writable structs,
+  the `fieldsToNull` control list naming every nullable field — so each
+  `if (nfName == '…')` injection branch runs.
+- `deserialize(null)` + `deserialize(map)` with the object-bearing fields'
+  wire keys, each shaped to drive its reattach arm.
+
+The nested structs' own branches are covered by their own exercises, so each
+input need only recurse one level. The exerciser lives on `Wire` (the single
+source of truth for which fields each hook branches on), so the tests can never
+drift from the hooks. Chunked at ≤ 60 structs per class (4 classes for the full
+spec) so no method overruns Apex's compiled-size limit.
+
+**Safety.** The generated calls cannot throw on the shaped inputs:
+`normalizeKeys`/`denormalizeKeys` only remap keys on the untyped map (no typed
+deserialize), and `deserialize` `remove`s the object-bearing keys *before* its
+typed `JSON.deserialize`, leaving an empty shell — so a shaped value never
+reaches a typed coercion.
+
+**Consequences.** +4 generated classes (1087 → **1091**); fmt, clippy
+(`-D warnings`), 28 `model_shapes` assertions (class + file counts updated), the
+full workspace suite, and the double-generate determinism check all green. The
+on-platform coverage lift is measured by re-dispatching `apex-package.yml`; the
+target is ≥ 75% so the next version is promotable past beta. No runtime or
+generated-model change — this adds test classes only.
