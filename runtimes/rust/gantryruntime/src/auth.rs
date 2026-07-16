@@ -111,6 +111,8 @@ impl Auth {
                     token: String::new(),
                     expiry: Instant::now(),
                     refresh_token,
+                    // The caller-supplied token is already durable.
+                    refresh_token_persisted: true,
                 }),
             }),
         }
@@ -142,11 +144,18 @@ impl Auth {
 /// A durable store for the rotating OAuth refresh token. Box invalidates the
 /// previous refresh token on each exchange, so an app that restarts must reload
 /// the newest one — implement this to persist each rotation (a file, a DB row,
-/// a secret manager). `save` runs before the access token is returned, and its
-/// failure propagates so a rotation is never silently lost.
+/// a secret manager).
+///
+/// `save` is `async` so a store can do real I/O without blocking the executor
+/// (do the I/O with async APIs, or offload sync work via
+/// `tokio::task::spawn_blocking`). It runs before a freshly rotated token is
+/// returned; its failure propagates on the rotating call, and the runtime keeps
+/// retrying persistence on later calls until it succeeds, so a rotation is never
+/// silently treated as durable when it is not.
+#[async_trait::async_trait]
 pub trait RefreshTokenStore: Send + Sync {
     /// Persist the newly rotated refresh token durably.
-    fn save(&self, refresh_token: &str) -> Result<(), Error>;
+    async fn save(&self, refresh_token: &str) -> Result<(), Error>;
 }
 
 /// The cached token if it is present and not within the refresh margin of
@@ -234,11 +243,16 @@ struct OAuthState {
     token: String,
     expiry: Instant,
     refresh_token: String,
+    /// Whether `refresh_token` is known durable in the store. The initial token
+    /// came from the caller (already stored); only later rotations start `false`
+    /// until their `save` succeeds.
+    refresh_token_persisted: bool,
 }
 
 impl OAuthSource {
     async fn access_token(&self) -> Result<String, Error> {
         let mut state = self.state.lock().await;
+        self.retry_persist(&mut state).await;
         if let Some(token) = fresh_token(&state.token, state.expiry) {
             return Ok(token);
         }
@@ -247,6 +261,7 @@ impl OAuthSource {
 
     async fn force_refresh(&self, stale: &str) -> Result<String, Error> {
         let mut state = self.state.lock().await;
+        self.retry_persist(&mut state).await;
         // Single-flight: a concurrent 401 may already have replaced the token.
         if let Some(token) = fresh_token(&state.token, state.expiry) {
             if token != stale {
@@ -254,6 +269,24 @@ impl OAuthSource {
             }
         }
         self.refresh_locked(&mut state).await
+    }
+
+    /// Best-effort retry of a rotation whose earlier `save` failed, so a
+    /// transient store outage doesn't leave the durable copy behind the live
+    /// token forever. The first failure was already surfaced by `refresh_locked`;
+    /// these retries stay silent so a still-down store can't wedge every call.
+    async fn retry_persist(&self, state: &mut OAuthState) {
+        if state.refresh_token_persisted {
+            return;
+        }
+        match &self.store {
+            Some(store) => {
+                if store.save(&state.refresh_token).await.is_ok() {
+                    state.refresh_token_persisted = true;
+                }
+            }
+            None => state.refresh_token_persisted = true,
+        }
     }
 
     async fn refresh_locked(&self, state: &mut OAuthState) -> Result<String, Error> {
@@ -268,10 +301,14 @@ impl OAuthSource {
         state.expiry = Instant::now() + response.ttl();
         if let Some(refresh) = &response.refresh_token {
             state.refresh_token = refresh.clone();
+            // The rotation isn't durable until the store confirms it. Box has
+            // already invalidated the previous token, so on a save failure we
+            // keep the new token in memory (marked unpersisted, retried on later
+            // calls) but surface the error now.
+            state.refresh_token_persisted = self.store.is_none();
             if let Some(store) = &self.store {
-                // Persist the rotation before returning; propagate a failure so
-                // a restart never reloads a refresh token Box already killed.
-                store.save(refresh)?;
+                store.save(refresh).await?;
+                state.refresh_token_persisted = true;
             }
         }
         Ok(response.access_token)
@@ -343,6 +380,7 @@ impl OAuthConfig {
                 token: response.access_token,
                 expiry: Instant::now() + ttl,
                 refresh_token,
+                refresh_token_persisted: true,
             }),
         };
         Ok(Auth {
@@ -528,29 +566,98 @@ mod tests {
         assert_eq!(source.force_refresh("old").await.unwrap(), "new");
     }
 
-    #[test]
-    fn refresh_token_store_records_rotations() {
-        use std::sync::Mutex as StdMutex;
-        struct Recorder(StdMutex<Vec<String>>);
-        impl RefreshTokenStore for Recorder {
-            fn save(&self, refresh_token: &str) -> Result<(), Error> {
-                self.0.lock().unwrap().push(refresh_token.to_string());
-                Ok(())
+    /// A recording store that fails its first `save` `fail_first` times, then
+    /// succeeds — to exercise both the propagate-on-failure and
+    /// retry-until-persisted paths.
+    struct Recorder {
+        saved: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        remaining_failures: std::sync::Mutex<u32>,
+    }
+
+    #[async_trait::async_trait]
+    impl RefreshTokenStore for Recorder {
+        async fn save(&self, refresh_token: &str) -> Result<(), Error> {
+            {
+                let mut left = self.remaining_failures.lock().unwrap();
+                if *left > 0 {
+                    *left -= 1;
+                    return Err(Error::new("store down"));
+                }
             }
+            self.saved.lock().unwrap().push(refresh_token.to_string());
+            Ok(())
         }
-        let recorder = Recorder(StdMutex::new(Vec::new()));
-        recorder.save("r1").unwrap();
-        recorder.save("r2").unwrap();
-        assert_eq!(recorder.0.lock().unwrap().as_slice(), ["r1", "r2"]);
-        // A store composes into an OAuth Auth via oauth_with_store.
-        let _auth = Auth::oauth_with_store(
+    }
+
+    /// A one-shot local HTTP endpoint that answers the next request with a fixed
+    /// token JSON, returning its URL. Lets the OAuth refresh path run for real.
+    async fn serve_one_token(body: &'static str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf).await; // drain the request (small form)
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = sock.write_all(response.as_bytes()).await;
+            let _ = sock.flush().await;
+        });
+        format!("http://{addr}/token")
+    }
+
+    fn oauth_with(token_url: String, store: Arc<Recorder>) -> Auth {
+        Auth::oauth_with_store(
             OAuthConfig {
                 client_id: "c".to_string(),
                 client_secret: "s".to_string(),
-                token_url: None,
+                token_url: Some(token_url),
             },
-            "refresh",
-            Arc::new(Recorder(StdMutex::new(Vec::new()))),
-        );
+            "initial-refresh",
+            store,
+        )
+    }
+
+    #[tokio::test]
+    async fn oauth_refresh_persists_rotation_through_store() {
+        // A real refresh (initial access token is empty → refresh_locked runs)
+        // must drive the rotated refresh token into the store.
+        let saved = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let store = Arc::new(Recorder {
+            saved: saved.clone(),
+            remaining_failures: std::sync::Mutex::new(0),
+        });
+        let url =
+            serve_one_token(r#"{"access_token":"at","refresh_token":"rotated","expires_in":3600}"#)
+                .await;
+        let auth = oauth_with(url, store);
+        assert_eq!(auth.access_token().await.unwrap(), "at");
+        assert_eq!(saved.lock().unwrap().as_slice(), ["rotated"]);
+    }
+
+    #[tokio::test]
+    async fn oauth_refresh_surfaces_then_retries_a_failed_persist() {
+        // First save fails: the rotating call returns Err, but the new token is
+        // kept in memory marked unpersisted...
+        let saved = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let store = Arc::new(Recorder {
+            saved: saved.clone(),
+            remaining_failures: std::sync::Mutex::new(1),
+        });
+        let url =
+            serve_one_token(r#"{"access_token":"at","refresh_token":"rotated","expires_in":3600}"#)
+                .await;
+        let auth = oauth_with(url, store);
+        assert!(auth.access_token().await.is_err(), "first save failed");
+        assert!(saved.lock().unwrap().is_empty());
+        // ...and the next call retries persistence (no network needed — the token
+        // is still fresh) and succeeds.
+        assert_eq!(auth.access_token().await.unwrap(), "at");
+        assert_eq!(saved.lock().unwrap().as_slice(), ["rotated"]);
     }
 }

@@ -2011,9 +2011,14 @@ backoff** — the retry delay is the jittered exponential backoff, with a server
 `Auth::force_refresh` re-acquires past the freshness cache (a plain re-read
 returned the same rejected token), collapsing a burst of concurrent 401s to one
 refresh. Plus a **`RefreshTokenStore`** hook (`Auth::oauth_with_store`) that
-persists each rotated OAuth refresh token before returning, propagating a
-persistence failure so a restart never reloads a token Box has already killed.
-Also fixed a defect unique to the Rust port (Go delegates to `mime/multipart`):
-the hand-rolled multipart body now uses a boundary verified absent from both
-parts and escapes the filename (strip CR/LF, backslash-escape `\`/`"`), closing
-a framing-collision / header-injection gap.
+persists each rotated OAuth refresh token so a restart never reloads a token Box
+has already killed: `save` is `async` (a file/DB/secret-manager store does real
+I/O without blocking the executor), the rotating call surfaces a `save` failure,
+and — since Box has already rotated the token server-side and can't be undone —
+the runtime marks the rotation unpersisted and *retries persistence on every
+later call until it sticks* rather than treating the in-memory cache as durable
+(a failure otherwise masks itself after the first call). Also fixed a defect
+unique to the Rust port (Go delegates to `mime/multipart`): the hand-rolled
+multipart body now uses a boundary verified absent from both parts and escapes
+the filename (strip CR/LF, backslash-escape `\`/`"`), closing a
+framing-collision / header-injection gap.

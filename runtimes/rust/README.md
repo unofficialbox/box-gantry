@@ -20,8 +20,10 @@ here, never in the engine workspace.
   `Auth::client_credentials` (CCG), and `Auth::oauth` (authorization-code,
   resumed from a stored refresh token or via `OAuthConfig::exchange_code`).
   Exchanged tokens are cached until shortly before expiry. `Auth::oauth_with_store`
-  persists each rotated refresh token through a `RefreshTokenStore` so a restart
-  reloads the live token rather than one Box has already invalidated.
+  persists each rotated refresh token through a `RefreshTokenStore` (an `async`
+  `save`) so a restart reloads the live token rather than one Box has already
+  invalidated; a failed `save` is surfaced and then retried on later calls until
+  it succeeds, so a rotation is never silently treated as durable.
 
 > These four behaviors (idempotency-gated retries, exponential 429 backoff,
 > single-flight 401 refresh, durable refresh-token store) go beyond the shipped
