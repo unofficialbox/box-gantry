@@ -14,6 +14,7 @@ path = "src/main.rs"
 gantry-backend-go.workspace = true
 gantry-backend-apex.workspace = true
 gantry-backend-rust.workspace = true
+gantry-backend-typescript.workspace = true
 gantry-ir.workspace = true
 gantry-manifest.workspace = true
 gantry-sema.workspace = true
