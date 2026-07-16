@@ -543,7 +543,7 @@ pub fn rust_shape() -> TargetShape {
         count_operations: rust_operations,
         count_pagination: rust_pagination,
         count_serialization: rust_serialization,
-        count_round_trip_tests: rust_not_yet,
+        count_round_trip_tests: rust_round_trip_tests,
         count_auth: rust_auth,
         count_traceability: rust_traceability,
         count_guides: rust_guides,
@@ -551,10 +551,22 @@ pub fn rust_shape() -> TargetShape {
     }
 }
 
-/// A capability the Rust backend does not emit yet (generated round-trip /
-/// behavioral tests — a later M5 slice): reads zero until it lands.
-fn rust_not_yet(_files: &[GeneratedView]) -> usize {
-    0
+fn rust_round_trip_tests(files: &[GeneratedView]) -> usize {
+    // The serialization behavioral test (tri-state + typed date/time) is the
+    // required baseline — it is itself a round-trip test, so it satisfies the
+    // bar for a union-free SDK (whose `roundtrip_tests.rs` is legitimately
+    // empty). Each generated per-union round-trip test adds to the count
+    // (FR-7.8, VR-4). Per-union coverage on a union-bearing spec is separately
+    // asserted by the backend's deterministic `compile_output` test.
+    if !files.iter().any(|f| f.path == "src/serialization_tests.rs") {
+        return 0;
+    }
+    let unions: usize = files
+        .iter()
+        .filter(|f| f.path == "src/roundtrip_tests.rs")
+        .map(|f| f.content.matches("_round_trip(").count())
+        .sum();
+    1 + unions
 }
 
 fn rust_is_manager_file(path: &str) -> bool {
@@ -826,13 +838,13 @@ mod tests {
     }
 
     #[test]
-    fn rust_shape_measures_what_the_backend_emits_and_flags_the_rest() {
+    fn rust_shape_measures_full_capability_parity() {
         let program = program();
         let analysis = gantry_sema::analyze(&program).unwrap();
-        // A minimal Rust SDK: one manager with two operation methods and a
-        // paginator (struct + `next` + `_paginate` constructor), the tri-state
-        // helper, the buildinfo provenance, and the `docs/` tree (per-manager
-        // page + the guides). No generated tests yet.
+        // A minimal but complete Rust SDK: one manager with two operation
+        // methods and a paginator (struct + `next` + `_paginate` constructor),
+        // the tri-state helper, the buildinfo provenance, the `docs/` tree
+        // (per-manager page + the guides), and the generated round-trip tests.
         let files =
             vec![
             (
@@ -878,6 +890,14 @@ mod tests {
             ),
             ("docs/pagination.md".to_string(), "# Pagination\n".to_string()),
             ("docs/errors.md".to_string(), "# Errors\n".to_string()),
+            (
+                "src/serialization_tests.rs".to_string(),
+                "#[test]\nfn date_round_trip() {}\n".to_string(),
+            ),
+            (
+                "src/roundtrip_tests.rs".to_string(),
+                "#[test]\nfn schemas_item_round_trip() {}\n".to_string(),
+            ),
         ];
         let report = conformance(&rust_shape(), &analysis, &views(&files));
         assert!(report.report().contains("conformance (rust)"));
@@ -901,11 +921,50 @@ mod tests {
         assert_eq!(check("docs-guides").status, CheckStatus::Pass);
         assert_eq!(check("auth-flows").actual, 4);
         assert_eq!(check("auth-flows").status, CheckStatus::Pass);
-        // Generated round-trip tests are the one remaining pending capability —
-        // it reads zero and fails, so the whole report is not yet passing.
-        assert_eq!(check("round-trip-tests").actual, 0);
-        assert_eq!(check("round-trip-tests").status, CheckStatus::Fail);
-        assert!(!report.passed());
+        // Generated round-trip tests: the serialization behavioral baseline
+        // plus one per-union round-trip test — the capability passes.
+        assert_eq!(check("round-trip-tests").actual, 2);
+        assert_eq!(check("round-trip-tests").status, CheckStatus::Pass);
+        // Every capability is emitted now — the Rust report passes end to end.
+        assert!(report.passed());
+
+        // A union-free SDK (empty `roundtrip_tests.rs`) still passes on the
+        // serialization baseline alone — no false failure.
+        let union_free: Vec<(String, String)> = files
+            .iter()
+            .map(|(path, content)| {
+                if path == "src/roundtrip_tests.rs" {
+                    (path.clone(), "// no discriminated unions\n".to_string())
+                } else {
+                    (path.clone(), content.clone())
+                }
+            })
+            .collect();
+        let uf = conformance(&rust_shape(), &analysis, &views(&union_free));
+        let uf_rt = uf
+            .checks
+            .iter()
+            .find(|c| c.capability == "round-trip-tests")
+            .unwrap();
+        assert_eq!(uf_rt.actual, 1);
+        assert_eq!(uf_rt.status, CheckStatus::Pass);
+
+        // Regression: dropping the serialization behavioral test (the required
+        // baseline) fails the gate.
+        let without_serialization: Vec<(String, String)> = files
+            .iter()
+            .filter(|(path, _)| path != "src/serialization_tests.rs")
+            .cloned()
+            .collect();
+        let degraded = conformance(&rust_shape(), &analysis, &views(&without_serialization));
+        let rt = degraded
+            .checks
+            .iter()
+            .find(|c| c.capability == "round-trip-tests")
+            .unwrap();
+        assert_eq!(rt.actual, 0);
+        assert_eq!(rt.status, CheckStatus::Fail);
+        assert!(!degraded.passed());
     }
 
     #[test]

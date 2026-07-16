@@ -66,6 +66,13 @@ jobs:
           fixtures/specs/openapi-v2025.0.json
           fixtures/specs/openapi-v2026.0.json
           --target apex
+      - name: Conformance checklist — Rust (VR-3; full capability parity)
+        run: >
+          cargo run -p gantry-cli -- conform
+          fixtures/specs/openapi.json
+          fixtures/specs/openapi-v2025.0.json
+          fixtures/specs/openapi-v2026.0.json
+          --target rust
       - name: Build and test the hand-written Go runtime (TR-Go.7)
         working-directory: runtimes/go
         run: |

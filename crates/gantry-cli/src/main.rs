@@ -358,7 +358,8 @@ fn generate_apex(specs: &[PathBuf]) -> Result<Vec<(String, String)>, ExitCode> {
 
 /// Load → lower → analyze → Rust-generate. The Rust backend consumes the
 /// `rust()` manifest; no toolchain runs here — `verify --target rust` runs the
-/// VR-1.2 toolchain gate (rustfmt + `cargo check` + clippy) on this output.
+/// VR-1.2 toolchain gate (rustfmt + `cargo check` + clippy + `cargo test`) on
+/// this output.
 fn generate_rust(specs: &[PathBuf]) -> Result<Vec<(String, String)>, ExitCode> {
     let set = gantry_spec::SpecSet::load(specs).map_err(|err| {
         eprintln!("error: {err}");
@@ -428,7 +429,8 @@ fn verify(specs: &[PathBuf], target: &str) -> ExitCode {
     }
 
     // The compile loop: the target's real toolchain is the oracle (Go → VR-1.1;
-    // Rust → VR-1.2 = rustfmt-clean + cargo check + clippy-clean).
+    // Rust → VR-1.2 = rustfmt-clean + cargo check + clippy-clean + the generated
+    // round-trip tests passing under `cargo test`).
     let steps: &[(&str, &str, &[&str])] = match target {
         "go" => &[
             ("go build", "go", &["build", "./..."]),
@@ -440,8 +442,12 @@ fn verify(specs: &[PathBuf], target: &str) -> ExitCode {
             (
                 "clippy -D warnings",
                 "cargo",
-                &["clippy", "--", "-D", "warnings"],
+                &["clippy", "--all-targets", "--", "-D", "warnings"],
             ),
+            // Compile *and run* the generated round-trip / behavioral tests
+            // (FR-7.8, VR-4): serialization tri-state + typed date/time, and
+            // per-union known/unknown discriminator dispatch.
+            ("cargo test", "cargo", &["test"]),
         ],
         other => unreachable!("clap restricts --target to known manifests, got {other:?}"),
     };

@@ -276,37 +276,15 @@ impl Printer<'_> {
     /// lowers to a transparent `serde_json::Value` newtype — callers inspect
     /// the raw value.
     fn union_decl(&mut self, name: &str, u: &ir::UnionDecl) {
-        let discriminated: Option<Vec<(&str, ir::DeclId)>> = match &u.discriminator {
-            Some(discriminator) => u
-                .variants
-                .iter()
-                .map(|v| match (&v.discriminator_value, &v.ty) {
-                    (Some(value), ir::Type::Decl(id))
-                        if self.decl_carries_field(*id, discriminator) =>
-                    {
-                        Some((value.as_str(), *id))
-                    }
-                    _ => None,
-                })
-                .collect(),
-            None => None,
-        };
-        match (discriminated, &u.discriminator) {
-            (Some(variants), Some(discriminator)) => {
-                self.discriminated_union(name, discriminator, &variants, u.extensibility);
+        match discriminated_union_rows(self.program, u) {
+            Some(rows) => {
+                // Safe: `discriminated_union_rows` only returns `Some` when the
+                // union has a discriminator.
+                let discriminator = u.discriminator.as_deref().unwrap();
+                self.discriminated_union(name, discriminator, &rows, u.extensibility);
             }
-            _ => self.structural_union(name),
+            None => self.structural_union(name),
         }
-    }
-
-    /// Whether a declaration is a struct with a field serialized under
-    /// `wire_name` — i.e. it carries its own discriminator, the invariant the
-    /// typed-union serialization relies on.
-    fn decl_carries_field(&self, id: ir::DeclId, wire_name: &str) -> bool {
-        matches!(
-            &self.program.decl(id).kind,
-            ir::DeclKind::Struct(s) if s.fields.iter().any(|f| f.wire_name == wire_name)
-        )
     }
 
     /// The structural fallback: a transparent newtype over `serde_json::Value`.
@@ -321,31 +299,15 @@ impl Printer<'_> {
         &mut self,
         name: &str,
         discriminator: &str,
-        variants: &[(&str, ir::DeclId)],
+        rows: &[(String, String, String)],
         extensibility: ir::Extensibility,
     ) {
         let open = matches!(extensibility, ir::Extensibility::Open);
-        // Variant identifier from the discriminator value (`ai_agent_ask` →
-        // `AiAgentAsk`), de-duplicated and kept clear of the `Unknown` arm.
-        let mut used: Vec<String> = if open {
-            vec!["Unknown".to_string()]
-        } else {
-            Vec::new()
-        };
-        let rows: Vec<(String, String, &str)> = variants
-            .iter()
-            .map(|(value, id)| {
-                let variant = dedupe(&mut used, variant_ident(value));
-                let ty = type_name(self.program.decl(*id).name.as_str());
-                (variant, ty, *value)
-            })
-            .collect();
-
         // The enum. serde derives are hand-written below, so only the value
         // traits are derived here.
         self.body.push_str("#[derive(Clone, Debug, PartialEq)]\n");
         let _ = writeln!(self.body, "pub enum {name} {{");
-        for (variant, ty, _) in &rows {
+        for (variant, ty, _) in rows {
             let _ = writeln!(self.body, "    {variant}({ty}),");
         }
         if open {
@@ -363,7 +325,7 @@ impl Printer<'_> {
             "    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {\n",
         );
         self.body.push_str("        match self {\n");
-        for (variant, _, _) in &rows {
+        for (variant, _, _) in rows {
             let _ = writeln!(
                 self.body,
                 "            Self::{variant}(inner) => inner.serialize(serializer),"
@@ -390,7 +352,7 @@ impl Printer<'_> {
             .push_str("            .and_then(serde_json::Value::as_str)\n");
         self.body.push_str("            .map(str::to_owned);\n");
         self.body.push_str("        match tag.as_deref() {\n");
-        for (variant, _, value) in &rows {
+        for (variant, _, value) in rows {
             let _ = writeln!(
                 self.body,
                 "            Some({value:?}) => Ok(Self::{variant}("
@@ -633,13 +595,68 @@ fn sanitize_ident(name: &str) -> String {
 }
 
 /// A closed-enum variant identifier: PascalCase, keyword- and digit-guarded.
-fn variant_ident(value: &str) -> String {
+pub(crate) fn variant_ident(value: &str) -> String {
     let name = constant(value);
     if RUST_KEYWORDS.contains(&name.as_str()) || RAW_UNSAFE.contains(&name.as_str()) {
         format!("{name}_")
     } else {
         name
     }
+}
+
+/// Whether a declaration is a struct with a field serialized under `wire_name`
+/// — i.e. it carries its own discriminator, the invariant the typed-union
+/// serialization relies on.
+fn decl_carries_field(program: &ir::Program, id: ir::DeclId, wire_name: &str) -> bool {
+    matches!(
+        &program.decl(id).kind,
+        ir::DeclKind::Struct(s) if s.fields.iter().any(|f| f.wire_name == wire_name)
+    )
+}
+
+/// The variant rows a discriminated union lowers to — `(variant_ident, type,
+/// discriminator_value)`, de-duplicated and clear of the reserved `Unknown`
+/// arm — or `None` when the union instead lowers to the structural
+/// `serde_json::Value` newtype (no discriminator, or any variant that isn't a
+/// discriminator-carrying decl). Shared so generated tests target exactly the
+/// enum the models emit (same names, same lowering decision).
+pub(crate) fn discriminated_union_rows(
+    program: &ir::Program,
+    u: &ir::UnionDecl,
+) -> Option<Vec<(String, String, String)>> {
+    let discriminator = u.discriminator.as_deref()?;
+    // Every variant must be a tagged, discriminator-carrying decl; otherwise the
+    // union is not soundly typed and lowers to the structural newtype.
+    let variants: Vec<(&str, ir::DeclId)> = u
+        .variants
+        .iter()
+        .map(|v| match (&v.discriminator_value, &v.ty) {
+            (Some(value), ir::Type::Decl(id))
+                if decl_carries_field(program, *id, discriminator) =>
+            {
+                Some((value.as_str(), *id))
+            }
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+
+    // Variant identifier from the discriminator value (`ai_agent_ask` →
+    // `AiAgentAsk`), de-duplicated and kept clear of the `Unknown` arm.
+    let mut used: Vec<String> = if matches!(u.extensibility, ir::Extensibility::Open) {
+        vec!["Unknown".to_string()]
+    } else {
+        Vec::new()
+    };
+    Some(
+        variants
+            .iter()
+            .map(|(value, id)| {
+                let variant = dedupe(&mut used, variant_ident(value));
+                let ty = type_name(program.decl(*id).name.as_str());
+                (variant, ty, (*value).to_string())
+            })
+            .collect(),
+    )
 }
 
 /// A `SCREAMING_SNAKE_CASE` associated-constant name for an open-enum value.

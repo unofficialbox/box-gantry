@@ -98,6 +98,19 @@ fn generation_is_deterministic() {
         assert!(auth.content.contains(flow), "auth guide missing {flow}");
     }
 
+    // Generated round-trip / behavioral tests (FR-7.8, VR-4): the fixed
+    // serialization tests plus one per-union round-trip test, run by the VR-1.2
+    // gate's `cargo test`.
+    assert!(once.iter().any(|f| f.path == "src/serialization_tests.rs"));
+    let roundtrip = once
+        .iter()
+        .find(|f| f.path == "src/roundtrip_tests.rs")
+        .unwrap();
+    assert!(
+        roundtrip.content.contains("_round_trip("),
+        "expected generated per-union round-trip tests"
+    );
+
     // The client wires one manager field per API area over a shared session.
     let client = once.iter().find(|f| f.path == "src/client.rs").unwrap();
     assert!(client.content.contains("pub struct Client {"));
@@ -163,7 +176,7 @@ fn the_real_spec_models_compile() {
     );
 
     let clippy = Command::new("cargo")
-        .args(["clippy", "--", "-D", "warnings"])
+        .args(["clippy", "--all-targets", "--", "-D", "warnings"])
         .current_dir(&dir)
         .output()
         .unwrap();
@@ -171,6 +184,20 @@ fn the_real_spec_models_compile() {
         clippy.status.success(),
         "clippy failed (TR-Rust.4):\n{}",
         String::from_utf8_lossy(&clippy.stderr)
+    );
+
+    // The generated round-trip / behavioral tests compile *and pass* (FR-7.8,
+    // VR-4): the tri-state, typed date/time, and union discriminator dispatch.
+    let test = Command::new("cargo")
+        .args(["test"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        test.status.success(),
+        "generated tests failed (FR-7.8, VR-4):\n{}\n{}",
+        String::from_utf8_lossy(&test.stdout),
+        String::from_utf8_lossy(&test.stderr)
     );
 }
 
