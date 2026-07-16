@@ -2056,15 +2056,25 @@ against a real Box account (mirroring the Go runtime).
   with no credentials it returns a clean no-op. Env/`.env` loading is
   dependency-free, same recognized variables as Go.
 
-**Verification.** Unit tests (now 23) add JWT coverage: an assertion is a
+**Verification.** Unit tests (now 25) add JWT coverage: an assertion is a
 well-formed three-part JWT whose header/claims decode as expected and whose
 **RS256 signature verifies** against the key's public half, the user subject
-overrides enterprise, a bad key errors at construction, an encrypted key with no
-passphrase is rejected, and `jti`s are unique. CI gains a Rust step in
+overrides enterprise, a bad key errors at construction, and `jti`s are unique.
+The encrypted-PKCS#8 path is exercised end to end — an AES-256-CBC/PBES2 key
+decrypts with its passphrase and signs a verifiable assertion, a wrong
+passphrase errors, and a missing passphrase is rejected. CI gains a Rust step in
 `livesmoke.yml` (the manual VR-7 workflow), alongside the Go one; the per-commit
 gate still compiles the ignored smoke via the standalone runtime `cargo test` +
 `clippy --all-targets`. The generated SDK still compiles against the real runtime
 (the FR-5.2 conformance test is unaffected — JWT is additive to `Auth`).
+
+The two smokes share one Box account: the Go step runs first and consumes the
+**rotating** `BOX_OAUTH_REFRESH_TOKEN`, so the Rust step nulls it and skips OAuth
+(Go covers that shared flow; Rust's OAuth path is unit-tested and reuses the
+CCG flow's cached-refresh machinery, which the Rust smoke does exercise). The
+Rust smoke uses a per-run unique filename and deletes the uploaded file
+unconditionally — even if the download assertion would fail — so a run never
+leaves an artifact or 409s a later run on a duplicate name.
 
 **Deferred.** Pagination `Stream`s, typed date/time, `verify --target rust` +
 conformance `rust_shape` + generated tests/docs remain the backend-side M5 work;

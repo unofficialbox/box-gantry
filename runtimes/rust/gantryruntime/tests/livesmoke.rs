@@ -184,7 +184,13 @@ async fn smoke_paginate(client: &Client) {
 /// delete it.
 async fn smoke_upload_download_delete(client: &Client) {
     let content = b"box-gantry live smoke".to_vec();
-    let name = "box-gantry-smoke.txt";
+    // Unique per run: Box rejects a duplicate name in the same folder (409), so
+    // a leftover from a prior run would otherwise wedge the smoke.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let name = format!("box-gantry-smoke-{nanos}.txt");
     let attributes = serde_json::to_vec(&serde_json::json!({
         "name": name,
         "parent": { "id": "0" },
@@ -196,7 +202,7 @@ async fn smoke_upload_download_delete(client: &Client) {
     let up_req = with_multipart_body(
         client.new_request("POST", &up_url),
         &attributes,
-        name,
+        &name,
         Stream::from_bytes(content.clone()),
     );
     let up_body = fetch_ok(client, up_req).await;
@@ -207,18 +213,31 @@ async fn smoke_upload_download_delete(client: &Client) {
         .to_string();
     eprintln!("upload: created file {file_id}");
 
-    // Download and compare.
+    // Download, capturing the result *without* asserting yet — the file must be
+    // deleted even if the download fails, so a smoke run never leaves an
+    // artifact in the account.
     let dl_url = format!("{}/files/{file_id}/content", client.base_url("api"));
-    let dl_body = fetch_ok(client, client.new_request("GET", &dl_url)).await;
-    assert_eq!(dl_body, content, "download: content mismatch");
+    let download = client.fetch(client.new_request("GET", &dl_url)).await;
+
+    // Delete unconditionally now that we hold the id.
+    let del_url = format!("{}/files/{file_id}", client.base_url("api"));
+    let deleted = client.fetch(client.new_request("DELETE", &del_url)).await;
+
+    // Now surface any download failure and compare bytes.
+    let dl_resp = download.expect("download request");
+    assert!(
+        (200..300).contains(&status_code(&dl_resp)),
+        "download: unexpected status {}",
+        status_code(&dl_resp)
+    );
+    assert_eq!(
+        response_bytes(&dl_resp).expect("download body"),
+        content,
+        "download: content mismatch"
+    );
     eprintln!("download: content round-tripped");
 
-    // Delete (always attempted, so smoke runs leave no trail).
-    let del_url = format!("{}/files/{file_id}", client.base_url("api"));
-    let resp = client
-        .fetch(client.new_request("DELETE", &del_url))
-        .await
-        .expect("delete request");
+    let resp = deleted.expect("delete request");
     assert_eq!(status_code(&resp), 204, "delete: expected 204");
     eprintln!("delete: cleaned up file {file_id}");
 }

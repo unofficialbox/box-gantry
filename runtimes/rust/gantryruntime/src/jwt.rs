@@ -258,6 +258,70 @@ MuHbNkWNGGKoq5Z7LO+oGg==\n\
         assert!(err.to_string().contains("no passphrase"));
     }
 
+    /// A throwaway 2048-bit RSA key, PKCS#8 encrypted (PBES2 / AES-256-CBC,
+    /// passphrase `testpass`) — the shape Box's `box_config.json` ships.
+    const ENCRYPTED_TEST_KEY: &str = "-----BEGIN ENCRYPTED PRIVATE KEY-----\n\
+MIIFLTBXBgkqhkiG9w0BBQ0wSjApBgkqhkiG9w0BBQwwHAQI2G9Ry9IIysgCAggA\n\
+MAwGCCqGSIb3DQIJBQAwHQYJYIZIAWUDBAEqBBBzQTdkEZ8qrgjgKYwvaq5MBIIE\n\
+0FziZo9wmmhZdB9BqYjAGwQ7/nWCkfoJZtRQ2Ku2OOTA8fTEwB0DTXH76zPX8BOj\n\
+JIf96RvDe7628c6qsfGpWaHg9lth9wX3vhrdVXJPRXYNRjKpAAuJVOx1cXmqZqMI\n\
+cC+dtAkO9FNc3JirV22nfg5LGIfkm48qiUkoJTXb3/qjPSFiogML8JgOkld6r4A+\n\
+WYysQpynqjekq7otxFnvBeJW0r6g+a83OolvETB67c4i0Y8P5Ia9aRpbO3UZ6xUq\n\
+P4Jo3H68OtzkhsI+spyJSwN0jLfsNUa6dutt13aIwdpaECD9aSDanJycj1ZEcN6J\n\
+EeafmjUgC4ZunGJJ0iaxUiSKfENDLu/JmVGopLZZM+06uqE6qGD59zJyFhSWOG80\n\
+SsDyhhsPVCaXKCT294YylGhDrwyftmi4aLMfNXE+J7SkUq4fQgW4Fxs1f7T26LNT\n\
+kByYavLkdhKHvUwvsjVekpUCxayb8Oo+/XCTIusIHrLOb1HPr6HNJeqlh957Hv4m\n\
+LZtT8MMnBIL3vjTJGCWJxw9Lbo1oU0+TT7CY2tPoZB7iW/AhIaNa0hqEqMgxIURQ\n\
+Dq6LtkReyZXYV2c6NWxlidtKEvNbF6SCnJRrecaXj5RPAvAkmtgucGuzh3ZoqpGl\n\
+Y2y6QtmLOIDsTsBZroCOVE9ra66F6JSHngKYKKmn8cco02nzB4XTGbhWkEaPA3MI\n\
+djC47MDu09Ey4Fut65/DmaiTdpewaAvpTI65KZkVhXXZy6/8MsiGxz0NO31y9iLz\n\
+txoQSPGCOmG+CzQOo3socJorqWDi8jcB0/P/jBvkr7GfDsah+4O7AwwjK9bz6XdZ\n\
+zP6a/fG6DVBjOl8QN0+jtj63uv1qFJ/2vvPLyBehrnkehFk2rNkICZwQC4CbYDsG\n\
+7dkOke3pLFycIHbK0cbsJROg7tCR5RooNQW6IIYFQwZJYDxenos4lvoMl9cHx79h\n\
+6/sSK4DwbGXod8ngxUlDlvoOGa+pMu2OVJCtxBkSf+TpmSoUG9Y+1G9pm6ekDEhV\n\
+KyjrLxU5hKBkVmMGrm0UZbi7tqnq7+g6VJ9uX3wuNCwaGRL/NiofPWzxP7ZPy4s/\n\
+ddjdWvhWRLvCI+JYv1WCYYsydImVqwGEC6aLMuQ0oww54G42STTcouM7OXmLRrsP\n\
+/Lzi83J+ziqDFVrcXqds/0j2F2F2YqrOp/C549Af7lf6DV3KLK3wR9nDrgNfurPf\n\
++eph/U3lVVM3FZwMZ0ojNSAiK/YUP0QTFQB5djXwC9ViYHA2qpnbzOTMFBjc3Nai\n\
+nj+4WTwwRfiR1rv/x9FmaDsMjHtoZwnS9ntr97V6sRemGGt1G4fyWleep/dK3sq/\n\
+1hpG5dSOitPjPc+PvH+/bOFcrK/duQccmCTRxHI3am2O5iPAYxbfluoCQH327vg/\n\
+qVBJXseNwxF9tKScZP6ifVlWeMZ+fkky5uygzt/huoebVy2DrGLZ80lDBGrU4ghc\n\
+UuU2dVCtPRhDpgZVwiIvEcLm70xD/qW0Qwt8svo+A43rgjf547ySvyaykG+Ugc4D\n\
+Gksl/FVQYhZhxBrGxnHn044712MNm83iYqtSyu58XCkOfiWtbA4E1cuU34dpzXdM\n\
+qmjxk2QigiX6/v0hlAXJpzibHfKKD3uUhvHy9J9G1o6d\n\
+-----END ENCRYPTED PRIVATE KEY-----\n";
+
+    #[test]
+    fn an_encrypted_key_decrypts_and_signs() {
+        // The advertised Box flow: an encrypted PKCS#8 key + passphrase parses,
+        // and the resulting signer produces a verifiable assertion.
+        let signer = Signer::new(&JwtConfig {
+            client_id: "cid".to_string(),
+            client_secret: "secret".to_string(),
+            public_key_id: "kid".to_string(),
+            private_key_pem: ENCRYPTED_TEST_KEY.as_bytes().to_vec(),
+            passphrase: Some("testpass".to_string()),
+            enterprise_id: "ent1".to_string(),
+            user_id: None,
+            token_url: None,
+        })
+        .expect("encrypted key decrypts");
+        let assertion = signer.assertion("aud").unwrap();
+        let parts: Vec<&str> = assertion.split('.').collect();
+        let signing_input = format!("{}.{}", parts[0], parts[1]);
+        let digest = Sha256::digest(signing_input.as_bytes());
+        let signature = URL_SAFE_NO_PAD.decode(parts[2]).unwrap();
+        RsaPublicKey::from(&signer.key)
+            .verify(Pkcs1v15Sign::new::<Sha256>(), &digest, &signature)
+            .expect("signature verifies");
+    }
+
+    #[test]
+    fn an_encrypted_key_with_the_wrong_passphrase_fails() {
+        let err = parse_rsa_private_key(ENCRYPTED_TEST_KEY.as_bytes(), Some("wrong")).unwrap_err();
+        assert!(err.to_string().contains("decrypting private key"));
+    }
+
     #[test]
     fn jtis_are_unique() {
         assert_ne!(jti(), jti());

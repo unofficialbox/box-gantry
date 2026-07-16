@@ -35,4 +35,11 @@ jobs:
         run: go test -tags live -run TestLiveSmoke -v ./gantryruntime/...
       - name: Run the Rust live smoke (same flows, the hand-written reqwest/tokio runtime)
         working-directory: runtimes/rust/gantryruntime
+        # The OAuth refresh token rotates on use, so the Go step above already
+        # consumed it — null it here so the Rust smoke skips OAuth rather than
+        # failing on a stale token. Go covers the shared OAuth flow; Rust covers
+        # developer/CCG/JWT live (its OAuth path is unit-tested and shares the
+        # CCG flow's cached-refresh machinery, which the smoke does exercise).
+        env:
+          BOX_OAUTH_REFRESH_TOKEN: ""
         run: cargo test --test livesmoke -- --ignored --nocapture
