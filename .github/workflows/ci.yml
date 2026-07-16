@@ -22,8 +22,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Install TypeScript (the VR-1.5 `tsc --noEmit` gate)
-        run: npm install -g typescript
+      - name: Install TypeScript 7 (the native Go-ported compiler; the VR-1.5 gate)
+        # Pinned so the `tsc --noEmit` gate can't drift with the npm `latest`
+        # tag. TypeScript 7 is the native (Go-ported) compiler.
+        run: npm install -g typescript@7.0.2
       - uses: actions/cache@v4
         with:
           path: |

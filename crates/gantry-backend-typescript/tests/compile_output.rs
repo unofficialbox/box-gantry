@@ -71,9 +71,16 @@ fn generation_is_deterministic() {
         "no interfaces emitted"
     );
     assert!(models.contains("?: "), "no optional (tri-state) fields");
-    // `oneOf` → discriminated unions with an open catch-all (TR-TS.1).
+    // `oneOf` → discriminated unions: each member pins its literal tag via an
+    // intersection (so the union narrows even with open discriminator enums),
+    // and open unions add a discriminator-bearing catch-all that retains an
+    // unknown tag without swallowing `{}` (TR-TS.1).
     assert!(
-        models.contains(" | { [key: string]: unknown }"),
+        models.contains(" & { "),
+        "union members don't pin the discriminator literal"
+    );
+    assert!(
+        models.contains("; [key: string]: unknown }"),
         "no open-union catch-all member"
     );
     // Open enums → string-literal unions widened with `(string & {})` (TR-TS.1).

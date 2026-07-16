@@ -17,9 +17,10 @@ essentially complete (models, native-JSON, managers/client, serialization
 remap, server auth, generated tests, **VR-1.3 green** on-platform, **VR-1.4**
 live smoke, **VR-3 conformance parity** (D-141), and the **NF-8 ship artifact**
 — an unlocked 2GP package, defined with its CI build job wired (D-142)); v3 (Rust) and v4
-(TypeScript) remain. TypeScript was added as a fourth target (D-143), which
-expands total scope — so the overall figure steps down from ~84% to ~78% by
-effort even though **no work was lost**. The large shared cost — the whole
+(TypeScript) are underway. When TypeScript was added as a fourth target (D-143)
+its expanded scope stepped the overall figure down from ~84% to ~78% by effort
+(no work was lost); it has since climbed back to ~88% as v3 reached parity and
+v4 began. The large shared cost — the whole
 engine core (ingestion, typed IR, semantics, manifest, runtime contract) and
 the verification harnesses — landed with v1 and is **reused unchanged** by
 v2/v3/v4, so the remainder is mostly target-specific backends + runtimes.

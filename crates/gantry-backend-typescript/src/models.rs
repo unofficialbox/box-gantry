@@ -209,12 +209,26 @@ impl Printer<'_> {
 
     fn union_decl(&mut self, name: &str, u: &ir::UnionDecl) {
         match discriminated_variants(self.program, u) {
-            Some(ids) => {
-                let mut members: Vec<String> = ids.iter().map(|id| self.decl_ref(*id)).collect();
-                // Open unions keep an unrecognized tag via a catch-all member
-                // (TR-TS.1); closed unions reject it structurally.
+            Some(variants) => {
+                // Safe: `discriminated_variants` only returns `Some` when the
+                // union has a discriminator.
+                let disc = field_key(u.discriminator.as_deref().unwrap());
+                let mut members: Vec<String> = variants
+                    .iter()
+                    .map(|(id, value)| {
+                        // Pin the discriminator to its literal via an
+                        // intersection, so the union narrows even though the
+                        // variant's own discriminator field is an open
+                        // (string-widened) enum (TR-TS.1).
+                        format!("({} & {{ {disc}: {value:?} }})", self.decl_ref(*id))
+                    })
+                    .collect();
+                // Open unions keep an unrecognized tag: the discriminator is
+                // present but matches no known literal (TR-TS.1). Requiring the
+                // key keeps the catch-all from swallowing `{}`; closed unions
+                // reject an unknown tag structurally.
                 if matches!(u.extensibility, ir::Extensibility::Open) {
-                    members.push("{ [key: string]: unknown }".to_string());
+                    members.push(format!("{{ {disc}: string; [key: string]: unknown }}"));
                 }
                 let _ = writeln!(self.body, "export type {name} = {};\n", members.join(" | "));
             }
@@ -261,17 +275,24 @@ impl Printer<'_> {
     }
 }
 
-/// The declaration ids a discriminated union lowers to — every variant a
-/// tagged, discriminator-carrying struct — or `None` when it lowers to the
-/// structural `unknown` fallback (no discriminator, or any variant that isn't a
-/// discriminator-carrying declaration).
-fn discriminated_variants(program: &ir::Program, u: &ir::UnionDecl) -> Option<Vec<ir::DeclId>> {
+/// The `(declaration id, discriminator value)` pairs a discriminated union
+/// lowers to — every variant a tagged, discriminator-carrying struct — or
+/// `None` when it lowers to the structural `unknown` fallback (no
+/// discriminator, or any variant that isn't a discriminator-carrying
+/// declaration). The literal value lets each union member pin its tag so the
+/// union narrows.
+fn discriminated_variants(
+    program: &ir::Program,
+    u: &ir::UnionDecl,
+) -> Option<Vec<(ir::DeclId, String)>> {
     let discriminator = u.discriminator.as_deref()?;
     u.variants
         .iter()
         .map(|v| match (&v.discriminator_value, &v.ty) {
-            (Some(_), ir::Type::Decl(id)) if decl_carries_field(program, *id, discriminator) => {
-                Some(*id)
+            (Some(value), ir::Type::Decl(id))
+                if decl_carries_field(program, *id, discriminator) =>
+            {
+                Some((*id, value.clone()))
             }
             _ => None,
         })
