@@ -7,6 +7,8 @@
 declare module 'node:crypto' {
   export interface KeyObject {
     readonly type: string;
+    /** The asymmetric key algorithm (`'rsa'`, `'ec'`, …); absent for secret keys. */
+    readonly asymmetricKeyType?: string;
   }
   export function createPrivateKey(input: { key: string; passphrase?: string }): KeyObject;
   export function sign(algorithm: string, data: Uint8Array, key: KeyObject): Uint8Array;

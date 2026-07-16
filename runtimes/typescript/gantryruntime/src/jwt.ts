@@ -51,6 +51,13 @@ export async function jwtAuth(config: JwtConfig): Promise<Auth> {
   } catch (err) {
     throw new BoxApiError('failed to parse the JWT private key', { cause: err });
   }
+  // The assertion is RS256-signed, so a non-RSA key would fail confusingly at
+  // sign time — reject it up front (parity with the Go/Rust runtimes).
+  if (privateKey.asymmetricKeyType !== 'rsa') {
+    throw new BoxApiError(
+      `JWT auth requires an RSA private key, got ${privateKey.asymmetricKeyType ?? 'an unrecognized key type'}`,
+    );
+  }
   const tokenUrl = config.tokenUrl ?? DEFAULT_TOKEN_URL;
   const subject = config.userId
     ? { type: 'user', id: config.userId }

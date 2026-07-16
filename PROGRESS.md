@@ -19,8 +19,8 @@ live smoke, **VR-3 conformance parity** (D-141), and the **NF-8 ship artifact**
 — an unlocked 2GP package, defined with its CI build job wired (D-142)); v3 (Rust) and v4
 (TypeScript) are underway. When TypeScript was added as a fourth target (D-143)
 its expanded scope stepped the overall figure down from ~84% to ~78% by effort
-(no work was lost); it has since climbed back to ~90% as v3 reached parity and
-v4's model layer, managers/client, and runtime landed. The large shared cost — the whole
+(no work was lost); it has since climbed back to ~91% as v3 reached parity and
+v4's model layer, managers/client, and runtime (all four auth flows) landed. The large shared cost — the whole
 engine core (ingestion, typed IR, semantics, manifest, runtime contract) and
 the verification harnesses — landed with v1 and is **reused unchanged** by
 v2/v3/v4, so the remainder is mostly target-specific backends + runtimes.

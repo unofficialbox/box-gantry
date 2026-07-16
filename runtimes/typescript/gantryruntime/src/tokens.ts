@@ -13,6 +13,11 @@ export const DEFAULT_TOKEN_URL = 'https://api.box.com/oauth2/token';
  * race an expiry. */
 const REFRESH_MARGIN_MS = 60_000;
 
+/** A hard deadline on a token exchange, so a stalled endpoint can't leave a
+ * single-flight refresh (and every caller awaiting it) hung forever. Matches
+ * the Go runtime's 30s token HTTP client. */
+const TOKEN_TIMEOUT_MS = 30_000;
+
 /**
  * Yields an access token for the configured auth flow. A token acquisition is
  * not bound to any single request's cancellation — a shared refresh serves every
@@ -103,6 +108,12 @@ export async function postTokenForm(
   form: Record<string, string>,
   signal?: AbortSignal,
 ): Promise<Token> {
+  // An internal deadline independent of the caller's signal, combined with it
+  // when present. It also covers the body read, since the signal aborts an
+  // in-progress `fetch` (including body streaming). `AbortSignal.timeout` owns
+  // its own timer, so there is nothing to clear.
+  const deadline = AbortSignal.timeout(TOKEN_TIMEOUT_MS);
+  const combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
   let response: Awaited<ReturnType<typeof fetch>>;
   let text: string;
   try {
@@ -113,7 +124,7 @@ export async function postTokenForm(
         Accept: 'application/json',
       },
       body: new URLSearchParams(form).toString(),
-      signal,
+      signal: combined,
     });
     text = await response.text();
   } catch (err) {
