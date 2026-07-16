@@ -120,7 +120,7 @@ fn lib_rs(manifest: &gantry_manifest::CapabilityManifest, build: &BuildInfo) -> 
          pub(crate) mod internal;\n\
          pub mod managers;\n\
          pub mod models;\n\
-         mod runtime;\n\
+         pub mod runtime;\n\
          mod serde_helpers;\n\
          \n\
          /// Build provenance for this generated SDK (NF-7).\n\

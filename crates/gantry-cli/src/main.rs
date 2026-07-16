@@ -357,8 +357,9 @@ fn generate_apex(specs: &[PathBuf]) -> Result<Vec<(String, String)>, ExitCode> {
 }
 
 /// Load → lower → analyze → Rust-generate. The Rust backend consumes the
-/// `rust()` manifest; no toolchain runs here (`verify --target rust` is the
-/// VR-1.2 gate).
+/// `rust()` manifest; no toolchain runs here. VR-1.2 is currently exercised by
+/// the backend's generated-output toolchain test (`verify --target rust` is a
+/// later slice).
 fn generate_rust(specs: &[PathBuf]) -> Result<Vec<(String, String)>, ExitCode> {
     let set = gantry_spec::SpecSet::load(specs).map_err(|err| {
         eprintln!("error: {err}");

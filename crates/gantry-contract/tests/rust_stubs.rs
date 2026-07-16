@@ -33,9 +33,11 @@ fn rust_stubs_render_deterministically() {
 
 #[test]
 fn rust_stubs_compile_and_are_rustfmt_clean() {
-    // Skip loudly (VR-6) when no cargo toolchain exists; CI runs this gate.
-    if Command::new("cargo").arg("--version").output().is_err() {
-        eprintln!("SKIPPED: cargo toolchain not available; CI runs this gate");
+    // Skip loudly (VR-6) when either tool is missing; CI runs this gate.
+    let missing = Command::new("cargo").arg("--version").output().is_err()
+        || Command::new("rustfmt").arg("--version").output().is_err();
+    if missing {
+        eprintln!("SKIPPED: cargo/rustfmt not available; CI runs this gate");
         return;
     }
     let dir = std::env::temp_dir().join(format!("gantry-rust-stubs-{}", std::process::id()));
