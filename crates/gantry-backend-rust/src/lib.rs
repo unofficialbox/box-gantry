@@ -8,6 +8,9 @@
 //! - **Optionality** is `Option<T>`; the absent-vs-null tri-state
 //!   (`Optional<Nullable<T>>`, D-110) maps to `Option<Option<T>>` with a
 //!   `double_option` deserializer so absence and explicit `null` stay distinct.
+//! - **Date/time** are typed via `chrono`: `Date` → `NaiveDate` (Box's
+//!   full-date), `DateTime` → `DateTime<Utc>` (RFC 3339) — both serde-serialize
+//!   to exactly Box's wire format.
 //! - **Unions** (TR-Rust.1, D-148): a discriminated union with decl-backed
 //!   variants lowers to a typed `enum` with hand-written `Serialize`/
 //!   `Deserialize` that dispatch on the tag; open unions retain an unrecognized
@@ -24,8 +27,8 @@
 //! (TR-Rust.5) and satisfies the same contract, which the backend's
 //! conformance test proves by compiling the generated SDK against it (FR-5.2).
 //!
-//! Not yet emitted (later M5 slices): typed date/time, pagination `Stream`s,
-//! and generated tests + docs.
+//! Not yet emitted (later M5 slices): pagination `Stream`s and generated tests
+//! + docs.
 
 mod managers;
 mod models;
@@ -99,8 +102,9 @@ pub fn generate(
     files
 }
 
-/// The generated SDK crate manifest. Pinned, minimal deps (serde +
-/// serde_json); the runtime crate joins here when TR-Rust.5 lands.
+/// The generated SDK crate manifest. Pinned, minimal deps: serde + serde_json,
+/// plus `chrono` for the typed `Date`/`DateTime` model fields (lean feature set
+/// — `serde` + `alloc`, no clock/OS-timezone machinery).
 fn cargo_toml() -> String {
     "[package]\n\
      name = \"box-sdk\"\n\
@@ -108,6 +112,7 @@ fn cargo_toml() -> String {
      edition = \"2021\"\n\
      \n\
      [dependencies]\n\
+     chrono = { version = \"0.4\", default-features = false, features = [\"serde\", \"alloc\"] }\n\
      serde = { version = \"1\", features = [\"derive\"] }\n\
      serde_json = \"1\"\n"
         .to_string()

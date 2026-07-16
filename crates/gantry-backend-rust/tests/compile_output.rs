@@ -79,6 +79,25 @@ fn generation_is_deterministic() {
             .content
             .contains("std::sync::Arc::new(crate::runtime::Client::new(auth))")
     );
+    // Date/time fields are typed via chrono (not strings), and the crate
+    // manifest declares the lean chrono dependency.
+    let models: String = once
+        .iter()
+        .filter(|f| f.path.starts_with("src/models/"))
+        .map(|f| f.content.as_str())
+        .collect();
+    assert!(
+        models.contains("chrono::NaiveDate"),
+        "date fields should be chrono-typed"
+    );
+    assert!(
+        models.contains("chrono::DateTime<chrono::Utc>"),
+        "date-time fields should be chrono-typed"
+    );
+    let cargo = once.iter().find(|f| f.path == "Cargo.toml").unwrap();
+    assert!(cargo.content.contains(
+        "chrono = { version = \"0.4\", default-features = false, features = [\"serde\", \"alloc\"] }"
+    ));
 }
 
 #[test]
