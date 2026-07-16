@@ -523,6 +523,84 @@ fn apex_guides(files: &[GeneratedView]) -> usize {
         .count()
 }
 
+// --- Rust recognizers -----------------------------------------------------
+
+/// The Rust conformance shape: measures the `src/` crate layout the Rust
+/// backend emits (managers, operation methods, the tri-state helper, and the
+/// buildinfo provenance).
+///
+/// Generated docs, tests, and pagination surfaces are **not yet emitted** (later
+/// M5 slices), so those capabilities read zero until they land. Unlike Apex,
+/// there are no platform *exclusions* here: the shortfalls are pending work, not
+/// permanent — so `conform --target rust` is a progress report (partial today)
+/// rather than a green CI gate, and it joins the release gate once the Rust
+/// backend reaches parity.
+pub fn rust_shape() -> TargetShape {
+    TargetShape {
+        target: "rust",
+        count_managers: rust_managers,
+        count_manager_docs: rust_not_yet,
+        count_operations: rust_operations,
+        count_pagination: rust_not_yet,
+        count_serialization: rust_serialization,
+        count_round_trip_tests: rust_not_yet,
+        count_auth: rust_not_yet,
+        count_traceability: rust_traceability,
+        count_guides: rust_not_yet,
+        exclusions: &[],
+    }
+}
+
+/// A capability the Rust backend does not emit yet (docs, generated tests,
+/// pagination surfaces — later M5 slices): reads zero until it lands.
+fn rust_not_yet(_files: &[GeneratedView]) -> usize {
+    0
+}
+
+fn rust_is_manager_file(path: &str) -> bool {
+    path.starts_with("src/managers/") && path.ends_with(".rs") && path != "src/managers/mod.rs"
+}
+
+fn rust_managers(files: &[GeneratedView]) -> usize {
+    // One `<Name>Manager` struct per x-box-tag (a module file may hold several).
+    // Match the struct definition line, not its `impl` block or options structs.
+    files
+        .iter()
+        .filter(|f| rust_is_manager_file(f.path))
+        .map(|f| {
+            f.content
+                .lines()
+                .filter(|l| l.trim_start().starts_with("pub struct ") && l.contains("Manager {"))
+                .count()
+        })
+        .sum()
+}
+
+fn rust_operations(files: &[GeneratedView]) -> usize {
+    // One `pub async fn` per operation; the manager constructor is `pub(crate)
+    // fn new` and the decode helper is private, so neither is counted.
+    count_marker(files, rust_is_manager_file, "pub async fn ")
+}
+
+fn rust_serialization(files: &[GeneratedView]) -> usize {
+    // The tri-state helper (D-110). Typed `Date` is a later slice, so only the
+    // absent/null/value tri-state is measured here.
+    usize::from(
+        files
+            .iter()
+            .any(|f| f.path == "src/serde_helpers.rs" && f.content.contains("double_option")),
+    )
+}
+
+fn rust_traceability(files: &[GeneratedView]) -> usize {
+    // The `buildinfo` provenance module lives in the crate root (`src/lib.rs`).
+    usize::from(files.iter().any(|f| {
+        f.path == "src/lib.rs"
+            && f.content.contains("ENGINE")
+            && f.content.contains("SPEC_FINGERPRINT")
+    }))
+}
+
 /// The four Box auth flows the R§1 contract expects to be surfaced.
 const AUTH_FLOWS: [&str; 4] = ["Developer Token", "Client Credentials", "JWT", "OAuth"];
 
@@ -709,6 +787,60 @@ mod tests {
         assert!(report.passed());
         assert_eq!(report.failures(), 0);
         assert_eq!(report.excluded(), 1);
+    }
+
+    #[test]
+    fn rust_shape_measures_what_the_backend_emits_and_flags_the_rest() {
+        let program = program();
+        let analysis = gantry_sema::analyze(&program).unwrap();
+        // A minimal Rust SDK: two managers (one struct + its impl each — only
+        // the struct counts), two operation methods, the tri-state helper, and
+        // the buildinfo provenance. No docs / tests / pagination yet.
+        let files = vec![
+            (
+                "src/managers/files.rs".to_string(),
+                "pub struct FilesManager {}\n\
+                 impl FilesManager {\n\
+                 \x20   pub(crate) fn new() -> Self { Self {} }\n\
+                 \x20   pub async fn get_files(&self) {}\n\
+                 \x20   pub async fn get_files_id(&self) {}\n\
+                 }\n"
+                .to_string(),
+            ),
+            (
+                "src/managers/mod.rs".to_string(),
+                "pub mod files;\n".to_string(),
+            ),
+            (
+                "src/serde_helpers.rs".to_string(),
+                "pub(crate) fn double_option() {}\n".to_string(),
+            ),
+            (
+                "src/lib.rs".to_string(),
+                "pub mod buildinfo {\n\
+                 \x20   pub const ENGINE: &str = \"0.1.0\";\n\
+                 \x20   pub const SPEC_FINGERPRINT: &str = \"abc\";\n\
+                 }\n"
+                .to_string(),
+            ),
+        ];
+        let report = conformance(&rust_shape(), &analysis, &views(&files));
+        assert!(report.report().contains("conformance (rust)"));
+
+        let check = |cap: &str| report.checks.iter().find(|c| c.capability == cap).unwrap();
+        // Emitted capabilities are measured and pass.
+        assert_eq!(check("managers").actual, 1);
+        assert_eq!(check("managers").status, CheckStatus::Pass);
+        assert_eq!(check("operations").actual, 2);
+        assert_eq!(check("operations").status, CheckStatus::Pass);
+        assert_eq!(check("serialization").status, CheckStatus::Pass);
+        assert_eq!(check("traceability").status, CheckStatus::Pass);
+        // Not-yet-emitted capabilities read zero and fail (pending work, no
+        // exclusions) — so the whole report is not yet passing.
+        assert_eq!(check("manager-docs").actual, 0);
+        assert_eq!(check("manager-docs").status, CheckStatus::Fail);
+        assert_eq!(check("round-trip-tests").status, CheckStatus::Fail);
+        assert!(!report.passed());
     }
 
     #[test]

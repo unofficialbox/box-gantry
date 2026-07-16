@@ -45,6 +45,13 @@ jobs:
           fixtures/specs/openapi-v2025.0.json
           fixtures/specs/openapi-v2026.0.json
           --target go
+      - name: Verify generated Rust compiles (VR-1.2 — rustfmt + cargo check + clippy)
+        run: >
+          cargo run -p gantry-cli -- verify
+          fixtures/specs/openapi.json
+          fixtures/specs/openapi-v2025.0.json
+          fixtures/specs/openapi-v2026.0.json
+          --target rust
       - name: Conformance checklist — Go (VR-3, the R§1 capability contract)
         run: >
           cargo run -p gantry-cli -- conform
