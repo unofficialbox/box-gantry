@@ -2149,3 +2149,47 @@ is additive). A generated-output assertion checks the date fields are
 chrono-typed and the manifest declares the dependency. The `conform --target
 rust` serialization capability remains satisfied (tri-state present); typed date
 is the D-152 refinement noted there.
+
+## D-154 — Rust backend: pagination as async paginators (TR-Rust, FR-7.3)
+
+**Context.** Paged operations shipped only their plain single-page method; the
+`conform --target rust` pagination capability read 0/64. This slice generates a
+paginator per paged operation, mirroring the Go backend's `iter.Seq2` iterators
+but as a dependency-free async iterator (no `futures::Stream` dep).
+
+**Decision.** For each operation `gantry_synth::detect_pagination` finds, emit a
+module-level `<Manager><Method>Paginator` struct plus a `<method>_paginate`
+constructor on the manager. The struct holds the manager (rebuilt from the
+shared session), the operation's required args + body (owned), the options
+struct (carrying the cursor), a `std::vec::IntoIter` page buffer, and a `done`
+flag. Its `pub async fn next(&mut self) -> Option<Result<Element, Error>>`
+yields one element at a time: it drains the buffer, then fetches the next page
+through the *plain method* (so URL/param/body logic is never duplicated),
+appends its entries, and advances the cursor — marker style threads the response
+cursor back into the options (flattening the tri-state `next_marker`, converting
+an int cursor to string, stopping on empty/absent), offset style increments by
+the page's entry count and stops on an empty page. An error is yielded once,
+then iteration ends.
+
+**Envelope shape handling.** The generator peels each envelope field's `Option`
+layers (0/1/2, matching the model's `Plain`/`Optional`-or-`Nullable`/tri-state
+forms) to reach `entries` (`Vec`) and the cursor value. Unsupported cursor
+shapes (a marker param that isn't a string, an offset param that isn't an int, a
+marker cursor scalar that isn't string/int) **skip the paginator** — the plain
+method still ships (a documented VR-6-style fallback, never wrong code). On the
+real Box specs all 64 paged operations synthesize a paginator.
+
+**rustfmt-clean by construction.** The paginator hits rustfmt's chain rules: the
+`self.manager.method(..).await` scrutinee breaks past `chain_width` (60), its
+arguments past `fn_call_width` (60), and the long `next` signature/return wraps
+at `max_width` (100, brace-drops at exactly 100). The printer reproduces each
+threshold so the emitted code needs no reformatting — verified by the VR-1.2
+gate (`cargo fmt --check` + `cargo check` + `clippy -D warnings`) on the full
+96-file SDK.
+
+**Conformance.** `rust_shape` now measures pagination — one `_paginate`
+constructor per paged surface — and subtracts the paginators' `next` methods
+from the async-fn operation count. `conform --target rust` moves from 5 failing
+to **4** (pagination 64/64 and operations 336/336 pass); manager-docs,
+docs-guides, auth-flows, and round-trip-tests remain for the generated
+tests/docs slice.
