@@ -42,13 +42,13 @@ enum Command {
     Generate {
         #[arg(required = true, value_name = "SPEC")]
         specs: Vec<PathBuf>,
-        /// Target language(s) (manifest key). `go` is complete; `apex` emits
-        /// the model layer as a deployable SFDX project (M4, in progress).
-        /// Accepts a comma-separated list or repeated flags to build several
-        /// at once (`--target go,apex`); `all` expands to every target. A
-        /// single target writes into `--out` directly; two or more each land
-        /// in their own `<out>/<target>/` subdirectory.
-        #[arg(long, required = true, value_parser = ["go", "apex", "all"], value_delimiter = ',')]
+        /// Target language(s) (manifest key). `go` is complete; `apex` emits a
+        /// deployable SFDX project; `rust` emits the models + async managers/
+        /// client (M5, in progress). Accepts a comma-separated list or repeated
+        /// flags to build several at once (`--target go,rust`); `all` expands to
+        /// every target. A single target writes into `--out` directly; two or
+        /// more each land in their own `<out>/<target>/` subdirectory.
+        #[arg(long, required = true, value_parser = ["go", "apex", "rust", "all"], value_delimiter = ',')]
         target: Vec<String>,
         /// Output directory (created if missing). With more than one target,
         /// each SDK lands in a `<out>/<target>/` subdirectory.
@@ -247,7 +247,7 @@ fn write_files(root: &Path, files: &[gantry_backend_go::GeneratedFile]) -> std::
 }
 
 /// Every target `all` expands to, in output order.
-const ALL_TARGETS: &[&str] = &["go", "apex"];
+const ALL_TARGETS: &[&str] = &["go", "apex", "rust"];
 
 fn generate(specs: &[PathBuf], targets: &[String], out: &Path) -> ExitCode {
     let resolved = resolve_targets(targets);
@@ -302,6 +302,10 @@ fn generate_one(specs: &[PathBuf], target: &str, out: &Path) -> ExitCode {
             Ok(files) => files,
             Err(code) => return code,
         },
+        "rust" => match generate_rust(specs) {
+            Ok(files) => files,
+            Err(code) => return code,
+        },
         other => unreachable!("clap restricts --target to known manifests, got {other:?}"),
     };
     if let Err(err) = write_pairs(out, &files) {
@@ -333,6 +337,42 @@ fn generate_apex(specs: &[PathBuf]) -> Result<Vec<(String, String)>, ExitCode> {
         Ok(analysis) => {
             Ok(
                 gantry_backend_apex::generate(&analysis, &gantry_manifest::apex(), &build)
+                    .into_iter()
+                    .map(|f| (f.path, f.content))
+                    .collect(),
+            )
+        }
+        Err(errors) => {
+            let engine_bug = errors.iter().any(gantry_sema::SemaError::is_engine_bug);
+            for error in &errors {
+                eprintln!("error: {error}");
+            }
+            Err(ExitCode::from(if engine_bug {
+                exit_codes::ENGINE_BUG
+            } else {
+                exit_codes::SPEC_ERROR
+            }))
+        }
+    }
+}
+
+/// Load → lower → analyze → Rust-generate. The Rust backend consumes the
+/// `rust()` manifest; no toolchain runs here (`verify --target rust` is the
+/// VR-1.2 gate).
+fn generate_rust(specs: &[PathBuf]) -> Result<Vec<(String, String)>, ExitCode> {
+    let set = gantry_spec::SpecSet::load(specs).map_err(|err| {
+        eprintln!("error: {err}");
+        ExitCode::from(exit_codes::SPEC_ERROR)
+    })?;
+    let build = gantry_backend_rust::BuildInfo::new(set.fingerprint());
+    let lowering = gantry_spec::lower(&set).map_err(|err| {
+        eprintln!("error: {err}");
+        ExitCode::from(exit_codes::SPEC_ERROR)
+    })?;
+    match gantry_sema::analyze(&lowering.program) {
+        Ok(analysis) => {
+            Ok(
+                gantry_backend_rust::generate(&analysis, &gantry_manifest::rust(), &build)
                     .into_iter()
                     .map(|f| (f.path, f.content))
                     .collect(),

@@ -53,7 +53,7 @@ pub fn generate_models(analysis: &Analysis<'_>, build: &BuildInfo) -> Vec<Genera
 /// A Rust module name for an IR module path: every segment sanitized and
 /// joined with `_`, so nested paths stay collision-free as flat siblings
 /// (`[schemas, v2025_0]` → `schemas_v2025_0`).
-fn module_name(module: &ir::ModulePath) -> String {
+pub(crate) fn module_name(module: &ir::ModulePath) -> String {
     if module.0.is_empty() {
         return "root".to_string();
     }
@@ -546,7 +546,7 @@ fn emit_field(body: &mut String, ident: &str, ty: &str) {
 
 /// A Rust type name from an IR declaration name: PascalCase, guarded against
 /// prelude/keyword collisions that would shadow.
-fn type_name(name: &str) -> String {
+pub(crate) fn type_name(name: &str) -> String {
     let pascal = pascal(name);
     if RESERVED_TYPES.contains(&pascal.as_str()) {
         format!("{pascal}_")
