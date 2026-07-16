@@ -335,7 +335,7 @@ pub(crate) fn type_name(name: &str) -> String {
 /// A collision-free lowercase module name per IR module path — flattening a
 /// path with `_` is not injective (`[a_b]` and `[a, b]` collapse), so names are
 /// allocated deterministically and shared, never recomputed (mirrors D-149).
-fn module_names(program: &ir::Program) -> BTreeMap<ir::ModulePath, String> {
+pub(crate) fn module_names(program: &ir::Program) -> BTreeMap<ir::ModulePath, String> {
     let mut paths: Vec<ir::ModulePath> = Vec::new();
     for decl in &program.decls {
         if !paths.contains(&decl.module) {

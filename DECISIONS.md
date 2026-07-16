@@ -2348,3 +2348,41 @@ runtime surface too. A `typescript_stubs` contract test renders it
 deterministically, asserts the async/exceptions shape, and type-checks it with
 `tsc` (the FR-5.3 gate, mirroring the Rust/Go stub tests). Next: the
 `Promise`-based managers/client that call through this surface (TR-TS.3).
+
+## D-159 — TypeScript backend, slice 3: the `Promise`-based managers/client (TR-TS.3)
+
+**Context.** With the model layer (D-157) and the runtime-contract stubs (D-158)
+in place, the SDK needs its call surface: one class per API tag, one async method
+per operation, and a `Client` entry point — the TypeScript analogue of the Go/Rust
+managers (D-149), calling only through the rendered `runtime.ts` contract so it
+type-checks without the real runtime (FR-5.2/5.3).
+
+**The shape.** `managers.rs` emits `src/managers/<tag>.ts` (one `<Pascal>Manager`
+class per tag, deduped/collision-safe names shared with the models' module
+registry), a `managers/index.ts` barrel, `src/client.ts`, and `src/internal.ts`.
+Each operation becomes an `async` method: required params positional, the request
+body next, and optional params in a per-operation **options object** (`opts?:
+<Class><Method>Options` — the TypeScript idiom for keyword arguments, guarded on
+`!== undefined`). Methods build the URL from structured path segments (never a
+re-parsed template, FR-2.2), percent-escape path params, apply query/header params,
+encode the body per media (`withJsonBody`/`withFormBody`/`withStreamBody`/
+`withMultipartBody`), `await this.session.fetch(req)`, and decode by response
+shape. Return types are `Promise<T>` throughout — the exceptions model surfaces
+failure as a throw, never in the type (mirroring D-158). Uploads keep the same
+empty-file placeholder posture as Go/Rust until the runtime slice wires real body
+streaming.
+
+**Idioms.** Enums lower to string-literal unions, so a query/path/form value that
+is an enum is already a `string` — no newtype unwrap (unlike Rust's `.0`).
+Interface/option keys are wire names verbatim (serialization identity, TR-TS.2);
+member access quotes non-identifier wire names. Local variable/param names are
+`camelCase`, digit- and reserved-word-safe (method names may be reserved words, so
+only locals are guarded). Generation-side helpers (`pathEscape`, `join`,
+`formEncode`) live in `internal.ts`, imported only where used.
+
+**Gated.** The VR-1.5 `tsc --noEmit` gate now type-checks the full package —
+managers + client + internal against the runtime stubs and models — clean under
+strict TS7 (97 files via `verify --target typescript`). The `compile_output` test
+asserts the managers/client files exist, are `async`, and reach the network only
+through `this.session.fetch`. Next: the real `fetch` runtime (TR-TS.5), then
+docs/generated tests + `conform --target typescript`.

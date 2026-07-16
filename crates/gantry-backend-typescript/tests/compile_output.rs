@@ -59,6 +59,30 @@ fn generation_is_deterministic() {
     assert!(once.iter().any(|f| f.path == "tsconfig.json"));
     assert!(once.iter().any(|f| f.path == "src/index.ts"));
     assert!(once.iter().any(|f| f.path == "src/models/index.ts"));
+    // The managers/client surface, calling only through the runtime contract.
+    assert!(once.iter().any(|f| f.path == "src/client.ts"));
+    assert!(once.iter().any(|f| f.path == "src/managers/index.ts"));
+    assert!(once.iter().any(|f| f.path == "src/internal.ts"));
+    let client = once.iter().find(|f| f.path == "src/client.ts").unwrap();
+    assert!(client.content.contains("export class Client {"));
+    assert!(
+        client
+            .content
+            .contains("const session = new Session(auth);")
+    );
+    // Every manager method is `async` and reaches the network only via the
+    // `this.session.fetch(...)` contract surface (FR-5.2).
+    let managers: String = once
+        .iter()
+        .filter(|f| f.path.starts_with("src/managers/") && f.path.ends_with(".ts"))
+        .map(|f| f.content.as_str())
+        .collect();
+    assert!(managers.contains("export class "), "no manager classes");
+    assert!(managers.contains("): Promise<"), "no async manager methods");
+    assert!(
+        managers.contains("await this.session.fetch(req)"),
+        "managers must fetch through the runtime session"
+    );
     // The runtime-contract stubs (FR-5.3): managers type-check against these.
     let runtime = once.iter().find(|f| f.path == "src/runtime.ts").unwrap();
     assert!(
