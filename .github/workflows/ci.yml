@@ -66,3 +66,9 @@ jobs:
           go vet ./...
           test -z "$(gofmt -l .)"
           go test ./...
+      - name: Build and test the hand-written Rust runtime (TR-Rust.5)
+        working-directory: runtimes/rust/gantryruntime
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test
