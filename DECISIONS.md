@@ -1996,3 +1996,24 @@ stub `runtime.rs` for a re-export of this crate, adds the path dependency, and
 `cargo check --examples` the whole generated SDK plus a smoke example that
 constructs the client. That proves the runtime satisfies every contract
 signature the managers call (FR-5.2) — no drift between stub and reality.
+
+**Review hardening (Rust leads Go here).** Review surfaced four network-layer
+behaviors this port had faithfully mirrored from the shipped Go runtime; per an
+explicit call to have Rust lead, all four were fixed here (Go to follow in a
+cross-runtime pass): (1) **idempotency-gated retries** — a 429 (rate-limited,
+never processed) still retries for every method, but a transport error or 5xx
+retries only for idempotent methods (`Method::is_idempotent`), so a POST/upload
+that may have committed is never silently replayed; (2) **exponential 429
+backoff** — the retry delay is the jittered exponential backoff, with a server
+`Retry-After` raised to a floor rather than used as a flat repeat; (3) a
+**`MAX_RETRY_DELAY` clamp** (300s) so a hostile/absurd `Retry-After` can't stall
+`fetch` past the caller's intent; (4) **single-flight force-refresh on 401** —
+`Auth::force_refresh` re-acquires past the freshness cache (a plain re-read
+returned the same rejected token), collapsing a burst of concurrent 401s to one
+refresh. Plus a **`RefreshTokenStore`** hook (`Auth::oauth_with_store`) that
+persists each rotated OAuth refresh token before returning, propagating a
+persistence failure so a restart never reloads a token Box has already killed.
+Also fixed a defect unique to the Rust port (Go delegates to `mime/multipart`):
+the hand-rolled multipart body now uses a boundary verified absent from both
+parts and escapes the filename (strip CR/LF, backslash-escape `\`/`"`), closing
+a framing-collision / header-injection gap.

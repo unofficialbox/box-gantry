@@ -7,6 +7,7 @@
 //! JWT server auth (signing-key assertions) lands in the next runtime slice;
 //! the three flows here cover fixed-token and both refresh-based exchanges.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
@@ -76,17 +77,40 @@ impl Auth {
     /// Resume the OAuth 2.0 authorization-code flow from a previously stored
     /// refresh token, exchanging it for access tokens as needed. Box rotates
     /// the refresh token on each exchange, so the newest one is retained.
+    ///
+    /// The rotated token is held in memory only; use [`Auth::oauth_with_store`]
+    /// to persist each rotation durably across restarts.
     pub fn oauth(config: OAuthConfig, refresh_token: impl Into<String>) -> Auth {
+        Self::oauth_source(config, refresh_token.into(), None)
+    }
+
+    /// Like [`Auth::oauth`], but persists each rotated refresh token through a
+    /// [`RefreshTokenStore`] before returning — so an app restart reloads the
+    /// live token instead of a refresh token Box has already invalidated.
+    pub fn oauth_with_store(
+        config: OAuthConfig,
+        refresh_token: impl Into<String>,
+        store: Arc<dyn RefreshTokenStore>,
+    ) -> Auth {
+        Self::oauth_source(config, refresh_token.into(), Some(store))
+    }
+
+    fn oauth_source(
+        config: OAuthConfig,
+        refresh_token: String,
+        store: Option<Arc<dyn RefreshTokenStore>>,
+    ) -> Auth {
         Auth {
             source: Source::OAuth(OAuthSource {
                 http: auth_http_client(),
                 token_url: config.token_url.clone().unwrap_or_else(default_token_url),
                 client_id: config.client_id,
                 client_secret: config.client_secret,
+                store,
                 state: Mutex::new(OAuthState {
                     token: String::new(),
                     expiry: Instant::now(),
-                    refresh_token: refresh_token.into(),
+                    refresh_token,
                 }),
             }),
         }
@@ -99,6 +123,39 @@ impl Auth {
             Source::Form(source) => source.access_token().await,
             Source::OAuth(source) => source.access_token().await,
         }
+    }
+
+    /// Force-acquire a token after the current one was rejected (a 401),
+    /// bypassing the freshness cache. Single-flight: if another task already
+    /// replaced the rejected `stale` token, that new token is returned instead
+    /// of refreshing again. A fixed developer token has nothing to refresh, so
+    /// it is returned unchanged (the retry then surfaces the 401).
+    pub(crate) async fn force_refresh(&self, stale: &str) -> Result<String, Error> {
+        match &self.source {
+            Source::Developer(token) => Ok(token.clone()),
+            Source::Form(source) => source.force_refresh(stale).await,
+            Source::OAuth(source) => source.force_refresh(stale).await,
+        }
+    }
+}
+
+/// A durable store for the rotating OAuth refresh token. Box invalidates the
+/// previous refresh token on each exchange, so an app that restarts must reload
+/// the newest one — implement this to persist each rotation (a file, a DB row,
+/// a secret manager). `save` runs before the access token is returned, and its
+/// failure propagates so a rotation is never silently lost.
+pub trait RefreshTokenStore: Send + Sync {
+    /// Persist the newly rotated refresh token durably.
+    fn save(&self, refresh_token: &str) -> Result<(), Error>;
+}
+
+/// The cached token if it is present and not within the refresh margin of
+/// expiry (shared by both caching sources).
+fn fresh_token(token: &str, expiry: Instant) -> Option<String> {
+    if !token.is_empty() && expiry.saturating_duration_since(Instant::now()) > REFRESH_MARGIN {
+        Some(token.to_string())
+    } else {
+        None
     }
 }
 
@@ -116,16 +173,8 @@ impl Cached {
         }
     }
 
-    /// The cached token if it is present and not within the refresh margin of
-    /// expiry.
     fn fresh(&self) -> Option<String> {
-        if !self.token.is_empty()
-            && self.expiry.saturating_duration_since(Instant::now()) > REFRESH_MARGIN
-        {
-            Some(self.token.clone())
-        } else {
-            None
-        }
+        fresh_token(&self.token, self.expiry)
     }
 
     fn store(&mut self, token: String, ttl: Duration) {
@@ -148,6 +197,21 @@ impl FormSource {
         if let Some(token) = cached.fresh() {
             return Ok(token);
         }
+        self.refresh_locked(&mut cached).await
+    }
+
+    async fn force_refresh(&self, stale: &str) -> Result<String, Error> {
+        let mut cached = self.cached.lock().await;
+        // Single-flight: a concurrent 401 may already have replaced the token.
+        if let Some(token) = cached.fresh() {
+            if token != stale {
+                return Ok(token);
+            }
+        }
+        self.refresh_locked(&mut cached).await
+    }
+
+    async fn refresh_locked(&self, cached: &mut Cached) -> Result<String, Error> {
         let response = post_token_form(&self.http, &self.token_url, &self.form).await?;
         cached.store(response.access_token.clone(), response.ttl());
         Ok(response.access_token)
@@ -155,12 +219,14 @@ impl FormSource {
 }
 
 /// The OAuth 2.0 refresh-token source: it rotates the refresh token Box returns
-/// (Box invalidates the old one each exchange).
+/// (Box invalidates the old one each exchange) and, when configured, persists
+/// each rotation through a [`RefreshTokenStore`].
 struct OAuthSource {
     http: reqwest::Client,
     token_url: String,
     client_id: String,
     client_secret: String,
+    store: Option<Arc<dyn RefreshTokenStore>>,
     state: Mutex<OAuthState>,
 }
 
@@ -173,11 +239,24 @@ struct OAuthState {
 impl OAuthSource {
     async fn access_token(&self) -> Result<String, Error> {
         let mut state = self.state.lock().await;
-        if !state.token.is_empty()
-            && state.expiry.saturating_duration_since(Instant::now()) > REFRESH_MARGIN
-        {
-            return Ok(state.token.clone());
+        if let Some(token) = fresh_token(&state.token, state.expiry) {
+            return Ok(token);
         }
+        self.refresh_locked(&mut state).await
+    }
+
+    async fn force_refresh(&self, stale: &str) -> Result<String, Error> {
+        let mut state = self.state.lock().await;
+        // Single-flight: a concurrent 401 may already have replaced the token.
+        if let Some(token) = fresh_token(&state.token, state.expiry) {
+            if token != stale {
+                return Ok(token);
+            }
+        }
+        self.refresh_locked(&mut state).await
+    }
+
+    async fn refresh_locked(&self, state: &mut OAuthState) -> Result<String, Error> {
         let form = vec![
             ("grant_type".to_string(), "refresh_token".to_string()),
             ("refresh_token".to_string(), state.refresh_token.clone()),
@@ -189,6 +268,11 @@ impl OAuthSource {
         state.expiry = Instant::now() + response.ttl();
         if let Some(refresh) = &response.refresh_token {
             state.refresh_token = refresh.clone();
+            if let Some(store) = &self.store {
+                // Persist the rotation before returning; propagate a failure so
+                // a restart never reloads a refresh token Box already killed.
+                store.save(refresh)?;
+            }
         }
         Ok(response.access_token)
     }
@@ -254,6 +338,7 @@ impl OAuthConfig {
             token_url,
             client_id: self.client_id.clone(),
             client_secret: self.client_secret.clone(),
+            store: None,
             state: Mutex::new(OAuthState {
                 token: response.access_token,
                 expiry: Instant::now() + ttl,
@@ -422,5 +507,50 @@ mod tests {
         // Inside the refresh margin, the cache reports stale.
         cached.store("tok".to_string(), Duration::from_secs(10));
         assert!(cached.fresh().is_none());
+    }
+
+    #[tokio::test]
+    async fn force_refresh_reuses_a_concurrently_refreshed_token() {
+        // A source whose cache already holds a fresh token *different* from the
+        // rejected one: force_refresh returns it without any network round-trip
+        // (single-flight — the token_url is unreachable, so a POST would fail).
+        let source = FormSource {
+            http: auth_http_client(),
+            token_url: "http://127.0.0.1:1/never".to_string(),
+            form: Vec::new(),
+            cached: Mutex::new(Cached::empty()),
+        };
+        source
+            .cached
+            .lock()
+            .await
+            .store("new".to_string(), Duration::from_secs(3600));
+        assert_eq!(source.force_refresh("old").await.unwrap(), "new");
+    }
+
+    #[test]
+    fn refresh_token_store_records_rotations() {
+        use std::sync::Mutex as StdMutex;
+        struct Recorder(StdMutex<Vec<String>>);
+        impl RefreshTokenStore for Recorder {
+            fn save(&self, refresh_token: &str) -> Result<(), Error> {
+                self.0.lock().unwrap().push(refresh_token.to_string());
+                Ok(())
+            }
+        }
+        let recorder = Recorder(StdMutex::new(Vec::new()));
+        recorder.save("r1").unwrap();
+        recorder.save("r2").unwrap();
+        assert_eq!(recorder.0.lock().unwrap().as_slice(), ["r1", "r2"]);
+        // A store composes into an OAuth Auth via oauth_with_store.
+        let _auth = Auth::oauth_with_store(
+            OAuthConfig {
+                client_id: "c".to_string(),
+                client_secret: "s".to_string(),
+                token_url: None,
+            },
+            "refresh",
+            Arc::new(Recorder(StdMutex::new(Vec::new()))),
+        );
     }
 }

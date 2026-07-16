@@ -16,10 +16,15 @@
 
 mod auth;
 
-pub use auth::{Auth, CcgConfig, OAuthConfig};
+pub use auth::{Auth, CcgConfig, OAuthConfig, RefreshTokenStore};
 
 use std::collections::HashMap;
 use std::time::Duration;
+
+/// The safety ceiling on any single retry sleep, so a pathological server-sent
+/// `Retry-After` (hours, years) can never suspend `fetch` far past the caller's
+/// intent.
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(300);
 
 /// A runtime error: a failed request, auth acquisition, or body decode. Opaque
 /// by design — the message carries the detail, the type stays stable.
@@ -164,7 +169,12 @@ impl Client {
     }
 
     /// Execute the request with retries: exponential backoff + full jitter, a
-    /// single 401 token refresh, and Retry-After on 429/503.
+    /// single 401 token refresh, and Retry-After (as a floor) on 429/5xx.
+    ///
+    /// Retries are gated on idempotency: a 429 means the request was rate-limited
+    /// and never processed, so it retries for every method; a transport error or
+    /// 5xx may have already committed a write, so those retry only for idempotent
+    /// methods (GET/HEAD/PUT/DELETE/…). The 401 refresh applies to every method.
     pub async fn fetch(&self, request: Request) -> Result<Response, Error> {
         let method = reqwest::Method::from_bytes(request.method.as_bytes()).map_err(|_| {
             Error::new(format!(
@@ -172,6 +182,7 @@ impl Client {
                 request.method
             ))
         })?;
+        let idempotent = method.is_idempotent();
         let mut token = self.access_token().await?;
         let mut refreshed = false;
 
@@ -189,7 +200,9 @@ impl Client {
             let response = match builder.send().await {
                 Ok(response) => response,
                 Err(err) => {
-                    if attempt == self.max_retries {
+                    // A transport error gives no response, so a non-idempotent
+                    // request may or may not have committed — don't replay it.
+                    if attempt == self.max_retries || !idempotent {
                         return Err(err.into());
                     }
                     sleep(backoff(attempt)).await;
@@ -198,15 +211,16 @@ impl Client {
             };
             let response = read_response(response).await?;
 
-            // A single token refresh on 401.
+            // A single force-refresh on 401: re-acquire past the token cache so
+            // the retry doesn't just resend the same rejected token.
             if response.status == 401 && !refreshed {
                 refreshed = true;
-                token = self.access_token().await?;
+                token = self.auth.force_refresh(&token).await?;
                 continue;
             }
-            // Back off on rate-limit / server errors, honoring Retry-After.
-            if retriable(response.status) && attempt < self.max_retries {
-                sleep(retry_after(&response, attempt)).await;
+            // Back off exponentially on rate-limit / server errors.
+            if should_retry(response.status, idempotent) && attempt < self.max_retries {
+                sleep(retry_delay(&response, attempt)).await;
                 continue;
             }
             return Ok(response);
@@ -350,9 +364,11 @@ async fn read_response(response: reqwest::Response) -> Result<Response, Error> {
     })
 }
 
-/// 429 or any 5xx is worth retrying.
-fn retriable(status: i64) -> bool {
-    status == 429 || status >= 500
+/// Whether a response status warrants a retry for a request of this idempotency.
+/// A 429 (rate-limited, never processed) retries for any method; a 5xx may have
+/// committed a write, so it retries only for idempotent methods.
+fn should_retry(status: i64, idempotent: bool) -> bool {
+    status == 429 || (status >= 500 && idempotent)
 }
 
 /// Exponential backoff capped at 30s, with full jitter.
@@ -361,14 +377,17 @@ fn backoff(attempt: u32) -> Duration {
     Duration::from_millis(jitter(base))
 }
 
-/// Retry-After (seconds) when the server sets it, else plain backoff.
-fn retry_after(response: &Response, attempt: u32) -> Duration {
+/// The delay before the next retry: exponential backoff (so repeated 429s/5xx
+/// escalate), raised to a server-sent `Retry-After` as a floor when present, and
+/// clamped to [`MAX_RETRY_DELAY`] so a hostile header can't stall the client.
+fn retry_delay(response: &Response, attempt: u32) -> Duration {
+    let mut delay = backoff(attempt);
     if let Some(value) = header_value(&response.headers, "retry-after") {
         if let Ok(secs) = value.trim().parse::<u64>() {
-            return Duration::from_secs(secs);
+            delay = delay.max(Duration::from_secs(secs));
         }
     }
-    backoff(attempt)
+    delay.min(MAX_RETRY_DELAY)
 }
 
 /// A cheap, dependency-free full-jitter source: a uniform value in `[0, max]`
@@ -545,12 +564,17 @@ mod tests {
     }
 
     #[test]
-    fn retriable_statuses() {
-        assert!(retriable(429));
-        assert!(retriable(500));
-        assert!(retriable(503));
-        assert!(!retriable(200));
-        assert!(!retriable(404));
+    fn retry_gating_respects_idempotency() {
+        // 429 (never processed) retries for any method.
+        assert!(should_retry(429, true));
+        assert!(should_retry(429, false));
+        // 5xx retries only for idempotent methods (a write may have committed).
+        assert!(should_retry(500, true));
+        assert!(should_retry(503, true));
+        assert!(!should_retry(500, false));
+        // Success / client errors never retry.
+        assert!(!should_retry(200, true));
+        assert!(!should_retry(404, true));
     }
 
     #[test]
@@ -570,12 +594,16 @@ mod tests {
     }
 
     #[test]
-    fn retry_after_prefers_header_seconds() {
+    fn retry_delay_uses_backoff_floored_by_retry_after_and_capped() {
+        // At attempt 0 backoff is <= 500ms, so a 2s Retry-After raises the floor.
         let resp = response(429, &[("Retry-After", "2")], b"");
-        assert_eq!(retry_after(&resp, 0), Duration::from_secs(2));
+        assert_eq!(retry_delay(&resp, 0), Duration::from_secs(2));
+        // A pathological Retry-After is clamped to the ceiling, never honored raw.
+        let resp = response(429, &[("Retry-After", "100000")], b"");
+        assert_eq!(retry_delay(&resp, 0), MAX_RETRY_DELAY);
         // A non-numeric Retry-After falls back to jittered backoff (<= cap).
         let resp = response(503, &[("Retry-After", "soon")], b"");
-        assert!(retry_after(&resp, 0) <= Duration::from_millis(500));
+        assert!(retry_delay(&resp, 0) <= Duration::from_millis(500));
     }
 
     #[test]
