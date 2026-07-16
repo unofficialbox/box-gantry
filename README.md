@@ -22,8 +22,10 @@ set), `generate` (emit an SDK), `verify` (generate then compile with the
 target toolchain), `conform` (the R§1 capability checklist), and `diff` (the
 breaking-change report between two spec sets). The **Go SDK (v1) is shipped**;
 Apex (v2) is essentially complete; **Rust (v3) has reached full capability
-parity** with Go (`verify`/`conform --target rust` both gate CI at 9/9); and
-TypeScript (v4) is next — see [`PROGRESS.md`](./PROGRESS.md).
+parity** with Go (`verify --target rust` gates the toolchain — rustfmt +
+`cargo check` + clippy + `cargo test` — while `conform --target rust` reports
+9/9 and gates the CI release check); and TypeScript (v4) is next — see
+[`PROGRESS.md`](./PROGRESS.md).
 
 ## Generating SDKs
 
