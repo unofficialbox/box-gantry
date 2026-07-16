@@ -56,12 +56,13 @@ enum Command {
         out: PathBuf,
     },
     /// Generate, then compile the output with the target's real toolchain
-    /// (VR-1.1). Exits 4 when the generated code fails verification.
+    /// (`go` → VR-1.1; `rust` → VR-1.2). Exits 4 when the generated code fails
+    /// verification.
     Verify {
         #[arg(required = true, value_name = "SPEC")]
         specs: Vec<PathBuf>,
         /// Target language (manifest key).
-        #[arg(long, value_parser = ["go"])]
+        #[arg(long, value_parser = ["go", "rust"])]
         target: String,
     },
     /// Report the R§1 capability conformance checklist for a target
@@ -71,9 +72,11 @@ enum Command {
     Conform {
         #[arg(required = true, value_name = "SPEC")]
         specs: Vec<PathBuf>,
-        /// Target language (manifest key). `go` and `apex` are both measured
-        /// against the same R§1 capability contract.
-        #[arg(long, value_parser = ["go", "apex"])]
+        /// Target language (manifest key). `go`, `apex`, and `rust` are all
+        /// measured against the same R§1 capability contract. `rust` is a
+        /// progress report (docs/tests/pagination are later slices), not yet a
+        /// green gate.
+        #[arg(long, value_parser = ["go", "apex", "rust"])]
         target: String,
     },
     /// Diff two spec sets and report breaking vs compatible changes and the
@@ -156,6 +159,14 @@ fn conform(specs: &[PathBuf], target: &str) -> ExitCode {
                 .collect();
             (files, gantry_verify::apex_shape())
         }
+        "rust" => {
+            let build = gantry_backend_rust::BuildInfo::new(set.fingerprint());
+            let files = gantry_backend_rust::generate(&analysis, &gantry_manifest::rust(), &build)
+                .into_iter()
+                .map(|f| (f.path, f.content))
+                .collect();
+            (files, gantry_verify::rust_shape())
+        }
         other => unreachable!("clap restricts --target to known manifests, got {other:?}"),
     };
 
@@ -233,17 +244,6 @@ fn generate_files(
             }))
         }
     }
-}
-
-fn write_files(root: &Path, files: &[gantry_backend_go::GeneratedFile]) -> std::io::Result<()> {
-    for file in files {
-        let path = root.join(&file.path);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(path, &file.content)?;
-    }
-    Ok(())
 }
 
 /// Every target `all` expands to, in output order.
@@ -357,9 +357,8 @@ fn generate_apex(specs: &[PathBuf]) -> Result<Vec<(String, String)>, ExitCode> {
 }
 
 /// Load → lower → analyze → Rust-generate. The Rust backend consumes the
-/// `rust()` manifest; no toolchain runs here. VR-1.2 is currently exercised by
-/// the backend's generated-output toolchain test (`verify --target rust` is a
-/// later slice).
+/// `rust()` manifest; no toolchain runs here — `verify --target rust` runs the
+/// VR-1.2 toolchain gate (rustfmt + `cargo check` + clippy) on this output.
 fn generate_rust(specs: &[PathBuf]) -> Result<Vec<(String, String)>, ExitCode> {
     let set = gantry_spec::SpecSet::load(specs).map_err(|err| {
         eprintln!("error: {err}");
@@ -404,25 +403,51 @@ fn write_pairs(root: &Path, files: &[(String, String)]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Generate one target's SDK as `(path, content)` pairs — the common currency
+/// `verify` and `conform` measure, so the backend file types stay internal.
+fn generate_pairs(specs: &[PathBuf], target: &str) -> Result<Vec<(String, String)>, ExitCode> {
+    match target {
+        "go" => generate_files(specs, "go")
+            .map(|files| files.into_iter().map(|f| (f.path, f.content)).collect()),
+        "apex" => generate_apex(specs),
+        "rust" => generate_rust(specs),
+        other => unreachable!("clap restricts --target to known manifests, got {other:?}"),
+    }
+}
+
 fn verify(specs: &[PathBuf], target: &str) -> ExitCode {
-    let files = match generate_files(specs, target) {
+    let files = match generate_pairs(specs, target) {
         Ok(files) => files,
         Err(code) => return code,
     };
     let dir = std::env::temp_dir().join(format!("gantry-verify-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    if let Err(err) = write_files(&dir, &files) {
+    if let Err(err) = write_pairs(&dir, &files) {
         eprintln!("error: cannot write output: {err}");
         return ExitCode::from(exit_codes::ENGINE_BUG);
     }
 
-    // The VR-1.1 loop: the target's real toolchain is the oracle.
-    for (label, program, args) in [
-        ("go build", "go", vec!["build", "./..."]),
-        ("go vet", "go", vec!["vet", "./..."]),
-    ] {
+    // The compile loop: the target's real toolchain is the oracle (Go → VR-1.1;
+    // Rust → VR-1.2 = rustfmt-clean + cargo check + clippy-clean).
+    let steps: &[(&str, &str, &[&str])] = match target {
+        "go" => &[
+            ("go build", "go", &["build", "./..."]),
+            ("go vet", "go", &["vet", "./..."]),
+        ],
+        "rust" => &[
+            ("cargo fmt --check", "cargo", &["fmt", "--check"]),
+            ("cargo check", "cargo", &["check"]),
+            (
+                "clippy -D warnings",
+                "cargo",
+                &["clippy", "--", "-D", "warnings"],
+            ),
+        ],
+        other => unreachable!("clap restricts --target to known manifests, got {other:?}"),
+    };
+    for (label, program, args) in steps {
         let output = match std::process::Command::new(program)
-            .args(&args)
+            .args(*args)
             .current_dir(&dir)
             .output()
         {
@@ -434,31 +459,36 @@ fn verify(specs: &[PathBuf], target: &str) -> ExitCode {
         };
         if !output.status.success() {
             eprintln!(
-                "error: {label} failed on the generated output:\n{}",
+                "error: {label} failed on the generated output:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
             return ExitCode::from(exit_codes::VERIFICATION_FAILURE);
         }
         println!("ok  {label} clean");
     }
-    match std::process::Command::new("gofmt")
-        .arg("-l")
-        .arg(&dir)
-        .output()
-    {
-        Ok(output) if output.status.success() && output.stdout.is_empty() => {
-            println!("ok  gofmt clean");
-        }
-        Ok(output) => {
-            eprintln!(
-                "error: gofmt wants changes (G-17) in:\n{}",
-                String::from_utf8_lossy(&output.stdout)
-            );
-            return ExitCode::from(exit_codes::VERIFICATION_FAILURE);
-        }
-        Err(err) => {
-            eprintln!("error: cannot run gofmt: {err}");
-            return ExitCode::from(exit_codes::VERIFICATION_FAILURE);
+    // Go's `gofmt -l` reports unformatted files by name (exit 0 + non-empty
+    // stdout), unlike Rust's `cargo fmt --check` (exit code), so check it here.
+    if target == "go" {
+        match std::process::Command::new("gofmt")
+            .arg("-l")
+            .arg(&dir)
+            .output()
+        {
+            Ok(output) if output.status.success() && output.stdout.is_empty() => {
+                println!("ok  gofmt clean");
+            }
+            Ok(output) => {
+                eprintln!(
+                    "error: gofmt wants changes (G-17) in:\n{}",
+                    String::from_utf8_lossy(&output.stdout)
+                );
+                return ExitCode::from(exit_codes::VERIFICATION_FAILURE);
+            }
+            Err(err) => {
+                eprintln!("error: cannot run gofmt: {err}");
+                return ExitCode::from(exit_codes::VERIFICATION_FAILURE);
+            }
         }
     }
     println!(

@@ -13,7 +13,7 @@ pub mod diff;
 
 pub use conformance::{
     Check, CheckStatus, ConformanceReport, Exclusion, GeneratedView, TargetShape, apex_shape,
-    conformance, go_shape,
+    conformance, go_shape, rust_shape,
 };
 pub use diff::{Change, ChangeKind, Severity, SpecDiff, VersionBump, diff};
 

@@ -2079,3 +2079,48 @@ leaves an artifact or 409s a later run on a duplicate name.
 **Deferred.** Pagination `Stream`s, typed date/time, `verify --target rust` +
 conformance `rust_shape` + generated tests/docs remain the backend-side M5 work;
 the runtime itself is now feature-complete for the four Box auth flows.
+
+## D-152 — Rust CLI verification: `verify --target rust` + `conform` `rust_shape` (VR-1.2/VR-3)
+
+**Context.** The Rust backend's VR-1.2 gate ran only as a backend integration
+test; the CLI's `verify` was Go-only and `conform` covered Go/Apex. This slice
+brings Rust to CLI parity so the same commands that gate Go/Apex also gate Rust,
+and wires the Rust compile gate into the primary CI signal.
+
+**Decision.**
+
+- **`verify --target rust`** (`gantry-cli`): generates the SDK to a temp crate
+  and runs the Rust toolchain as the oracle — `cargo fmt --check` + `cargo check`
+  + `clippy -D warnings` (VR-1.2), exit 4 on any failure. `verify` now dispatches
+  the toolchain by target (Go keeps `go build`/`vet`/`gofmt`; the `gofmt -l`
+  empty-stdout check stays Go-only since `cargo fmt --check` signals via exit
+  code). A shared `generate_pairs(specs, target)` produces the `(path, content)`
+  currency both `verify` and `conform` consume, so backend file types stay
+  internal. Wired into `ci.yml` right after the Go verify step — the Rust
+  compile gate is now a first-class CI signal, not only a backend test.
+- **`conform --target rust`** + **`rust_shape`** (`gantry-verify`): the R§1
+  conformance checklist now measures the Rust `src/` layout — `<Name>Manager`
+  struct definitions (not their `impl`s or options structs), one `pub async fn`
+  per operation, the `double_option` tri-state helper, and the `buildinfo`
+  provenance in `lib.rs`. Managers (85), operations (336), serialization, and
+  traceability match the program-derived expectations and pass today.
+
+**Rust conformance is a progress report, not yet a green gate.** The Rust
+backend does not emit generated docs, tests, or pagination surfaces yet (later
+M5 slices), so manager-docs, pagination, round-trip-tests, auth-flows, and
+docs-guides read **zero** — five capabilities fail. Crucially these are
+**pending work, not platform exclusions**: unlike Apex (which genuinely cannot
+do interactive OAuth or a tri-state package, D-141), Rust *will* emit these, so
+`rust_shape` declares **no exclusions** and `conform --target rust` honestly
+reports `FAIL` (4/9). It is therefore added to the CLI (developers can watch the
+number climb) but **deliberately not wired into the release-blocking CI gate**
+— it joins the gate when the docs/tests/pagination slices land and flip it
+green, exactly as `conform --target apex` was gated only once Apex reached
+parity (D-141). Faking exclusions to force a green would misreport deferred work
+as permanently excused, so it wasn't done.
+
+**Verification.** A `rust_shape` unit test drives a synthetic Rust SDK: the
+emitted capabilities are measured and pass (managers count struct defs not
+`impl`s; operations count `pub async fn`), and the not-yet-emitted ones read
+zero and fail — so the report is honestly partial. `verify --target rust` passes
+end to end on the full spec (96 files, rustfmt + check + clippy clean).
