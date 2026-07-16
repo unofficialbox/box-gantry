@@ -27,12 +27,13 @@
 //! (TR-Rust.5) and satisfies the same contract, which the backend's
 //! conformance test proves by compiling the generated SDK against it (FR-5.2).
 //!
-//! Not yet emitted (later M5 slices): pagination `Stream`s and generated tests
-//! + docs.
+//! Not yet emitted (a later M5 slice): generated round-trip / behavioral tests.
 
+mod docs;
 mod managers;
 mod models;
 
+pub use docs::generate_docs;
 pub use managers::generate_managers;
 pub use models::generate_models;
 
@@ -98,6 +99,10 @@ pub fn generate(
     ];
     files.extend(generate_models(analysis, build));
     files.extend(generate_managers(analysis, build));
+    files.extend(generate_docs(
+        analysis,
+        &gantry_synth::detect_pagination(analysis),
+    ));
     files.sort_by(|a, b| a.path.cmp(&b.path));
     files
 }

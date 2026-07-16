@@ -80,6 +80,24 @@ fn generation_is_deterministic() {
     assert!(folders.content.contains("Paginator {"), "{}", folders.path);
     assert!(folders.content.contains("_paginate("));
     assert!(folders.content.contains("pub async fn next(&mut self)"));
+    // Reference docs (FR-7.7): an index, one page per manager, and the three
+    // cross-cutting guides — describing the real Rust surface.
+    assert!(once.iter().any(|f| f.path == "docs/README.md"));
+    assert!(
+        once.iter()
+            .any(|f| f.path.starts_with("docs/managers/") && f.path.ends_with(".md")),
+        "expected per-manager doc pages"
+    );
+    for guide in ["docs/auth.md", "docs/pagination.md", "docs/errors.md"] {
+        assert!(once.iter().any(|f| f.path == guide), "missing {guide}");
+    }
+    // The auth guide documents every Box auth flow, and describes types with
+    // the real Rust surface (chrono-typed, `Result`-returning).
+    let auth = once.iter().find(|f| f.path == "docs/auth.md").unwrap();
+    for flow in ["Developer Token", "Client Credentials", "JWT", "OAuth"] {
+        assert!(auth.content.contains(flow), "auth guide missing {flow}");
+    }
+
     // The client wires one manager field per API area over a shared session.
     let client = once.iter().find(|f| f.path == "src/client.rs").unwrap();
     assert!(client.content.contains("pub struct Client {"));

@@ -539,20 +539,20 @@ pub fn rust_shape() -> TargetShape {
     TargetShape {
         target: "rust",
         count_managers: rust_managers,
-        count_manager_docs: rust_not_yet,
+        count_manager_docs: rust_manager_docs,
         count_operations: rust_operations,
         count_pagination: rust_pagination,
         count_serialization: rust_serialization,
         count_round_trip_tests: rust_not_yet,
-        count_auth: rust_not_yet,
+        count_auth: rust_auth,
         count_traceability: rust_traceability,
-        count_guides: rust_not_yet,
+        count_guides: rust_guides,
         exclusions: &[],
     }
 }
 
-/// A capability the Rust backend does not emit yet (docs, generated tests,
-/// pagination surfaces — later M5 slices): reads zero until it lands.
+/// A capability the Rust backend does not emit yet (generated round-trip /
+/// behavioral tests — a later M5 slice): reads zero until it lands.
 fn rust_not_yet(_files: &[GeneratedView]) -> usize {
     0
 }
@@ -605,6 +605,36 @@ fn rust_traceability(files: &[GeneratedView]) -> usize {
             && f.content.contains("ENGINE")
             && f.content.contains("SPEC_FINGERPRINT")
     }))
+}
+
+fn rust_manager_docs(files: &[GeneratedView]) -> usize {
+    // One reference page per manager under the shared `docs/managers/` tree
+    // (FR-7.7) — the same layout the Go backend emits.
+    files
+        .iter()
+        .filter(|f| f.path.starts_with("docs/managers/") && f.path.ends_with(".md"))
+        .count()
+}
+
+fn rust_auth(files: &[GeneratedView]) -> usize {
+    // The auth guide documents every Box auth flow the runtime surfaces.
+    files
+        .iter()
+        .find(|f| f.path == "docs/auth.md")
+        .map(|guide| {
+            AUTH_FLOWS
+                .iter()
+                .filter(|name| guide.content.contains(**name))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+fn rust_guides(files: &[GeneratedView]) -> usize {
+    GUIDES
+        .iter()
+        .filter(|path| files.iter().any(|f| f.path == **path))
+        .count()
 }
 
 /// The four Box auth flows the R§1 contract expects to be surfaced.
@@ -801,8 +831,10 @@ mod tests {
         let analysis = gantry_sema::analyze(&program).unwrap();
         // A minimal Rust SDK: one manager with two operation methods and a
         // paginator (struct + `next` + `_paginate` constructor), the tri-state
-        // helper, and the buildinfo provenance. No docs / tests yet.
-        let files = vec![
+        // helper, the buildinfo provenance, and the `docs/` tree (per-manager
+        // page + the guides). No generated tests yet.
+        let files =
+            vec![
             (
                 "src/managers/files.rs".to_string(),
                 "pub struct FilesGetFilesPaginator {}\n\
@@ -834,6 +866,18 @@ mod tests {
                  }\n"
                 .to_string(),
             ),
+            ("docs/README.md".to_string(), "# Box SDK reference\n".to_string()),
+            (
+                "docs/managers/files.md".to_string(),
+                "# FilesManager\n".to_string(),
+            ),
+            (
+                "docs/auth.md".to_string(),
+                "# Authentication\n## Developer Token\n## Client Credentials\n## JWT\n## OAuth\n"
+                    .to_string(),
+            ),
+            ("docs/pagination.md".to_string(), "# Pagination\n".to_string()),
+            ("docs/errors.md".to_string(), "# Errors\n".to_string()),
         ];
         let report = conformance(&rust_shape(), &analysis, &views(&files));
         assert!(report.report().contains("conformance (rust)"));
@@ -849,10 +893,17 @@ mod tests {
         assert_eq!(check("pagination").actual, 1);
         assert_eq!(check("serialization").status, CheckStatus::Pass);
         assert_eq!(check("traceability").status, CheckStatus::Pass);
-        // Not-yet-emitted capabilities read zero and fail (pending work, no
-        // exclusions) — so the whole report is not yet passing.
-        assert_eq!(check("manager-docs").actual, 0);
-        assert_eq!(check("manager-docs").status, CheckStatus::Fail);
+        // Docs are emitted: the per-manager page, all four guides, and every
+        // auth flow documented in the auth guide.
+        assert_eq!(check("manager-docs").actual, 1);
+        assert_eq!(check("manager-docs").status, CheckStatus::Pass);
+        assert_eq!(check("docs-guides").actual, 4);
+        assert_eq!(check("docs-guides").status, CheckStatus::Pass);
+        assert_eq!(check("auth-flows").actual, 4);
+        assert_eq!(check("auth-flows").status, CheckStatus::Pass);
+        // Generated round-trip tests are the one remaining pending capability —
+        // it reads zero and fails, so the whole report is not yet passing.
+        assert_eq!(check("round-trip-tests").actual, 0);
         assert_eq!(check("round-trip-tests").status, CheckStatus::Fail);
         assert!(!report.passed());
     }
