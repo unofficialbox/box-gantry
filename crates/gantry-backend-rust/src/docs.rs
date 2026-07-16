@@ -162,9 +162,13 @@ fn describe(program: &ir::Program, ty: &ir::Type) -> String {
                 describe(program, inner)
             )
         }
-        ir::Type::Decl(id) => program.decl(*id).name.as_str().to_string(),
-        ir::Type::Optional(inner) => format!("Option<{}>", describe(program, inner)),
-        ir::Type::Nullable(inner) => format!("Nullable<{}>", describe(program, inner)),
+        // Match the `models` type mapping exactly: declaration names go through
+        // `type_name` (prelude-collision suffixing), and `Nullable`/`Optional`
+        // both map to `Option<T>` — so the docs name the real generated types.
+        ir::Type::Decl(id) => crate::models::type_name(program.decl(*id).name.as_str()),
+        ir::Type::Optional(inner) | ir::Type::Nullable(inner) => {
+            format!("Option<{}>", describe(program, inner))
+        }
     }
 }
 
@@ -172,7 +176,7 @@ fn describe_response(program: &ir::Program, response: &ir::ResponseShape) -> Str
     match response {
         ir::ResponseShape::None => "no content".into(),
         ir::ResponseShape::Json(ty) => format!("`{}`", describe(program, unwrap(ty))),
-        ir::ResponseShape::Binary => "a binary stream (`Vec<u8>`)".into(),
+        ir::ResponseShape::Binary => "a binary stream (`runtime::Stream`)".into(),
         ir::ResponseShape::Text => "text (`String`)".into(),
         ir::ResponseShape::Redirect => "a redirect URL (`String`)".into(),
     }
