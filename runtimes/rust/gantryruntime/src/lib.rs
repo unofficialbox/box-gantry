@@ -243,8 +243,10 @@ fn apply_body(builder: reqwest::RequestBuilder, body: Option<&Body>) -> reqwest:
             file_name,
             file,
         }) => {
-            let boundary = "gantryruntimeXboundary";
-            let payload = multipart_body(boundary, attributes, file_name, file);
+            // A boundary that provably does not occur in either part, so the
+            // payload's own bytes can never split the framing.
+            let boundary = multipart_boundary(attributes, file);
+            let payload = multipart_body(&boundary, attributes, file_name, file);
             builder
                 .header(
                     "Content-Type",
@@ -256,7 +258,7 @@ fn apply_body(builder: reqwest::RequestBuilder, body: Option<&Body>) -> reqwest:
 }
 
 /// Build a Box-style multipart/form-data body: an `attributes` JSON field plus
-/// a `file` part (G-7).
+/// a `file` part (G-7). `file_name` is escaped for the quoted header value.
 fn multipart_body(boundary: &str, attributes: &[u8], file_name: &str, file: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
@@ -266,13 +268,64 @@ fn multipart_body(boundary: &str, attributes: &[u8], file_name: &str, file: &[u8
     out.extend_from_slice(b"\r\n");
     out.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
     out.extend_from_slice(
-        format!("Content-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\n")
-            .as_bytes(),
+        format!(
+            "Content-Disposition: form-data; name=\"file\"; filename=\"{}\"\r\n",
+            escape_filename(file_name)
+        )
+        .as_bytes(),
     );
     out.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
     out.extend_from_slice(file);
     out.extend_from_slice(b"\r\n");
     out.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    out
+}
+
+/// A multipart boundary guaranteed not to appear in either part — so no file
+/// content can forge a delimiter and split the framing. Derived from a
+/// nanosecond-seeded counter, re-rolled until it is collision-free (`mime/
+/// multipart` gets this from a random boundary; we verify explicitly).
+fn multipart_boundary(attributes: &[u8], file: &[u8]) -> String {
+    let mut seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x9e37_79b9_7f4a_7c15);
+    loop {
+        let candidate = format!("gantryruntimeXboundaryX{seed:016x}");
+        let needle = candidate.as_bytes();
+        if !contains_subslice(attributes, needle) && !contains_subslice(file, needle) {
+            return candidate;
+        }
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+    }
+}
+
+/// Whether `haystack` contains `needle` as a contiguous subslice.
+fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack.len() >= needle.len()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+}
+
+/// Escape a filename for a quoted `Content-Disposition` value (RFC 6266): strip
+/// CR/LF so it can never inject header lines or a boundary, and backslash-escape
+/// `\` and `"` so a quote can't close the value early.
+fn escape_filename(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for ch in name.chars() {
+        match ch {
+            '\r' | '\n' => {}
+            '\\' | '"' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
     out
 }
 
@@ -535,6 +588,31 @@ mod tests {
         assert!(text.contains("name=\"file\"; filename=\"f.txt\""));
         assert!(text.contains("data"));
         assert!(text.ends_with("--BOUND--\r\n"));
+    }
+
+    #[test]
+    fn multipart_boundary_avoids_payload_collision() {
+        // Seed the payload with what the first candidate would be, forcing a
+        // re-roll; the returned boundary must not occur in either part.
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap();
+        let planted = format!("gantryruntimeXboundaryX{seed:016x}");
+        let file = format!("prefix{planted}suffix").into_bytes();
+        let boundary = multipart_boundary(b"{}", &file);
+        assert!(!contains_subslice(&file, boundary.as_bytes()));
+        assert!(!contains_subslice(b"{}", boundary.as_bytes()));
+    }
+
+    #[test]
+    fn escape_filename_neutralizes_injection() {
+        // CRLF is stripped (no header/boundary injection); quotes and
+        // backslashes are escaped so they can't close the quoted value.
+        assert_eq!(escape_filename("a\r\nb"), "ab");
+        assert_eq!(escape_filename(r#"a"b"#), r#"a\"b"#);
+        assert_eq!(escape_filename(r"a\b"), r"a\\b");
+        assert_eq!(escape_filename("plain.txt"), "plain.txt");
     }
 
     #[tokio::test]
