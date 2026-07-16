@@ -2022,3 +2022,60 @@ unique to the Rust port (Go delegates to `mime/multipart`): the hand-rolled
 multipart body now uses a boundary verified absent from both parts and escapes
 the filename (strip CR/LF, backslash-escape `\`/`"`), closing a
 framing-collision / header-injection gap.
+
+## D-151 — Rust runtime, slice 5: JWT server auth + the live smoke (VR-7)
+
+**Context.** D-150 landed the Rust runtime with three auth flows (developer
+token, CCG, OAuth) and deferred JWT — signing-key server auth needs external
+crypto and Box's encrypted-key format — plus the Rust live smoke. This slice
+adds both, completing the runtime's auth surface and its end-to-end check
+against a real Box account (mirroring the Go runtime).
+
+**Decision.**
+
+- **JWT server auth** (`runtimes/rust/gantryruntime/src/jwt.rs` + `Auth::jwt`).
+  The RSA private key from the app's `box_config.json` is parsed up front (a bad
+  key fails at construction, not on the first request): unencrypted PKCS#8 or
+  PKCS#1, or **encrypted PKCS#8** with a passphrase (the `rsa` crate's `pkcs5`
+  feature — Box's current `box_config` key format). Each token refresh RS256-signs
+  a fresh, single-use JWT bearer assertion by hand (`rsa` + `sha2` + `base64`,
+  mirroring the Go runtime's `crypto` use rather than pulling a JWT library that
+  can't take an encrypted key) — header `{alg:RS256,typ:JWT,kid}`, claims
+  `iss/sub/box_sub_type/aud/jti/exp` with a 45s expiry and a nanosecond+counter
+  `jti` — then exchanges it at the `jwt-bearer` grant. `JwtSource` caches the
+  resulting token like the CCG flow but re-mints the assertion each refresh.
+  Legacy passphrase-encrypted **PKCS#1** keys (DEK-Info) are a documented
+  non-target; Box issues PKCS#8-encrypted keys. The `Source::Jwt` variant is
+  boxed (the parsed key dwarfs the other variants — `clippy::large_enum_variant`).
+- **Live smoke** (`tests/livesmoke.rs`, VR-7). Drives only the stable runtime
+  contract (`Client::new`/`new_request`/`fetch`/`with_*`/response accessors), so
+  it is independent of generated method names — it verifies the hand-written
+  runtime, the part a compile check can't reach: one `GET /users/me` per
+  configured flow, then paginate the root folder + upload/download/delete a small
+  file. `#[ignore]`d so the standard gate compiles it (no rot) but never runs it;
+  with no credentials it returns a clean no-op. Env/`.env` loading is
+  dependency-free, same recognized variables as Go.
+
+**Verification.** Unit tests (now 25) add JWT coverage: an assertion is a
+well-formed three-part JWT whose header/claims decode as expected and whose
+**RS256 signature verifies** against the key's public half, the user subject
+overrides enterprise, a bad key errors at construction, and `jti`s are unique.
+The encrypted-PKCS#8 path is exercised end to end — an AES-256-CBC/PBES2 key
+decrypts with its passphrase and signs a verifiable assertion, a wrong
+passphrase errors, and a missing passphrase is rejected. CI gains a Rust step in
+`livesmoke.yml` (the manual VR-7 workflow), alongside the Go one; the per-commit
+gate still compiles the ignored smoke via the standalone runtime `cargo test` +
+`clippy --all-targets`. The generated SDK still compiles against the real runtime
+(the FR-5.2 conformance test is unaffected — JWT is additive to `Auth`).
+
+The two smokes share one Box account: the Go step runs first and consumes the
+**rotating** `BOX_OAUTH_REFRESH_TOKEN`, so the Rust step nulls it and skips OAuth
+(Go covers that shared flow; Rust's OAuth path is unit-tested and reuses the
+CCG flow's cached-refresh machinery, which the Rust smoke does exercise). The
+Rust smoke uses a per-run unique filename and deletes the uploaded file
+unconditionally — even if the download assertion would fail — so a run never
+leaves an artifact or 409s a later run on a duplicate name.
+
+**Deferred.** Pagination `Stream`s, typed date/time, `verify --target rust` +
+conformance `rust_shape` + generated tests/docs remain the backend-side M5 work;
+the runtime itself is now feature-complete for the four Box auth flows.

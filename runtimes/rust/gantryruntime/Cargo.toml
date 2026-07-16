@@ -12,6 +12,9 @@ description = "Hand-written runtime the generated Box Rust SDK ships against (TR
 
 [dependencies]
 async-trait = "0.1"
+base64 = "0.22"
+rsa = { version = "0.9", features = ["sha2", "pem", "pkcs5"] }
+sha2 = "0.10"
 tokio = { version = "1", features = ["time", "sync"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde_json = "1"

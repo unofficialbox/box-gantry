@@ -15,8 +15,10 @@
 //! dropping a `fetch` future cancels the in-flight request.
 
 mod auth;
+mod jwt;
 
 pub use auth::{Auth, CcgConfig, OAuthConfig, RefreshTokenStore};
+pub use jwt::JwtConfig;
 
 use std::collections::HashMap;
 use std::time::Duration;
