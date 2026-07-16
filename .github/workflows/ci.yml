@@ -100,3 +100,6 @@ jobs:
           cargo fmt --check
           cargo clippy --all-targets -- -D warnings
           cargo test
+      - name: Type-check the hand-written TypeScript runtime (TR-TS.5)
+        working-directory: runtimes/typescript/gantryruntime
+        run: tsc --noEmit -p tsconfig.json

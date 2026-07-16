@@ -2386,3 +2386,41 @@ strict TS7 (97 files via `verify --target typescript`). The `compile_output` tes
 asserts the managers/client files exist, are `async`, and reach the network only
 through `this.session.fetch`. Next: the real `fetch` runtime (TR-TS.5), then
 docs/generated tests + `conform --target typescript`.
+
+## D-160 — TypeScript backend, slice 4: the hand-written `fetch` runtime (TR-TS.5)
+
+**Context.** The generated managers/client (D-159) call only through the runtime
+contract, type-checked against the rendered `runtime.ts` stubs (D-158). This
+slice adds the *real* runtime — the hand-written implementation the stubs stand
+in for — so the generated SDK compiles and runs against actual behavior, the
+TypeScript analogue of `runtimes/go/gantryruntime` and `runtimes/rust/gantryruntime`.
+
+**The runtime.** `runtimes/typescript/gantryruntime/` is a standalone package
+(its own `package.json`/`tsconfig`, detached from the engine workspace like the
+Go/Rust runtimes). `src/runtime.ts` implements the V1 contract with matching
+names/signatures: `Request`/`Response`/`Stream` envelopes, a `Client` session
+(`baseUrl`, `newRequest`, `accessToken`, and a retrying `fetch` — exponential
+backoff + full jitter, a single 401 token refresh, Retry-After on 429/503), the
+`with*` request builders, and the response accessors. `src/errors.ts` holds
+`BoxApiError extends Error` (the exceptions model, TR-TS.3). It depends only on
+the platform `fetch`/`Headers`/`URLSearchParams`, so it runs on any modern
+JavaScript runtime — no Node-only APIs.
+
+**Auth.** `src/auth.ts` provides three of the four flows, all `fetch`-only:
+`developerToken` (fixed token), `clientCredentials` (CCG), and the OAuth 2.0
+authorization-code flow (`authorizeUrl` / `exchangeCode` / `oauth` resume). CCG
+and OAuth cache the access token behind a single-flight refresh (concurrent
+callers share one in-flight exchange) and refresh a margin before expiry; OAuth
+rotates the refresh token Box returns. **JWT server auth is deferred** to a
+follow-up slice — it is the only flow that needs an RSA signing key (`node:crypto`
++ `@types/node`), so keeping it separate preserves this slice's platform-neutral,
+dependency-free tsc gate.
+
+**Gated (TR-TS.5).** A backend test (`the_generated_sdk_compiles_against_the_real_runtime`)
+generates the SDK, swaps the stub `runtime.ts` for the real runtime's source, adds
+a smoke module that constructs the client from an auth flow, and `tsc --noEmit`s
+the whole package — proving the runtime satisfies the contract signatures the
+managers call, with no drift (FR-5.2), exactly as the Rust backend's
+`cargo check --examples` gate does. The runtime package also type-checks standalone
+under strict TS7, wired as a CI step alongside the Go/Rust runtime jobs. Next: JWT
+server auth, then docs/generated tests + `conform --target typescript`.
