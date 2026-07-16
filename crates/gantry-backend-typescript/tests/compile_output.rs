@@ -69,7 +69,7 @@ fn generation_is_deterministic() {
     assert!(
         runtime
             .content
-            .contains("async fetch(request: Request): Promise<Response>")
+            .contains("async fetch(request: Request, signal?: AbortSignal): Promise<Response>")
     );
 
     let models: String = once

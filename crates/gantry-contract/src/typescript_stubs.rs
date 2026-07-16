@@ -120,16 +120,22 @@ fn render_free_fn(out: &mut String, function: &ContractFn) {
     out.push_str("}\n\n");
 }
 
-/// The parameter list, `name: Type` comma-joined. The context carrier is never
-/// emitted (TypeScript uses `AbortSignal`, not a context parameter).
+/// The parameter list, `name: Type` comma-joined. The context carrier is
+/// rendered as TypeScript's cancellation idiom instead of a context parameter:
+/// the async (network) entry points take a trailing optional `signal?:
+/// AbortSignal` — TypeScript cancels via `AbortSignal`, not by dropping a
+/// future the way Rust does.
 fn params(function: &ContractFn) -> String {
-    function
+    let mut parts: Vec<String> = function
         .params
         .iter()
         .filter(|(_, ty)| *ty != ContractType::Context)
         .map(|(name, ty)| format!("{}: {}", camel(name), ts_type(*ty)))
-        .collect::<Vec<_>>()
-        .join(", ")
+        .collect();
+    if function.takes_context {
+        parts.push("signal?: AbortSignal".to_string());
+    }
+    parts.join(", ")
 }
 
 /// The return type: `Promise<T>` for the async (network) entry points, `T`

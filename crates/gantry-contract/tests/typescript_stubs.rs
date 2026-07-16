@@ -18,10 +18,13 @@ fn typescript_stubs_render_deterministically() {
             function.name
         );
     }
-    // The network entry points return `Promise<T>` (the Async axis); builders
-    // are sync. The error model is a `BoxApiError` subclass (Exceptions axis).
-    assert!(once.contains("async fetch(request: Request): Promise<Response>"));
-    assert!(once.contains("async accessToken(): Promise<string>"));
+    // The network entry points return `Promise<T>` (the Async axis) and carry a
+    // trailing optional `AbortSignal` (TypeScript's cancellation carrier);
+    // builders are sync. The error model is a `BoxApiError` subclass.
+    assert!(
+        once.contains("async fetch(request: Request, signal?: AbortSignal): Promise<Response>")
+    );
+    assert!(once.contains("async accessToken(signal?: AbortSignal): Promise<string>"));
     assert!(once.contains("baseUrl(name: string): string"));
     assert!(once.contains(
         "export function withQuery(request: Request, name: string, value: string): Request"
