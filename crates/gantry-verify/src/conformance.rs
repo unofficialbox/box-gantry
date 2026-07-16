@@ -552,18 +552,21 @@ pub fn rust_shape() -> TargetShape {
 }
 
 fn rust_round_trip_tests(files: &[GeneratedView]) -> usize {
-    // Both the serialization behavioral test (tri-state + typed date/time) and
-    // at least one per-union round-trip test must be present — a missing or
-    // empty `roundtrip_tests.rs` fails the gate, mirroring the Go recognizer
-    // (FR-7.8, VR-4). The reported count is the number of per-union tests.
+    // The serialization behavioral test (tri-state + typed date/time) is the
+    // required baseline — it is itself a round-trip test, so it satisfies the
+    // bar for a union-free SDK (whose `roundtrip_tests.rs` is legitimately
+    // empty). Each generated per-union round-trip test adds to the count
+    // (FR-7.8, VR-4). Per-union coverage on a union-bearing spec is separately
+    // asserted by the backend's deterministic `compile_output` test.
     if !files.iter().any(|f| f.path == "src/serialization_tests.rs") {
         return 0;
     }
-    files
+    let unions: usize = files
         .iter()
         .filter(|f| f.path == "src/roundtrip_tests.rs")
         .map(|f| f.content.matches("_round_trip(").count())
-        .sum()
+        .sum();
+    1 + unions
 }
 
 fn rust_is_manager_file(path: &str) -> bool {
@@ -918,21 +921,42 @@ mod tests {
         assert_eq!(check("docs-guides").status, CheckStatus::Pass);
         assert_eq!(check("auth-flows").actual, 4);
         assert_eq!(check("auth-flows").status, CheckStatus::Pass);
-        // Generated round-trip tests: one per-union round-trip test present
-        // (gated on the serialization behavioral test) — the capability passes.
-        assert_eq!(check("round-trip-tests").actual, 1);
+        // Generated round-trip tests: the serialization behavioral baseline
+        // plus one per-union round-trip test — the capability passes.
+        assert_eq!(check("round-trip-tests").actual, 2);
         assert_eq!(check("round-trip-tests").status, CheckStatus::Pass);
         // Every capability is emitted now — the Rust report passes end to end.
         assert!(report.passed());
 
-        // Regression: dropping the per-union round-trip file fails the gate even
-        // though the serialization behavioral test remains.
-        let without_unions: Vec<(String, String)> = files
+        // A union-free SDK (empty `roundtrip_tests.rs`) still passes on the
+        // serialization baseline alone — no false failure.
+        let union_free: Vec<(String, String)> = files
             .iter()
-            .filter(|(path, _)| path != "src/roundtrip_tests.rs")
+            .map(|(path, content)| {
+                if path == "src/roundtrip_tests.rs" {
+                    (path.clone(), "// no discriminated unions\n".to_string())
+                } else {
+                    (path.clone(), content.clone())
+                }
+            })
+            .collect();
+        let uf = conformance(&rust_shape(), &analysis, &views(&union_free));
+        let uf_rt = uf
+            .checks
+            .iter()
+            .find(|c| c.capability == "round-trip-tests")
+            .unwrap();
+        assert_eq!(uf_rt.actual, 1);
+        assert_eq!(uf_rt.status, CheckStatus::Pass);
+
+        // Regression: dropping the serialization behavioral test (the required
+        // baseline) fails the gate.
+        let without_serialization: Vec<(String, String)> = files
+            .iter()
+            .filter(|(path, _)| path != "src/serialization_tests.rs")
             .cloned()
             .collect();
-        let degraded = conformance(&rust_shape(), &analysis, &views(&without_unions));
+        let degraded = conformance(&rust_shape(), &analysis, &views(&without_serialization));
         let rt = degraded
             .checks
             .iter()
