@@ -2437,3 +2437,37 @@ managers call, with no drift (FR-5.2), exactly as the Rust backend's
 `cargo check --examples` gate does. The runtime package also type-checks standalone
 under strict TS7, wired as a CI step alongside the Go/Rust runtime jobs. Next: JWT
 server auth, then docs/generated tests + `conform --target typescript`.
+
+## D-161 — TypeScript backend, slice 5: JWT server auth (TR-TS.5, auth parity)
+
+**Context.** The runtime (D-160) shipped three of the four Box auth flows; JWT
+server auth was deferred because it is the only flow that needs an RSA signing
+key, i.e. reaches beyond the platform `fetch`. This slice completes auth parity
+with the Go/Rust runtimes.
+
+**The flow.** `jwtAuth(config)` parses (and if needed decrypts) the RSA private
+key up front — so a bad key fails loudly at construction, not on the first
+request — then, on each refresh, builds and RS256-signs the single-use Box JWT
+bearer assertion (`alg`/`typ`/`kid` header; `iss`/`sub`/`box_sub_type`/`aud`/
+random `jti`/45s `exp` claims — identical to Go/Rust) and exchanges it at the
+token endpoint through the shared cached-refresh machinery. It returns a promise
+because it imports `node:crypto` on demand.
+
+**Keeping the core platform-neutral.** JWT is the one Node-only flow, so it is
+isolated: `jwt.ts` is a **leaf** module (not re-exported by `runtime.ts`),
+reached via the package's `./jwt` export, and it imports `node:crypto` **lazily**
+(`await import`), so importing the core runtime or the three `fetch`-only flows
+never pulls in a Node dependency. The shared token machinery (`Auth`,
+`CachedToken`, `postTokenForm`) was extracted into `tokens.ts` so `jwt.ts` reuses
+it without `auth.ts` leaking internals (DRY).
+
+**Types without `@types/node`.** Adding `@types/node` would drag in Node's global
+`fetch`/`Request`/`Response`, which clash with the DOM lib the core runtime
+relies on. So the small slice of `node:crypto` used (`createPrivateKey`, `sign`,
+`randomBytes`) is declared ambiently in `node-crypto.d.ts`, keeping the runtime's
+`tsc` gate dependency-free. The generated-SDK swap gate skips `jwt.ts` (and its
+ambient decl), staying platform-neutral; the runtime's own gate type-checks
+`jwt.ts`. Because the ambient decl can't verify against the real module, the
+signing path was smoke-checked against real `node:crypto` (encrypted-key parse →
+valid RS256 signature). A runtime unit test + live smoke are a later testing
+slice, alongside docs/generated tests + `conform --target typescript`.

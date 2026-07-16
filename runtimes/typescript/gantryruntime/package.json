@@ -5,7 +5,8 @@
   "type": "module",
   "types": "./src/runtime.ts",
   "exports": {
-    ".": "./src/runtime.ts"
+    ".": "./src/runtime.ts",
+    "./jwt": "./src/jwt.ts"
   },
   "license": "MIT"
 }
