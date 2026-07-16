@@ -1,0 +1,32 @@
+[package]
+name = "gantryruntime"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Hand-written runtime the generated Box Rust SDK ships against (TR-Rust.5)."
+
+# Standalone crate: the heavy async stack (reqwest/tokio/rustls) lives here,
+# never in the engine workspace. Its own workspace root detaches it from the
+# `crates/*` members (mirrors runtimes/go's separate go.mod).
+[workspace]
+
+[dependencies]
+async-trait = "0.1"
+tokio = { version = "1", features = ["time", "sync"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde_json = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "time",
+    "sync",
+    "net",
+    "io-util",
+] }
+
+[lints.clippy]
+# NF-1 parity with the engine workspace: silent enum fallthroughs are the bug
+# class this project exists to eliminate.
+wildcard_enum_match_arm = "warn"

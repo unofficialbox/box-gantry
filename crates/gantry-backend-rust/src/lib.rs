@@ -19,9 +19,13 @@
 //! (`cargo fmt --check` + `cargo check` + `clippy -D warnings` — VR-1.2) plus a
 //! generated-union round-trip test (VR-4).
 //!
-//! Not yet emitted (later M5 slices): typed date/time, managers + async client
-//! (TR-Rust.3), the `reqwest`/`tokio` runtime (TR-Rust.5), and generated tests
-//! + docs.
+//! The backend emits the contract's compile-time runtime *stub* (`runtime.rs`);
+//! the real `reqwest`/`tokio` runtime is hand-written in `runtimes/rust`
+//! (TR-Rust.5) and satisfies the same contract, which the backend's
+//! conformance test proves by compiling the generated SDK against it (FR-5.2).
+//!
+//! Not yet emitted (later M5 slices): typed date/time, pagination `Stream`s,
+//! and generated tests + docs.
 
 mod managers;
 mod models;

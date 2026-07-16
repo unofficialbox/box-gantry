@@ -1939,3 +1939,86 @@ the real `reqwest`/`tokio` runtime crate + `verify --target rust` + conformance
 `rust_shape` + `ci.yml` steps. Uploads (octet-stream/multipart) send an empty
 file part as a documented placeholder — the same posture as the Go backend's
 `nil` file — until the runtime slice wires real body streaming.
+
+## D-150 — Rust backend, slice 4: the hand-written `reqwest`/`tokio` runtime (TR-Rust.5)
+
+**Context.** Slice 3 (D-149) added the callable surface (managers/client) and
+the FR-5 runtime *stub* the generated SDK compiles against. This slice supplies
+the real behavior: the hand-written runtime that satisfies the same contract,
+so a generated SDK can actually reach Box. It mirrors the shipped Go runtime
+(`runtimes/go/gantryruntime`).
+
+**Decision.**
+
+- **A standalone crate** at `runtimes/rust/gantryruntime` (its own `[workspace]`
+  root, outside the engine's `crates/*`), so the heavy async stack
+  (`reqwest`/`tokio`/`rustls`) lives with the runtime and never enters the
+  engine's dependency tree — exactly how the Go runtime's separate `go.mod`
+  keeps Go's HTTP stack out of the engine. `reqwest` uses `rustls-tls`
+  (`default-features = false`) to avoid a system-OpenSSL build dependency in CI.
+- **The contract surface, implemented** (`src/lib.rs`): `Client::new(auth)` over
+  the default Box base URLs (D-106), an async `fetch` with the R§1 network-layer
+  policy — jittered exponential backoff capped at 30s (a dependency-free
+  nanosecond-seeded xorshift for the jitter, which only needs to decorrelate
+  retries, not be cryptographic), a single 401 token refresh, and Retry-After on
+  429/503. Request/response envelopes buffer their bodies fully so retries and
+  response replay stay safe (the manifest's `Streaming::Supported` axis is met
+  by buffering — the same posture as the Go runtime). The `with_*` builders and
+  `response_*` accessors match the free-function contract signatures exactly;
+  the multipart body is framed by hand (an `attributes` JSON part + a `file`
+  part, G-7) to avoid pulling reqwest's multipart/stream features.
+- **Auth flows** (`src/auth.rs`): `Auth::developer_token` (fixed),
+  `Auth::client_credentials` (CCG), and `Auth::oauth` (authorization-code,
+  resumed from a stored refresh token or minted via `OAuthConfig::exchange_code`,
+  rotating the refresh token Box returns each exchange). Exchanged tokens cache
+  behind a `tokio::sync::Mutex` and refresh within a 60s margin of expiry. The
+  token endpoint POST and `x-www-form-urlencoded` encoding are hand-written
+  (no `url`/`oauth` crate). Async token acquisition threads through `fetch`.
+
+**Async, concretely.** The contract's `takes_context` functions are `async fn`
+returning `Result<T, Error>` (the Rust manifest's async + Result axes);
+cancellation rides the future itself, so there is no context parameter. `Error`
+is the opaque contract error with `From<serde_json::Error>` (and
+`From<reqwest::Error>`) so generated `?` decodes compile.
+
+**JWT deferred.** RSA-assertion server auth (signing keys, encrypted-PEM
+handling) is genuinely separate — external crypto crates and Box's legacy
+encrypted-key format — and lands in the next slice alongside the Rust live
+smoke (VR-7). The three flows here cover fixed-token and both refresh-based
+exchanges, which is all the contract-conformance and default flows need.
+
+**Verification.** Two ways, mirroring Go: (1) the runtime crate is
+fmt/clippy/tested standalone (a new CI step; 13 unit tests over base-URL config,
+request builders, retry math, response accessors, form encoding, and the
+developer-token/CCG/OAuth-config surface); (2) the real check — a new backend
+test (`the_generated_sdk_compiles_against_the_real_runtime`) swaps the generated
+stub `runtime.rs` for a re-export of this crate, adds the path dependency, and
+`cargo check --examples` the whole generated SDK plus a smoke example that
+constructs the client. That proves the runtime satisfies every contract
+signature the managers call (FR-5.2) — no drift between stub and reality.
+
+**Review hardening (Rust leads Go here).** Review surfaced four network-layer
+behaviors this port had faithfully mirrored from the shipped Go runtime; per an
+explicit call to have Rust lead, all four were fixed here (Go to follow in a
+cross-runtime pass): (1) **idempotency-gated retries** — a 429 (rate-limited,
+never processed) still retries for every method, but a transport error or 5xx
+retries only for idempotent methods (`Method::is_idempotent`), so a POST/upload
+that may have committed is never silently replayed; (2) **exponential 429
+backoff** — the retry delay is the jittered exponential backoff, with a server
+`Retry-After` raised to a floor rather than used as a flat repeat; (3) a
+**`MAX_RETRY_DELAY` clamp** (300s) so a hostile/absurd `Retry-After` can't stall
+`fetch` past the caller's intent; (4) **single-flight force-refresh on 401** —
+`Auth::force_refresh` re-acquires past the freshness cache (a plain re-read
+returned the same rejected token), collapsing a burst of concurrent 401s to one
+refresh. Plus a **`RefreshTokenStore`** hook (`Auth::oauth_with_store`) that
+persists each rotated OAuth refresh token so a restart never reloads a token Box
+has already killed: `save` is `async` (a file/DB/secret-manager store does real
+I/O without blocking the executor), the rotating call surfaces a `save` failure,
+and — since Box has already rotated the token server-side and can't be undone —
+the runtime marks the rotation unpersisted and *retries persistence on every
+later call until it sticks* rather than treating the in-memory cache as durable
+(a failure otherwise masks itself after the first call). Also fixed a defect
+unique to the Rust port (Go delegates to `mime/multipart`): the hand-rolled
+multipart body now uses a boundary verified absent from both parts and escapes
+the filename (strip CR/LF, backslash-escape `\`/`"`), closing a
+framing-collision / header-injection gap.

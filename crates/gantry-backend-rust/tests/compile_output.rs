@@ -127,3 +127,64 @@ fn the_real_spec_models_compile() {
         String::from_utf8_lossy(&clippy.stderr)
     );
 }
+
+/// FR-5.2/TR-Rust.5: the generated SDK must compile against the real
+/// hand-written runtime, not only the stubs — proving the `reqwest`/`tokio`
+/// runtime satisfies the contract signatures the managers call.
+#[test]
+fn the_generated_sdk_compiles_against_the_real_runtime() {
+    if Command::new("cargo").arg("--version").output().is_err() {
+        eprintln!("SKIPPED: cargo toolchain not available; CI runs this gate");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("gantry-rust-runtime-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    write_all(&dir, &generate());
+
+    // Point `crate::runtime` at the real crate instead of the compile-time
+    // stub: a one-line re-export makes every `runtime::…` path the managers
+    // call resolve to the hand-written runtime's types and functions.
+    let runtime_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../runtimes/rust/gantryruntime")
+        .canonicalize()
+        .unwrap();
+    std::fs::write(
+        dir.join("src/runtime.rs"),
+        "// Test shim: re-export the real runtime in place of the stub.\n\
+         pub use gantryruntime::*;\n",
+    )
+    .unwrap();
+
+    // Add the path dependency on the real runtime crate.
+    let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
+    let manifest = format!(
+        "{manifest}gantryruntime = {{ path = {:?} }}\n",
+        runtime_dir.to_str().unwrap()
+    );
+    std::fs::write(dir.join("Cargo.toml"), manifest).unwrap();
+
+    // A smoke example proving the public API composes: construct the client
+    // from an auth flow (which forces the whole manager tree to typecheck
+    // against the real runtime).
+    std::fs::create_dir_all(dir.join("examples")).unwrap();
+    std::fs::write(
+        dir.join("examples/smoke.rs"),
+        "fn main() {\n\
+         \x20   let _client =\n\
+         \x20       box_sdk::client::Client::new(box_sdk::runtime::Auth::developer_token(\"dev\"));\n\
+         }\n",
+    )
+    .unwrap();
+
+    let check = Command::new("cargo")
+        .args(["check", "--examples"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        check.status.success(),
+        "generated SDK does not compile against the real runtime (contract drift, FR-5.2):\n{}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+}
