@@ -21,15 +21,16 @@ The `gantry` CLI has five subcommands: `check` (ingest + validate a spec
 set), `generate` (emit an SDK), `verify` (generate then compile with the
 target toolchain), `conform` (the R§1 capability checklist), and `diff` (the
 breaking-change report between two spec sets). The **Go SDK (v1) is shipped**;
-Apex (v2) is essentially complete, and Rust (v3) then TypeScript (v4) are next
-— see [`PROGRESS.md`](./PROGRESS.md).
+Apex (v2) is essentially complete; **Rust (v3) has reached full capability
+parity** with Go (`verify`/`conform --target rust` both gate CI at 9/9); and
+TypeScript (v4) is next — see [`PROGRESS.md`](./PROGRESS.md).
 
 ## Generating SDKs
 
 `generate` emits **one** target per run — `--target` takes a single manifest
-key and `--out` the output directory. Two targets are implemented in the CLI
-today: `go` (shipped) and `apex` (near-complete); `rust` (v3) and `typescript`
-(v4) are planned and not yet selectable.
+key and `--out` the output directory. Three targets are implemented in the CLI
+today: `go` (shipped), `apex` (near-complete), and `rust` (capability parity);
+`typescript` (v4) is planned and not yet selectable.
 The trailing arguments are the spec set: the base spec plus each versioned
 overlay, ingested together.
 

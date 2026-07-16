@@ -471,8 +471,50 @@ already proved it (85/85 managers lower, zero IR changes forced).
     `PROGRESS.md`, and this plan; +320 (96) hrs including VR-1.5 → total 3,430
     (1,034), overall ~84% → ~78% by effort from the added scope. No engine code
     yet — M6 work.)
-47. **Next**: M5 — Rust backend + runtime (v3), then **M6 — TypeScript** (v4).
-    Apex (M4, v2) is conformance-proven (D-141) with its ship artifact defined
-    and its CI build job wired (D-142) — v2's "shipped" bar is met bar the first
-    on-platform
-    package-build dispatch.
+47. ~~M5 opens: the Rust model layer.~~ ✅ (D-147: `gantry-backend-rust` — one
+    Rust module per IR module, collision-safe across API versions; serde structs,
+    `Option<Option<T>>` tri-state via `double_option`, open enums as `String`
+    newtypes, closed enums, aliases.)
+48. ~~Typed discriminated unions (TR-Rust.1).~~ ✅ (D-148: hand-written
+    `Serialize`/`Deserialize` dispatching on the tag; open-union `Unknown(Value)`
+    retention, closed-union rejection.)
+49. ~~Async managers/client + the runtime-contract stubs.~~ ✅ (D-149: one
+    `<Name>Manager` per tag, one `async fn` per operation routing only through the
+    runtime contract; `Client` entry point; the contract's Rust stub renderer so
+    the SDK compiles without the real runtime (FR-5.3). `generate --target rust`
+    wired.)
+50. ~~The hand-written `reqwest`/`tokio` runtime (TR-Rust.5).~~ ✅ (D-150: a
+    standalone `runtimes/rust/gantryruntime` crate — async `fetch` with
+    idempotency-gated retries + exponential backoff, single-flight 401-refresh,
+    `Retry-After`; `with_*` builders + response accessors; the generated SDK
+    compiles against it (FR-5.2).)
+51. ~~All four Box auth flows + live smoke (VR-7).~~ ✅ (D-151: developer-token,
+    CCG, OAuth refresh with a durable async token store, and **JWT** server auth —
+    encrypted-PKCS#8 key parsing + hand-signed RS256; `#[ignore]`d live smoke vs a
+    real Box account, wired into `livesmoke.yml`.)
+52. ~~CLI verification: `verify`/`conform --target rust`.~~ ✅ (D-152: `verify
+    --target rust` runs the VR-1.2 toolchain gate (rustfmt + `cargo check` +
+    clippy) as a first-class CI signal; `conform --target rust` measures the R§1
+    checklist via a new `rust_shape`.)
+53. ~~Typed date/time via `chrono`.~~ ✅ (D-153: `Date` → `NaiveDate`, `DateTime`
+    → `DateTime<Utc>`, lean feature set, serializing to Box's exact wire format.)
+54. ~~Pagination as async paginators (FR-7.3).~~ ✅ (D-154: a per-operation
+    `<Manager><Method>Paginator` with a dependency-free `async fn next` threading
+    the marker/offset cursor, mirroring Go's `iter.Seq2` iterators — pagination
+    64/64 + operations 336/336.)
+55. ~~Reference docs (FR-7.7).~~ ✅ (D-155: a `docs/` tree generated from the same
+    IR as the code — per-manager pages + the auth/pagination/errors guides,
+    mirroring the Go backend's `docs.rs` — manager-docs 85/85, docs-guides 4/4,
+    auth-flows 4/4.)
+56. ~~Generated round-trip tests + the conform CI gate (FR-7.8, VR-4).~~ ✅
+    (D-156: inline `#[cfg(test)]` modules that compile *and pass* under `cargo
+    test` — the tri-state + typed date/time, and one per-union discriminator
+    dispatch test from the IR; the VR-1.2 gate now runs `clippy --all-targets` +
+    `cargo test`. **`conform --target rust` reads 9/9 and joins the CI release
+    gate** — full capability parity with the Go reference.)
+57. **Next**: **M6 — TypeScript** (v4). Rust (M5, v3) has reached parity with
+    Go's shipped state (self-contained crate + provenance, VR-1.2 + VR-7 + VR-3
+    all gating); the one remaining v3 item is the NF-8 ship artifact (making the
+    crate a functional, publishable artifact by wiring the real runtime — a
+    cross-backend decision Go shares). Apex (M4, v2) is conformance-proven (D-141)
+    with its ship artifact defined and its CI build job wired (D-142).
