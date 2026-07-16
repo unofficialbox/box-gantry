@@ -71,6 +71,15 @@ fn generation_is_deterministic() {
         .unwrap();
     assert!(files.content.contains("pub async fn "), "{}", files.path);
     assert!(files.content.contains("self.session.fetch(req).await?"));
+    // Paginated operations get an async paginator + a `_paginate` constructor
+    // (FR-7.3), threading the cursor through the options.
+    let folders = once
+        .iter()
+        .find(|f| f.path == "src/managers/folders.rs")
+        .unwrap();
+    assert!(folders.content.contains("Paginator {"), "{}", folders.path);
+    assert!(folders.content.contains("_paginate("));
+    assert!(folders.content.contains("pub async fn next(&mut self)"));
     // The client wires one manager field per API area over a shared session.
     let client = once.iter().find(|f| f.path == "src/client.rs").unwrap();
     assert!(client.content.contains("pub struct Client {"));

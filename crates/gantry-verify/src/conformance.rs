@@ -529,19 +529,19 @@ fn apex_guides(files: &[GeneratedView]) -> usize {
 /// backend emits (managers, operation methods, the tri-state helper, and the
 /// buildinfo provenance).
 ///
-/// Generated docs, tests, and pagination surfaces are **not yet emitted** (later
-/// M5 slices), so those capabilities read zero until they land. Unlike Apex,
-/// there are no platform *exclusions* here: the shortfalls are pending work, not
-/// permanent — so `conform --target rust` is a progress report (partial today)
-/// rather than a green CI gate, and it joins the release gate once the Rust
-/// backend reaches parity.
+/// Generated docs and tests are **not yet emitted** (later M5 slices), so those
+/// capabilities read zero until they land. Unlike Apex, there are no platform
+/// *exclusions* here: the shortfalls are pending work, not permanent — so
+/// `conform --target rust` is a progress report (partial today) rather than a
+/// green CI gate, and it joins the release gate once the Rust backend reaches
+/// parity.
 pub fn rust_shape() -> TargetShape {
     TargetShape {
         target: "rust",
         count_managers: rust_managers,
         count_manager_docs: rust_not_yet,
         count_operations: rust_operations,
-        count_pagination: rust_not_yet,
+        count_pagination: rust_pagination,
         count_serialization: rust_serialization,
         count_round_trip_tests: rust_not_yet,
         count_auth: rust_not_yet,
@@ -577,9 +577,15 @@ fn rust_managers(files: &[GeneratedView]) -> usize {
 }
 
 fn rust_operations(files: &[GeneratedView]) -> usize {
-    // One `pub async fn` per operation; the manager constructor is `pub(crate)
-    // fn new` and the decode helper is private, so neither is counted.
-    count_marker(files, rust_is_manager_file, "pub async fn ")
+    // One `pub async fn` per operation, plus one `async fn next` per paginator;
+    // subtract the paginators to isolate the operation methods.
+    let async_fns = count_marker(files, rust_is_manager_file, "pub async fn ");
+    async_fns.saturating_sub(rust_pagination(files))
+}
+
+fn rust_pagination(files: &[GeneratedView]) -> usize {
+    // One `<method>_paginate` constructor per paginated operation.
+    count_marker(files, rust_is_manager_file, "_paginate(")
 }
 
 fn rust_serialization(files: &[GeneratedView]) -> usize {
@@ -793,17 +799,22 @@ mod tests {
     fn rust_shape_measures_what_the_backend_emits_and_flags_the_rest() {
         let program = program();
         let analysis = gantry_sema::analyze(&program).unwrap();
-        // A minimal Rust SDK: two managers (one struct + its impl each — only
-        // the struct counts), two operation methods, the tri-state helper, and
-        // the buildinfo provenance. No docs / tests / pagination yet.
+        // A minimal Rust SDK: one manager with two operation methods and a
+        // paginator (struct + `next` + `_paginate` constructor), the tri-state
+        // helper, and the buildinfo provenance. No docs / tests yet.
         let files = vec![
             (
                 "src/managers/files.rs".to_string(),
-                "pub struct FilesManager {}\n\
+                "pub struct FilesGetFilesPaginator {}\n\
+                 impl FilesGetFilesPaginator {\n\
+                 \x20   pub async fn next(&mut self) {}\n\
+                 }\n\
+                 pub struct FilesManager {}\n\
                  impl FilesManager {\n\
                  \x20   pub(crate) fn new() -> Self { Self {} }\n\
                  \x20   pub async fn get_files(&self) {}\n\
                  \x20   pub async fn get_files_id(&self) {}\n\
+                 \x20   pub fn get_files_paginate(&self) {}\n\
                  }\n"
                 .to_string(),
             ),
@@ -831,8 +842,11 @@ mod tests {
         // Emitted capabilities are measured and pass.
         assert_eq!(check("managers").actual, 1);
         assert_eq!(check("managers").status, CheckStatus::Pass);
+        // Operations subtract the paginator's `next` from the async-fn count.
         assert_eq!(check("operations").actual, 2);
         assert_eq!(check("operations").status, CheckStatus::Pass);
+        // The `_paginate` constructor is counted as a paged surface.
+        assert_eq!(check("pagination").actual, 1);
         assert_eq!(check("serialization").status, CheckStatus::Pass);
         assert_eq!(check("traceability").status, CheckStatus::Pass);
         // Not-yet-emitted capabilities read zero and fail (pending work, no

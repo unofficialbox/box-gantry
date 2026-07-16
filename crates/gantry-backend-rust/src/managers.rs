@@ -10,11 +10,13 @@
 //! `crate::runtime` (the contract surface), so the generated SDK compiles
 //! against the rendered stubs and, later, the real runtime unchanged.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use gantry_ir as ir;
 use gantry_ir::naming::{pascal, snake};
 use gantry_sema::Analysis;
+use gantry_synth::{PageStyle, PagedOperation, detect_pagination};
 
 use crate::models::type_name;
 use crate::{BuildInfo, GeneratedFile};
@@ -42,6 +44,12 @@ pub fn generate_managers(analysis: &Analysis<'_>, _build: &BuildInfo) -> Vec<Gen
     // Shared module-name registry, so manager type paths agree with the models
     // (D-149 review).
     let modules = crate::models::module_names(program);
+    // Paginated operations, by operation index (FR-7.3): each gets an async
+    // paginator alongside its plain method.
+    let paged: HashMap<usize, PagedOperation> = detect_pagination(analysis)
+        .into_iter()
+        .map(|p| (p.operation, p))
+        .collect();
 
     // Allocate one collision-free, keyword-safe name per manager (sorted keys
     // via the `BTreeMap`) and reuse it for the module, file, struct, and field.
@@ -76,6 +84,7 @@ pub fn generate_managers(analysis: &Analysis<'_>, _build: &BuildInfo) -> Vec<Gen
             program,
             base_version: base_version.clone(),
             modules: &modules,
+            paged: &paged,
             body: String::new(),
             uses_path_escape: false,
         };
@@ -161,6 +170,8 @@ struct Printer<'p> {
     base_version: Option<ir::ApiVersion>,
     /// Shared IR-module → Rust-module-name map (D-149 review).
     modules: &'p std::collections::BTreeMap<ir::ModulePath, String>,
+    /// Paginated operations by index (FR-7.3).
+    paged: &'p HashMap<usize, PagedOperation>,
     body: String,
     /// Whether any method escaped a path parameter, so the file imports
     /// `path_escape`.
@@ -184,11 +195,32 @@ impl Printer<'_> {
             })
             .collect();
 
-        // Options structs are module-level items (Rust forbids `struct` inside
-        // `impl`), emitted before the manager so the methods can name them.
+        // A pagination plan per operation (None when not paged or the cursor
+        // shape is unsupported — the plain method still ships).
+        let plans: Vec<Option<PaginationPlan>> = indices
+            .iter()
+            .enumerate()
+            .map(|(pos, &index)| {
+                self.paged.get(&index).and_then(|paged| {
+                    self.pagination_plan(
+                        &self.program.operations[index],
+                        name,
+                        &methods[pos],
+                        paged,
+                    )
+                })
+            })
+            .collect();
+
+        // Options structs and paginators are module-level items (Rust forbids
+        // `struct` inside `impl`), emitted before the manager so the methods can
+        // name them.
         for (pos, &index) in indices.iter().enumerate() {
             let op = self.program.operations[index].clone();
             self.options_struct(&op, ty, &methods[pos]);
+        }
+        for plan in plans.iter().flatten() {
+            self.paginator_type(plan);
         }
         let _ = writeln!(
             self.body,
@@ -204,8 +236,312 @@ impl Printer<'_> {
         for (pos, &index) in indices.iter().enumerate() {
             let op = self.program.operations[index].clone();
             self.operation(&op, &methods[pos]);
+            if let Some(plan) = &plans[pos] {
+                self.paginate_method(&op, &methods[pos], plan);
+            }
         }
         self.body.push_str("}\n");
+    }
+
+    /// Resolve everything needed to synthesize a paginator for `op`, or `None`
+    /// when the cursor shape is not one we generate (the plain method still
+    /// ships — a documented fallback, VR-6, never wrong code).
+    fn pagination_plan(
+        &self,
+        op: &ir::Operation,
+        name: &ManagerName,
+        method: &str,
+        paged: &PagedOperation,
+    ) -> Option<PaginationPlan> {
+        // The response envelope (a struct) carries `entries` + the cursor field.
+        let ir::ResponseShape::Json(response_ty) = &op.response else {
+            return None;
+        };
+        let ir::DeclKind::Struct(envelope) = &self.program.decl(decl_of(response_ty)?).kind else {
+            return None;
+        };
+        let field_ty = |wire: &str| envelope.fields.iter().find(|f| f.wire_name == wire);
+        let entries = field_ty(&paged.entries_wire)?;
+        let cursor = field_ty(&paged.cursor_wire)?;
+
+        // The cursor query parameter (detection guaranteed it is optional).
+        let cursor_param = op
+            .params
+            .iter()
+            .find(|p| p.location == ir::ParamLocation::Query && p.wire_name == paged.param_wire)?;
+        let param_field = field_ident(cursor_param.name.as_str());
+
+        let efield = field_ident(&snake(&paged.entries_wire));
+        let entries_vec = match option_layers(&entries.ty) {
+            0 => format!("page.{efield}"),
+            1 => format!("page.{efield}.unwrap_or_default()"),
+            _ => format!("page.{efield}.flatten().unwrap_or_default()"),
+        };
+
+        let advance = match paged.style {
+            PageStyle::Marker => {
+                // The request marker is a string; the response cursor may be a
+                // string or an int (converted). Anything else: skip.
+                if !matches!(unwrap_optionality(&cursor_param.ty), ir::Type::String) {
+                    return None;
+                }
+                let cfield = field_ident(&snake(&paged.cursor_wire));
+                let cursor_opt = match option_layers(&cursor.ty) {
+                    0 => format!("Some(page.{cfield})"),
+                    1 => format!("page.{cfield}"),
+                    _ => format!("page.{cfield}.flatten()"),
+                };
+                let arm = match unwrap_optionality(&cursor.ty) {
+                    ir::Type::String => {
+                        format!(
+                            "Some(cursor) if !cursor.is_empty() => self.options.{param_field} = Some(cursor),"
+                        )
+                    }
+                    ir::Type::Int64 => {
+                        format!(
+                            "Some(cursor) => self.options.{param_field} = Some(cursor.to_string()),"
+                        )
+                    }
+                    // A non-string/int marker cursor is a shape we don't
+                    // synthesize — skip the paginator (NF-1: no wildcard).
+                    ir::Type::Bool
+                    | ir::Type::Float64
+                    | ir::Type::Date
+                    | ir::Type::DateTime
+                    | ir::Type::Binary
+                    | ir::Type::JsonValue
+                    | ir::Type::List(_)
+                    | ir::Type::Map(_)
+                    | ir::Type::Decl(_)
+                    | ir::Type::Optional(_)
+                    | ir::Type::Nullable(_) => return None,
+                };
+                format!(
+                    "            self.buffer = {entries_vec}.into_iter();\n\
+                     \x20           match {cursor_opt} {{\n\
+                     \x20               {arm}\n\
+                     \x20               _ => self.done = true,\n\
+                     \x20           }}\n"
+                )
+            }
+            PageStyle::Offset => {
+                if !matches!(unwrap_optionality(&cursor_param.ty), ir::Type::Int64) {
+                    return None;
+                }
+                format!(
+                    "            let items = {entries_vec};\n\
+                     \x20           if items.is_empty() {{\n\
+                     \x20               self.done = true;\n\
+                     \x20           }} else {{\n\
+                     \x20               let next = self.options.{param_field}.unwrap_or(0) + items.len() as i64;\n\
+                     \x20               self.options.{param_field} = Some(next);\n\
+                     \x20           }}\n\
+                     \x20           self.buffer = items.into_iter();\n"
+                )
+            }
+        };
+
+        // Stored fields = the operation's required params (owned), then the body.
+        let mut stored: Vec<(String, String)> = op
+            .params
+            .iter()
+            .filter(|p| !matches!(p.ty, ir::Type::Optional(_)))
+            .map(|p| (field_ident(p.name.as_str()), self.rust_type(&p.ty)))
+            .collect();
+        if let Some(body) = &op.request {
+            stored.push((
+                "body".to_string(),
+                self.rust_type(unwrap_optionality(&body.ty)),
+            ));
+        }
+        let mut forward: Vec<String> = stored
+            .iter()
+            .map(|(field, _)| format!("self.{field}.clone()"))
+            .collect();
+        forward.push("Some(self.options.clone())".to_string());
+
+        Some(PaginationPlan {
+            struct_name: format!("{}{}Paginator", pascal(op.manager.as_str()), pascal(method)),
+            manager_ty: name.struct_name.clone(),
+            element: self.rust_type(&paged.element),
+            options_ty: options_type(op.manager.as_str(), method),
+            method: method.to_string(),
+            stored,
+            forward,
+            advance,
+        })
+    }
+
+    /// Emit the module-level paginator struct + its async `next`.
+    fn paginator_type(&mut self, plan: &PaginationPlan) {
+        let PaginationPlan {
+            struct_name,
+            manager_ty,
+            element,
+            options_ty,
+            method,
+            stored,
+            forward,
+            advance,
+        } = plan;
+        // Struct.
+        let _ = writeln!(
+            self.body,
+            "/// Async paginator over [`{manager_ty}::{method}`], yielding one \
+             `{element}`\n/// per item across pages (FR-7.3).\n\
+             pub struct {struct_name} {{\n\
+             \x20   manager: {manager_ty},"
+        );
+        for (field, ty) in stored {
+            let _ = writeln!(self.body, "    {field}: {ty},");
+        }
+        let _ = writeln!(
+            self.body,
+            "    options: {options_ty},\n\
+             \x20   buffer: std::vec::IntoIter<{element}>,\n\
+             \x20   done: bool,\n\
+             }}\n\n\
+             impl {struct_name} {{\n\
+             \x20   /// The next item, advancing pages as needed; `None` at the end.\n\
+             \x20   /// An error is yielded once, then iteration stops."
+        );
+        // `next` signature — one line, or rustfmt's `&mut self` wrap past 100.
+        let sig =
+            format!("    pub async fn next(&mut self) -> Option<Result<{element}, Error>> {{");
+        if sig.len() <= 100 {
+            let _ = writeln!(self.body, "{sig}");
+        } else {
+            self.body
+                .push_str("    pub async fn next(\n        &mut self,\n");
+            let ret = format!("    ) -> Option<Result<{element}, Error>> {{");
+            // rustfmt drops the brace when the `) -> … {` line reaches max_width
+            // (a 100-col brace line breaks, so require strictly under).
+            if ret.len() < 100 {
+                let _ = writeln!(self.body, "{ret}");
+            } else {
+                // rustfmt drops the brace to its own line when the return
+                // clause alone overflows.
+                let _ = writeln!(self.body, "    ) -> Option<Result<{element}, Error>>");
+                self.body.push_str("    {\n");
+            }
+        }
+        self.body.push_str(
+            "        loop {\n\
+             \x20           if let Some(item) = self.buffer.next() {\n\
+             \x20               return Some(Ok(item));\n\
+             \x20           }\n\
+             \x20           if self.done {\n\
+             \x20               return None;\n\
+             \x20           }\n",
+        );
+        // The fetch, then match. rustfmt breaks the `self.manager.m(..).await`
+        // chain once it passes `chain_width` (60), then the call's arguments
+        // once they pass `fn_call_width` (60) — so mirror both thresholds.
+        let joined = forward.join(", ");
+        let chain = format!("self.manager.{method}({joined}).await");
+        if chain.len() <= 60 {
+            let _ = writeln!(self.body, "            let page = match {chain} {{");
+        } else {
+            self.body
+                .push_str("            let page = match self\n                .manager\n");
+            let call = format!(".{method}({joined})");
+            // Args stay on one line while they fit `fn_call_width` (60) and the
+            // whole call line fits `max_width` (100 = 16-space indent + 84).
+            if joined.len() <= 60 && call.len() <= 84 {
+                let _ = writeln!(self.body, "                {call}");
+            } else {
+                let _ = writeln!(self.body, "                .{method}(");
+                for arg in forward {
+                    let _ = writeln!(self.body, "                    {arg},");
+                }
+                self.body.push_str("                )\n");
+            }
+            self.body
+                .push_str("                .await\n            {\n");
+        }
+        self.body.push_str(
+            "                Ok(page) => page,\n\
+             \x20               Err(err) => {\n\
+             \x20                   self.done = true;\n\
+             \x20                   return Some(Err(err));\n\
+             \x20               }\n\
+             \x20           };\n",
+        );
+        self.body.push_str(advance);
+        self.body.push_str("        }\n    }\n}\n\n");
+    }
+
+    /// Emit the `<method>_paginate` constructor inside the manager `impl`.
+    fn paginate_method(&mut self, op: &ir::Operation, method: &str, plan: &PaginationPlan) {
+        let mut params: Vec<String> = vec!["&self".to_string()];
+        for param in op
+            .params
+            .iter()
+            .filter(|p| !matches!(p.ty, ir::Type::Optional(_)))
+        {
+            params.push(format!(
+                "{}: {}",
+                field_ident(param.name.as_str()),
+                self.rust_type(&param.ty)
+            ));
+        }
+        if let Some(body) = &op.request {
+            params.push(format!(
+                "body: {}",
+                self.rust_type(unwrap_optionality(&body.ty))
+            ));
+        }
+        params.push(format!("opts: Option<{}>", plan.options_ty));
+
+        self.body.push('\n');
+        let _ = writeln!(
+            self.body,
+            "    /// Iterate every `{element}` across pages, threading the cursor.",
+            element = plan.element,
+        );
+        // Constructor signature — inline, or one param per line past 100 cols.
+        let sig = format!(
+            "    pub fn {method}_paginate({}) -> {} {{",
+            params.join(", "),
+            plan.struct_name,
+        );
+        if sig.len() <= 100 {
+            let _ = writeln!(self.body, "{sig}");
+        } else {
+            let _ = writeln!(self.body, "    pub fn {method}_paginate(");
+            for param in &params {
+                let line = format!("        {param},");
+                if line.len() <= 100 {
+                    let _ = writeln!(self.body, "{line}");
+                } else if let Some((head, inner)) = param.split_once(": Option<") {
+                    // rustfmt breaks an over-long `name: Option<Type>` param.
+                    let inner = inner.strip_suffix('>').unwrap_or(inner);
+                    let _ = writeln!(self.body, "        {head}: Option<");
+                    let _ = writeln!(self.body, "            {inner},");
+                    self.body.push_str("        >,\n");
+                } else {
+                    let _ = writeln!(self.body, "{line}");
+                }
+            }
+            let _ = writeln!(self.body, "    ) -> {} {{", plan.struct_name);
+        }
+        let _ = writeln!(
+            self.body,
+            "        {struct_name} {{\n\
+             \x20           manager: {manager_ty}::new(self.session.clone()),",
+            struct_name = plan.struct_name,
+            manager_ty = plan.manager_ty,
+        );
+        for (field, _) in &plan.stored {
+            let _ = writeln!(self.body, "            {field},");
+        }
+        self.body.push_str(
+            "            options: opts.unwrap_or_default(),\n\
+             \x20           buffer: Vec::new().into_iter(),\n\
+             \x20           done: false,\n\
+             \x20       }\n\
+             \x20   }\n",
+        );
     }
 
     /// Emit the module-level options struct for an operation's optional params.
@@ -787,6 +1123,74 @@ fn unwrap_optionality(ty: &ir::Type) -> &ir::Type {
     }
 }
 
+/// Everything needed to synthesize one operation's paginator (FR-7.3).
+struct PaginationPlan {
+    struct_name: String,
+    manager_ty: String,
+    element: String,
+    options_ty: String,
+    method: String,
+    /// `(field, owned type)` for the stored required params, then the body.
+    stored: Vec<(String, String)>,
+    /// The forwarded arguments to the wrapped method (clones + the options).
+    forward: Vec<String>,
+    /// The per-page cursor-advance block (12-space indented).
+    advance: String,
+}
+
+/// The declaration id a (possibly optional) type resolves to, if any.
+fn decl_of(ty: &ir::Type) -> Option<ir::DeclId> {
+    match ty {
+        ir::Type::Optional(inner) | ir::Type::Nullable(inner) => decl_of(inner),
+        ir::Type::Decl(id) => Some(*id),
+        ir::Type::Bool
+        | ir::Type::Int64
+        | ir::Type::Float64
+        | ir::Type::String
+        | ir::Type::Date
+        | ir::Type::DateTime
+        | ir::Type::Binary
+        | ir::Type::JsonValue
+        | ir::Type::List(_)
+        | ir::Type::Map(_) => None,
+    }
+}
+
+/// How many `Option` layers a field's generated Rust type carries: a tri-state
+/// `Optional<Nullable<T>>` is two, a plain `Optional`/`Nullable` is one, a bare
+/// type is zero — so a paginator can peel `entries`/cursor to the value.
+fn option_layers(ty: &ir::Type) -> usize {
+    match ty {
+        ir::Type::Optional(inner) => match &**inner {
+            ir::Type::Nullable(_) => 2,
+            ir::Type::Bool
+            | ir::Type::Int64
+            | ir::Type::Float64
+            | ir::Type::String
+            | ir::Type::Date
+            | ir::Type::DateTime
+            | ir::Type::Binary
+            | ir::Type::JsonValue
+            | ir::Type::List(_)
+            | ir::Type::Map(_)
+            | ir::Type::Decl(_)
+            | ir::Type::Optional(_) => 1,
+        },
+        ir::Type::Nullable(_) => 1,
+        ir::Type::Bool
+        | ir::Type::Int64
+        | ir::Type::Float64
+        | ir::Type::String
+        | ir::Type::Date
+        | ir::Type::DateTime
+        | ir::Type::Binary
+        | ir::Type::JsonValue
+        | ir::Type::List(_)
+        | ir::Type::Map(_)
+        | ir::Type::Decl(_) => 0,
+    }
+}
+
 fn base_class(base: ir::BaseUrl) -> &'static str {
     match base {
         ir::BaseUrl::Api => "api",
@@ -937,10 +1341,12 @@ mod tests {
 
     fn render_manager(p: &Program) -> String {
         let modules = crate::models::module_names(p);
+        let paged = HashMap::new();
         let mut printer = Printer {
             program: p,
             base_version: None,
             modules: &modules,
+            paged: &paged,
             body: String::new(),
             uses_path_escape: false,
         };
