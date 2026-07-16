@@ -2124,3 +2124,28 @@ emitted capabilities are measured and pass (managers count struct defs not
 `impl`s; operations count `pub async fn`), and the not-yet-emitted ones read
 zero and fail — so the report is honestly partial. `verify --target rust` passes
 end to end on the full spec (96 files, rustfmt + check + clippy clean).
+
+## D-153 — Rust models: typed date/time via `chrono` (TR-Rust.2 lineage)
+
+**Context.** The Rust model layer lowered `Date`/`DateTime` IR types to `String`
+(an interim from D-147), so callers got no type safety and no parsing. This
+slice types them, mirroring the Go backend's `serialization.Date` + `time.Time`.
+
+**Decision.** Map `ir::Type::Date → chrono::NaiveDate` (Box's full-date, e.g.
+`2020-01-31`) and `ir::Type::DateTime → chrono::DateTime<chrono::Utc>` (RFC 3339).
+Both serde-serialize to *exactly* Box's wire format by default — `NaiveDate` as
+`YYYY-MM-DD`, `DateTime<Utc>` as RFC 3339 — so no custom (de)serializer is
+needed, and the tri-state `double_option` helper composes over them unchanged.
+
+`chrono` is added to the generated crate's manifest with a **lean feature set**
+— `default-features = false, features = ["serde", "alloc"]` — which pulls only
+the calendar types and their serde impls, not the `clock`/OS-timezone/wasm
+machinery a generated data SDK never needs.
+
+**Verification.** The VR-1.2 compile gate (generate the full 96-file SDK → `cargo
+fmt --check` + `cargo check` + `clippy -D warnings`) now exercises 190 chrono-typed
+fields and stays clean; the real-runtime conformance test is unaffected (chrono
+is additive). A generated-output assertion checks the date fields are
+chrono-typed and the manifest declares the dependency. The `conform --target
+rust` serialization capability remains satisfied (tri-state present); typed date
+is the D-152 refinement noted there.

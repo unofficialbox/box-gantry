@@ -424,9 +424,12 @@ impl Printer<'_> {
             ir::Type::Int64 => "i64".into(),
             ir::Type::Float64 => "f64".into(),
             ir::Type::String => "String".into(),
-            // Interim: RFC 3339 strings. The serialization slice introduces
-            // typed date/time (TR-Rust.2 lineage).
-            ir::Type::Date | ir::Type::DateTime => "String".into(),
+            // Typed date/time (chrono): a full-date `NaiveDate` (Box's
+            // `2020-01-31`) and an RFC 3339 `DateTime<Utc>` — both serde-serialize
+            // to exactly Box's wire format, mirroring Go's `serialization.Date` +
+            // `time.Time`.
+            ir::Type::Date => "chrono::NaiveDate".into(),
+            ir::Type::DateTime => "chrono::DateTime<chrono::Utc>".into(),
             ir::Type::Binary => "Vec<u8>".into(),
             ir::Type::JsonValue => "serde_json::Value".into(),
             ir::Type::List(inner) => format!("Vec<{}>", self.bare_type(inner)),
