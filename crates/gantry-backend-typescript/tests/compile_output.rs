@@ -59,6 +59,18 @@ fn generation_is_deterministic() {
     assert!(once.iter().any(|f| f.path == "tsconfig.json"));
     assert!(once.iter().any(|f| f.path == "src/index.ts"));
     assert!(once.iter().any(|f| f.path == "src/models/index.ts"));
+    // The runtime-contract stubs (FR-5.3): managers type-check against these.
+    let runtime = once.iter().find(|f| f.path == "src/runtime.ts").unwrap();
+    assert!(
+        runtime
+            .content
+            .contains("export class BoxApiError extends Error")
+    );
+    assert!(
+        runtime
+            .content
+            .contains("async fetch(request: Request): Promise<Response>")
+    );
 
     let models: String = once
         .iter()

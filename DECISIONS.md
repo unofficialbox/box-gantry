@@ -2319,3 +2319,32 @@ generics, `Exceptions` error model (`Promise` rejection / thrown `BoxApiError`,
 TR-TS.3), async, streaming supported. Not yet emitted (later M6 slices): the
 `Promise`-based managers/client, the `fetch` runtime, docs, tests, and the
 `conform --target typescript` shape.
+
+## D-158 — TypeScript backend, slice 2: the runtime-contract stubs (FR-5.2/5.3, TR-TS.5 lineage)
+
+**Context.** The generated TypeScript managers (a later slice) must type-check
+against the runtime surface without the real `fetch` runtime (FR-5.3), exactly
+as the Go/Rust managers compile against `go_stubs`/`rust_stubs`. This slice adds
+the TypeScript stub renderer and wires it into the generated package, so the
+managers slice has a contract to build against.
+
+**The renderer.** `gantry_contract::typescript_stubs` renders the V1 contract to
+a `runtime.ts` module from the *same* `ContractFn` data as the other targets, so
+the stub and the declared surface cannot drift (FR-5.2). Rendering keys off the
+manifest axes, never a language name (FR-4.2): `ErrorModel::Exceptions` → a
+`BoxApiError extends Error` subclass and functions that throw (no `Result`-style
+return widening); `AsyncModel::Async` → the network entry points
+(`takes_context`) return `Promise<T>`, builders/accessors are sync. TypeScript
+threads cancellation through `AbortSignal`, so the context carrier is dropped
+(as in Rust). Session-receiver functions become methods on `Client`; free
+functions are exported module-level functions; canonical `snake_case` names
+render `camelCase`. Every stub `throw`s loudly (NF-1). Contract types map
+`String→string`, `Bytes→Uint8Array`, `Int64→number`, `Json→unknown`,
+`Request`/`Response`/`Stream` → the runtime classes.
+
+**Wired + gated.** `generate()` emits `src/runtime.ts` from the stubs; the
+tsconfig picks it up, so the VR-1.5 `tsc --noEmit` gate now type-checks the
+runtime surface too. A `typescript_stubs` contract test renders it
+deterministically, asserts the async/exceptions shape, and type-checks it with
+`tsc` (the FR-5.3 gate, mirroring the Rust/Go stub tests). Next: the
+`Promise`-based managers/client that call through this surface (TR-TS.3).

@@ -13,9 +13,11 @@
 
 mod go_stubs;
 mod rust_stubs;
+mod typescript_stubs;
 
 pub use go_stubs::{GO_MOD, go_stubs};
 pub use rust_stubs::rust_stubs;
+pub use typescript_stubs::typescript_stubs;
 
 /// Target-agnostic types at the generated-code ↔ runtime boundary.
 ///
