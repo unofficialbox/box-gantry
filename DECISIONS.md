@@ -2276,3 +2276,46 @@ gate test mirrors that. So a broken generated test fails CI like any other drift
 rust` reads **9/9, 0 failing** and joins the CI release gate alongside Go and
 Apex — no longer a progress report. The Rust backend reaches full capability
 parity with the Go reference (minus no platform exclusions).
+
+## D-157 — TypeScript backend, slice 1: the model layer + VR-1.5 gate (TR-TypeScript, M6)
+
+**Context.** M6 opens the fourth SDK target (v4, D-143). TypeScript is the
+strongest structural fit for the IR of any target — the type system expresses
+the IR's shapes almost directly — so the model layer is a near-structural map
+rather than a bridge over a type-system mismatch. This slice lands the model
+layer, the package scaffold, `generate --target typescript`, and the VR-1.5
+compile gate.
+
+**Model lowering.** A new `gantry-backend-typescript` crate emits one `.ts`
+module per IR module (API versions redefine names and share no references, so
+each is its own module — mirroring D-147). Structs → `export interface`; the
+**tri-state maps straight onto the type system** (TR-TS.2) — absent → `field?:
+T`, explicit null → `T | null`, both peeled from the field's `Optional`/
+`Nullable` wrappers, so the absent-vs-null distinction needs no wrapper type.
+`oneOf` → a discriminated union of the variant interfaces, each carrying its own
+literal discriminator; **open unions add a `{ [key: string]: unknown }`
+catch-all** so an unknown tag is retained, closed unions omit it (TR-TS.1, same
+lowerability predicate as Go/Rust). **Open enums → string-literal unions widened
+with `(string & {})`** — literal autocomplete that still accepts any string;
+closed enums are the bare union (TR-TS.1). Aliases → `export type`. Field keys
+are the wire name verbatim (serialization is identity), quoted only when not a
+valid identifier. Cross-module references resolve through a shared
+`DeclId`-indexed name map and emit `import type { … } from './mod.js'` (NodeNext
+ESM); a namespaced barrel (`export * as <module>`) keeps version-colliding names
+(`schemas.ClientError` vs `schemas_v2025_0.ClientError`) distinct. Declaration
+names are kept clear of ambient globals (`Date`, `Error`, …) they'd otherwise
+shadow.
+
+**The gate: `tsc --noEmit` under `strict` (VR-1.5).** The TypeScript 7 native
+(Go-ported) compiler type-checks the whole generated package as a fast
+per-commit signal, the TS analogue of `go build`/`cargo check`. Wired as
+`verify --target typescript` (CLI), a backend `compile_output` test (generate →
+`tsc --noEmit`, determinism + structural assertions), and a CI step (Node +
+TypeScript). The generated `tsconfig.json` pins `strict` + `noEmit` + NodeNext.
+On the full real spec the model layer type-checks clean.
+
+**Manifest.** `gantry_manifest::typescript()` — ESM (`Hierarchical`), full
+generics, `Exceptions` error model (`Promise` rejection / thrown `BoxApiError`,
+TR-TS.3), async, streaming supported. Not yet emitted (later M6 slices): the
+`Promise`-based managers/client, the `fetch` runtime, docs, tests, and the
+`conform --target typescript` shape.

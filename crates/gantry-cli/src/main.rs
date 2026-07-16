@@ -48,7 +48,7 @@ enum Command {
         /// flags to build several at once (`--target go,rust`); `all` expands to
         /// every target. A single target writes into `--out` directly; two or
         /// more each land in their own `<out>/<target>/` subdirectory.
-        #[arg(long, required = true, value_parser = ["go", "apex", "rust", "all"], value_delimiter = ',')]
+        #[arg(long, required = true, value_parser = ["go", "apex", "rust", "typescript", "all"], value_delimiter = ',')]
         target: Vec<String>,
         /// Output directory (created if missing). With more than one target,
         /// each SDK lands in a `<out>/<target>/` subdirectory.
@@ -62,7 +62,7 @@ enum Command {
         #[arg(required = true, value_name = "SPEC")]
         specs: Vec<PathBuf>,
         /// Target language (manifest key).
-        #[arg(long, value_parser = ["go", "rust"])]
+        #[arg(long, value_parser = ["go", "rust", "typescript"])]
         target: String,
     },
     /// Report the R§1 capability conformance checklist for a target
@@ -247,7 +247,7 @@ fn generate_files(
 }
 
 /// Every target `all` expands to, in output order.
-const ALL_TARGETS: &[&str] = &["go", "apex", "rust"];
+const ALL_TARGETS: &[&str] = &["go", "apex", "rust", "typescript"];
 
 fn generate(specs: &[PathBuf], targets: &[String], out: &Path) -> ExitCode {
     let resolved = resolve_targets(targets);
@@ -303,6 +303,10 @@ fn generate_one(specs: &[PathBuf], target: &str, out: &Path) -> ExitCode {
             Err(code) => return code,
         },
         "rust" => match generate_rust(specs) {
+            Ok(files) => files,
+            Err(code) => return code,
+        },
+        "typescript" => match generate_typescript(specs) {
             Ok(files) => files,
             Err(code) => return code,
         },
@@ -393,6 +397,42 @@ fn generate_rust(specs: &[PathBuf]) -> Result<Vec<(String, String)>, ExitCode> {
     }
 }
 
+/// Load → lower → analyze → TypeScript-generate. The TypeScript backend
+/// consumes the `typescript()` manifest; no toolchain runs here — `verify
+/// --target typescript` runs the VR-1.5 gate (`tsc --noEmit` under `strict`).
+fn generate_typescript(specs: &[PathBuf]) -> Result<Vec<(String, String)>, ExitCode> {
+    let set = gantry_spec::SpecSet::load(specs).map_err(|err| {
+        eprintln!("error: {err}");
+        ExitCode::from(exit_codes::SPEC_ERROR)
+    })?;
+    let build = gantry_backend_typescript::BuildInfo::new(set.fingerprint());
+    let lowering = gantry_spec::lower(&set).map_err(|err| {
+        eprintln!("error: {err}");
+        ExitCode::from(exit_codes::SPEC_ERROR)
+    })?;
+    match gantry_sema::analyze(&lowering.program) {
+        Ok(analysis) => Ok(gantry_backend_typescript::generate(
+            &analysis,
+            &gantry_manifest::typescript(),
+            &build,
+        )
+        .into_iter()
+        .map(|f| (f.path, f.content))
+        .collect()),
+        Err(errors) => {
+            let engine_bug = errors.iter().any(gantry_sema::SemaError::is_engine_bug);
+            for error in &errors {
+                eprintln!("error: {error}");
+            }
+            Err(ExitCode::from(if engine_bug {
+                exit_codes::ENGINE_BUG
+            } else {
+                exit_codes::SPEC_ERROR
+            }))
+        }
+    }
+}
+
 fn write_pairs(root: &Path, files: &[(String, String)]) -> std::io::Result<()> {
     for (path, content) in files {
         let path = root.join(path);
@@ -412,6 +452,7 @@ fn generate_pairs(specs: &[PathBuf], target: &str) -> Result<Vec<(String, String
             .map(|files| files.into_iter().map(|f| (f.path, f.content)).collect()),
         "apex" => generate_apex(specs),
         "rust" => generate_rust(specs),
+        "typescript" => generate_typescript(specs),
         other => unreachable!("clap restricts --target to known manifests, got {other:?}"),
     }
 }
@@ -449,6 +490,9 @@ fn verify(specs: &[PathBuf], target: &str) -> ExitCode {
             // per-union known/unknown discriminator dispatch.
             ("cargo test", "cargo", &["test"]),
         ],
+        // TypeScript → VR-1.5: the TypeScript 7 native compiler type-checks the
+        // generated package under `strict`, the TS analogue of `go build`.
+        "typescript" => &[("tsc --noEmit", "tsc", &["--noEmit", "-p", "tsconfig.json"])],
         other => unreachable!("clap restricts --target to known manifests, got {other:?}"),
     };
     for (label, program, args) in steps {

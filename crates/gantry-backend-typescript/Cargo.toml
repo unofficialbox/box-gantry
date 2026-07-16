@@ -1,0 +1,20 @@
+[package]
+name = "gantry-backend-typescript"
+description = "TypeScript lowering + printer (FR-6, TR-TypeScript)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gantry-contract.workspace = true
+gantry-ir.workspace = true
+gantry-manifest.workspace = true
+gantry-sema.workspace = true
+gantry-synth.workspace = true
+
+[dev-dependencies]
+gantry-spec.workspace = true
+
+[lints]
+workspace = true

@@ -129,13 +129,30 @@ pub fn rust() -> CapabilityManifest {
     }
 }
 
+/// The TypeScript manifest (TR-TypeScript, D-143). ESM modules; the type system
+/// expresses the IR's shapes almost directly (tri-state → `?:`/`| null`,
+/// `oneOf` → discriminated unions), a `Promise`-based async API, and a
+/// `BoxApiError`-subclass error model surfaced as thrown/rejected exceptions.
+pub fn typescript() -> CapabilityManifest {
+    CapabilityManifest {
+        key: "typescript",
+        modules: ModuleSystem::Hierarchical,
+        generics: Generics::Full,
+        error_model: ErrorModel::Exceptions,
+        async_model: AsyncModel::Async,
+        streaming: Streaming::Supported,
+        callout_limits: None,
+        mandated_test_coverage: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn manifest_keys_are_distinct() {
-        let keys = [go().key, apex().key, rust().key];
+        let keys = [go().key, apex().key, rust().key, typescript().key];
         let mut sorted = keys.to_vec();
         sorted.sort_unstable();
         sorted.dedup();
