@@ -2193,3 +2193,37 @@ from the async-fn operation count. `conform --target rust` moves from 5 failing
 to **4** (pagination 64/64 and operations 336/336 pass); manager-docs,
 docs-guides, auth-flows, and round-trip-tests remain for the generated
 tests/docs slice.
+
+## D-155 — Rust backend: reference docs (per-manager pages + guides) (FR-7.7)
+
+**Context.** The generated Rust SDK shipped code but no docs; `conform --target
+rust` read 0 on `manager-docs` (0/85), `docs-guides` (0/4), and `auth-flows`
+(0/4). This slice ports the Go backend's `docs.rs` — a `docs/` tree generated
+from the same IR as the code, so the docs describe the real Rust surface (method
+names, chrono-typed fields, `Result` returns, `_paginate` variants) and can't
+drift from it.
+
+**What's generated.** `generate_docs` emits `docs/README.md` (an index linking
+the guides and tabulating every manager), one `docs/managers/<manager>.md` page
+per API tag (each operation's HTTP line, a parameter table, request-body and
+return types, and a note pointing paged operations at their `_paginate`
+constructor), and the three cross-cutting guides `docs/auth.md`,
+`docs/pagination.md`, `docs/errors.md`. Every file carries the do-not-edit
+header (FR-6.3) and the output is deterministic (FR-6.2).
+
+**Rust-flavored, not Go-flavored.** The shared `describe` type-renderer mirrors
+the `models` mapping exactly — `i64`/`f64`/`String`, `chrono::NaiveDate`,
+`chrono::DateTime<chrono::Utc>`, `Vec<T>`, `std::collections::HashMap<String,
+T>`, `Option<T>` — and the guides show real Rust call sites
+(`Client::new(runtime::Auth::…)`, `while let Some(item) = pages.next().await`,
+`Result<T, runtime::Error>`). The auth guide documents all four Box flows
+(Developer Token / Client Credentials / JWT / OAuth), which is what the
+`auth-flows` capability measures.
+
+**Conformance.** The docs paths and the auth-flow name scan are target-agnostic,
+so `rust_manager_docs`/`rust_guides`/`rust_auth` reuse the same recognizer logic
+as Go. `conform --target rust` moves from 4 failing to **1** — manager-docs
+85/85, docs-guides 4/4, auth-flows 4/4 now pass; only `round-trip-tests` (the
+generated-tests slice) remains before `conform --target rust` joins the release
+gate. The docs are Markdown (no rustfmt/clippy surface); the VR-1.2 gate still
+passes on the code, now regenerated alongside the `docs/` tree.

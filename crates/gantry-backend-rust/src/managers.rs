@@ -1043,7 +1043,7 @@ impl Printer<'_> {
 /// The Rust method name for an operation (snake_case). Versioned/variation
 /// operations get suffixed so base and versioned surfaces never collide
 /// (FR-7.5).
-fn method_name(op: &ir::Operation, base_version: Option<&ir::ApiVersion>) -> String {
+pub(crate) fn method_name(op: &ir::Operation, base_version: Option<&ir::ApiVersion>) -> String {
     let mut name = snake(op.name.as_str());
     if let Some(variation) = &op.variation {
         name.push('_');
