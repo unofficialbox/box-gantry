@@ -2227,3 +2227,43 @@ as Go. `conform --target rust` moves from 4 failing to **1** — manager-docs
 generated-tests slice) remains before `conform --target rust` joins the release
 gate. The docs are Markdown (no rustfmt/clippy surface); the VR-1.2 gate still
 passes on the code, now regenerated alongside the `docs/` tree.
+
+## D-156 — Rust backend: generated round-trip / behavioral tests + conform gate (FR-7.8, VR-4)
+
+**Context.** The generated Rust SDK shipped models, managers, runtime, docs, and
+pagination, but no tests — `conform --target rust` read 0 on `round-trip-tests`,
+the last of nine capabilities, keeping the Rust conformance report a non-gating
+progress report. This slice ports the Go backend's `tests.rs`, generating tests
+that compile *and pass* under `cargo test`, and then promotes `conform --target
+rust` to a CI release gate.
+
+**What's generated.** Two inline `#[cfg(test)]` modules (declared in the crate
+root, so they see `pub(crate)` items — the Rust analogue of Go's same-package
+tests):
+- `src/serialization_tests.rs` — fixed behavioral tests for the D-110 tri-state
+  (absent omits the key, present-null reads back as `Some(None)` via
+  `double_option`, a value round-trips) and the typed `chrono` date/time
+  (`NaiveDate` → `2026-07-12`, `DateTime<Utc>` RFC 3339 round-trip).
+- `src/roundtrip_tests.rs` — one `#[test]` per discriminated union, generated
+  from the IR: known-tag dispatch selects the right variant, the discriminator
+  survives a re-serialize, and an unknown tag is retained in `Unknown(_)` for
+  open unions / rejected for closed ones (G-10/G-11, VR-4).
+
+**Robust by construction.** The variant name comes from `variant_ident(value)`
+(matching `models`, not the variant's type name); the known-tag test is emitted
+only when the variant struct has no required field beyond the discriminator (so
+minimal `{"disc":"value"}` JSON deserializes), and the tag-survival assertion
+only when the variant actually carries the discriminator field. JSON literals
+are built through `{:?}` so escaping is always correct. On the real specs this
+yields 27 passing tests (23 unions + 4 serialization).
+
+**The gate learned to run tests.** `verify --target rust` (VR-1.2) previously ran
+`fmt --check` + `cargo check` + `clippy`; `#[cfg(test)]` code is compiled by none
+of those. It now also runs `clippy --all-targets` (linting the tests) and `cargo
+test` (compiling *and running* them), and the `the_real_spec_models_compile`
+gate test mirrors that. So a broken generated test fails CI like any other drift.
+
+**Conform is now a gate.** With `round-trip-tests` green, `conform --target
+rust` reads **9/9, 0 failing** and joins the CI release gate alongside Go and
+Apex — no longer a progress report. The Rust backend reaches full capability
+parity with the Go reference (minus no platform exclusions).

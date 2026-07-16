@@ -27,15 +27,18 @@
 //! (TR-Rust.5) and satisfies the same contract, which the backend's
 //! conformance test proves by compiling the generated SDK against it (FR-5.2).
 //!
-//! Not yet emitted (a later M5 slice): generated round-trip / behavioral tests.
+//! Emits the full SDK: models, async managers/client, the runtime stub,
+//! reference docs, and generated round-trip / behavioral tests.
 
 mod docs;
 mod managers;
 mod models;
+mod tests;
 
 pub use docs::generate_docs;
 pub use managers::generate_managers;
 pub use models::generate_models;
+pub use tests::generate_tests;
 
 /// One generated file, path relative to the SDK crate root.
 #[derive(Debug)]
@@ -103,6 +106,7 @@ pub fn generate(
         analysis,
         &gantry_synth::detect_pagination(analysis),
     ));
+    files.extend(generate_tests(analysis));
     files.sort_by(|a, b| a.path.cmp(&b.path));
     files
 }
@@ -136,6 +140,12 @@ fn lib_rs(manifest: &gantry_manifest::CapabilityManifest, build: &BuildInfo) -> 
          pub mod models;\n\
          pub mod runtime;\n\
          mod serde_helpers;\n\
+         \n\
+         // Generated round-trip / behavioral tests (FR-7.8, VR-4).\n\
+         #[cfg(test)]\n\
+         mod roundtrip_tests;\n\
+         #[cfg(test)]\n\
+         mod serialization_tests;\n\
          \n\
          /// Build provenance for this generated SDK (NF-7).\n\
          pub mod buildinfo {{\n\

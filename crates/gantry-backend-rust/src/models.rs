@@ -633,7 +633,7 @@ fn sanitize_ident(name: &str) -> String {
 }
 
 /// A closed-enum variant identifier: PascalCase, keyword- and digit-guarded.
-fn variant_ident(value: &str) -> String {
+pub(crate) fn variant_ident(value: &str) -> String {
     let name = constant(value);
     if RUST_KEYWORDS.contains(&name.as_str()) || RAW_UNSAFE.contains(&name.as_str()) {
         format!("{name}_")
