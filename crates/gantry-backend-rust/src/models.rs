@@ -13,10 +13,41 @@ use gantry_sema::Analysis;
 
 use crate::{BuildInfo, GeneratedFile};
 
+/// The one deduped, collision-free Rust module name per IR module path — the
+/// single source of truth shared by the model and manager generators (D-149
+/// review). Flattening a module path with `_` is not injective (`[a_b]` and
+/// `[a, b]` collapse), so names are allocated deterministically here and both
+/// generators consult this map rather than recomputing (which could disagree
+/// on a collision).
+pub(crate) fn module_names(
+    program: &ir::Program,
+) -> std::collections::BTreeMap<ir::ModulePath, String> {
+    // Unique module paths in first-appearance order, then sorted by raw name so
+    // dedup suffixes are assigned deterministically (FR-6.2).
+    let mut paths: Vec<ir::ModulePath> = Vec::new();
+    for decl in &program.decls {
+        if !paths.contains(&decl.module) {
+            paths.push(decl.module.clone());
+        }
+    }
+    let mut named: Vec<(ir::ModulePath, String)> = paths
+        .into_iter()
+        .map(|p| (p.clone(), module_name(&p)))
+        .collect();
+    named.sort_by(|a, b| a.1.cmp(&b.1));
+    let mut used: Vec<String> = Vec::new();
+    let mut map = std::collections::BTreeMap::new();
+    for (path, name) in named {
+        map.insert(path, dedupe(&mut used, name));
+    }
+    map
+}
+
 /// Generate `src/models/mod.rs` and one `src/models/<module>.rs` per IR
 /// module.
 pub fn generate_models(analysis: &Analysis<'_>, build: &BuildInfo) -> Vec<GeneratedFile> {
     let program = analysis.program;
+    let names = module_names(program);
 
     // Group declaration indices by module, preserving program order within a
     // module so output is stable (FR-6.2).
@@ -30,15 +61,9 @@ pub fn generate_models(analysis: &Analysis<'_>, build: &BuildInfo) -> Vec<Genera
 
     let mut named: Vec<(String, &ir::ModulePath, &[usize])> = modules
         .iter()
-        .map(|(path, indices)| (module_name(path), path, indices.as_slice()))
+        .map(|(path, indices)| (names[path].clone(), path, indices.as_slice()))
         .collect();
     named.sort_by(|a, b| a.0.cmp(&b.0));
-    // Flattening a module path with `_` is not injective (`[a_b]` and `[a, b]`
-    // collapse), so allocate collision-free module names deterministically.
-    let mut used_modules: Vec<String> = Vec::new();
-    for entry in &mut named {
-        entry.0 = dedupe(&mut used_modules, std::mem::take(&mut entry.0));
-    }
 
     let mut files = vec![GeneratedFile {
         path: "src/models/mod.rs".to_string(),
@@ -53,7 +78,7 @@ pub fn generate_models(analysis: &Analysis<'_>, build: &BuildInfo) -> Vec<Genera
 /// A Rust module name for an IR module path: every segment sanitized and
 /// joined with `_`, so nested paths stay collision-free as flat siblings
 /// (`[schemas, v2025_0]` → `schemas_v2025_0`).
-fn module_name(module: &ir::ModulePath) -> String {
+pub(crate) fn module_name(module: &ir::ModulePath) -> String {
     if module.0.is_empty() {
         return "root".to_string();
     }
@@ -546,7 +571,7 @@ fn emit_field(body: &mut String, ident: &str, ty: &str) {
 
 /// A Rust type name from an IR declaration name: PascalCase, guarded against
 /// prelude/keyword collisions that would shadow.
-fn type_name(name: &str) -> String {
+pub(crate) fn type_name(name: &str) -> String {
     let pascal = pascal(name);
     if RESERVED_TYPES.contains(&pascal.as_str()) {
         format!("{pascal}_")

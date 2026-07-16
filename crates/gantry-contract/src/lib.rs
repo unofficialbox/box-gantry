@@ -12,8 +12,10 @@
 //! async model), never a language name (FR-4.2).
 
 mod go_stubs;
+mod rust_stubs;
 
 pub use go_stubs::{GO_MOD, go_stubs};
+pub use rust_stubs::rust_stubs;
 
 /// Target-agnostic types at the generated-code ↔ runtime boundary.
 ///

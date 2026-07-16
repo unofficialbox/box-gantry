@@ -1,6 +1,7 @@
-//! VR-1.2: generate the full real spec's models → `cargo fmt --check` +
-//! `cargo check` + `clippy -D warnings` clean. The primary Rust CI signal
-//! (TR-Rust.4), the same real-toolchain loop that anchored the Go backend.
+//! VR-1.2: generate the full real spec's SDK (models + async managers/client +
+//! runtime stubs) → `cargo fmt --check` + `cargo check` + `clippy -D warnings`
+//! clean. The primary Rust CI signal (TR-Rust.4), the same real-toolchain loop
+//! that anchored the Go backend.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -57,6 +58,27 @@ fn generation_is_deterministic() {
     // The module tree: one module file per IR module plus the mod root.
     assert!(once.iter().any(|f| f.path == "src/models/mod.rs"));
     assert!(once.iter().any(|f| f.path == "src/models/schemas.rs"));
+    // The managers/client/runtime layer (M5 slice 3).
+    assert!(once.iter().any(|f| f.path == "src/managers/mod.rs"));
+    assert!(once.iter().any(|f| f.path == "src/client.rs"));
+    assert!(once.iter().any(|f| f.path == "src/runtime.rs"));
+    assert!(once.iter().any(|f| f.path == "src/internal.rs"));
+    // Methods are async and route through the runtime contract, never direct
+    // HTTP (FR-5.2).
+    let files = once
+        .iter()
+        .find(|f| f.path == "src/managers/files.rs")
+        .unwrap();
+    assert!(files.content.contains("pub async fn "), "{}", files.path);
+    assert!(files.content.contains("self.session.fetch(req).await?"));
+    // The client wires one manager field per API area over a shared session.
+    let client = once.iter().find(|f| f.path == "src/client.rs").unwrap();
+    assert!(client.content.contains("pub struct Client {"));
+    assert!(
+        client
+            .content
+            .contains("std::sync::Arc::new(crate::runtime::Client::new(auth))")
+    );
 }
 
 #[test]

@@ -146,6 +146,7 @@ dependencies = [
 name = "gantry-backend-rust"
 version = "0.1.0"
 dependencies = [
+ "gantry-contract",
  "gantry-ir",
  "gantry-manifest",
  "gantry-sema",
@@ -160,6 +161,7 @@ dependencies = [
  "clap",
  "gantry-backend-apex",
  "gantry-backend-go",
+ "gantry-backend-rust",
  "gantry-ir",
  "gantry-manifest",
  "gantry-sema",

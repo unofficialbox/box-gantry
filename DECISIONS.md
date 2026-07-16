@@ -1885,3 +1885,57 @@ the full-spec VR-1.2 compile gate (all 23 real unions compile clean).
 **Consequences.** No new dependency (serde_json already present). Union match
 arms remain enumerated, not wildcarded (NF-1). Typed date/time, managers, and
 the runtime are the next slices.
+
+## D-149 — Rust backend, slice 3: managers/client + the runtime contract stub (TR-Rust.3)
+
+**Context.** Slices 1–2 (D-147/D-148) built the Rust model layer. This slice
+adds the callable surface: one `<Name>Manager` per `x-box-tag`, one `async fn`
+per operation, a `Client` entry point, and — the FR-5 seam — a rendered runtime
+**stub** so the generated SDK compiles without the real runtime yet.
+
+**Decision.**
+
+- **Contract stub renderer** (`gantry-contract/src/rust_stubs.rs`, mirroring
+  `go_stubs.rs`): renders the `V1` contract to a `src/runtime.rs` module, keyed
+  off the manifest axes, not a language name (FR-4.2) — it asserts
+  `ErrorModel::Result` + `AsyncModel::Async`, so a fallible fn returns
+  `Result<T, Error>` and a `takes_context` fn becomes `async fn` with *no*
+  context parameter (Rust threads cancellation through the future). Session
+  functions are methods on `Client`; free functions are module-level. The
+  opaque `Request`/`Response`/`Stream`/`Auth`/`Error`/`Client` types are
+  hand-declared in the stub header; every body `unimplemented!()`s loudly
+  (NF-1). Contract-crate test compiles + rustfmt-checks the stub (FR-5.3).
+- **Managers** (`gantry-backend-rust/src/managers.rs`, porting the Go
+  `managers.rs`): each method builds the URL from structured path segments
+  (percent-escaped via a generated `internal::path_escape`, never a re-parsed
+  template — FR-2.2), applies query/header params (scalars, comma-joined lists
+  via `internal::join`, complex values as JSON), encodes the request body per
+  media, `fetch`es through the shared session, and decodes the response by
+  shape. Optional params travel in a per-operation module-level options struct
+  (`#[derive(Default)]`, passed as `Option<…>`). Methods reach the network only
+  through `crate::runtime` (FR-5.2). A `Client` holds one manager field per API
+  area over a shared `Arc<runtime::Client>`.
+- **CLI**: `generate --target rust` wired (`generate_rust`, mirroring
+  `generate_apex`); `rust` added to `--target all`.
+
+**rustfmt-clean by construction.** The managers hit several rustfmt wrapping
+rules beyond `max_width`: `chain_width` (60) breaks long method chains and
+`fn_call_width` breaks nested calls unpredictably from line length alone. Rather
+than reproduce each rule, the printer keeps generated expressions short — a
+per-file `use crate::runtime::{self, Error}` and `use crate::internal::…` shrink
+paths, long query values and every path segment bind to a local first, list
+joins route through `internal::join` (a short 2-call chain), and the over-long
+`Option<…>` param + fn signatures wrap one item per line. Verified against the
+full spec.
+
+**Verification (VR-1.2).** The compile gate now generates the whole SDK (96
+files) and runs `cargo fmt --check` + `cargo check` + `clippy -D warnings` on
+it. Plus fast manager/stub structural unit tests. Lowering match arms stay
+enumerated, never wildcarded (NF-1).
+
+**Deferred.** Pagination `Stream`s (paged ops keep their plain method for now);
+request builders (options structs are the interim ergonomics); typed date/time;
+the real `reqwest`/`tokio` runtime crate + `verify --target rust` + conformance
+`rust_shape` + `ci.yml` steps. Uploads (octet-stream/multipart) send an empty
+file part as a documented placeholder — the same posture as the Go backend's
+`nil` file — until the runtime slice wires real body streaming.
