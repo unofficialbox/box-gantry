@@ -87,11 +87,17 @@ fn generation_is_deterministic() {
         .map(|f| f.content.as_str())
         .collect();
     assert!(
-        models.contains("chrono::NaiveDate") || models.contains("chrono::DateTime<chrono::Utc>"),
-        "date/time model fields should be chrono-typed"
+        models.contains("chrono::NaiveDate"),
+        "date fields should be chrono-typed"
+    );
+    assert!(
+        models.contains("chrono::DateTime<chrono::Utc>"),
+        "date-time fields should be chrono-typed"
     );
     let cargo = once.iter().find(|f| f.path == "Cargo.toml").unwrap();
-    assert!(cargo.content.contains("chrono = { version = \"0.4\""));
+    assert!(cargo.content.contains(
+        "chrono = { version = \"0.4\", default-features = false, features = [\"serde\", \"alloc\"] }"
+    ));
 }
 
 #[test]
