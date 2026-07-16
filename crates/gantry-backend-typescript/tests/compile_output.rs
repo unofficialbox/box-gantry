@@ -65,7 +65,11 @@ fn generation_is_deterministic() {
     assert!(once.iter().any(|f| f.path == "src/internal.ts"));
     let client = once.iter().find(|f| f.path == "src/client.ts").unwrap();
     assert!(client.content.contains("export class Client {"));
-    assert!(client.content.contains("const session = new Session(auth);"));
+    assert!(
+        client
+            .content
+            .contains("const session = new Session(auth);")
+    );
     // Every manager method is `async` and reaches the network only via the
     // `this.session.fetch(...)` contract surface (FR-5.2).
     let managers: String = once
