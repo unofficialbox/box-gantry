@@ -2399,19 +2399,32 @@ TypeScript analogue of `runtimes/go/gantryruntime` and `runtimes/rust/gantryrunt
 (its own `package.json`/`tsconfig`, detached from the engine workspace like the
 Go/Rust runtimes). `src/runtime.ts` implements the V1 contract with matching
 names/signatures: `Request`/`Response`/`Stream` envelopes, a `Client` session
-(`baseUrl`, `newRequest`, `accessToken`, and a retrying `fetch` — exponential
-backoff + full jitter, a single 401 token refresh, Retry-After on 429/503), the
-`with*` request builders, and the response accessors. `src/errors.ts` holds
-`BoxApiError extends Error` (the exceptions model, TR-TS.3). It depends only on
-the platform `fetch`/`Headers`/`URLSearchParams`, so it runs on any modern
-JavaScript runtime — no Node-only APIs.
+(`baseUrl`, `newRequest`, `accessToken`, and a retrying `fetch`), the `with*`
+request builders, and the response accessors. `src/errors.ts` holds `BoxApiError
+extends Error` (the exceptions model, TR-TS.3, carrying an optional `cause`). It
+depends only on the platform `fetch`/`Headers`/`URLSearchParams`, so it runs on
+any modern JavaScript runtime — no Node-only APIs.
+
+The retry policy mirrors the Rust runtime exactly: exponential backoff + full
+jitter with Retry-After (delay-seconds) as a floor, clamped to a 30s ceiling;
+**idempotency-gated** — a 429 (never processed) retries for any method, but a
+transport error or 5xx (which may have committed a write) retries only for
+idempotent methods (GET/HEAD/PUT/DELETE/…); and a **force-refresh on 401** that
+re-acquires past the token cache (via an `Auth.forceRefresh(stale)` — the TS
+analogue of Rust's `force_refresh`) so the retry never resends the rejected
+token. `maxRetries` is validated as a non-negative integer at construction.
 
 **Auth.** `src/auth.ts` provides three of the four flows, all `fetch`-only:
 `developerToken` (fixed token), `clientCredentials` (CCG), and the OAuth 2.0
 authorization-code flow (`authorizeUrl` / `exchangeCode` / `oauth` resume). CCG
 and OAuth cache the access token behind a single-flight refresh (concurrent
-callers share one in-flight exchange) and refresh a margin before expiry; OAuth
-rotates the refresh token Box returns. **JWT server auth is deferred** to a
+callers share one in-flight exchange, not bound to any single request's
+cancellation) and refresh a margin before expiry; OAuth rotates the refresh
+token Box returns and reports each rotation through an optional `onRefresh`
+persistence hook (so a resume doesn't start from an already-invalidated token).
+A token acquisition that fails at the transport level surfaces as a `BoxApiError`
+(with the underlying error as `cause`), never a bare network error; CCG requires
+a subject (`enterpriseId` or `userId`). **JWT server auth is deferred** to a
 follow-up slice — it is the only flow that needs an RSA signing key (`node:crypto`
 + `@types/node`), so keeping it separate preserves this slice's platform-neutral,
 dependency-free tsc gate.

@@ -18,9 +18,21 @@ const AUTHORIZE_URL = 'https://account.box.com/api/oauth2/authorize';
  * race an expiry. */
 const REFRESH_MARGIN_MS = 60_000;
 
-/** Yields an access token for the configured auth flow. */
+/**
+ * Yields an access token for the configured auth flow. A token acquisition is
+ * not bound to any single request's cancellation — a shared refresh serves every
+ * concurrent caller — mirroring the Rust runtime, which drops the whole future
+ * rather than threading a per-request signal into token acquisition.
+ */
 export interface Auth {
-  accessToken(signal?: AbortSignal): Promise<string>;
+  /** A valid access token, refreshing through the cache as needed. */
+  accessToken(): Promise<string>;
+  /**
+   * Re-acquire a token after `stale` was rejected (a 401), bypassing the cache.
+   * If another caller already refreshed past `stale`, the newer token is
+   * returned without a network round-trip.
+   */
+  forceRefresh(stale: string): Promise<string>;
 }
 
 /** A normalized token exchange result. */
@@ -33,17 +45,21 @@ interface Token {
 /**
  * The simplest flow: a fixed access token from the Box developer console. The
  * other flows implement the same `Auth` interface and can be passed to the
- * client in its place.
+ * client in its place. A fixed token cannot be refreshed, so `forceRefresh`
+ * returns it unchanged (a subsequent 401 then surfaces to the caller).
  */
 export function developerToken(token: string): Auth {
-  return { accessToken: async () => token };
+  return {
+    accessToken: async () => token,
+    forceRefresh: async () => token,
+  };
 }
 
 /**
  * Caches an access token and refreshes it — via the flow-specific `refresh` —
  * when it is missing or within the refresh margin of expiry. Concurrent callers
  * during a refresh share one in-flight exchange (single-flight), so a token is
- * never fetched twice at once.
+ * never fetched twice at once, and the exchange is not tied to any one caller.
  */
 class CachedToken implements Auth {
   private token: string;
@@ -51,19 +67,32 @@ class CachedToken implements Auth {
   private inflight?: Promise<string>;
 
   constructor(
-    private readonly refresh: (signal?: AbortSignal) => Promise<Token>,
+    private readonly refresh: () => Promise<Token>,
     seed?: Token,
   ) {
     this.token = seed?.accessToken ?? '';
     this.expiry = seed ? Date.now() + seed.ttlMs : 0;
   }
 
-  async accessToken(signal?: AbortSignal): Promise<string> {
+  async accessToken(): Promise<string> {
     if (this.token && this.expiry - Date.now() > REFRESH_MARGIN_MS) {
       return this.token;
     }
+    return this.refreshOnce();
+  }
+
+  async forceRefresh(stale: string): Promise<string> {
+    // Another caller may already have refreshed past the rejected token.
+    if (this.token && this.token !== stale) {
+      return this.token;
+    }
+    return this.refreshOnce();
+  }
+
+  /** Run the flow's refresh, sharing one in-flight exchange across callers. */
+  private refreshOnce(): Promise<string> {
     if (!this.inflight) {
-      this.inflight = this.refresh(signal)
+      this.inflight = this.refresh()
         .then((token) => {
           this.token = token.accessToken;
           this.expiry = Date.now() + token.ttlMs;
@@ -80,29 +109,38 @@ class CachedToken implements Auth {
 }
 
 /**
- * POST a form-encoded grant to the token endpoint and normalize the response,
- * surfacing a non-2xx body as a `BoxApiError`.
+ * POST a form-encoded grant to the token endpoint and normalize the response.
+ * A transport failure and a non-2xx body both surface as a `BoxApiError`, so
+ * token acquisition never escapes the runtime's error contract. The optional
+ * `signal` cancels an explicit caller-initiated exchange (`exchangeCode`); the
+ * cached flows do not thread one, so a shared refresh is never bound to a single
+ * request's cancellation.
  */
 async function postTokenForm(
   tokenUrl: string,
   form: Record<string, string>,
   signal?: AbortSignal,
 ): Promise<Token> {
-  const resp = await fetch(tokenUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Accept: 'application/json',
-    },
-    body: new URLSearchParams(form).toString(),
-    signal,
-  });
-  const text = await resp.text();
-  if (!resp.ok) {
-    throw new BoxApiError(
-      `token endpoint returned ${resp.status}: ${text.trim()}`,
-      resp.status,
-    );
+  let response: Awaited<ReturnType<typeof fetch>>;
+  let text: string;
+  try {
+    response = await fetch(tokenUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+      },
+      body: new URLSearchParams(form).toString(),
+      signal,
+    });
+    text = await response.text();
+  } catch (err) {
+    throw new BoxApiError('token endpoint request failed', { cause: err });
+  }
+  if (!response.ok) {
+    throw new BoxApiError(`token endpoint returned ${response.status}: ${text.trim()}`, {
+      status: response.status,
+    });
   }
   let parsed: { access_token?: string; refresh_token?: string; expires_in?: number };
   try {
@@ -134,24 +172,25 @@ export interface CcgConfig {
   tokenUrl?: string;
 }
 
-/** Build a CCG `Auth`. */
+/** Build a CCG `Auth`. Requires a subject: `enterpriseId` or `userId`. */
 export function clientCredentials(config: CcgConfig): Auth {
+  if (!config.userId && !config.enterpriseId) {
+    throw new BoxApiError('clientCredentials requires a subject: enterpriseId or userId');
+  }
   const tokenUrl = config.tokenUrl ?? DEFAULT_TOKEN_URL;
+  // A `userId` acts as that managed user; otherwise the enterprise service
+  // account. The guard above rules out an empty subject.
   const subject = config.userId
     ? { type: 'user', id: config.userId }
     : { type: 'enterprise', id: config.enterpriseId ?? '' };
-  return new CachedToken((signal) =>
-    postTokenForm(
-      tokenUrl,
-      {
-        grant_type: 'client_credentials',
-        client_id: config.clientId,
-        client_secret: config.clientSecret,
-        box_subject_type: subject.type,
-        box_subject_id: subject.id,
-      },
-      signal,
-    ),
+  return new CachedToken(() =>
+    postTokenForm(tokenUrl, {
+      grant_type: 'client_credentials',
+      client_id: config.clientId,
+      client_secret: config.clientSecret,
+      box_subject_type: subject.type,
+      box_subject_id: subject.id,
+    }),
   );
 }
 
@@ -165,6 +204,12 @@ export interface OAuthConfig {
   clientSecret: string;
   /** Optional; defaults to Box's token endpoint. */
   tokenUrl?: string;
+  /**
+   * Called with each rotated refresh token (Box invalidates the previous one on
+   * every exchange). Persist it so a later `oauth` resume does not start from a
+   * stale, already-invalidated token.
+   */
+  onRefresh?: (refreshToken: string) => void;
 }
 
 /**
@@ -184,27 +229,25 @@ export function authorizeUrl(config: OAuthConfig, redirectUri: string, state: st
 /**
  * The refresh exchange for the authorization-code flow: it swaps the current
  * refresh token for a fresh access token and rotates the refresh token Box
- * returns (Box invalidates the old one on each exchange).
+ * returns (Box invalidates the old one on each exchange), reporting each rotated
+ * token through `config.onRefresh` so a caller can persist it.
  */
 function refreshTokenExchange(
   config: OAuthConfig,
   tokenUrl: string,
   initialRefresh: string,
-): (signal?: AbortSignal) => Promise<Token> {
+): () => Promise<Token> {
   let refreshToken = initialRefresh;
-  return async (signal) => {
-    const token = await postTokenForm(
-      tokenUrl,
-      {
-        grant_type: 'refresh_token',
-        refresh_token: refreshToken,
-        client_id: config.clientId,
-        client_secret: config.clientSecret,
-      },
-      signal,
-    );
+  return async () => {
+    const token = await postTokenForm(tokenUrl, {
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+      client_id: config.clientId,
+      client_secret: config.clientSecret,
+    });
     if (token.refreshToken) {
       refreshToken = token.refreshToken;
+      config.onRefresh?.(token.refreshToken);
     }
     return token;
   };
@@ -221,6 +264,8 @@ export function oauth(config: OAuthConfig, refreshToken: string): Auth {
 
 /**
  * Exchange an authorization code for an `Auth` that refreshes itself thereafter.
+ * The initial refresh token is reported through `config.onRefresh` so it can be
+ * persisted immediately.
  */
 export async function exchangeCode(
   config: OAuthConfig,
@@ -243,6 +288,7 @@ export async function exchangeCode(
   if (!token.refreshToken) {
     throw new BoxApiError('authorization-code exchange returned no refresh_token');
   }
+  config.onRefresh?.(token.refreshToken);
   // Seed the cache with the access token we just obtained, and refresh via the
   // rotating refresh token thereafter.
   return new CachedToken(refreshTokenExchange(config, tokenUrl, token.refreshToken), token);

@@ -79,7 +79,11 @@ export class Client {
 
   constructor(auth: Auth, options: ClientOptions = {}) {
     this.auth = auth;
-    this.maxRetries = options.maxRetries ?? 5;
+    const maxRetries = options.maxRetries ?? 5;
+    if (!Number.isInteger(maxRetries) || maxRetries < 0) {
+      throw new RangeError('maxRetries must be a non-negative integer');
+    }
+    this.maxRetries = maxRetries;
     this.baseUrls = { ...DEFAULT_BASE_URLS, ...(options.baseUrls ?? {}) };
   }
 
@@ -88,9 +92,11 @@ export class Client {
     return this.baseUrls[name] ?? '';
   }
 
-  /** A valid access token for the configured auth flow. */
-  async accessToken(signal?: AbortSignal): Promise<string> {
-    return this.auth.accessToken(signal);
+  /** A valid access token for the configured auth flow. The `signal` is
+   * accepted for contract symmetry; token acquisition is a shared refresh not
+   * bound to a single request's cancellation (mirroring the Rust runtime). */
+  async accessToken(_signal?: AbortSignal): Promise<string> {
+    return this.auth.accessToken();
   }
 
   /** A request envelope for a method and fully built URL. */
@@ -98,12 +104,18 @@ export class Client {
     return new Request(method, url);
   }
 
-  /** Execute the request with retries: exponential backoff + jitter, a single
-   * 401 token refresh, and Retry-After on 429/503. */
+  /** Execute the request with retries: exponential backoff + full jitter, a
+   * single force-refresh on 401, and Retry-After (as a floor) on 429/5xx.
+   *
+   * Retry policy follows idempotency: a 429 (rate-limited, never processed)
+   * retries for every method; a transport error or a 5xx may have already
+   * committed a write, so those retry only for idempotent methods
+   * (GET/HEAD/PUT/DELETE/…). The 401 refresh applies to every method. */
   async fetch(request: Request, signal?: AbortSignal): Promise<Response> {
-    let token = await this.auth.accessToken(signal);
+    let token = await this.auth.accessToken();
     const query = request.query.toString();
     const url = query ? `${request.url}?${query}` : request.url;
+    const idempotent = isIdempotent(request.method);
 
     let refreshed = false;
     let lastError: unknown;
@@ -125,8 +137,10 @@ export class Client {
           signal,
         });
       } catch (err) {
+        // A transport error gives no response, so a non-idempotent write may
+        // already have committed — only retry idempotent methods.
         lastError = err;
-        if (attempt === this.maxRetries) {
+        if (attempt === this.maxRetries || !idempotent) {
           break;
         }
         await sleep(backoff(attempt), signal);
@@ -136,46 +150,60 @@ export class Client {
       const bodyBytes = new Uint8Array(await httpResponse.arrayBuffer());
       const response = new Response(httpResponse.status, httpResponse.headers, bodyBytes);
 
-      // A single token refresh on 401.
+      // A single force-refresh on 401: re-acquire past the token cache so the
+      // retry doesn't just resend the same rejected token.
       if (response.status === 401 && !refreshed) {
         refreshed = true;
-        token = await this.auth.accessToken(signal);
+        token = await this.auth.forceRefresh(token);
         continue;
       }
-      // Backoff on rate-limit / server errors, honoring Retry-After.
-      if (retriable(response.status) && attempt < this.maxRetries) {
-        await sleep(retryAfter(response, attempt), signal);
+      if (shouldRetry(response.status, idempotent) && attempt < this.maxRetries) {
+        await sleep(retryDelay(response, attempt), signal);
         continue;
       }
       return response;
     }
-    throw new BoxApiError(
-      `request failed after ${this.maxRetries + 1} attempts: ${String(lastError)}`,
-    );
+    throw new BoxApiError(`request failed after ${this.maxRetries + 1} attempts`, {
+      cause: lastError,
+    });
   }
 }
 
-function retriable(status: number): boolean {
-  return status === 429 || status >= 500;
+/** The safety ceiling on any single retry sleep, so a hostile server-sent
+ * Retry-After can't stall the client indefinitely. */
+const MAX_RETRY_DELAY_MS = 30_000;
+
+/** HTTP's idempotent methods: safe to replay after a transport error or 5xx. */
+const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'PUT', 'DELETE', 'OPTIONS', 'TRACE']);
+
+function isIdempotent(method: string): boolean {
+  return IDEMPOTENT_METHODS.has(method.toUpperCase());
 }
 
-/** Full-jitter exponential backoff, capped at 30s. */
+/** Whether a response status warrants a retry for a request of this idempotency.
+ * A 429 (rate-limited, never processed) retries for any method; a 5xx may have
+ * committed a write, so it retries only for idempotent methods. */
+function shouldRetry(status: number, idempotent: boolean): boolean {
+  return status === 429 || (status >= 500 && idempotent);
+}
+
+/** Full-jitter exponential backoff, capped at the max retry delay. */
 function backoff(attempt: number): number {
-  const base = Math.min(2 ** attempt * 500, 30_000);
+  const base = Math.min(2 ** attempt * 500, MAX_RETRY_DELAY_MS);
   return Math.random() * base;
 }
 
-/** The delay before a retry: the response's Retry-After seconds when present,
- * else the backoff schedule. */
-function retryAfter(response: Response, attempt: number): number {
+/** The delay before the next retry: exponential backoff, raised to a
+ * (delay-seconds) Retry-After as a floor when present, and clamped to
+ * `MAX_RETRY_DELAY_MS`. HTTP-date Retry-After values fall back to backoff (the
+ * same posture as the Rust runtime). */
+function retryDelay(response: Response, attempt: number): number {
+  let delay = backoff(attempt);
   const header = response.headers.get('Retry-After');
-  if (header) {
-    const seconds = Number.parseInt(header, 10);
-    if (Number.isFinite(seconds)) {
-      return seconds * 1000;
-    }
+  if (header && /^\d+$/.test(header.trim())) {
+    delay = Math.max(delay, Number(header.trim()) * 1000);
   }
-  return backoff(attempt);
+  return Math.min(delay, MAX_RETRY_DELAY_MS);
 }
 
 /** Sleep for `ms`, rejecting promptly if the signal aborts. */
