@@ -155,3 +155,57 @@ fn the_real_spec_models_type_check() {
         String::from_utf8_lossy(&check.stderr)
     );
 }
+
+/// FR-5.2/TR-TS.5: the generated SDK must type-check against the real
+/// hand-written runtime, not only the stubs — proving the `fetch` runtime
+/// exports the contract's names with matching signatures.
+#[test]
+fn the_generated_sdk_compiles_against_the_real_runtime() {
+    if Command::new("tsc").arg("--version").output().is_err() {
+        eprintln!("SKIPPED: tsc not available; CI runs this gate");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("gantry-ts-runtime-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    write_all(&dir, &generate());
+
+    // Replace the compile-time stub with the real runtime: drop the generated
+    // `src/runtime.ts` and copy every source file of the hand-written runtime
+    // into `src/`. Its `runtime.ts` re-exports `auth`/`errors`, so the managers'
+    // `../runtime.js` imports resolve to the real types and functions.
+    let runtime_src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../runtimes/typescript/gantryruntime/src")
+        .canonicalize()
+        .unwrap();
+    std::fs::remove_file(dir.join("src/runtime.ts")).unwrap();
+    for entry in std::fs::read_dir(&runtime_src).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "ts") {
+            let name = path.file_name().unwrap();
+            std::fs::copy(&path, dir.join("src").join(name)).unwrap();
+        }
+    }
+
+    // A smoke module proving the public API composes: constructing the client
+    // from a real auth flow forces the whole manager tree to type-check against
+    // the real runtime.
+    std::fs::write(
+        dir.join("src/smoke.ts"),
+        "import { Client, runtime } from './index.js';\n\
+         export const client = new Client(runtime.developerToken('dev'));\n",
+    )
+    .unwrap();
+
+    let check = Command::new("tsc")
+        .args(["--noEmit", "-p", "tsconfig.json"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        check.status.success(),
+        "generated SDK does not type-check against the real runtime (contract drift, FR-5.2):\n{}\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+}

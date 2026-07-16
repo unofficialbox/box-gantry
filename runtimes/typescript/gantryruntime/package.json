@@ -1,0 +1,11 @@
+{
+  "name": "@box/gantryruntime",
+  "version": "0.1.0",
+  "description": "Hand-written runtime the generated Box TypeScript SDK ships against (TR-TS.5).",
+  "type": "module",
+  "types": "./src/runtime.ts",
+  "exports": {
+    ".": "./src/runtime.ts"
+  },
+  "license": "MIT"
+}
