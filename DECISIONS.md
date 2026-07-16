@@ -2249,13 +2249,22 @@ tests):
   survives a re-serialize, and an unknown tag is retained in `Unknown(_)` for
   open unions / rejected for closed ones (G-10/G-11, VR-4).
 
-**Robust by construction.** The variant name comes from `variant_ident(value)`
-(matching `models`, not the variant's type name); the known-tag test is emitted
-only when the variant struct has no required field beyond the discriminator (so
-minimal `{"disc":"value"}` JSON deserializes), and the tag-survival assertion
-only when the variant actually carries the discriminator field. JSON literals
-are built through `{:?}` so escaping is always correct. On the real specs this
-yields 27 passing tests (23 unions + 4 serialization).
+**Robust by construction — one shared allocation.** Rather than recomputing
+names, the test generator consumes the *same* canonical allocations the models
+do: `models::discriminated_union_rows` (extracted so `union_decl` and the tests
+share it) returns the deduplicated variant rows — enum name, variant idents (kept
+clear of the reserved `Unknown` arm), and values — and is `None` for a union
+that lowers to the structural `serde_json::Value` newtype (any tagless / non-decl
+variant). Tests are emitted only for enum-lowered unions, so a `U::Unknown` or
+`U::Variant(_)` assertion can never reference a newtype that has no such variant.
+Module paths come from the collision-suffixed `module_names` map (not a
+recomputed name), so they resolve to the real modules. The known-tag test is
+emitted only when the variant struct has no required field beyond the
+discriminator (minimal `{"disc":"value"}` JSON deserializes), and it asserts the
+discriminator *key* survives a re-serialize (`out[disc] == value`), not merely
+that the value appears somewhere. JSON literals are built through `{:?}` so
+escaping is always correct. On the real specs this yields 27 passing tests (23
+enum-lowered unions + 4 serialization).
 
 **The gate learned to run tests.** `verify --target rust` (VR-1.2) previously ran
 `fmt --check` + `cargo check` + `clippy`; `#[cfg(test)]` code is compiled by none
