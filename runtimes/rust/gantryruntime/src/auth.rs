@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
+use crate::jwt::{JwtConfig, Signer};
 use crate::Error;
 
 /// Box's OAuth 2.0 token endpoint, shared by every exchange flow.
@@ -39,6 +40,9 @@ enum Source {
     Form(FormSource),
     /// A cached token refreshed with a rotating refresh token (OAuth 2.0).
     OAuth(OAuthSource),
+    /// A cached token refreshed by signing a fresh JWT bearer assertion. Boxed:
+    /// the parsed RSA key makes this variant far larger than the others.
+    Jwt(Box<JwtSource>),
 }
 
 impl Auth {
@@ -72,6 +76,26 @@ impl Auth {
                 cached: Mutex::new(Cached::empty()),
             }),
         }
+    }
+
+    /// JWT server auth: sign a short-lived RSA assertion (from the app's
+    /// `box_config.json`) and exchange it for an access token. Set exactly one
+    /// subject on the config — `enterprise_id` or `user_id`.
+    ///
+    /// Fallible: the RSA private key is parsed (and if needed decrypted) up
+    /// front, so a bad key fails here rather than on the first request.
+    pub fn jwt(config: JwtConfig) -> Result<Auth, Error> {
+        let signer = Signer::new(&config)?;
+        Ok(Auth {
+            source: Source::Jwt(Box::new(JwtSource {
+                http: auth_http_client(),
+                token_url: config.token_url.unwrap_or_else(default_token_url),
+                client_id: config.client_id,
+                client_secret: config.client_secret,
+                signer,
+                cached: Mutex::new(Cached::empty()),
+            })),
+        })
     }
 
     /// Resume the OAuth 2.0 authorization-code flow from a previously stored
@@ -124,6 +148,7 @@ impl Auth {
             Source::Developer(token) => Ok(token.clone()),
             Source::Form(source) => source.access_token().await,
             Source::OAuth(source) => source.access_token().await,
+            Source::Jwt(source) => source.access_token().await,
         }
     }
 
@@ -137,6 +162,7 @@ impl Auth {
             Source::Developer(token) => Ok(token.clone()),
             Source::Form(source) => source.force_refresh(stale).await,
             Source::OAuth(source) => source.force_refresh(stale).await,
+            Source::Jwt(source) => source.force_refresh(stale).await,
         }
     }
 }
@@ -222,6 +248,55 @@ impl FormSource {
 
     async fn refresh_locked(&self, cached: &mut Cached) -> Result<String, Error> {
         let response = post_token_form(&self.http, &self.token_url, &self.form).await?;
+        cached.store(response.access_token.clone(), response.ttl());
+        Ok(response.access_token)
+    }
+}
+
+/// A token source that refreshes by signing a fresh JWT bearer assertion and
+/// exchanging it (server auth with a signing key). Like [`FormSource`], but the
+/// grant form is re-minted each refresh — each assertion is single-use.
+struct JwtSource {
+    http: reqwest::Client,
+    token_url: String,
+    client_id: String,
+    client_secret: String,
+    signer: Signer,
+    cached: Mutex<Cached>,
+}
+
+impl JwtSource {
+    async fn access_token(&self) -> Result<String, Error> {
+        let mut cached = self.cached.lock().await;
+        if let Some(token) = cached.fresh() {
+            return Ok(token);
+        }
+        self.refresh_locked(&mut cached).await
+    }
+
+    async fn force_refresh(&self, stale: &str) -> Result<String, Error> {
+        let mut cached = self.cached.lock().await;
+        // Single-flight: a concurrent 401 may already have replaced the token.
+        if let Some(token) = cached.fresh() {
+            if token != stale {
+                return Ok(token);
+            }
+        }
+        self.refresh_locked(&mut cached).await
+    }
+
+    async fn refresh_locked(&self, cached: &mut Cached) -> Result<String, Error> {
+        let assertion = self.signer.assertion(&self.token_url)?;
+        let form = vec![
+            (
+                "grant_type".to_string(),
+                "urn:ietf:params:oauth:grant-type:jwt-bearer".to_string(),
+            ),
+            ("assertion".to_string(), assertion),
+            ("client_id".to_string(), self.client_id.clone()),
+            ("client_secret".to_string(), self.client_secret.clone()),
+        ];
+        let response = post_token_form(&self.http, &self.token_url, &form).await?;
         cached.store(response.access_token.clone(), response.ttl());
         Ok(response.access_token)
     }
@@ -532,7 +607,9 @@ mod tests {
                     .form
                     .contains(&("box_subject_id".to_string(), "ent-1".to_string())));
             }
-            Source::Developer(_) | Source::OAuth(_) => panic!("expected a form source"),
+            Source::Developer(_) | Source::OAuth(_) | Source::Jwt(_) => {
+                panic!("expected a form source")
+            }
         }
     }
 

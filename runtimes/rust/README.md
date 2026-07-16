@@ -24,20 +24,40 @@ here, never in the engine workspace.
   `save`) so a restart reloads the live token rather than one Box has already
   invalidated; a failed `save` is surfaced and then retried on later calls until
   it succeeds, so a rotation is never silently treated as durable.
+- `gantryruntime/src/jwt.rs` — `Auth::jwt` (server auth with a signing key):
+  parses the app's `box_config.json` RSA private key up front (unencrypted
+  PKCS#8/PKCS#1, or encrypted PKCS#8 with a passphrase — a bad key fails at
+  construction), then RS256-signs a fresh, single-use JWT bearer assertion for
+  each token exchange.
 
 > These four behaviors (idempotency-gated retries, exponential 429 backoff,
 > single-flight 401 refresh, durable refresh-token store) go beyond the shipped
 > Go runtime, which the Rust runtime otherwise mirrors — Rust leads here, and Go
 > is expected to follow in a later cross-runtime hardening pass.
 
-Verified two ways: built/clippy/tested standalone in CI, and — the real
-check — the generated SDK is compiled against this crate in
-`crates/gantry-backend-rust/tests` (contract conformance, FR-5.2): the test
+Verified three ways: built/clippy/tested standalone in CI (unit tests cover the
+retry policy, auth caching/rotation, and JWT assertion signing + verification);
+the generated SDK is compiled against this crate in
+`crates/gantry-backend-rust/tests` (contract conformance, FR-5.2 — the test
 swaps the generated stub `runtime.rs` for a re-export of this crate and
-`cargo check`s the whole SDK plus a smoke example.
+`cargo check`s the whole SDK plus a smoke example); and the live smoke below.
 
-## Not yet wired
+## Live smoke (VR-7)
 
-- **JWT server auth** (signing-key assertions) — the next runtime slice.
-  The three flows here cover fixed-token and both refresh-based exchanges.
-- **Live smoke (VR-7)** against a real Box account — lands with JWT.
+`tests/livesmoke.rs` exercises the runtime against a **real Box account**: one
+authenticated call per configured auth flow, then paginate + upload + download +
+delete. It is `#[ignore]`d, so the standard CI gate compiles it (it can't rot)
+but never runs it — run it on demand:
+
+```sh
+BOX_DEVELOPER_TOKEN=… cargo test -p gantryruntime --test livesmoke -- --ignored --nocapture
+```
+
+Credentials come from the environment; a flow runs only when its variables are
+present, and the test returns early (a clean no-op) when none are set. For local
+runs, copy the repo-root `.env.sample` to `.env` (gitignored) and fill in the
+flows you want — the test loads it automatically (real env vars still win). The
+recognized variables are the same as the Go runtime's (see
+[`runtimes/go/README.md`](../go/README.md)); `BOX_JWT_CONFIG` points at a Box
+`box_config.json`. In CI it runs only via the manual **Live smoke (VR-7)**
+workflow (`livesmoke.yml`), reading credentials from repo secrets.

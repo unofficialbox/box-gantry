@@ -30,6 +30,9 @@ jobs:
         run: |
           printf '%s' "$BOX_JWT_CONFIG_JSON" > "$RUNNER_TEMP/box_config.json"
           echo "BOX_JWT_CONFIG=$RUNNER_TEMP/box_config.json" >> "$GITHUB_ENV"
-      - name: Run the live smoke (one call per auth flow + upload/download/paginate)
+      - name: Run the Go live smoke (one call per auth flow + upload/download/paginate)
         working-directory: runtimes/go
         run: go test -tags live -run TestLiveSmoke -v ./gantryruntime/...
+      - name: Run the Rust live smoke (same flows, the hand-written reqwest/tokio runtime)
+        working-directory: runtimes/rust/gantryruntime
+        run: cargo test --test livesmoke -- --ignored --nocapture
