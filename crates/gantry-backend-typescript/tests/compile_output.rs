@@ -181,10 +181,18 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
     std::fs::remove_file(dir.join("src/runtime.ts")).unwrap();
     for entry in std::fs::read_dir(&runtime_src).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().is_some_and(|e| e == "ts") {
-            let name = path.file_name().unwrap();
-            std::fs::copy(&path, dir.join("src").join(name)).unwrap();
+        if path.extension().is_none_or(|e| e != "ts") {
+            continue;
         }
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        // The JWT flow is a Node-only leaf module (`node:crypto`), never
+        // referenced by the generated SDK; skip it (and its ambient node type
+        // decl) so this gate stays platform-neutral. The runtime's own tsc gate
+        // covers it.
+        if name == "jwt.ts" || name == "node-crypto.d.ts" {
+            continue;
+        }
+        std::fs::copy(&path, dir.join("src").join(&name)).unwrap();
     }
 
     // A smoke module proving the public API composes: constructing the client
