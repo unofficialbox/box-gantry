@@ -2512,3 +2512,47 @@ and it joined the CI release gate. TypeScript joins the gate the same way once
 those slices land. A unit test exercises the shape on a synthetic SDK (managers/
 operations/traceability pass, serialization excluded, the rest pending); the
 real-spec numbers above are produced by the CLI.
+
+## D-163 — TypeScript backend, slice 7: reference docs (FR-7.7)
+
+**Context.** The next slice after `conform --target typescript` (D-162), which
+reported `manager-docs`, `docs-guides`, and `auth-flows` as pending. This slice
+emits the `docs/` tree — flipping all three green — porting the Go/Rust
+backends' `docs.rs` to the TypeScript surface.
+
+**Generated from the same IR as the code.** A new `docs.rs` emits a `docs/`
+tree: an index (`README.md`), one reference page per manager
+(`docs/managers/<module>.md`), and the three cross-cutting guides
+(`auth.md`, `pagination.md`, `errors.md`). Each manager page is derived from the
+IR — the `## <method>` heading is the real camelCased method name, followed by
+the `HTTP /path` line, a parameter table (wire name, in, TypeScript type,
+required), the request-body media/type, and the typed `**Returns:**` — so the
+docs describe exactly what the code generates and can't drift.
+
+**No drift, by construction.** The manager naming (module/class/field) and the
+per-operation method-base dedup were extracted from `managers.rs` into shared
+`plan_managers`/`method_bases` helpers, now the single source of truth for both
+the code printer and the docs. A doc's `## getById` heading is the same string
+the emitted `async getById(...)` method carries — verified on the real spec (the
+generated method names and the doc headings match exactly). Types go through the
+same mapping the models use (`describe` mirrors `ts_type`; declaration names
+through `type_name`), and paginated operations (via `detect_pagination`) get a
+note pointing at the pagination guide.
+
+**Accurate guides.** The auth guide documents all four Box flows with real
+runtime call sites (`developerToken`, `clientCredentials`, `await jwtAuth`,
+`oauth`) and names each flow so the `conform` auth recognizer reads 4/4. The
+errors guide describes the exceptions model against the real `BoxApiError`
+surface (`status`, `cause` — no invented `body` field). The pagination guide
+documents the manual marker/offset cursor loop the current managers support
+(dedicated paginators are a later slice), using the identity (snake_case) wire
+field names TR-TS.2 preserves.
+
+**Result.** `conform --target typescript` now reads **9 capabilities, 1
+excluded, 2 failing** — managers, operations, manager-docs (85/85), auth-flows
+(4/4), docs-guides (4/4), traceability all pass; serialization stays the
+documented exclusion; only `pagination` and `round-trip-tests` remain (the last
+two M6 slices). Docs are `.md` under `docs/`, outside the `tsc` `include`
+(`src/**/*.ts`), so the VR-1.5 gate is unaffected. A backend test asserts the
+docs tree (one page per manager, the guides, all four auth flows, real method
+headings + return types); generation stays deterministic (FR-6.2).
