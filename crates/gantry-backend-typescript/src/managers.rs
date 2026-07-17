@@ -11,12 +11,13 @@
 //! surface, so the generated SDK type-checks against the stubs and, later,
 //! the real runtime unchanged.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
 use gantry_ir as ir;
 use gantry_ir::naming::{pascal, snake};
 use gantry_sema::Analysis;
+use gantry_synth::{PageStyle, PagedOperation, detect_pagination};
 
 use crate::models::{module_names, type_name};
 use crate::{BuildInfo, GeneratedFile};
@@ -86,6 +87,11 @@ pub fn generate_managers(analysis: &Analysis<'_>, _build: &BuildInfo) -> Vec<Gen
         .and_then(|op| op.api_version.clone());
     // Shared module-name registry, so manager type paths agree with the models.
     let modules = module_names(program);
+    // Paginated operations, so a paged method also emits an async paginator.
+    let paged: HashMap<usize, PagedOperation> = detect_pagination(analysis)
+        .into_iter()
+        .map(|p| (p.operation, p))
+        .collect();
 
     // Allocate one collision-free base per manager (shared with the docs).
     let named = plan_managers(analysis);
@@ -97,6 +103,7 @@ pub fn generate_managers(analysis: &Analysis<'_>, _build: &BuildInfo) -> Vec<Gen
             program,
             base_version: base_version.clone(),
             modules: &modules,
+            paged: &paged,
             body: String::new(),
             uses_path_escape: false,
             uses_join: false,
@@ -212,6 +219,8 @@ struct Printer<'p> {
     base_version: Option<ir::ApiVersion>,
     /// Shared IR-module → module-name map (agrees with the models).
     modules: &'p BTreeMap<ir::ModulePath, String>,
+    /// Paginated operations by index, so a paged method also emits a paginator.
+    paged: &'p HashMap<usize, PagedOperation>,
     body: String,
     /// Which generation-side helpers this manager needs imported.
     uses_path_escape: bool,
@@ -243,6 +252,12 @@ impl Printer<'_> {
         for (pos, &index) in indices.iter().enumerate() {
             let op = self.program.operations[index].clone();
             self.operation(&op, name, &bases[pos]);
+            // A paged operation also gets an async-generator paginator (the
+            // plain method still ships too). Some cursor shapes aren't
+            // synthesized — those keep only the plain method (VR-6 fallback).
+            if let Some(paged) = self.paged.get(&index).cloned() {
+                self.paginator(&op, name, &bases[pos], &paged);
+            }
         }
         self.body.push_str("}\n");
     }
@@ -331,6 +346,148 @@ impl Printer<'_> {
         self.request_body(op);
         self.fetch_and_decode(op);
         self.body.push_str("  }\n");
+    }
+
+    /// Emit an async-generator paginator for a paged operation, right after its
+    /// plain method: `for await (const item of mgr.methodPaginate(...))`. It
+    /// calls the plain method, yields each entry, and threads the cursor into a
+    /// private copy of the options (the caller's `opts` is never mutated). Some
+    /// cursor shapes aren't synthesized (the request marker must be a string,
+    /// the request offset an int); those keep only the plain method — a
+    /// documented fallback (VR-6), never wrong code.
+    fn paginator(
+        &mut self,
+        op: &ir::Operation,
+        name: &ManagerName,
+        base: &str,
+        paged: &PagedOperation,
+    ) {
+        // The response envelope (a struct) carries `entries` + the cursor field.
+        let ir::ResponseShape::Json(response_ty) = &op.response else {
+            return;
+        };
+        let Some(decl_id) = decl_of(response_ty) else {
+            return;
+        };
+        let ir::DeclKind::Struct(envelope) = &self.program.decl(decl_id).kind else {
+            return;
+        };
+        let Some(cursor_field) = envelope
+            .fields
+            .iter()
+            .find(|f| f.wire_name == paged.cursor_wire)
+        else {
+            return;
+        };
+        // The cursor query parameter (detection guaranteed it is optional).
+        let Some(cursor_param) = op
+            .params
+            .iter()
+            .find(|p| p.location == ir::ParamLocation::Query && p.wire_name == paged.param_wire)
+        else {
+            return;
+        };
+
+        let option_param = member_access("options", &cursor_param.wire_name);
+        // The advance block threads the next cursor; a cursor shape we don't
+        // synthesize aborts the whole paginator (the plain method still ships).
+        let advance = match paged.style {
+            PageStyle::Marker => {
+                if !matches!(unwrap_optionality(&cursor_param.ty), ir::Type::String) {
+                    return;
+                }
+                let cursor = member_access("page", &paged.cursor_wire);
+                match unwrap_optionality(&cursor_field.ty) {
+                    ir::Type::String => format!(
+                        "      const cursor = {cursor};\n\
+                         \x20     if (cursor === undefined || cursor === null || cursor === '') {{\n\
+                         \x20       return;\n\
+                         \x20     }}\n\
+                         \x20     {option_param} = cursor;\n"
+                    ),
+                    // A non-string cursor (e.g. a numeric `next_marker`) is
+                    // stringified back into the string marker param.
+                    ir::Type::Int64 => format!(
+                        "      const cursor = {cursor};\n\
+                         \x20     if (cursor === undefined || cursor === null) {{\n\
+                         \x20       return;\n\
+                         \x20     }}\n\
+                         \x20     {option_param} = String(cursor);\n"
+                    ),
+                    ir::Type::Bool
+                    | ir::Type::Float64
+                    | ir::Type::Date
+                    | ir::Type::DateTime
+                    | ir::Type::Binary
+                    | ir::Type::JsonValue
+                    | ir::Type::List(_)
+                    | ir::Type::Map(_)
+                    | ir::Type::Decl(_)
+                    | ir::Type::Optional(_)
+                    | ir::Type::Nullable(_) => return,
+                }
+            }
+            PageStyle::Offset => {
+                if !matches!(unwrap_optionality(&cursor_param.ty), ir::Type::Int64) {
+                    return;
+                }
+                format!(
+                    "      if (items.length === 0) {{\n\
+                     \x20       return;\n\
+                     \x20     }}\n\
+                     \x20     {option_param} = ({option_param} ?? 0) + items.length;\n"
+                )
+            }
+        };
+
+        // Signature mirrors the plain method: required params, body, then the
+        // options object (always present — the cursor param is optional).
+        let mut params: Vec<String> = Vec::new();
+        let mut call_args: Vec<String> = Vec::new();
+        for param in op
+            .params
+            .iter()
+            .filter(|p| !matches!(p.ty, ir::Type::Optional(_)))
+        {
+            let nm = camel(param.name.as_str());
+            params.push(format!("{nm}: {}", self.ts_type(&param.ty)));
+            call_args.push(nm);
+        }
+        if let Some(body) = &op.request {
+            params.push(format!(
+                "body: {}",
+                self.ts_type(unwrap_optionality(&body.ty))
+            ));
+            call_args.push("body".to_string());
+        }
+        let opt_ty = options_type(&name.class, base);
+        params.push(format!("opts?: {opt_ty}"));
+        call_args.push("options".to_string());
+
+        let method = camel(base);
+        let element = self.ts_type(&paged.element);
+        let entries = member_access("page", &paged.entries_wire);
+        let style = match paged.style {
+            PageStyle::Marker => "marker",
+            PageStyle::Offset => "offset",
+        };
+        let _ = write!(
+            self.body,
+            "\n  /** Iterate every `{element}` across pages, threading the {style} cursor. */\n\
+             \x20 async *{method}Paginate({params}): AsyncIterableIterator<{element}> {{\n\
+             \x20   const options: {opt_ty} = {{ ...opts }};\n\
+             \x20   for (;;) {{\n\
+             \x20     const page = await this.{method}({call_args});\n\
+             \x20     const items = {entries} ?? [];\n\
+             \x20     for (const item of items) {{\n\
+             \x20       yield item;\n\
+             \x20     }}\n\
+             {advance}\
+             \x20   }}\n\
+             \x20 }}\n",
+            params = params.join(", "),
+            call_args = call_args.join(", "),
+        );
     }
 
     /// Build the URL from the D-106 base class + structured path segments.
@@ -772,6 +929,25 @@ fn unwrap_optionality(ty: &ir::Type) -> &ir::Type {
     }
 }
 
+/// Peel optionality; return the declaration id if the type is a `Decl` (the
+/// pagination envelope is a struct declaration).
+fn decl_of(ty: &ir::Type) -> Option<ir::DeclId> {
+    match ty {
+        ir::Type::Optional(inner) | ir::Type::Nullable(inner) => decl_of(inner),
+        ir::Type::Decl(id) => Some(*id),
+        ir::Type::Bool
+        | ir::Type::Int64
+        | ir::Type::Float64
+        | ir::Type::String
+        | ir::Type::Date
+        | ir::Type::DateTime
+        | ir::Type::Binary
+        | ir::Type::JsonValue
+        | ir::Type::List(_)
+        | ir::Type::Map(_) => None,
+    }
+}
+
 fn base_class(base: ir::BaseUrl) -> &'static str {
     match base {
         ir::BaseUrl::Api => "api",
@@ -978,10 +1154,16 @@ mod tests {
 
     fn render_manager(p: &Program) -> String {
         let modules = module_names(p);
+        let analysis = gantry_sema::analyze(p).unwrap();
+        let paged: HashMap<usize, PagedOperation> = detect_pagination(&analysis)
+            .into_iter()
+            .map(|x| (x.operation, x))
+            .collect();
         let mut printer = Printer {
             program: p,
             base_version: None,
             modules: &modules,
+            paged: &paged,
             body: String::new(),
             uses_path_escape: false,
             uses_join: false,

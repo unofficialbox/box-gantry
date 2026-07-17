@@ -661,12 +661,12 @@ fn rust_guides(files: &[GeneratedView]) -> usize {
 /// is no `Nullable[T]`/`Date` wrapper package to emit, mirroring Apex
 /// D-138/D-141).
 ///
-/// Generated behavioral tests and pagination surfaces are **not yet emitted**
-/// (later M6 slices), so those capabilities read zero until they land. Unlike
-/// the serialization exclusion, those shortfalls are pending work, not
-/// permanent — so `conform --target typescript` is a progress report (partial
-/// today) rather than a green CI gate, and it joins the release gate once the
-/// TypeScript backend reaches parity (as Rust did).
+/// Generated behavioral tests are **not yet emitted** (the last M6 slice), so
+/// `round-trip-tests` reads zero until it lands. Unlike the serialization
+/// exclusion, that shortfall is pending work, not permanent — so
+/// `conform --target typescript` is a progress report (partial today) rather
+/// than a green CI gate, and it joins the release gate once the TypeScript
+/// backend reaches parity (as Rust did).
 pub fn typescript_shape() -> TargetShape {
     TargetShape {
         target: "typescript",
@@ -714,15 +714,15 @@ fn ts_managers(files: &[GeneratedView]) -> usize {
 }
 
 fn ts_operations(files: &[GeneratedView]) -> usize {
-    // One `async <method>(` per operation (two-space-indented method bodies);
-    // subtract the paginators to isolate the plain operation methods (none yet).
+    // Every method (plain or paginator) is `  async `; the paginators are the
+    // `async *` generators, so subtract them to isolate the operation methods.
     let methods = count_marker(files, ts_is_manager_file, "  async ");
     methods.saturating_sub(ts_pagination(files))
 }
 
-fn ts_pagination(_files: &[GeneratedView]) -> usize {
-    // Paginated surfaces are a later M6 slice — none emitted yet.
-    0
+fn ts_pagination(files: &[GeneratedView]) -> usize {
+    // One `async *<method>Paginate` generator per paginated operation.
+    count_marker(files, ts_is_manager_file, "async *")
 }
 
 fn ts_serialization(_files: &[GeneratedView]) -> usize {
@@ -1115,6 +1115,9 @@ mod tests {
                  \x20 async getFiles(opts?: FilesManagerGetFilesOptions): Promise<void> {}\n\
                  \n\
                  \x20 async getFilesId(fileId: string): Promise<void> {}\n\
+                 \n\
+                 \x20 async *getFilesPaginate(opts?: FilesManagerGetFilesOptions): \
+                 AsyncIterableIterator<unknown> {}\n\
                  }\n"
                 .to_string(),
             ),
@@ -1141,7 +1144,8 @@ mod tests {
         assert_eq!(check("managers").actual, 1);
         assert_eq!(check("managers").status, CheckStatus::Pass);
         // The `Client` entry point and the options interface are not counted as
-        // managers; the two `async` methods are the operations.
+        // managers; the two plain `async` methods are the operations, with the
+        // `async *` paginator subtracted from the async-method count.
         assert_eq!(check("operations").actual, 2);
         assert_eq!(check("operations").status, CheckStatus::Pass);
         assert_eq!(check("traceability").actual, 1);
@@ -1151,17 +1155,17 @@ mod tests {
         assert_eq!(check("serialization").actual, 0);
         assert_eq!(check("serialization").status, CheckStatus::Excluded);
         assert!(check("serialization").detail.contains("type system"));
-        // Docs, tests, and pagination are pending later slices — honest
-        // shortfalls (Fail), not exclusions, so the report is partial today.
+        // The fixture omits docs and tests, so those read zero — honest
+        // shortfalls (Fail), not exclusions, so the report is partial.
         assert_eq!(check("manager-docs").actual, 0);
         assert_eq!(check("manager-docs").status, CheckStatus::Fail);
         assert_eq!(check("docs-guides").actual, 0);
         assert_eq!(check("auth-flows").actual, 0);
         assert_eq!(check("round-trip-tests").actual, 0);
-        // This synthetic program has no paginated operations, so pagination
-        // expects zero and passes trivially; on the real spec (64 paged
-        // surfaces) the pending TS backend reads zero and fails as pending.
-        assert_eq!(check("pagination").actual, 0);
+        // The `async *` paginator is counted as a paged surface. This synthetic
+        // program has no paginated operations (expected 0), so it passes; on the
+        // real spec the recognizer reads one paginator per paged operation.
+        assert_eq!(check("pagination").actual, 1);
         // A progress report: exactly one documented exclusion, and it does not
         // yet pass overall (the pending slices are real failures).
         assert_eq!(report.excluded(), 1);

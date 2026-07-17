@@ -132,10 +132,12 @@ fn manager_page(
             describe_response(program, &op.response)
         );
         if paged.contains_key(&index) {
-            body.push_str(
-                "Paginated — pass the page cursor through the options object and loop \
-                 until the response has no next cursor. See the \
-                 [pagination guide](../pagination.md).\n\n",
+            let _ = writeln!(
+                body,
+                "Paginated — also available as `{method}Paginate(...)`, an async \
+                 iterable that yields each entry across pages \
+                 (`for await (const item of ...)`), threading the cursor for you. \
+                 See the [pagination guide](../pagination.md).\n"
             );
         }
     }
@@ -302,23 +304,20 @@ const client = new Client(auth);\n\
 ```\n";
 
 const PAGINATION_GUIDE: &str = "# Pagination\n\n\
-Marker- and offset-paginated list operations return a page envelope: the page\n\
-of entries plus the cursor for the next page. Field names are the Box wire\n\
-names verbatim (serialization is identity, TR-TS.2), so read the cursor from\n\
-the response and pass it back through the operation's options object to walk\n\
-every page:\n\n\
+Marker- and offset-paginated list operations expose an extra `<method>Paginate`\n\
+method alongside the plain single-page method. It returns an\n\
+`AsyncIterableIterator` that yields one entry at a time, threading the cursor\n\
+for you — drive it with `for await ... of`:\n\n\
 ```ts\n\
-let marker: string | undefined = undefined;\n\
-do {\n\
-  const page = await client.files.getFolderItems(folderId, { marker });\n\
-  for (const entry of page.entries ?? []) {\n\
-    // use entry\n\
-  }\n\
-  marker = page.next_marker;\n\
-} while (marker);\n\
+for await (const item of client.files.getFolderItemsPaginate(folderId)) {\n\
+  // use item\n\
+}\n\
 ```\n\n\
-Offset-paged operations thread `offset`/`limit` the same way. The options\n\
-object you pass is never mutated.\n";
+The paginator calls the plain method under the hood, walks every page until the\n\
+response has no next cursor (or an empty page, for offset pagination), and owns\n\
+a private copy of the options you pass, so your value is never mutated. To\n\
+page manually instead, call the plain method and thread the wire cursor\n\
+(`next_marker` / `offset`, verbatim per TR-TS.2) through its options object.\n";
 
 const ERRORS_GUIDE: &str = "# Errors\n\n\
 Methods are `async` and surface failure by throwing — the return type only\n\

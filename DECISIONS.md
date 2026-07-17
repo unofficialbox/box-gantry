@@ -2641,3 +2641,46 @@ steps **~91% → ~83%** even though no completed work was lost — the same dyna
 as when TypeScript was added (D-143). The IR (FR-2) was designed to absorb new
 targets through manifest + lowering + printer alone (FR-6.1); Java is the second
 such addition beyond the original three.
+
+## D-165 — TypeScript backend, slice 8: pagination (FR-7.3)
+
+**Context.** After reference docs (D-163), `conform --target typescript` had two
+capabilities left: `pagination` and `round-trip-tests`. This slice adds the
+paged surfaces, flipping `pagination` 0/64 → 64/64.
+
+**An `async *` generator per paged operation.** For every operation
+`detect_pagination` finds (a marker/offset query param plus an `entries` +
+cursor response envelope), the backend emits — right after the plain method — an
+async-generator paginator `async *<method>Paginate(...): AsyncIterableIterator<T>`.
+It calls the plain method, `yield`s each entry, and threads the next cursor into
+a private copy of the options, so callers just write
+`for await (const item of client.files.getFolderItemsPaginate(id))`. This is the
+idiomatic TypeScript analogue of Rust's `Paginator::next().await` (D-154) — but
+where Rust hand-rolls a buffer + state machine (no generators), TS's async
+generators carry the iteration state, so the emitted code is a short loop.
+
+**Marker vs offset, and the conservative fallback.** Marker pagination threads
+the response cursor (`next_marker`) back into the string `marker` param, stopping
+on an absent/empty cursor; a numeric `next_marker` is stringified. Offset
+pagination advances `offset` by the page length, stopping on an empty page. A
+cursor shape the backend doesn't synthesize (a non-string marker param, a
+non-int offset) skips *only* the paginator — the plain method still ships (VR-6,
+never wrong code), the same rule the Rust backend follows. On the real spec all
+64 paged operations synthesize.
+
+**Naming shared with the plain method + docs.** The paginator reuses the same
+deduped method base (`method_bases`) as the plain method, so `getFolderItems` →
+`getFolderItemsPaginate` deterministically. The reference-doc pages (D-163) now
+point paged operations at the real `<method>Paginate` method, and the pagination
+guide shows the `for await ... of` idiom (with the manual cursor loop as a
+fallback).
+
+**Conformance.** The `typescript_shape` pagination recognizer counts the
+`async *` generators (one per paged operation); the operations recognizer, which
+counts every `  async ` method, subtracts them so plain-operation count stays
+336/336 (the same subtract-the-paginators trick the Go/Rust shapes use). With
+this, `conform --target typescript` reads **9 capabilities, 1 excluded, 1
+failing** — only `round-trip-tests` (the final M6 slice) remains. The generated
+paginators type-check clean under `tsc --noEmit` (VR-1.5) both against the stubs
+and against the real runtime (the swap test), and a backend test asserts the
+paginators are emitted; generation stays deterministic (FR-6.2).
