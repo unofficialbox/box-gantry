@@ -31,11 +31,13 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           # The Java backend's VR-1.6 gate (`javac -Xlint:all -Werror`) runs
-          # inside `cargo test --workspace`; the model layer uses only stable
-          # language features (records/enums), so the JDK 21 LTS floor suffices.
-          # Later slices' Java-26 features will raise this.
-          distribution: temurin
-          java-version: '21'
+          # inside `cargo test --workspace`, pinned to the ship target — Java 26
+          # (Corretto, the `*-amzn` distribution). The model layer uses only
+          # stable language features, so it also compiles on the JDK 21 LTS
+          # floor; later slices' Java-26-only features (HTTP/3, PEM, structured
+          # concurrency, …) make 26 mandatory.
+          distribution: corretto
+          java-version: '26'
       - uses: actions/cache@v4
         with:
           path: |

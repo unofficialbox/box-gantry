@@ -2957,9 +2957,11 @@ accessor of that name).
 (900 files) and compiles it with `javac -Xlint:all -Werror` — `-Werror` makes any
 lint a hard failure, the Java analogue of `clippy -D warnings` / strict `tsc`.
 It runs in `cargo test --workspace`, skipping cleanly when `javac` is absent; CI
-gains a `setup-java` step (temurin 21 — the model layer uses only stable
-features, so the JDK 21 LTS floor suffices; later slices' Java-26 features will
-raise it). `generate --target java` is wired; a `java()` manifest is added
+gains a `setup-java` step pinned to the ship target — **Java 26** (Corretto, the
+`*-amzn` distribution). The model layer uses only stable language features, so it
+also compiles on the JDK 21 LTS floor (what a contributor without a 26 JDK will
+have); later slices' Java-26-only features (HTTP/3, PEM, structured concurrency)
+make 26 mandatory. `generate --target java` is wired; a `java()` manifest is added
 (`Hierarchical`, `Full` generics, `Exceptions`, **`Sync`** — the blocking
 `java.net.http` API, concurrency the caller's business like Go/Apex — streaming
 `Supported`). Match arms over IR types stay enumerated, never wildcarded (NF-1).
