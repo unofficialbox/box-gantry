@@ -123,7 +123,10 @@ pub fn generate(
 /// fields (lean feature set — `serde` + `alloc`, no clock/OS-timezone
 /// machinery). Carries the package metadata `cargo publish` requires; the
 /// release pipeline vendors the real runtime (adding its deps) and sets the
-/// real `name`/`version` from the FR-9 spec-diff, as Go's module tag is set.
+/// real `name`/`version`/`repository` from the FR-9 spec-diff + release
+/// identity, as Go's module tag is set. The placeholder `repository` uses the
+/// reserved `.invalid` TLD (RFC 2606) precisely so an un-substituted value can
+/// never resolve to — and so never mislead a consumer toward — a real site.
 fn cargo_toml() -> String {
     "[package]\n\
      name = \"box-sdk\"\n\

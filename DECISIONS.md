@@ -2867,9 +2867,13 @@ yielding the full stack in one crate.
 **Manifest metadata + README.** `cargo publish` requires `description`,
 `license`, and either `repository` or `homepage`; the crate now carries them
 (license `MIT`, a placeholder `repository`) plus a `readme = "README.md"` and a
-short generated `README.md` pointing at the `docs/` tree. `name`/`version` stay
-placeholders (`box-sdk` / `0.1.0`); the release pipeline sets the real name and
-the `vMAJOR.MINOR.PATCH` from the FR-9 spec-diff, as Go's module tag is set.
+short generated `README.md` pointing at the `docs/` tree. `name`/`version`/
+`repository` stay placeholders (`box-sdk` / `0.1.0` / an `example.invalid` URL);
+the release pipeline sets the real name, the `vMAJOR.MINOR.PATCH` from the FR-9
+spec-diff, and the real repository URL, as Go's module tag is set. The
+placeholder deliberately uses the reserved `.invalid` TLD (RFC 2606) so an
+un-substituted value can never resolve to a real site — it fails safe rather
+than pointing a consumer somewhere misleading.
 
 **The gate.** `the_generated_sdk_packages_for_publish` generates the crate,
 performs the vendoring assembly into a temp dir, runs
