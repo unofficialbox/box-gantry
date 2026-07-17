@@ -137,10 +137,10 @@ lowering; async-first runtime on `reqwest`+`tokio`; builders; `cargo
 check`+`clippy`+`rustfmt` gates; `cargo publish --dry-run`.
 **Exit = v3 acceptance criteria** (R§7).
 
-**Calendar to four shipped SDKs: ~11–15.5 months** (v1 ~6–8, v2 ~2.5–3.5,
-v3 ~1–2, v4 ~1–2), against ~3,430 human-equivalent hours (~21 engineer-months)
-of effort. (TypeScript v4 added in D-143; the original three-SDK path was
-~10–13.5 months / ~3,110 hrs.)
+**Calendar to five shipped SDKs: ~12–17.5 months** (v1 ~6–8, v2 ~2.5–3.5,
+v3 ~1–2, v4 ~1–2, v5 ~1–2), against ~3,790 human-equivalent hours
+(~23 engineer-months) of effort. (Java 26 v5 added in D-164; TypeScript v4
+in D-143; the original three-SDK path was ~10–13.5 months / ~3,110 hrs.)
 
 ## 🔬 Verification cadence
 

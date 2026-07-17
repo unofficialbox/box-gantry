@@ -83,6 +83,21 @@ fn generation_is_deterministic() {
         managers.contains("await this.session.fetch(req)"),
         "managers must fetch through the runtime session"
     );
+    // Paginated operations also emit an async-generator paginator
+    // (`async *<method>Paginate(): AsyncIterableIterator<T>`), driven with
+    // `for await ... of` (FR-7.3). The real spec has paginated list endpoints.
+    assert!(
+        managers.contains("async *"),
+        "no async-generator paginators emitted"
+    );
+    assert!(
+        managers.contains("Paginate(") && managers.contains("): AsyncIterableIterator<"),
+        "paginators must be async iterables"
+    );
+    assert!(
+        managers.contains("for (const item of items) {"),
+        "paginator must yield each entry"
+    );
     // The runtime-contract stubs (FR-5.3): managers type-check against these.
     let runtime = once.iter().find(|f| f.path == "src/runtime.ts").unwrap();
     assert!(
