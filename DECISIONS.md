@@ -2556,3 +2556,88 @@ two M6 slices). Docs are `.md` under `docs/`, outside the `tsc` `include`
 (`src/**/*.ts`), so the VR-1.5 gate is unaffected. A backend test asserts the
 docs tree (one page per manager, the guides, all four auth flows, real method
 headings + return types); generation stays deterministic (FR-6.2).
+
+## D-164 — Java 26 as the fifth SDK target (v5)
+
+**Context.** With v1 (Go) shipped, v2 (Apex) essentially complete, v3 (Rust) at
+full capability parity, and v4 (TypeScript) underway (models, managers/client,
+runtime with all four auth flows, conformance, docs), a fifth target is added to
+the roadmap: **Java**, positioned *after* TypeScript (v5 / M7).
+
+**Decision.** Adopt **Java 26** as a first-party target (not a plugin — non-goal
+3 still stands for *third-party* languages). The version choice is deliberate:
+Java 26's finalized records, sealed interfaces + `permits`, record patterns, and
+pattern matching for `switch` make the IR's shapes map cleanly, the way Rust's
+enums and TypeScript's unions do —
+
+- **Good IR fit.** `oneOf` → a sealed interface over record variants dispatched
+  by an exhaustive pattern-matching `switch` (unknown discriminators retained via
+  a catch-all record); structs → immutable records; open enums → an `enum` plus
+  an unknown-value carrier so round-tripping never drops an unrecognized value.
+  None of Apex's erasure/dispatch work applies.
+- **A dependency-free runtime.** The hand-written runtime uses the JDK's built-in
+  `java.net.http.HttpClient` — no third-party HTTP library — with the same
+  retry/backoff + `401`-refresh contract as the Go/Rust/TS runtimes (FR-5).
+- **A fast verification gate.** `javac` compile-clean under `-Xlint:all` plus a
+  formatter (`google-java-format` / Spotless) is the Java analogue of `go build`
+  / `cargo check` / `tsc --noEmit` (**VR-1.6**).
+
+The one place Java is *less* direct than TypeScript or Rust: it has no native
+absent-vs-null distinction, so the tri-state needs an explicit wrapper (like
+Go's `Nullable[T]`), documented as the platform shape rather than mapped onto
+the type system.
+
+**Java 25/26 features we take advantage of.** Targeting Java 26 (with Java 25
+LTS as the floor) is what makes the clean shapes above possible, and several
+recent additions map directly onto SDK-generation concerns — each is adopted for
+a concrete reason, not for novelty:
+
+- **HTTP/3 (QUIC) in `HttpClient`** (Java 26) — the runtime is built on the JDK's
+  `java.net.http.HttpClient`; HTTP/3's UDP/QUIC transport lowers request latency
+  and is negotiated transparently, so the runtime opts in without a third-party
+  HTTP or QUIC library (TR-Java.5).
+- **Standard PEM Encodings** (Java 26 preview) — the JWT auth flow parses an RSA
+  private key from a PEM `box_config.json`; the built-in PEM API decodes it with
+  no BouncyCastle/third-party crypto dependency, keeping the runtime
+  dependency-free the way the Go/Rust/TS runtimes are (auth parity).
+- **Structured Concurrency** (Java 26 preview) — the chunked-upload orchestrator
+  fans parts out as a single unit of work in a `try`-with-resources scope: if one
+  part fails, its siblings are cancelled, so a failed upload never leaks threads
+  (TR-Java.5).
+- **Scoped Values** (Java 25) — request/auth context (the access token, an
+  idempotency key) propagates through the call tree as an immutable `ScopedValue`
+  instead of a `ThreadLocal`, safe across the virtual threads a blocking-API SDK
+  spawns.
+- **Module Import Declarations** (Java 25) — generated files collapse framework
+  imports to `import module java.base;`, cutting generated-import boilerplate
+  (FR-6, determinism preserved).
+- **Flexible Constructor Bodies** (Java 25) — model records and the JWT config
+  validate their arguments *before* `super()`/`this()`, so a bad key or a
+  malformed tri-state wrapper "fails loudly at construction" (the same guarantee
+  the Go/Rust/TS runtimes give).
+- **Primitive patterns in `switch`** (Java 26 preview) — the sealed-interface
+  union dispatch pattern-matches without manual boxing when a discriminator is a
+  primitive.
+- **Compact Source Files + instance `main`** (Java 25) — the generated VR-7 live-
+  smoke / example entry point is a compact `void main()`, not a
+  `public class … static void main(String[])` ceremony.
+- **Compact Object Headers** (Java 25, standard) — a free 10–20% heap reduction
+  for the model-heavy response graphs a Box SDK deserializes; no code change,
+  recorded so the ship artifact documents the JVM floor.
+
+The v5 acceptance criteria mirror v1/v3/v4: `javac -Xlint:all` clean +
+formatter-clean, conformance parity with v1, round-trip (incl.
+unknown-discriminator retention), generated tests + docs, VR-7 live smoke, and
+an NF-8 ship artifact (Maven Central publish dry-run clean with shipped sources
++ Javadoc JARs).
+
+**Consequences.** A roadmap/spec addition only — **no engine code yet** (M7 is
+after M6/TypeScript). Recorded in `NEW_ENGINE_REQUIREMENTS.md` (scope line,
+roll-up row + a TR-Java section, a v5 release row, the release decomposition, VR
+bumped for VR-1.6), `PROGRESS.md` (v5 row + milestone M7 + the overall step-down),
+`PLAN.md`, `README.md`, and `SCOPE.md`. Total scope grows **3,430 (1,034) →
+3,790 (1,142)** hrs; because v5 starts at 0%, the overall effort-weighted figure
+steps **~91% → ~83%** even though no completed work was lost — the same dynamic
+as when TypeScript was added (D-143). The IR (FR-2) was designed to absorb new
+targets through manifest + lowering + printer alone (FR-6.1); Java is the second
+such addition beyond the original three.

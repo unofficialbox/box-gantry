@@ -9,8 +9,9 @@ on its code or its output.
 
 **Scope assumptions:** zero existing users; zero obligations to the six
 legacy SDK targets; SDK targets are **Go** (first), **Salesforce Apex**
-(second), **Rust** (third), and **TypeScript** (fourth, D-143); the engine is
-implemented in **Rust** (assessment §6, D-101) and lives in this repository.
+(second), **Rust** (third), **TypeScript** (fourth, D-143), and **Java 26**
+(fifth, D-164); the engine is implemented in **Rust** (assessment §6, D-101)
+and lives in this repository.
 
 ## 🔑 Legend
 
@@ -44,7 +45,8 @@ implemented in **Rust** (assessment §6, D-101) and lives in this repository.
 | TR-Apex | 580 (176) | 0% |
 | TR-Rust | 360 (108) | 0% |
 | TR-TypeScript | 300 (90) | 0% |
-| **TOTAL** | **3,430 (1,034)** | **~16%** |
+| TR-Java | 360 (108) | 0% |
+| **TOTAL** | **3,790 (1,142)** | **~14%** |
 
 > Hours are effort, not calendar: with agent-driven parallelism the calendar
 > path is PLAN.md (~6–8 months to v1). This roll-up is the project-start
@@ -243,6 +245,40 @@ makes a full-spec type-check a fast per-commit signal, the TS analogue of `go bu
 | TR-TS.4 | MUST | ESM output; `tsc --noEmit` clean under `strict`; formatter-clean (Prettier) by construction; ships type declarations (`.d.ts`) and both ESM/CJS entry points | §4 | ❌ | 40 (12) |
 | TR-TS.5 | MUST | Hand-written TypeScript runtime: `fetch`-based networking (Node ≥ 20 / undici) with retry/backoff + `401` refresh, auth token management, streaming request/response bodies, multipart upload assembly; implemented against the FR-5 contract | FR-5, §4 | ❌ | 100 (30) |
 
+### TR-Java ☕ (v5) — 360 hrs 👤 (108 🤖) — 0% complete
+
+Java is the fifth target (D-164), positioned after TypeScript (v5 / M7).
+**Java 26** is chosen deliberately: with records, sealed interfaces + `permits`,
+record patterns, and pattern matching for `switch` all finalized, the IR's
+shapes map cleanly — `oneOf` → a sealed interface over record variants dispatched
+by an exhaustive `switch`, structs → immutable records — without the
+type-erasure gymnastics an older Java would force. The runtime uses the JDK's
+built-in `java.net.http.HttpClient` (no third-party HTTP dependency), and the
+verification gate is `javac` (compile-clean under `-Xlint:all`) plus a
+formatter (`google-java-format` / Spotless) — the Java analogue of `go build`
+/ `cargo check` (VR-1.6). One place Java is *less* direct than TypeScript or
+Rust: it has no native absent-vs-null distinction, so the tri-state needs a
+wrapper (like Go's `Nullable[T]`), documented as the platform shape.
+
+**Java 25/26 features we leverage** (see D-164 for the rationale): HTTP/3 (QUIC)
+in `HttpClient` for the runtime transport (Java 26); the standard **PEM
+Encodings** API to parse the JWT RSA key with no third-party crypto dep (Java 26
+preview); **Structured Concurrency** for the chunked-upload fan-out (Java 26
+preview); **Scoped Values** for request/auth context across virtual threads
+(Java 25); **Module Import Declarations** to shrink generated imports (Java 25);
+**Flexible Constructor Bodies** so records/config fail loudly at construction
+(Java 25); **primitive patterns in `switch`** for union dispatch (Java 26
+preview); and **Compact Source Files + instance `main`** for the generated
+live-smoke entry point (Java 25).
+
+| ID | Level | Requirement | Source | Status | Hrs 👤 (🤖) |
+|---|---|---|---|---|---|
+| TR-Java.1 | MUST | `oneOf`/polymorphic types as a sealed interface over record variants, dispatched by pattern-matching `switch` (primitive patterns where a discriminator is primitive, Java 26); unknown discriminators retained via a catch-all record; open enums as an `enum` plus an unknown-value carrier so round-tripping never drops an unrecognized value | §4 | ❌ | 60 (18) |
+| TR-Java.2 | MUST | Tri-state optionality via an explicit wrapper (absent vs explicit-null vs value), since Java has no native distinction, validating in a flexible constructor body (Java 25) so a bad value fails at construction; unchecked `BoxApiException` error model carrying status + parsed body | §4 | ❌ | 40 (12) |
+| TR-Java.3 | MUST | Immutable records for models; builder pattern for optional-heavy requests; a blocking API with an async (`CompletableFuture`) variant over `java.net.http`; module import declarations (Java 25) to keep generated imports compact | §4 | ❌ | 120 (36) |
+| TR-Java.4 | MUST | `javac` clean under `-Xlint:all`; formatter-clean (`google-java-format` / Spotless) output | §4 | ❌ | 40 (12) |
+| TR-Java.5 | MUST | Hand-written Java runtime: `java.net.http.HttpClient` networking (HTTP/3/QUIC where negotiable, Java 26) with retry/backoff + `401` refresh, Scoped-Value auth/request context, structured-concurrency chunked-upload fan-out, PEM-decoded JWT keys (no third-party crypto dep), streaming request/response bodies, multipart upload assembly; implemented against the FR-5 contract | FR-5, §4 | ❌ | 100 (30) |
+
 ## 6. 🚫 Non-goals
 
 | # | Non-goal |
@@ -260,9 +296,10 @@ makes a full-spec type-check a fast per-commit signal, the TS analogue of `go bu
 | **v2 — Apex SDK** ☁️ | TR-Apex, VR-1.3 harness | Full scratch-org deploy validation green **including generated tests** (75% coverage gate); conformance parity with v1 minus manifest-documented platform exclusions, each recorded in `DECISIONS.md`; VR-7 live smoke green from a scratch org; packaging decision recorded and ship artifact produced (NF-8) | 640 (194) | 0% |
 | **v3 — Rust SDK** 🦀 | TR-Rust, VR-1.2 harness | `cargo check` + `clippy` + rustfmt clean; conformance parity with v1; round-trip suite green incl. unknown-discriminator retention; generated tests pass and docs generated (same bar as v1); VR-7 live smoke green; `cargo publish --dry-run` clean (NF-8) | 380 (114) | 0% |
 | **v4 — TypeScript SDK** 🟦 | TR-TypeScript, VR-1.5 harness | `tsc --noEmit` clean under `strict` + Prettier-clean; conformance parity with v1; round-trip suite green incl. unknown-discriminator retention; generated tests pass and docs generated (same bar as v1); VR-7 live smoke green; `npm publish --dry-run` clean + shipped `.d.ts`/dual ESM-CJS, with a package-import smoke loading the built package through **both** its ESM (`import`) and CJS (`require`) entry points (NF-8) | 320 (96) | 0% |
-| **TOTAL** | | | **3,430 (1,034)** | **~16%** |
+| **v5 — Java SDK** ☕ | TR-Java, VR-1.6 harness | `javac` clean under `-Xlint:all` + formatter-clean (`google-java-format` / Spotless); conformance parity with v1; round-trip suite green incl. unknown-discriminator retention; generated tests pass and docs generated (same bar as v1); VR-7 live smoke green; Maven Central publish dry-run clean with shipped sources + Javadoc JARs (NF-8) | 360 (108) | 0% |
+| **TOTAL** | | | **3,790 (1,142)** | **~14%** |
 
 > The release rows decompose exactly: v1 = FR-1…FR-9 + NF + TR-Go +
-> VR minus {VR-1.2, VR-1.3, VR-1.5}; v2 = TR-Apex + VR-1.3; v3 = TR-Rust +
-> VR-1.2; v4 = TR-TypeScript + VR-1.5. The VR-7 live-smoke harness is built in
-> v1 and reused (with per-target entries) in v2, v3, and v4.
+> VR minus {VR-1.2, VR-1.3, VR-1.5, VR-1.6}; v2 = TR-Apex + VR-1.3; v3 = TR-Rust +
+> VR-1.2; v4 = TR-TypeScript + VR-1.5; v5 = TR-Java + VR-1.6. The VR-7 live-smoke
+> harness is built in v1 and reused (with per-target entries) in v2, v3, v4, and v5.

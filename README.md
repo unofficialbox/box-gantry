@@ -2,8 +2,9 @@
 
 A net-new SDK generator, written in Rust, that consumes the Box OpenAPI
 specification and generates Box SDKs — **Go** (v1), **Salesforce Apex**
-(v2), **Rust** (v3), and **TypeScript** (v4). No dependencies on existing SDKs
-or existing developers; box-codegen is consultable prior art only.
+(v2), **Rust** (v3), **TypeScript** (v4), and **Java 26** (v5). No dependencies
+on existing SDKs or existing developers; box-codegen is consultable prior art
+only.
 
 ## Quickstart
 
