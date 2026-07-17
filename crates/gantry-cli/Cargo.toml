@@ -15,6 +15,7 @@ gantry-backend-go.workspace = true
 gantry-backend-apex.workspace = true
 gantry-backend-rust.workspace = true
 gantry-backend-typescript.workspace = true
+gantry-backend-java.workspace = true
 gantry-ir.workspace = true
 gantry-manifest.workspace = true
 gantry-sema.workspace = true

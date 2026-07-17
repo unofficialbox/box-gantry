@@ -146,13 +146,39 @@ pub fn typescript() -> CapabilityManifest {
     }
 }
 
+/// The Java manifest (TR-Java, D-164). Java 26 target: real packages (the IR
+/// module tree lowers directly), full generics, an exceptions error model
+/// (thrown/`throws`), and a **blocking** `java.net.http.HttpClient` API — the
+/// SDK is synchronous, with concurrency the caller's business over virtual
+/// threads (like Go/Apex), not async-first like Rust/TS. Bodies stream through
+/// the JDK client, so streaming is supported and there are no platform callout
+/// budgets or mandated test coverage.
+pub fn java() -> CapabilityManifest {
+    CapabilityManifest {
+        key: "java",
+        modules: ModuleSystem::Hierarchical,
+        generics: Generics::Full,
+        error_model: ErrorModel::Exceptions,
+        async_model: AsyncModel::Sync,
+        streaming: Streaming::Supported,
+        callout_limits: None,
+        mandated_test_coverage: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn manifest_keys_are_distinct() {
-        let keys = [go().key, apex().key, rust().key, typescript().key];
+        let keys = [
+            go().key,
+            apex().key,
+            rust().key,
+            typescript().key,
+            java().key,
+        ];
         let mut sorted = keys.to_vec();
         sorted.sort_unstable();
         sorted.dedup();

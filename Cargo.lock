@@ -143,6 +143,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gantry-backend-java"
+version = "0.1.0"
+dependencies = [
+ "gantry-ir",
+ "gantry-manifest",
+ "gantry-sema",
+ "gantry-spec",
+]
+
+[[package]]
 name = "gantry-backend-rust"
 version = "0.1.0"
 dependencies = [
@@ -173,6 +183,7 @@ dependencies = [
  "clap",
  "gantry-backend-apex",
  "gantry-backend-go",
+ "gantry-backend-java",
  "gantry-backend-rust",
  "gantry-backend-typescript",
  "gantry-ir",

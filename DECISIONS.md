@@ -2901,3 +2901,69 @@ runtime + VR-7 smoke (D-150/D-151), and now the ship scaffold all in place, v3
 Rust is feature-complete — the remaining step is an actual credentialed
 live-smoke run + the release tag (a pipeline/manual action, as with Go), not
 engineering.
+
+## D-170 — Java backend, slice 1: the model layer (M7, TR-Java)
+
+**Context.** Java 26 is the fifth target (D-164), positioned after TypeScript.
+This is its first engine slice. It mirrors how Rust started (D-147): the model
+layer alone — structs, enums, unions, aliases — javac-clean by construction,
+with typed unions and the rest of the SDK following in later slices.
+
+**A package tree, not a flat namespace.** Java has real packages, so the IR
+module tree lowers directly (like Go/Rust/TS, `ModuleSystem::Hierarchical` — no
+Apex-style flattening): one package `com.box.sdk.model.<module>` per IR module,
+one `.java` file per declaration (Java's one-public-type-per-file rule). API
+versions redefine names (`ClientError` in the base and in `2025.0`), and those
+modules share no references, so each is its own package — the D-147 lineage.
+Sub-package names are `_`-joined sanitized segments, deduped deterministically
+(FR-6.2), since flattening a path with `_` isn't injective.
+
+**Records, and the tri-state as an explicit wrapper.** Structs lower to
+immutable `record`s (finalized in Java 16 — the clean fit D-164 calls out, no
+getter/setter/builder ceremony). Java has no native absent-vs-null distinction,
+so the tri-state (D-110) is the documented platform shape rather than a
+type-system mapping (as with Go's `Nullable[T]`): a generated `Tristate<T>`
+(emitted into `com.box.sdk.core`) carries absent/null/value; a plain optional is
+`java.util.Optional<T>`; a nullable-but-present field is a bare nullable
+reference. Open enums (D-012) → a `record` over the raw `String` with the known
+values as constants, so an unknown value round-trips; closed enums → a real
+`enum` carrying each value's wire spelling for the (later) serialization slice.
+
+**Aliases resolve through; unions are structural for now.** Java has no type
+alias, so an alias emits no file and references resolve to the target type.
+Unions lower to a structural `record(Object value)` fallback in this slice; the
+typed sealed-interface-over-records form — Java's natural `oneOf` shape (a
+`sealed interface … permits` over record variants dispatched by pattern-matching
+`switch`) — is the next slice, exactly as Rust split models (D-147) from typed
+unions (D-148).
+
+**Serialization is a separate slice.** Unlike serde (Rust) or a native JSON
+runtime (Go/TS), Java's standard library ships no JSON, so the codec can't come
+free with the model derive — it is its own slice. This slice emits pure, typed
+model data (records/enums), and free-form JSON (`Type::JsonValue`) is a parsed
+`Object` graph for now. Scalars box uniformly (`Boolean`/`Long`/`Double`) so
+container elements and nullable fields need no primitive/reference juggling.
+
+**Imports vs FQNs.** Each file imports the library types it uses (java.util /
+java.time / `com.box.sdk.core.Tristate`); cross-package *model* references are
+inlined as fully-qualified names, so two modules' like-named types can both be
+referenced with no import collision. Generated type names are guarded against the
+`java.lang` auto-imports and the imported library simple-names (`List`,
+`Optional`, …) so a schema type never shadows them; record components are guarded
+against Java keywords and `Object`'s method names (a component generates an
+accessor of that name).
+
+**Verification (VR-1.6).** The gate generates the whole real-spec model tree
+(900 files) and compiles it with `javac -Xlint:all -Werror` — `-Werror` makes any
+lint a hard failure, the Java analogue of `clippy -D warnings` / strict `tsc`.
+It runs in `cargo test --workspace`, skipping cleanly when `javac` is absent; CI
+gains a `setup-java` step (temurin 21 — the model layer uses only stable
+features, so the JDK 21 LTS floor suffices; later slices' Java-26 features will
+raise it). `generate --target java` is wired; a `java()` manifest is added
+(`Hierarchical`, `Full` generics, `Exceptions`, **`Sync`** — the blocking
+`java.net.http` API, concurrency the caller's business like Go/Apex — streaming
+`Supported`). Match arms over IR types stay enumerated, never wildcarded (NF-1).
+
+**Result.** v5 Java has a compiling model layer on the real spec. Next slices:
+typed sealed-interface unions, then the JSON codec, managers/client, the
+`java.net.http` runtime + auth, docs, tests, and the NF-8 Maven artifact.
