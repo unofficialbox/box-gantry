@@ -24,8 +24,7 @@ fn generate() -> Vec<gantry_backend_java::GeneratedFile> {
     .unwrap();
     let build = gantry_backend_java::BuildInfo::new(set.fingerprint());
     let lowering = gantry_spec::lower(&set).unwrap();
-    let program = Box::leak(Box::new(lowering.program));
-    let analysis = gantry_sema::analyze(program).unwrap();
+    let analysis = gantry_sema::analyze(&lowering.program).unwrap();
     gantry_backend_java::generate(&analysis, &gantry_manifest::java(), &build)
 }
 
@@ -80,7 +79,11 @@ fn generation_is_deterministic() {
 
 /// VR-1.6: the whole generated model tree compiles `javac -Xlint:all -Werror`
 /// clean on the real Box spec. `-Werror` makes any lint a hard failure, the
-/// Java analogue of `clippy -D warnings` / `tsc` strict.
+/// Java analogue of `clippy -D warnings` / `tsc` strict. Compiled with
+/// `--release 21` so the gate enforces the documented compatibility floor (the
+/// model layer uses only stable features) regardless of the host JDK — CI runs
+/// it under the Corretto 26 ship-target toolchain, contributors under whatever
+/// JDK ≥ 21 they have.
 #[test]
 fn the_generated_model_layer_compiles_under_javac() {
     if Command::new("javac").arg("-version").output().is_err() {
@@ -105,6 +108,8 @@ fn the_generated_model_layer_compiles_under_javac() {
     std::fs::create_dir_all(&out).unwrap();
 
     let javac = Command::new("javac")
+        .arg("--release")
+        .arg("21")
         .arg("-Xlint:all")
         .arg("-Werror")
         .arg("-d")
@@ -119,5 +124,8 @@ fn the_generated_model_layer_compiles_under_javac() {
         String::from_utf8_lossy(&javac.stderr)
     );
     let _ = std::fs::remove_dir_all(&dir);
-    assert!(ok, "javac -Xlint:all -Werror failed (VR-1.6):\n{log}");
+    assert!(
+        ok,
+        "javac --release 21 -Xlint:all -Werror failed (VR-1.6):\n{log}"
+    );
 }

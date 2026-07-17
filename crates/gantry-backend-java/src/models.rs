@@ -40,14 +40,44 @@ pub(crate) fn package_names(program: &ir::Program) -> BTreeMap<ir::ModulePath, S
     map
 }
 
+/// One deduped, collision-free Java type name per (non-alias) declaration,
+/// allocated **per package**. Java is one public type per file, so two decls in
+/// a module that normalize to the same PascalCase name (`displayName` and
+/// `display_name` both → `DisplayName`) would otherwise emit the same `.java`
+/// path — one silently overwriting the other, and references resolving to the
+/// wrong type. The map is the single source of truth for both filenames and
+/// cross-decl references, so they can't disagree. Aliases reserve no name (they
+/// emit no type — references resolve through).
+pub(crate) fn type_names(program: &ir::Program) -> BTreeMap<ir::DeclId, String> {
+    let mut per_module: BTreeMap<ir::ModulePath, Vec<String>> = BTreeMap::new();
+    let mut map = BTreeMap::new();
+    for (i, decl) in program.decls.iter().enumerate() {
+        if matches!(decl.kind, ir::DeclKind::Alias(_)) {
+            continue;
+        }
+        let used = per_module.entry(decl.module.clone()).or_default();
+        let name = dedupe(used, type_name(decl.name.as_str()));
+        map.insert(ir::DeclId(i as u32), name);
+    }
+    map
+}
+
 /// Generate one `.java` file per declaration (aliases resolve through, so they
 /// emit no file).
 pub fn generate_models(analysis: &Analysis<'_>, build: &BuildInfo) -> Vec<GeneratedFile> {
     let program = analysis.program;
     let packages = package_names(program);
+    let names = type_names(program);
     let mut files = Vec::new();
-    for decl in &program.decls {
-        if let Some(file) = render_decl(program, &packages, decl, build) {
+    for (i, decl) in program.decls.iter().enumerate() {
+        if let Some(file) = render_decl(
+            program,
+            &packages,
+            &names,
+            ir::DeclId(i as u32),
+            decl,
+            build,
+        ) {
             files.push(file);
         }
     }
@@ -94,6 +124,8 @@ fn sanitize_lower(text: &str) -> String {
 fn render_decl(
     program: &ir::Program,
     packages: &BTreeMap<ir::ModulePath, String>,
+    names: &BTreeMap<ir::DeclId, String>,
+    id: ir::DeclId,
     decl: &ir::Decl,
     build: &BuildInfo,
 ) -> Option<GeneratedFile> {
@@ -101,11 +133,12 @@ fn render_decl(
         return None;
     }
     let package = format!("{MODEL_PKG}.{}", packages[&decl.module]);
-    let name = type_name(decl.name.as_str());
+    let name = names[&id].clone();
 
     let mut printer = Printer {
         program,
         packages,
+        names,
         module: &decl.module,
         imports: BTreeSet::new(),
     };
@@ -137,6 +170,9 @@ fn render_decl(
 struct Printer<'p> {
     program: &'p ir::Program,
     packages: &'p BTreeMap<ir::ModulePath, String>,
+    /// The per-package deduped type name for every declaration — the same map
+    /// used for filenames, so a reference can't disagree with the file it names.
+    names: &'p BTreeMap<ir::DeclId, String>,
     module: &'p ir::ModulePath,
     /// Fully-qualified imports this file needs (library types only; model
     /// cross-package references are inlined as FQNs, so they never collide).
@@ -258,6 +294,16 @@ impl Printer<'_> {
     /// enumerated, never wildcarded — a new IR type must break this lowering at
     /// compile time, not fall through silently (NF-1, FR-2.1).
     fn component_type(&mut self, ty: &ir::Type) -> String {
+        // Resolve a top-level alias *before* classifying optionality: an alias
+        // has no Java type (it resolves through), so a field typed as an alias
+        // to `Optional<T>`/`Optional<Nullable<T>>` must keep its wrapper rather
+        // than reach `bare`, which strips it. Chained aliases recurse.
+        if let ir::Type::Decl(id) = ty
+            && let ir::DeclKind::Alias(target) = &self.program.decl(*id).kind
+        {
+            let target = target.clone();
+            return self.component_type(&target);
+        }
         match ty {
             ir::Type::Binary => "byte[]".to_string(),
             ir::Type::Optional(inner) => match &**inner {
@@ -266,8 +312,11 @@ impl Printer<'_> {
                     self.imports.insert(format!("{CORE_PKG}.Tristate"));
                     format!("Tristate<{}>", self.bare(nullable))
                 }
-                ir::Type::Binary => "byte[]".to_string(),
-                ir::Type::Bool
+                // Every other Optional<T> keeps its absence marker, `byte[]`
+                // included (a valid generic argument) — so an optional binary
+                // stays distinct from a required/nullable one.
+                ir::Type::Binary
+                | ir::Type::Bool
                 | ir::Type::Int64
                 | ir::Type::Float64
                 | ir::Type::String
@@ -346,7 +395,7 @@ impl Printer<'_> {
                 self.bare(&ty)
             }
             ir::DeclKind::Struct(_) | ir::DeclKind::Enum(_) | ir::DeclKind::Union(_) => {
-                let name = type_name(decl.name.as_str());
+                let name = self.names[&id].clone();
                 if decl.module == *self.module {
                     name
                 } else {
@@ -617,9 +666,18 @@ mod tests {
     fn render(program: &ir::Program, id: ir::DeclId) -> String {
         let build = BuildInfo::new("testfp");
         let packages = package_names(program);
-        render_decl(program, &packages, program.decl(id), &build)
+        let names = type_names(program);
+        render_decl(program, &packages, &names, id, program.decl(id), &build)
             .expect("decl emits a file")
             .content
+    }
+
+    /// The `.java` path a decl renders to (or `None` for an alias).
+    fn render_path(program: &ir::Program, id: ir::DeclId) -> Option<String> {
+        let build = BuildInfo::new("testfp");
+        let packages = package_names(program);
+        let names = type_names(program);
+        render_decl(program, &packages, &names, id, program.decl(id), &build).map(|f| f.path)
     }
 
     #[test]
@@ -787,13 +845,123 @@ mod tests {
             }),
             "Widget",
         );
-        let packages = package_names(&p);
-        let build = BuildInfo::new("fp");
         // The alias emits no file.
-        assert!(render_decl(&p, &packages, p.decl(alias), &build).is_none());
+        assert!(render_path(&p, alias).is_none());
         // The field referencing it resolves through to `String`.
         let out = render(&p, s);
         assert!(out.contains("String id"), "{out}");
+    }
+
+    #[test]
+    fn alias_to_optional_and_tri_state_keeps_the_wrapper() {
+        // An alias whose target is itself optional must not lose the wrapper
+        // when a field references it (the tri-state would otherwise collapse).
+        let mut p = ir::Program::default();
+        let opt = add(
+            &mut p,
+            DeclKind::Alias(Type::Optional(Box::new(Type::String))),
+            "MaybeName",
+        );
+        let tri = add(
+            &mut p,
+            DeclKind::Alias(Type::Optional(Box::new(Type::Nullable(Box::new(
+                Type::Int64,
+            ))))),
+            "MaybeSize",
+        );
+        let s = add(
+            &mut p,
+            DeclKind::Struct(StructDecl {
+                fields: vec![
+                    Field {
+                        name: ident("name"),
+                        wire_name: "name".into(),
+                        ty: Type::Decl(opt),
+                    },
+                    Field {
+                        name: ident("size"),
+                        wire_name: "size".into(),
+                        ty: Type::Decl(tri),
+                    },
+                ],
+            }),
+            "Widget",
+        );
+        let out = render(&p, s);
+        assert!(out.contains("Optional<String> name"), "{out}");
+        assert!(out.contains("Tristate<Long> size"), "{out}");
+    }
+
+    #[test]
+    fn optional_binary_keeps_its_absence_marker() {
+        let mut p = ir::Program::default();
+        let s = add(
+            &mut p,
+            DeclKind::Struct(StructDecl {
+                fields: vec![
+                    Field {
+                        name: ident("blob"),
+                        wire_name: "blob".into(),
+                        ty: Type::Optional(Box::new(Type::Binary)),
+                    },
+                    Field {
+                        name: ident("raw"),
+                        wire_name: "raw".into(),
+                        ty: Type::Binary,
+                    },
+                ],
+            }),
+            "Widget",
+        );
+        let out = render(&p, s);
+        // Optional binary keeps its absence marker; a required one stays bare.
+        assert!(out.contains("Optional<byte[]> blob"), "{out}");
+        assert!(out.contains("byte[] raw"), "{out}");
+    }
+
+    #[test]
+    fn colliding_decl_names_get_distinct_files_and_references() {
+        // Two decls in one module that normalize to the same PascalCase name
+        // must not share a `.java` path (Java is one type per file — a shared
+        // path would silently overwrite one), and references must stay distinct.
+        let mut p = ir::Program::default();
+        let a = add(
+            &mut p,
+            DeclKind::Struct(StructDecl { fields: vec![] }),
+            "displayName",
+        );
+        let b = add(
+            &mut p,
+            DeclKind::Struct(StructDecl { fields: vec![] }),
+            "display_name",
+        );
+        let s = add(
+            &mut p,
+            DeclKind::Struct(StructDecl {
+                fields: vec![
+                    Field {
+                        name: ident("first"),
+                        wire_name: "first".into(),
+                        ty: Type::Decl(a),
+                    },
+                    Field {
+                        name: ident("second"),
+                        wire_name: "second".into(),
+                        ty: Type::Decl(b),
+                    },
+                ],
+            }),
+            "Holder",
+        );
+        let pa = render_path(&p, a).unwrap();
+        let pb = render_path(&p, b).unwrap();
+        assert_ne!(pa, pb, "colliding decls share a path: {pa}");
+        assert!(pa.ends_with("DisplayName.java"), "{pa}");
+        assert!(pb.ends_with("DisplayName_2.java"), "{pb}");
+        // The referencing struct names each distinct type.
+        let out = render(&p, s);
+        assert!(out.contains("DisplayName first"), "{out}");
+        assert!(out.contains("DisplayName_2 second"), "{out}");
     }
 
     #[test]

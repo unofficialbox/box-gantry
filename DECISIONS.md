@@ -2954,14 +2954,18 @@ against Java keywords and `Object`'s method names (a component generates an
 accessor of that name).
 
 **Verification (VR-1.6).** The gate generates the whole real-spec model tree
-(900 files) and compiles it with `javac -Xlint:all -Werror` — `-Werror` makes any
-lint a hard failure, the Java analogue of `clippy -D warnings` / strict `tsc`.
-It runs in `cargo test --workspace`, skipping cleanly when `javac` is absent; CI
-gains a `setup-java` step pinned to the ship target — **Java 26** (Corretto, the
-`*-amzn` distribution). The model layer uses only stable language features, so it
-also compiles on the JDK 21 LTS floor (what a contributor without a 26 JDK will
-have); later slices' Java-26-only features (HTTP/3, PEM, structured concurrency)
-make 26 mandatory. `generate --target java` is wired; a `java()` manifest is added
+(900 files) and compiles it with `javac --release 21 -Xlint:all -Werror` —
+`-Werror` makes any lint a hard failure, the Java analogue of `clippy -D
+warnings` / strict `tsc`, and `--release 21` pins the language level to the
+documented compatibility floor so the gate enforces it regardless of the host
+JDK (rather than floating with whatever `javac` is installed). It runs in `cargo
+test --workspace`, skipping cleanly when `javac` is absent; CI gains a
+`setup-java` step pinned to the ship-target toolchain — **Java 26** (Corretto,
+the `*-amzn` distribution) — so the model layer is compiled by the 26 toolchain
+yet held to the 21 floor. The model layer uses only stable language features;
+later slices' Java-26-only features (HTTP/3, PEM, structured concurrency) will
+raise the `--release` level (and add `--enable-preview`) for the files that use
+them. `generate --target java` is wired; a `java()` manifest is added
 (`Hierarchical`, `Full` generics, `Exceptions`, **`Sync`** — the blocking
 `java.net.http` API, concurrency the caller's business like Go/Apex — streaming
 `Supported`). Match arms over IR types stay enumerated, never wildcarded (NF-1).
