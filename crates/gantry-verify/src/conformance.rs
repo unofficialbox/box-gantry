@@ -653,20 +653,18 @@ fn rust_guides(files: &[GeneratedView]) -> usize {
 // --- TypeScript recognizers -----------------------------------------------
 
 /// The TypeScript conformance shape: measures the `src/` package the
-/// TypeScript backend emits (manager classes, async operation methods, the
-/// `buildinfo` provenance) and the `docs/` tree (per-manager pages + the
-/// auth/pagination/errors guides), and declares the one documented platform
-/// exclusion — the erased serialization layer (the tri-state is mapped onto
-/// the type system as `?:`/`| null` and dates are ISO-8601 strings, so there
-/// is no `Nullable[T]`/`Date` wrapper package to emit, mirroring Apex
-/// D-138/D-141).
+/// TypeScript backend emits (manager classes, async operation methods, async
+/// paginators, the `buildinfo` provenance, and the `*.test.ts` behavioral
+/// tests) and the `docs/` tree (per-manager pages + the auth/pagination/errors
+/// guides), and declares the one documented platform exclusion — the erased
+/// serialization layer (the tri-state is mapped onto the type system as
+/// `?:`/`| null` and dates are ISO-8601 strings, so there is no
+/// `Nullable[T]`/`Date` wrapper package to emit, mirroring Apex D-138/D-141).
 ///
-/// Generated behavioral tests are **not yet emitted** (the last M6 slice), so
-/// `round-trip-tests` reads zero until it lands. Unlike the serialization
-/// exclusion, that shortfall is pending work, not permanent — so
-/// `conform --target typescript` is a progress report (partial today) rather
-/// than a green CI gate, and it joins the release gate once the TypeScript
-/// backend reaches parity (as Rust did).
+/// Every capability is now emitted, so `conform --target typescript` reads
+/// 9/9 (minus the documented serialization exclusion) and joins the CI release
+/// gate alongside Go, Apex, and Rust — full capability parity with the Go
+/// reference.
 pub fn typescript_shape() -> TargetShape {
     TargetShape {
         target: "typescript",
@@ -730,9 +728,19 @@ fn ts_serialization(_files: &[GeneratedView]) -> usize {
     0
 }
 
-fn ts_round_trip_tests(_files: &[GeneratedView]) -> usize {
-    // Generated behavioral tests are a later M6 slice — none emitted yet.
-    0
+fn ts_round_trip_tests(files: &[GeneratedView]) -> usize {
+    // The serialization behavioral test (tri-state + date round-trips) is the
+    // required baseline; each per-union round-trip test adds to the count
+    // (FR-7.8, VR-4). Both files run under `node --test`.
+    if !files.iter().any(|f| f.path == "src/serialization.test.ts") {
+        return 0;
+    }
+    let unions: usize = files
+        .iter()
+        .filter(|f| f.path == "src/unions.test.ts")
+        .map(|f| f.content.matches("test(").count())
+        .sum();
+    1 + unions
 }
 
 fn ts_auth(files: &[GeneratedView]) -> usize {

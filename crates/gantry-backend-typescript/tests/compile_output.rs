@@ -196,6 +196,50 @@ fn generation_is_deterministic() {
         a_manager_page.content.contains("**Returns:**"),
         "no return type documented"
     );
+
+    // Generated behavioral tests (FR-7.8, VR-4): the serialization baseline, the
+    // per-union round-trip file, and the ambient node:test declaration.
+    assert!(once.iter().any(|f| f.path == "src/serialization.test.ts"));
+    assert!(once.iter().any(|f| f.path == "src/node-test.d.ts"));
+    let unions = once
+        .iter()
+        .find(|f| f.path == "src/unions.test.ts")
+        .expect("no unions.test.ts");
+    // The real spec has discriminated unions, so per-union tests are emitted,
+    // each asserting known-tag dispatch (and open-union unknown retention).
+    assert!(
+        unions.content.matches("test(").count() > 0,
+        "no per-union round-trip tests"
+    );
+    assert!(unions.content.contains("as models."), "union tests untyped");
+}
+
+/// FR-7.8/VR-4: the generated behavioral tests must *pass*, not just compile —
+/// run them under Node's built-in test runner (`node --test`, type-stripping the
+/// `.ts` in place, Node ≥ 22.18). The TypeScript analogue of Rust's `cargo test`
+/// round-trip suite. CI runs this gate.
+#[test]
+fn the_generated_tests_pass_under_node() {
+    if Command::new("node").arg("--version").output().is_err() {
+        eprintln!("SKIPPED: node not available; CI runs this gate");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("gantry-ts-nodetest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    write_all(&dir, &generate());
+
+    let run = Command::new("node")
+        .args(["--test", "src/serialization.test.ts", "src/unions.test.ts"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "generated behavioral tests failed under `node --test` (VR-4):\n{}\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
 }
 
 /// VR-1.5: the generated package type-checks clean under `strict` with the

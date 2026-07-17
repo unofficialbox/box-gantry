@@ -233,6 +233,7 @@ version = "0.1.0"
 dependencies = [
  "gantry-backend-apex",
  "gantry-backend-go",
+ "gantry-backend-typescript",
  "gantry-ir",
  "gantry-manifest",
  "gantry-sema",

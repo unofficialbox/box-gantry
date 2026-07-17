@@ -21,6 +21,8 @@ jobs:
           go-version: '1.23'
       - uses: actions/setup-node@v4
         with:
+          # ≥ 22.18: the generated VR-4 behavioral tests run under `node --test`,
+          # which type-strips the `.ts` in place (default since 22.18 / 23.6).
           node-version: '22'
       - name: Install TypeScript 7 (the native Go-ported compiler; the VR-1.5 gate)
         # Pinned so the `tsc --noEmit` gate can't drift with the npm `latest`
@@ -87,6 +89,13 @@ jobs:
           fixtures/specs/openapi-v2025.0.json
           fixtures/specs/openapi-v2026.0.json
           --target rust
+      - name: Conformance checklist — TypeScript (VR-3; parity minus documented exclusion)
+        run: >
+          cargo run -p gantry-cli -- conform
+          fixtures/specs/openapi.json
+          fixtures/specs/openapi-v2025.0.json
+          fixtures/specs/openapi-v2026.0.json
+          --target typescript
       - name: Build and test the hand-written Go runtime (TR-Go.7)
         working-directory: runtimes/go
         run: |
