@@ -1,0 +1,15 @@
+{
+  "//": "Emit the runtime + the VR-7 live smoke to JS so `node --test` can run it: the runtime's NodeNext `.js` import specifiers and parameter-property classes need a real compile, which Node's strip-only TS mode won't do. The main tsconfig.json stays the noEmit type-check gate.",
+  "compilerOptions": {
+    "strict": true,
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022", "DOM"],
+    "rootDir": ".",
+    "outDir": "dist-livesmoke",
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/**/*.ts", "livesmoke.test.ts", "node-live.d.ts"]
+}

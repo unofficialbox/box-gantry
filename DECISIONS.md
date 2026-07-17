@@ -2786,3 +2786,48 @@ the `vMAJOR.MINOR.PATCH` from the FR-9 spec-diff, as Go's module tag is set.
 **Result.** NF-8 for TypeScript is met — the artifact builds, publishes clean
 (dry-run), and loads dual-format. The only remaining item for a fully shipped v4
 is **VR-7 live smoke** against a real Box account (as Go/Rust have).
+
+## D-168 — TypeScript runtime, slice 11: VR-7 live smoke
+
+**Context.** The last item for a shippable v4. Go and Rust each have a VR-7 live
+smoke that drives the hand-written runtime against a real Box account (one call
+per auth flow + paginate + upload/download/delete), `#[ignore]`d so the
+per-commit gate never runs it yet compiled so it can't rot, and wired into the
+manual `livesmoke.yml`. This adds the TypeScript equivalent.
+
+**A contract-level smoke, mirroring Go/Rust.** `livesmoke.test.ts` drives only
+the stable runtime contract (`new Client` / `newRequest` / `fetch` / the `with*`
+builders / response accessors + the four auth flows), so it is independent of
+any generated method names — it verifies the hand-written `fetch` runtime, the
+part the `tsc` gate can't exercise. It builds an `Auth` for each flow the
+environment configures (developer token, CCG, OAuth, JWT-from-`box_config.json`),
+authenticates each with `GET /users/me`, then paginates the root folder and
+round-trips an upload/download/delete. With no credentials set it returns early
+(a clean no-op), like the Go/Rust smokes, so the manual dry-run still passes.
+
+**Build-then-run, not strip-and-run.** The other runtimes' smokes compile under
+their normal test toolchain (`go test` / `cargo test`) and are gated off by
+`#[ignore]`. TypeScript's per-commit gate is `tsc --noEmit` (type-check only), so
+the smoke is **type-checked by the runtime's gate** (added to its `tsconfig.json`
+`include`, with a local ambient `node-live.d.ts` for the `node:test`/`assert`/
+`fs`/`process` surface — the same no-`@types/node` trick `jwt.ts` uses) but only
+*runs* under `node --test`, on demand. Node's default strip-only TS mode can't
+execute the runtime, though: its NodeNext `.js` import specifiers point at `.ts`
+sources (Node won't remap them) and its envelope classes use parameter
+properties (non-erasable). So the live-smoke step **builds the runtime + smoke to
+JS first** (`tsconfig.livesmoke.json` → `dist-livesmoke/`, gitignored) and runs
+the built `dist-livesmoke/livesmoke.test.js` — dependency-free (just the pinned
+`tsc` + `node`), no `tsx`/`ts-node`. The smoke lives at the runtime **root** (not
+`src/`), so it is never vendored into the shipped SDK by the NF-8 packaging.
+
+**CI.** `livesmoke.yml` gains Node + TypeScript setup and a step that builds and
+runs the TS smoke, nulling `BOX_OAUTH_REFRESH_TOKEN` (the Go step already
+consumed the rotating token; TS covers developer/CCG/JWT live, its OAuth path
+sharing the CCG cached-refresh machinery the smoke exercises). It reads the same
+`BOX_*` secrets the Go/Rust steps do.
+
+**Result.** All TR-TypeScript acceptance criteria are now implemented and gated:
+`tsc` clean, conformance 9/9, round-trip + generated tests, docs, the NF-8 dual
+ESM/CJS ship artifact, and the VR-7 live-smoke harness. v4 is feature-complete —
+the remaining step is an actual credentialed live-smoke run + the release tag
+(a pipeline/manual action, as with Go's tag), not engineering.
