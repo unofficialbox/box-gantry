@@ -2731,3 +2731,58 @@ baseline (required) plus each per-union test. With this, **M6 (TypeScript) is
 capability-complete** — every R§1 capability the target can express is emitted,
 verified, and gated. Remaining for a shipped v4: the NF-8 npm ship artifact and
 VR-7 live smoke.
+
+## D-167 — TypeScript backend, slice 10: NF-8 npm ship artifact (dual ESM/CJS)
+
+**Context.** The remaining TR-TypeScript work toward a shipped v4 is the NF-8
+ship artifact: `npm publish --dry-run` clean, shipped `.d.ts`, and **dual
+ESM/CJS** entry points (with an import smoke through both). This slice adds the
+publishable package scaffold and a gate that assembles + builds + validates the
+artifact end to end.
+
+**Self-contained, vendor-the-runtime (the Go model).** The repo had two
+precedents: Go ships a self-contained tree that vendors its runtime source, and
+Rust depends on the runtime as a separate crate (unfinished). TypeScript follows
+**Go** — the ship artifact is self-contained. The generated `src/runtime.ts` is
+a compile stub (FR-5.3); the release pipeline vendors the real
+`runtimes/typescript/gantryruntime` source into the tree before building (the
+same swap the drift test does, D-160), so the built package embeds a working
+runtime with no external dependency. `files` ships only the built `dist/` (plus
+the docs + README), never the `src/` stub.
+
+**The dual build.** The backend now emits a publishable `package.json` — an
+`exports` map routing `types`/`import`/`require` into `dist/types`/`dist/esm`/
+`dist/cjs`, plus `main`/`module`/`types`, `sideEffects: false`, `engines`, and a
+`build` script — alongside two build configs and a post-build step:
+
+- `tsconfig.build.json` emits ES modules to `dist/esm` and `.d.ts` to
+  `dist/types` (TS 7 needs an explicit `rootDir` alongside `declarationDir`).
+- `tsconfig.cjs.json` emits CommonJS to `dist/cjs`. TS 7 removed the `node10`
+  module resolution, so the CJS config uses `module: CommonJS` with the default
+  resolution (the one combination that emits `require`/`exports` cleanly).
+- `scripts/postbuild.mjs` stamps the dual-package `type` markers
+  (`dist/esm/package.json` → `module`, `dist/cjs/package.json` → `commonjs`) so
+  Node reads each tree in the right module system regardless of the root
+  package's `type`.
+
+The JWT flow ships as a separate `./jwt` subpath (its own `exports` entry),
+mirroring the runtime's own `./jwt` export and keeping the Node-only
+`node:crypto` leaf out of the main entry.
+
+**The gate.** A backend test (`the_generated_sdk_packs_and_loads_dual_format`)
+assembles the artifact the way the release pipeline does — vendors the real
+runtime (JWT leaf included), strips the non-shipped behavioral tests, runs the
+`build` script, asserts `npm publish --dry-run` is clean and ships the
+dual-format entry points + `.d.ts` (and *not* the `src/` stub), then packs the
+tarball, installs it into a fresh consumer, and **loads it through both its
+`import` and `require` entry points** — constructing a `Client` from the real
+runtime (85 managers wired) and touching the `./jwt` subpath under each module
+system. It runs in `cargo test --workspace` (CI), skipping cleanly when
+tsc/npm/node are unavailable; no separate packaging workflow is needed (unlike
+Apex's on-platform 2GP job, npm's dry-run needs no external system or secret).
+`name`/`version` are placeholders; the release pipeline sets the real scope and
+the `vMAJOR.MINOR.PATCH` from the FR-9 spec-diff, as Go's module tag is set.
+
+**Result.** NF-8 for TypeScript is met — the artifact builds, publishes clean
+(dry-run), and loads dual-format. The only remaining item for a fully shipped v4
+is **VR-7 live smoke** against a real Box account (as Go/Rust have).

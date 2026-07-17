@@ -57,6 +57,26 @@ fn generation_is_deterministic() {
     // The package scaffold + module tree.
     assert!(once.iter().any(|f| f.path == "package.json"));
     assert!(once.iter().any(|f| f.path == "tsconfig.json"));
+    // The NF-8 dual ESM/CJS ship scaffold: a publishable manifest with an
+    // `exports` map routing `import`/`require`/`types`, the build configs, the
+    // dual-package post-build step, and a package README.
+    let pkg = once.iter().find(|f| f.path == "package.json").unwrap();
+    for needle in [
+        "\"exports\"",
+        "\"import\"",
+        "\"require\"",
+        "./dist/types/index.d.ts",
+        "\"./jwt\"",
+    ] {
+        assert!(
+            pkg.content.contains(needle),
+            "package.json missing {needle}"
+        );
+    }
+    assert!(once.iter().any(|f| f.path == "tsconfig.build.json"));
+    assert!(once.iter().any(|f| f.path == "tsconfig.cjs.json"));
+    assert!(once.iter().any(|f| f.path == "scripts/postbuild.mjs"));
+    assert!(once.iter().any(|f| f.path == "README.md"));
     assert!(once.iter().any(|f| f.path == "src/index.ts"));
     assert!(once.iter().any(|f| f.path == "src/models/index.ts"));
     // The managers/client surface, calling only through the runtime contract.
@@ -220,17 +240,20 @@ fn generation_is_deterministic() {
 /// round-trip suite. CI runs this gate.
 #[test]
 fn the_generated_tests_pass_under_node() {
-    // `node --test` type-strips `.ts` in place only from Node 22.18 / 23.6; on
-    // older Node it fails confusingly, so skip with a clear message instead.
-    let Ok(out) = Command::new("node").arg("--version").output() else {
-        eprintln!("SKIPPED: node not available; CI runs this gate");
+    if !require_tools(&["node"], "VR-4 node --test gate") {
         return;
-    };
+    }
+    // `node --test` type-strips `.ts` in place only from Node 22.18 / 23.6; on
+    // older Node it fails confusingly. A too-old Node in CI is a misconfigured
+    // runner (fail), not a reason to silently pass; skip only for local runs.
+    let out = Command::new("node").arg("--version").output().unwrap();
     let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if !node_strips_types(&version) {
-        eprintln!(
-            "SKIPPED: node {version} < 22.18 lacks default TS type-stripping; CI uses node 22"
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "VR-4 node --test gate: node {version} < 22.18 in CI (needs default TS type-stripping)"
         );
+        eprintln!("SKIPPED locally: node {version} < 22.18 lacks default TS type-stripping");
         return;
     }
     let dir = std::env::temp_dir().join(format!("gantry-ts-nodetest-{}", std::process::id()));
@@ -271,8 +294,7 @@ fn node_strips_types(version: &str) -> bool {
 /// TypeScript 7 native compiler (`tsc --noEmit`). CI runs this gate.
 #[test]
 fn the_real_spec_models_type_check() {
-    if Command::new("tsc").arg("--version").output().is_err() {
-        eprintln!("SKIPPED: tsc not available; CI runs this gate");
+    if !require_tools(&["tsc"], "VR-1.5 tsc gate") {
         return;
     }
     let dir = std::env::temp_dir().join(format!("gantry-ts-models-{}", std::process::id()));
@@ -298,8 +320,7 @@ fn the_real_spec_models_type_check() {
 /// exports the contract's names with matching signatures.
 #[test]
 fn the_generated_sdk_compiles_against_the_real_runtime() {
-    if Command::new("tsc").arg("--version").output().is_err() {
-        eprintln!("SKIPPED: tsc not available; CI runs this gate");
+    if !require_tools(&["tsc"], "FR-5.2 runtime-swap gate") {
         return;
     }
     let dir = std::env::temp_dir().join(format!("gantry-ts-runtime-{}", std::process::id()));
@@ -352,5 +373,185 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
         "generated SDK does not type-check against the real runtime (contract drift, FR-5.2):\n{}\n{}",
         String::from_utf8_lossy(&check.stdout),
         String::from_utf8_lossy(&check.stderr)
+    );
+}
+
+/// NF-8: the ship artifact is a publishable **dual ESM/CJS** npm package.
+/// Assemble it the way the release pipeline does — vendor the real runtime into
+/// the tree (as Go vendors its runtime), build both module formats + `.d.ts`,
+/// and prove `npm publish --dry-run` is clean and the built package loads
+/// through *both* its `import` and `require` entry points (the dual-package
+/// hazard check). Needs tsc + npm + node; skips cleanly otherwise. CI runs this.
+#[test]
+fn the_generated_sdk_packs_and_loads_dual_format() {
+    if !require_tools(&["tsc", "npm", "node"], "NF-8 pack gate") {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("gantry-ts-pack-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    write_all(&dir, &generate());
+
+    // The release pipeline vendors the real runtime into the tree before
+    // building (the generated `src/runtime.ts` is a compile stub). Copy every
+    // runtime source — including the JWT leaf + its ambient decl, so the shipped
+    // package exposes the `./jwt` subpath.
+    let runtime_src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../runtimes/typescript/gantryruntime/src")
+        .canonicalize()
+        .unwrap();
+    std::fs::remove_file(dir.join("src/runtime.ts")).unwrap();
+    for entry in std::fs::read_dir(&runtime_src).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "ts") {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        std::fs::copy(&path, dir.join("src").join(&name)).unwrap();
+    }
+    // The generated behavioral tests are not part of the shipped package.
+    for test in [
+        "src/serialization.test.ts",
+        "src/unions.test.ts",
+        "src/node-test.d.ts",
+    ] {
+        let _ = std::fs::remove_file(dir.join(test));
+    }
+
+    // Build both module formats + declarations via the generated `build` script.
+    run_ok(
+        Command::new("npm").args(["run", "build"]).current_dir(&dir),
+        "npm run build",
+    );
+
+    // `npm publish --dry-run` must be clean and ship the dual-format entry
+    // points + declarations (only `dist/` + docs, never the `src/` stub).
+    let publish = Command::new("npm")
+        .args(["publish", "--dry-run"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    let log = format!(
+        "{}{}",
+        String::from_utf8_lossy(&publish.stdout),
+        String::from_utf8_lossy(&publish.stderr)
+    );
+    assert!(
+        publish.status.success(),
+        "npm publish --dry-run failed (NF-8):\n{log}"
+    );
+    for expected in [
+        "dist/esm/index.js",
+        "dist/cjs/index.js",
+        "dist/types/index.d.ts",
+    ] {
+        assert!(
+            log.contains(expected),
+            "publish dry-run omits {expected}:\n{log}"
+        );
+    }
+    assert!(
+        !log.contains("src/runtime.ts"),
+        "the src/ stub must not ship — only the built dist:\n{log}"
+    );
+
+    // Pack the tarball and load it from a fresh consumer through BOTH entry
+    // points — proving the dual-package `exports` map resolves and the built
+    // SDK composes against the real runtime (85 managers wired).
+    let pack = Command::new("npm")
+        .arg("pack")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(pack.status.success(), "npm pack failed");
+    let tgz = String::from_utf8_lossy(&pack.stdout)
+        .lines()
+        .last()
+        .unwrap()
+        .trim()
+        .to_string();
+    let tarball = dir.join(&tgz);
+
+    let consumer = std::env::temp_dir().join(format!("gantry-ts-consumer-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&consumer);
+    std::fs::create_dir_all(&consumer).unwrap();
+    run_ok(
+        Command::new("npm")
+            .args(["init", "-y"])
+            .current_dir(&consumer),
+        "npm init",
+    );
+    run_ok(
+        Command::new("npm")
+            .args(["install", "--offline", "--no-audit", "--no-fund"])
+            .arg(&tarball)
+            .current_dir(&consumer),
+        "npm install tarball",
+    );
+    // The ESM and CJS smokes construct a client from the real runtime and touch
+    // the `./jwt` subpath — the whole public surface must load through each
+    // module system.
+    std::fs::write(
+        consumer.join("esm.mjs"),
+        "import { Client, runtime, buildinfo } from 'box-sdk';\n\
+         import { jwtAuth } from 'box-sdk/jwt';\n\
+         const c = new Client(runtime.developerToken('dev'));\n\
+         if (typeof c.files !== 'object' || typeof c.folders !== 'object' || Object.keys(c).length < 85) throw new Error('managers not wired');\n\
+         if (typeof buildinfo.ENGINE !== 'string') throw new Error('no provenance');\n\
+         if (typeof jwtAuth !== 'function') throw new Error('no jwt export');\n",
+    )
+    .unwrap();
+    std::fs::write(
+        consumer.join("cjs.cjs"),
+        "const { Client, runtime, buildinfo } = require('box-sdk');\n\
+         const { jwtAuth } = require('box-sdk/jwt');\n\
+         const c = new Client(runtime.developerToken('dev'));\n\
+         if (typeof c.files !== 'object' || typeof c.folders !== 'object' || Object.keys(c).length < 85) throw new Error('managers not wired');\n\
+         if (typeof buildinfo.ENGINE !== 'string') throw new Error('no provenance');\n\
+         if (typeof jwtAuth !== 'function') throw new Error('no jwt export');\n",
+    )
+    .unwrap();
+    run_ok(
+        Command::new("node").arg("esm.mjs").current_dir(&consumer),
+        "ESM import smoke",
+    );
+    run_ok(
+        Command::new("node").arg("cjs.cjs").current_dir(&consumer),
+        "CJS require smoke",
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&consumer);
+}
+
+/// Ensure the named tools are on `PATH` for a release gate. Returns `true` when
+/// all are present. When any is missing: **panic in CI** — a release gate must
+/// never silently pass on a misconfigured runner — or print a skip note and
+/// return `false` for a local run (detected via the standard `CI` env var).
+fn require_tools(tools: &[&str], gate: &str) -> bool {
+    let missing: Vec<&str> = tools
+        .iter()
+        .copied()
+        .filter(|tool| Command::new(tool).arg("--version").output().is_err())
+        .collect();
+    if missing.is_empty() {
+        return true;
+    }
+    assert!(
+        std::env::var_os("CI").is_none(),
+        "{gate}: required tooling missing in CI: {missing:?}"
+    );
+    eprintln!("SKIPPED locally ({gate}): missing {missing:?}");
+    false
+}
+
+/// Run a command, asserting success with its captured output on failure.
+fn run_ok(command: &mut Command, what: &str) {
+    let out = command.output().unwrap_or_else(|e| panic!("{what}: {e}"));
+    assert!(
+        out.status.success(),
+        "{what} failed:\n{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
     );
 }
