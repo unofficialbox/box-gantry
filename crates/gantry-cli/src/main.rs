@@ -72,11 +72,11 @@ enum Command {
     Conform {
         #[arg(required = true, value_name = "SPEC")]
         specs: Vec<PathBuf>,
-        /// Target language (manifest key). `go`, `apex`, and `rust` are all
-        /// measured against the same R§1 capability contract. `rust` is a
-        /// progress report (docs/tests/pagination are later slices), not yet a
-        /// green gate.
-        #[arg(long, value_parser = ["go", "apex", "rust"])]
+        /// Target language (manifest key). `go`, `apex`, `rust`, and
+        /// `typescript` are all measured against the same R§1 capability
+        /// contract. `rust` and `typescript` are progress reports
+        /// (docs/tests/pagination are later slices), not yet green gates.
+        #[arg(long, value_parser = ["go", "apex", "rust", "typescript"])]
         target: String,
     },
     /// Diff two spec sets and report breaking vs compatible changes and the
@@ -166,6 +166,18 @@ fn conform(specs: &[PathBuf], target: &str) -> ExitCode {
                 .map(|f| (f.path, f.content))
                 .collect();
             (files, gantry_verify::rust_shape())
+        }
+        "typescript" => {
+            let build = gantry_backend_typescript::BuildInfo::new(set.fingerprint());
+            let files = gantry_backend_typescript::generate(
+                &analysis,
+                &gantry_manifest::typescript(),
+                &build,
+            )
+            .into_iter()
+            .map(|f| (f.path, f.content))
+            .collect();
+            (files, gantry_verify::typescript_shape())
         }
         other => unreachable!("clap restricts --target to known manifests, got {other:?}"),
     };
