@@ -285,13 +285,17 @@ fn the_generated_sdk_packages_for_publish() {
     write_all(&dir, &generate());
     vendor_runtime(&dir);
 
+    let mut cmd = Command::new("cargo");
+    cmd.args(["publish", "--dry-run", "--allow-dirty"])
+        .current_dir(&dir)
+        // Force plain, deterministic output: CI sets `CARGO_TERM_COLOR=always`,
+        // whose ANSI escapes split the "Uploading box-sdk" success line the
+        // assertion below matches on (`Uploading\x1b[0m box-sdk`).
+        .env("CARGO_TERM_COLOR", "never");
     // The crate is assembled in a temp dir *outside* the repo, so the workspace
     // `rust-toolchain.toml` pin (NF-6) doesn't reach it — the verify build would
     // otherwise use whatever cargo the host defaults to. Force the pinned
     // toolchain so this gate is reproducible and matches the rest of CI.
-    let mut cmd = Command::new("cargo");
-    cmd.args(["publish", "--dry-run", "--allow-dirty"])
-        .current_dir(&dir);
     if let Some(channel) = pinned_toolchain() {
         cmd.env("RUSTUP_TOOLCHAIN", channel);
     }
