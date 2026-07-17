@@ -12,8 +12,11 @@
 //! This slice emits the model layer, the `Promise`-based managers/client (with
 //! async paginators), the reference docs (per-manager pages + the
 //! auth/pagination/errors guides), the generated behavioral tests (tri-state +
-//! per-union round-trip, run under `node --test`), and the package scaffold
-//! (`package.json`, `tsconfig.json`, provenance).
+//! per-union round-trip, run under `node --test`), and the NF-8 ship scaffold —
+//! a publishable **dual ESM/CJS** `package.json` with an `exports` map, the
+//! ESM/CJS build configs, and the dual-package post-build step, so the release
+//! pipeline (which vendors the real runtime, as Go does) can build a package
+//! that `npm publish --dry-run`s clean with shipped `.d.ts`.
 
 mod docs;
 mod managers;
@@ -69,6 +72,24 @@ pub fn generate(
             path: "tsconfig.json".to_string(),
             content: TSCONFIG.to_string(),
         },
+        // The NF-8 ship-artifact build: dual ESM/CJS emit + `.d.ts` + the
+        // dual-package markers + a package README.
+        GeneratedFile {
+            path: "tsconfig.build.json".to_string(),
+            content: TSCONFIG_BUILD.to_string(),
+        },
+        GeneratedFile {
+            path: "tsconfig.cjs.json".to_string(),
+            content: TSCONFIG_CJS.to_string(),
+        },
+        GeneratedFile {
+            path: "scripts/postbuild.mjs".to_string(),
+            content: POSTBUILD_MJS.to_string(),
+        },
+        GeneratedFile {
+            path: "README.md".to_string(),
+            content: readme(),
+        },
         GeneratedFile {
             path: "src/buildinfo.ts".to_string(),
             content: buildinfo_ts(manifest, build),
@@ -100,18 +121,113 @@ pub fn generate(
     files
 }
 
-/// The generated package manifest. `type: module` (ESM, TR-TS.4); no runtime
-/// dependencies yet (the model layer is pure types).
+/// The generated package manifest (NF-8). A publishable, **dual ESM/CJS**
+/// package: `exports` route `import`/`require`/`types` into the built `dist/`
+/// tree (ESM + CJS + `.d.ts`), and only `dist/` (with the docs) ships — the
+/// `src/` stub runtime is a build input, not shipped. The JWT flow is a
+/// separate `./jwt` subpath (Node-only, mirroring the runtime's own export).
+/// `name`/`version` are placeholders; the release pipeline sets the real scope
+/// and the `vMAJOR.MINOR.PATCH` from the FR-9 spec-diff (as Go's tag is).
 fn package_json() -> String {
     "{\n\
      \x20 \"name\": \"box-sdk\",\n\
      \x20 \"version\": \"0.1.0\",\n\
      \x20 \"description\": \"Generated TypeScript SDK for the Box API.\",\n\
+     \x20 \"license\": \"MIT\",\n\
      \x20 \"type\": \"module\",\n\
-     \x20 \"types\": \"./src/index.ts\",\n\
-     \x20 \"license\": \"MIT\"\n\
+     \x20 \"sideEffects\": false,\n\
+     \x20 \"engines\": { \"node\": \">=20\" },\n\
+     \x20 \"main\": \"./dist/cjs/index.js\",\n\
+     \x20 \"module\": \"./dist/esm/index.js\",\n\
+     \x20 \"types\": \"./dist/types/index.d.ts\",\n\
+     \x20 \"exports\": {\n\
+     \x20   \".\": {\n\
+     \x20     \"types\": \"./dist/types/index.d.ts\",\n\
+     \x20     \"import\": \"./dist/esm/index.js\",\n\
+     \x20     \"require\": \"./dist/cjs/index.js\"\n\
+     \x20   },\n\
+     \x20   \"./jwt\": {\n\
+     \x20     \"types\": \"./dist/types/jwt.d.ts\",\n\
+     \x20     \"import\": \"./dist/esm/jwt.js\",\n\
+     \x20     \"require\": \"./dist/cjs/jwt.js\"\n\
+     \x20   }\n\
+     \x20 },\n\
+     \x20 \"files\": [\"dist\", \"docs\", \"README.md\"],\n\
+     \x20 \"scripts\": {\n\
+     \x20   \"build\": \"tsc -p tsconfig.build.json && tsc -p tsconfig.cjs.json && node scripts/postbuild.mjs\"\n\
+     \x20 }\n\
      }\n"
     .to_string()
+}
+
+/// The ESM + declarations build config (NF-8). Emits ES modules into
+/// `dist/esm` and `.d.ts` into `dist/types`. `rootDir` is explicit (TS 7
+/// requires it alongside `declarationDir`).
+const TSCONFIG_BUILD: &str = "{\n\
+     \x20 \"compilerOptions\": {\n\
+     \x20   \"strict\": true,\n\
+     \x20   \"target\": \"ES2022\",\n\
+     \x20   \"module\": \"NodeNext\",\n\
+     \x20   \"moduleResolution\": \"NodeNext\",\n\
+     \x20   \"lib\": [\"ES2022\", \"DOM\"],\n\
+     \x20   \"rootDir\": \"./src\",\n\
+     \x20   \"outDir\": \"./dist/esm\",\n\
+     \x20   \"declaration\": true,\n\
+     \x20   \"declarationDir\": \"./dist/types\",\n\
+     \x20   \"skipLibCheck\": true,\n\
+     \x20   \"forceConsistentCasingInFileNames\": true\n\
+     \x20 },\n\
+     \x20 \"include\": [\"src/**/*.ts\"],\n\
+     \x20 \"exclude\": [\"src/**/*.test.ts\"]\n\
+     }\n";
+
+/// The CommonJS build config (NF-8). Emits CJS into `dist/cjs`; TS 7 accepts
+/// `module: CommonJS` with the default resolution (it removed `node10`).
+const TSCONFIG_CJS: &str = "{\n\
+     \x20 \"compilerOptions\": {\n\
+     \x20   \"strict\": true,\n\
+     \x20   \"target\": \"ES2022\",\n\
+     \x20   \"module\": \"CommonJS\",\n\
+     \x20   \"lib\": [\"ES2022\", \"DOM\"],\n\
+     \x20   \"rootDir\": \"./src\",\n\
+     \x20   \"outDir\": \"./dist/cjs\",\n\
+     \x20   \"declaration\": false,\n\
+     \x20   \"skipLibCheck\": true,\n\
+     \x20   \"forceConsistentCasingInFileNames\": true\n\
+     \x20 },\n\
+     \x20 \"include\": [\"src/**/*.ts\"],\n\
+     \x20 \"exclude\": [\"src/**/*.test.ts\"]\n\
+     }\n";
+
+/// Post-build step (NF-8): stamp the dual-package `type` markers so Node reads
+/// each `dist/` tree in the right module system regardless of the root
+/// package's `type`.
+const POSTBUILD_MJS: &str = "// Code generated by box-gantry. DO NOT EDIT.\n\
+     \n\
+     // Write the dual-package `type` markers so Node reads `dist/esm` as ES\n\
+     // modules and `dist/cjs` as CommonJS regardless of the root package type.\n\
+     import { writeFileSync } from 'node:fs';\n\
+     \n\
+     writeFileSync('dist/esm/package.json', '{\\n  \"type\": \"module\"\\n}\\n');\n\
+     writeFileSync('dist/cjs/package.json', '{\\n  \"type\": \"commonjs\"\\n}\\n');\n";
+
+/// A short package README (NF-8: `files` ships it). Points at the generated
+/// reference docs.
+fn readme() -> String {
+    "<!-- Generated by box-gantry. DO NOT EDIT. -->\n\
+     # Box SDK\n\
+     \n\
+     A generated TypeScript SDK for the Box API — a dual ESM/CJS package with\n\
+     shipped type declarations.\n\
+     \n\
+     ```ts\n\
+     import { Client, runtime } from 'box-sdk';\n\
+     const client = new Client(runtime.developerToken('DEVELOPER_TOKEN'));\n\
+     ```\n\
+     \n\
+     See [`docs/`](./docs/README.md) for the manager reference and the\n\
+     authentication, pagination, and errors guides.\n"
+        .to_string()
 }
 
 /// The compiler configuration: `strict` + `noEmit` (VR-1.5), NodeNext ESM
