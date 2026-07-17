@@ -25,6 +25,11 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install TypeScript 7 (to build the TS live smoke)
+        run: npm install -g typescript@7.0.2
       - name: Write the JWT config, if provided
         if: ${{ env.BOX_JWT_CONFIG_JSON != '' }}
         run: |
@@ -43,3 +48,17 @@ jobs:
         env:
           BOX_OAUTH_REFRESH_TOKEN: ""
         run: cargo test --test livesmoke -- --ignored --nocapture
+      - name: Run the TypeScript live smoke (same flows, the hand-written fetch runtime)
+        working-directory: runtimes/typescript/gantryruntime
+        # Node's strip-only TS mode can't run the runtime's NodeNext `.js`
+        # specifiers or parameter-property classes, so build to JS first, then
+        # run the built smoke. OAuth's refresh token rotates on use and the Go
+        # step above already consumed it — null it so the TS smoke skips OAuth
+        # rather than failing on a stale token (Go covers the shared OAuth flow;
+        # TS covers developer/CCG/JWT live, its OAuth path sharing the CCG
+        # cached-refresh machinery the smoke does exercise).
+        env:
+          BOX_OAUTH_REFRESH_TOKEN: ""
+        run: |
+          tsc -p tsconfig.livesmoke.json
+          node --test dist-livesmoke/livesmoke.test.js
