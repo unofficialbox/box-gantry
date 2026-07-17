@@ -196,6 +196,75 @@ fn generation_is_deterministic() {
         a_manager_page.content.contains("**Returns:**"),
         "no return type documented"
     );
+
+    // Generated behavioral tests (FR-7.8, VR-4): the serialization baseline, the
+    // per-union round-trip file, and the ambient node:test declaration.
+    assert!(once.iter().any(|f| f.path == "src/serialization.test.ts"));
+    assert!(once.iter().any(|f| f.path == "src/node-test.d.ts"));
+    let unions = once
+        .iter()
+        .find(|f| f.path == "src/unions.test.ts")
+        .expect("no unions.test.ts");
+    // The real spec has discriminated unions, so per-union tests are emitted,
+    // each asserting known-tag dispatch (and open-union unknown retention).
+    assert!(
+        unions.content.matches("test(").count() > 0,
+        "no per-union round-trip tests"
+    );
+    assert!(unions.content.contains("as models."), "union tests untyped");
+}
+
+/// FR-7.8/VR-4: the generated behavioral tests must *pass*, not just compile —
+/// run them under Node's built-in test runner (`node --test`, type-stripping the
+/// `.ts` in place, Node ≥ 22.18). The TypeScript analogue of Rust's `cargo test`
+/// round-trip suite. CI runs this gate.
+#[test]
+fn the_generated_tests_pass_under_node() {
+    // `node --test` type-strips `.ts` in place only from Node 22.18 / 23.6; on
+    // older Node it fails confusingly, so skip with a clear message instead.
+    let Ok(out) = Command::new("node").arg("--version").output() else {
+        eprintln!("SKIPPED: node not available; CI runs this gate");
+        return;
+    };
+    let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !node_strips_types(&version) {
+        eprintln!(
+            "SKIPPED: node {version} < 22.18 lacks default TS type-stripping; CI uses node 22"
+        );
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("gantry-ts-nodetest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    write_all(&dir, &generate());
+
+    let run = Command::new("node")
+        .args(["--test", "src/serialization.test.ts", "src/unions.test.ts"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    // Read the outcome, then clean the temp dir before asserting, so a failure
+    // leaves no artifacts behind.
+    let passed = run.status.success();
+    let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        passed,
+        "generated behavioral tests failed under `node --test` (VR-4):\n{stdout}\n{stderr}"
+    );
+}
+
+/// Whether a `node --version` string (`v22.22.2`) is ≥ 22.18 — the floor where
+/// Node's test runner type-strips `.ts` files by default.
+fn node_strips_types(version: &str) -> bool {
+    let mut parts = version.trim_start_matches('v').split('.');
+    let major = parts.next().and_then(|p| p.parse::<u32>().ok());
+    let minor = parts.next().and_then(|p| p.parse::<u32>().ok());
+    match (major, minor) {
+        (Some(major), Some(minor)) => major > 22 || (major == 22 && minor >= 18),
+        _ => false,
+    }
 }
 
 /// VR-1.5: the generated package type-checks clean under `strict` with the

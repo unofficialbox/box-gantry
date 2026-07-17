@@ -2684,3 +2684,50 @@ failing** — only `round-trip-tests` (the final M6 slice) remains. The generate
 paginators type-check clean under `tsc --noEmit` (VR-1.5) both against the stubs
 and against the real runtime (the swap test), and a backend test asserts the
 paginators are emitted; generation stays deterministic (FR-6.2).
+
+## D-166 — TypeScript backend, slice 9: generated behavioral tests (FR-7.8, VR-4)
+
+**Context.** The last M6 slice. After pagination (D-165), `conform --target
+typescript` had one capability left: `round-trip-tests`. This slice generates
+the behavioral tests, flipping it green — so `conform --target typescript` reads
+9/9 (minus the documented serialization exclusion) and joins the CI release gate
+alongside Go, Apex, and Rust. Full capability parity with the Go reference.
+
+**Tests that type-check *and* run.** Rust's round-trip tests compile and pass
+under `cargo test`; the TypeScript analogue must do both under its own
+toolchain. The backend emits two `.ts` test files that (a) type-check under the
+VR-1.5 `tsc --noEmit` gate and (b) *run* under Node's built-in test runner
+(`node --test`), which type-strips the `.ts` in place (default since Node 22.18)
+— no transpile step, no test framework dependency:
+
+- `serialization.test.ts` — the tri-state (absent / explicit-null / value)
+  through the `JSON.stringify`/`JSON.parse` wire codec (serialization is
+  identity, TR-TS.2), proving Box's clear-on-update semantics: absent omits the
+  key, `null` serializes `null`, a value serializes the value — and absent stays
+  distinguishable from null on read (`'field' in obj`). Plus ISO-8601
+  date/date-time round-trips (dates are strings, TR-TS.2).
+- `unions.test.ts` — one test per discriminated union (generated from the same
+  IR via `discriminated_variants`): a known-tag document parses as the union and
+  the tag round-trips; for **open** unions, an object with an unrecognized tag is
+  assignable via the `{ [key: string]: unknown }` catch-all (a line that
+  type-checks *only* because the catch-all exists — the TR-TS.1 unknown-retention
+  guarantee); **closed** unions carry no catch-all, so they assert known dispatch
+  only. On the real spec, 23 union tests + the serialization baseline.
+
+**No `@types/node`.** The tests import `node:test`/`node:assert`, whose types
+would otherwise require `@types/node` — which drags in Node's global
+`fetch`/`Request`/`Response`, clashing with the DOM lib the runtime relies on. So
+a local ambient `node-test.d.ts` declares just the surface used (the same trick
+`jwt.ts` uses for `node:crypto`, D-161), keeping the `tsc` gate dependency-free.
+Node supplies the real behavior at run time.
+
+**Verification + CI.** A backend test (`the_generated_tests_pass_under_node`)
+runs `node --test` on the generated tests as a first-class gate, next to the
+existing `tsc` gates; a real-spec conformance test
+(`the_generated_typescript_sdk_is_conformant`) asserts the SDK passes 9/9 with
+exactly one exclusion; and CI gains a `conform --target typescript` step
+alongside Go/Apex/Rust. The conformance recognizer counts the serialization
+baseline (required) plus each per-union test. With this, **M6 (TypeScript) is
+capability-complete** — every R§1 capability the target can express is emitted,
+verified, and gated. Remaining for a shipped v4: the NF-8 npm ship artifact and
+VR-7 live smoke.

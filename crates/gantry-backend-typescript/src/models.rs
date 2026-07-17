@@ -281,7 +281,7 @@ impl Printer<'_> {
 /// discriminator, or any variant that isn't a discriminator-carrying
 /// declaration). The literal value lets each union member pin its tag so the
 /// union narrows.
-fn discriminated_variants(
+pub(crate) fn discriminated_variants(
     program: &ir::Program,
     u: &ir::UnionDecl,
 ) -> Option<Vec<(ir::DeclId, String)>> {
