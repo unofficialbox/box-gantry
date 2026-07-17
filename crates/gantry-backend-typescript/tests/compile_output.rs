@@ -220,8 +220,17 @@ fn generation_is_deterministic() {
 /// round-trip suite. CI runs this gate.
 #[test]
 fn the_generated_tests_pass_under_node() {
-    if Command::new("node").arg("--version").output().is_err() {
+    // `node --test` type-strips `.ts` in place only from Node 22.18 / 23.6; on
+    // older Node it fails confusingly, so skip with a clear message instead.
+    let Ok(out) = Command::new("node").arg("--version").output() else {
         eprintln!("SKIPPED: node not available; CI runs this gate");
+        return;
+    };
+    let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !node_strips_types(&version) {
+        eprintln!(
+            "SKIPPED: node {version} < 22.18 lacks default TS type-stripping; CI uses node 22"
+        );
         return;
     }
     let dir = std::env::temp_dir().join(format!("gantry-ts-nodetest-{}", std::process::id()));
@@ -234,12 +243,28 @@ fn the_generated_tests_pass_under_node() {
         .current_dir(&dir)
         .output()
         .unwrap();
+    // Read the outcome, then clean the temp dir before asserting, so a failure
+    // leaves no artifacts behind.
+    let passed = run.status.success();
+    let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
+    let _ = std::fs::remove_dir_all(&dir);
     assert!(
-        run.status.success(),
-        "generated behavioral tests failed under `node --test` (VR-4):\n{}\n{}",
-        String::from_utf8_lossy(&run.stdout),
-        String::from_utf8_lossy(&run.stderr)
+        passed,
+        "generated behavioral tests failed under `node --test` (VR-4):\n{stdout}\n{stderr}"
     );
+}
+
+/// Whether a `node --version` string (`v22.22.2`) is ≥ 22.18 — the floor where
+/// Node's test runner type-strips `.ts` files by default.
+fn node_strips_types(version: &str) -> bool {
+    let mut parts = version.trim_start_matches('v').split('.');
+    let major = parts.next().and_then(|p| p.parse::<u32>().ok());
+    let minor = parts.next().and_then(|p| p.parse::<u32>().ok());
+    match (major, minor) {
+        (Some(major), Some(minor)) => major > 22 || (major == 22 && minor >= 18),
+        _ => false,
+    }
 }
 
 /// VR-1.5: the generated package type-checks clean under `strict` with the
