@@ -2831,3 +2831,73 @@ sharing the CCG cached-refresh machinery the smoke exercises). It reads the same
 ESM/CJS ship artifact, and the VR-7 live-smoke harness. v4 is feature-complete —
 the remaining step is an actual credentialed live-smoke run + the release tag
 (a pipeline/manual action, as with Go's tag), not engineering.
+
+## D-169 — Rust backend, slice: NF-8 ship artifact (publishable crate)
+
+**Context.** Go ships a `go.mod` module, TypeScript ships a dual ESM/CJS npm
+package (D-167). Rust's NF-8 obligation is a **self-contained, publishable
+crate** — `cargo publish`-clean. Until now the Rust backend emitted a compile
+stub for the runtime (`src/runtime.rs`, from `gantry_contract`) so the generated
+SDK type-checks against the declared surface without the real runtime (FR-5.3),
+but a crate carrying only a stub is not shippable. This slice adds the ship
+scaffold and gates the assembled crate through `cargo publish --dry-run`.
+
+**Vendor the runtime, don't depend on it.** The obvious assembly — a
+`gantryruntime = { path = "...", version = "..." }` dependency — fails
+`cargo publish --dry-run`: the publish path resolves deps against the crates.io
+index, and `gantryruntime` is unpublished, so it errors `no matching package
+named gantryruntime found`. A bare `{ path }` (no `version`) can't be published
+either. Rather than couple the ship gate to a publish-order dance (publish the
+runtime first, then the SDK), the release pipeline **vendors the runtime into
+the crate** as a `runtime` module, replacing the stub — the same
+self-contained shape Go and TypeScript ship. The crate then has no
+unpublishable dependency and `cargo publish --dry-run` is clean.
+
+**The assembly (in the gate + the release pipeline).** Starting from the
+generated crate: delete `src/runtime.rs`, create `src/runtime/`, and copy the
+hand-written runtime's files in — `lib.rs` → `runtime/mod.rs` verbatim (its
+`crate::` references are doc-only), `auth.rs`/`jwt.rs` → `runtime/{auth,jwt}.rs`
+with `crate::` rewritten to `super::` (they are now children of the `runtime`
+module, not a crate root). Each file's trailing `#[cfg(test)]` module is
+dropped — the shipped SDK carries no runtime unit tests (its own generated
+round-trip tests stay). Finally the runtime's dependencies (`reqwest`, `tokio`,
+…) are appended to the SDK manifest, skipping any already present (`serde_json`),
+yielding the full stack in one crate.
+
+**Manifest metadata + README.** `cargo publish` requires `description`,
+`license`, and either `repository` or `homepage`; the crate now carries them
+(license `MIT`, a placeholder `repository`) plus a `readme = "README.md"` and a
+short generated `README.md` pointing at the `docs/` tree. `name`/`version`/
+`repository` stay placeholders (`box-sdk` / `0.1.0` / an `example.invalid` URL);
+the release pipeline sets the real name, the `vMAJOR.MINOR.PATCH` from the FR-9
+spec-diff, and the real repository URL, as Go's module tag is set. The
+placeholder deliberately uses the reserved `.invalid` TLD (RFC 2606) so an
+un-substituted value can never resolve to a real site — it fails safe rather
+than pointing a consumer somewhere misleading.
+
+**The gate.** `the_generated_sdk_packages_for_publish` generates the crate,
+performs the vendoring assembly into a temp dir, runs
+`cargo publish --dry-run --allow-dirty`, and asserts its log contains
+`Uploading box-sdk`: cargo prints that only after packaging **and** the verify
+build both succeed, so reaching the (intentionally aborted) upload is the real
+acceptance signal — a bad manifest, a verify-build error, or an unpublishable
+dep aborts earlier. Two environment details make the gate deterministic. It
+forces `CARGO_TERM_COLOR=never` on the inner build (CI sets it to `always`,
+whose ANSI escapes would split the `Uploading box-sdk` line the assertion
+matches on). And because the crate is assembled *outside* the repo, the
+workspace `rust-toolchain.toml` pin doesn't reach it, so the gate forces the
+pinned channel via `RUSTUP_TOOLCHAIN` (read from `rust-toolchain.toml`) rather
+than using the host's default cargo (NF-6 reproducibility). It runs in
+`cargo test --workspace` (CI), skipping cleanly when the cargo toolchain is
+absent (like the swap gate). No external system or secret is needed — unlike
+Apex's on-platform 2GP job — so no separate packaging workflow. The
+deterministic-output test additionally asserts the manifest metadata and the
+shipped `README.md`.
+
+**Result.** NF-8 for Rust is met: the assembled crate packages and publishes
+clean (dry-run) as a self-contained artifact. With models, unions, managers,
+pagination, docs, generated tests, conformance (D-152/D-156), the hand-written
+runtime + VR-7 smoke (D-150/D-151), and now the ship scaffold all in place, v3
+Rust is feature-complete — the remaining step is an actual credentialed
+live-smoke run + the release tag (a pipeline/manual action, as with Go), not
+engineering.

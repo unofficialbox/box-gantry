@@ -138,6 +138,11 @@ fn generation_is_deterministic() {
     assert!(cargo.content.contains(
         "chrono = { version = \"0.4\", default-features = false, features = [\"serde\", \"alloc\"] }"
     ));
+    // NF-8: publish-ready manifest metadata + a shipped README.
+    for meta in ["description = ", "license = ", "repository = ", "readme = "] {
+        assert!(cargo.content.contains(meta), "Cargo.toml missing {meta}");
+    }
+    assert!(once.iter().any(|f| f.path == "README.md"));
 }
 
 #[test]
@@ -260,4 +265,135 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
         "generated SDK does not compile against the real runtime (contract drift, FR-5.2):\n{}",
         String::from_utf8_lossy(&check.stderr)
     );
+}
+
+/// NF-8: the ship artifact is a **self-contained, publishable crate**. Assemble
+/// it the way the release pipeline does — vendor the real runtime into the crate
+/// as a `runtime` module (as Go/TS vendor their runtimes; a `{ path, version }`
+/// dep can't `cargo publish` while `gantryruntime` is unpublished) — and prove
+/// `cargo publish --dry-run` is clean. Needs the cargo toolchain + the crates.io
+/// index; skips when cargo is absent (like the swap gate). CI runs this gate.
+#[test]
+fn the_generated_sdk_packages_for_publish() {
+    if Command::new("cargo").arg("--version").output().is_err() {
+        eprintln!("SKIPPED: cargo toolchain not available; CI runs this gate");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("gantry-rust-pack-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    write_all(&dir, &generate());
+    vendor_runtime(&dir);
+
+    let mut cmd = Command::new("cargo");
+    cmd.args(["publish", "--dry-run", "--allow-dirty"])
+        .current_dir(&dir)
+        // Force plain, deterministic output: CI sets `CARGO_TERM_COLOR=always`,
+        // whose ANSI escapes split the "Uploading box-sdk" success line the
+        // assertion below matches on (`Uploading\x1b[0m box-sdk`).
+        .env("CARGO_TERM_COLOR", "never");
+    // The crate is assembled in a temp dir *outside* the repo, so the workspace
+    // `rust-toolchain.toml` pin (NF-6) doesn't reach it — the verify build would
+    // otherwise use whatever cargo the host defaults to. Force the pinned
+    // toolchain so this gate is reproducible and matches the rest of CI.
+    if let Some(channel) = pinned_toolchain() {
+        cmd.env("RUSTUP_TOOLCHAIN", channel);
+    }
+    let publish = cmd.output().unwrap();
+    let log = format!(
+        "{}{}",
+        String::from_utf8_lossy(&publish.stdout),
+        String::from_utf8_lossy(&publish.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    // Reaching the (intentionally aborted) upload is the real acceptance signal:
+    // cargo prints "Uploading <crate>" only after packaging *and* the verify
+    // build both succeed — a bad manifest, a verify-build error, or an
+    // unpublishable dep aborts earlier, before this line. The dry-run then
+    // aborts the upload itself; some cargo versions signal that abort with a
+    // non-zero exit even though the crate is fully publish-ready, so the exit
+    // code is not a reliable pass/fail signal here — the log is.
+    assert!(
+        log.contains("Uploading box-sdk"),
+        "cargo publish --dry-run did not complete packaging + verify (NF-8):\n{log}"
+    );
+}
+
+/// The workspace's pinned toolchain channel from `rust-toolchain.toml` (NF-6),
+/// e.g. `"1.94.1"` — `None` if the file or the `channel = "…"` line is absent.
+fn pinned_toolchain() -> Option<String> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../rust-toolchain.toml");
+    let text = std::fs::read_to_string(path).ok()?;
+    text.lines()
+        .find_map(|l| l.trim().strip_prefix("channel"))
+        .and_then(|rest| rest.trim().strip_prefix('='))
+        .map(|rhs| rhs.trim().trim_matches('"').to_string())
+        .filter(|c| !c.is_empty())
+}
+
+/// Vendor the hand-written runtime crate into the generated SDK as a `runtime`
+/// module (replacing the compile stub) and add its dependencies — the
+/// self-contained assembly the release pipeline performs. Each runtime file's
+/// trailing `#[cfg(test)]` module is dropped (the SDK ships no runtime unit
+/// tests), and the submodules' `crate::` self-references become `super::` (they
+/// are now children of the `runtime` module).
+fn vendor_runtime(dir: &Path) {
+    let runtime_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../runtimes/rust/gantryruntime")
+        .canonicalize()
+        .unwrap();
+    let src = runtime_dir.join("src");
+    std::fs::remove_file(dir.join("src/runtime.rs")).unwrap();
+    std::fs::create_dir_all(dir.join("src/runtime")).unwrap();
+
+    // The crate root (`lib.rs`) → the module root (`runtime/mod.rs`); its
+    // `crate::` references are doc-only and non-breaking, so it is copied
+    // test-stripped but otherwise verbatim.
+    let lib = strip_tests(&std::fs::read_to_string(src.join("lib.rs")).unwrap());
+    std::fs::write(dir.join("src/runtime/mod.rs"), lib).unwrap();
+    // The submodules are children of `runtime`, so `crate::` (the runtime crate
+    // root) becomes `super::`.
+    for name in ["auth", "jwt"] {
+        let source = std::fs::read_to_string(src.join(format!("{name}.rs"))).unwrap();
+        let vendored = strip_tests(&source).replace("crate::", "super::");
+        std::fs::write(dir.join(format!("src/runtime/{name}.rs")), vendored).unwrap();
+    }
+
+    // Append the runtime's dependency set, skipping any already in the SDK
+    // manifest (serde_json), so the self-contained crate carries the full stack.
+    let mut manifest = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
+    for dep in runtime_dep_lines(&std::fs::read_to_string(runtime_dir.join("Cargo.toml")).unwrap())
+    {
+        let key = dep.split(['=', ' ']).next().unwrap_or("");
+        if !manifest.contains(&format!("\n{key} =")) {
+            manifest.push_str(&dep);
+            manifest.push('\n');
+        }
+    }
+    std::fs::write(dir.join("Cargo.toml"), manifest).unwrap();
+}
+
+/// Drop a source file's trailing `#[cfg(test)]` module (the final item in each
+/// runtime file).
+fn strip_tests(source: &str) -> String {
+    match source.find("#[cfg(test)]") {
+        Some(pos) => format!("{}\n", source[..pos].trim_end()),
+        None => source.to_string(),
+    }
+}
+
+/// The runtime crate's `[dependencies]` lines, one per dependency (up to the
+/// next section header).
+fn runtime_dep_lines(manifest: &str) -> Vec<String> {
+    let start = manifest
+        .find("[dependencies]")
+        .expect("runtime [dependencies]");
+    let block = &manifest[start + "[dependencies]".len()..];
+    let end = block.find("\n[").map_or(block.len(), |i| i);
+    block[..end]
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_string)
+        .collect()
 }
