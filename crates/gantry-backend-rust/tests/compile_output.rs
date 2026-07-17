@@ -285,25 +285,46 @@ fn the_generated_sdk_packages_for_publish() {
     write_all(&dir, &generate());
     vendor_runtime(&dir);
 
-    let publish = Command::new("cargo")
-        .args(["publish", "--dry-run", "--allow-dirty"])
-        .current_dir(&dir)
-        .output()
-        .unwrap();
+    // The crate is assembled in a temp dir *outside* the repo, so the workspace
+    // `rust-toolchain.toml` pin (NF-6) doesn't reach it — the verify build would
+    // otherwise use whatever cargo the host defaults to. Force the pinned
+    // toolchain so this gate is reproducible and matches the rest of CI.
+    let mut cmd = Command::new("cargo");
+    cmd.args(["publish", "--dry-run", "--allow-dirty"])
+        .current_dir(&dir);
+    if let Some(channel) = pinned_toolchain() {
+        cmd.env("RUSTUP_TOOLCHAIN", channel);
+    }
+    let publish = cmd.output().unwrap();
     let log = format!(
         "{}{}",
         String::from_utf8_lossy(&publish.stdout),
         String::from_utf8_lossy(&publish.stderr)
     );
-    let ok = publish.status.success();
     let _ = std::fs::remove_dir_all(&dir);
-    assert!(ok, "cargo publish --dry-run failed (NF-8):\n{log}");
-    // Reaching the (aborted) upload means packaging + the verify build both
-    // passed — a partial run would have errored out before this line.
+    // Reaching the (intentionally aborted) upload is the real acceptance signal:
+    // cargo prints "Uploading <crate>" only after packaging *and* the verify
+    // build both succeed — a bad manifest, a verify-build error, or an
+    // unpublishable dep aborts earlier, before this line. The dry-run then
+    // aborts the upload itself; some cargo versions signal that abort with a
+    // non-zero exit even though the crate is fully publish-ready, so the exit
+    // code is not a reliable pass/fail signal here — the log is.
     assert!(
         log.contains("Uploading box-sdk"),
-        "publish dry-run did not complete packaging + verify:\n{log}"
+        "cargo publish --dry-run did not complete packaging + verify (NF-8):\n{log}"
     );
+}
+
+/// The workspace's pinned toolchain channel from `rust-toolchain.toml` (NF-6),
+/// e.g. `"1.94.1"` — `None` if the file or the `channel = "…"` line is absent.
+fn pinned_toolchain() -> Option<String> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../rust-toolchain.toml");
+    let text = std::fs::read_to_string(path).ok()?;
+    text.lines()
+        .find_map(|l| l.trim().strip_prefix("channel"))
+        .and_then(|rest| rest.trim().strip_prefix('='))
+        .map(|rhs| rhs.trim().trim_matches('"').to_string())
+        .filter(|c| !c.is_empty())
 }
 
 /// Vendor the hand-written runtime crate into the generated SDK as a `runtime`

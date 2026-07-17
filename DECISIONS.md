@@ -2872,11 +2872,19 @@ placeholders (`box-sdk` / `0.1.0`); the release pipeline sets the real name and
 the `vMAJOR.MINOR.PATCH` from the FR-9 spec-diff, as Go's module tag is set.
 
 **The gate.** `the_generated_sdk_packages_for_publish` generates the crate,
-performs the vendoring assembly into a temp dir, and asserts
-`cargo publish --dry-run --allow-dirty` succeeds *and* its log contains
-`Uploading box-sdk` — reaching the (aborted) upload proves packaging **and** the
-verify build both passed, which a partial run would not. It runs in
-`cargo test --workspace` (CI), skipping cleanly when the cargo toolchain is
+performs the vendoring assembly into a temp dir, runs
+`cargo publish --dry-run --allow-dirty`, and asserts its log contains
+`Uploading box-sdk`: cargo prints that only after packaging **and** the verify
+build both succeed, so reaching the (intentionally aborted) upload is the real
+acceptance signal — a bad manifest, a verify-build error, or an unpublishable
+dep aborts earlier. The dry-run then aborts the upload itself, and some cargo
+versions signal that abort with a non-zero exit even though the crate is fully
+publish-ready, so the gate keys off the log rather than the process exit code.
+Because the crate is assembled *outside* the repo, the workspace
+`rust-toolchain.toml` pin doesn't reach it; the gate forces the pinned channel
+on the inner build via `RUSTUP_TOOLCHAIN` (read from `rust-toolchain.toml`) so
+it stays reproducible (NF-6) instead of using the host's default cargo. It runs
+in `cargo test --workspace` (CI), skipping cleanly when the cargo toolchain is
 absent (like the swap gate). No external system or secret is needed — unlike
 Apex's on-platform 2GP job — so no separate packaging workflow. The
 deterministic-output test additionally asserts the manifest metadata and the
