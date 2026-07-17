@@ -22,14 +22,58 @@ use crate::models::{module_names, type_name};
 use crate::{BuildInfo, GeneratedFile};
 
 /// The deduped names for one manager: its module/file, its class, and its
-/// `Client` field — all derived from one collision-free base.
-struct ManagerName {
+/// `Client` field — all derived from one collision-free base. Shared with the
+/// docs generator so reference pages name the real generated surface.
+pub(crate) struct ManagerName {
     /// The file/module base (snake_case): `src/managers/<module>.ts`.
-    module: String,
+    pub(crate) module: String,
     /// The exported class: `<Pascal>Manager`.
-    class: String,
+    pub(crate) class: String,
     /// The `Client` field (camelCase).
-    field: String,
+    pub(crate) field: String,
+}
+
+/// Allocate one collision-free [`ManagerName`] per manager (sorted keys),
+/// reused for the module/file, class, and field. The single source of truth
+/// for manager naming, shared by the manager printer and the docs generator so
+/// the two can't drift.
+pub(crate) fn plan_managers<'a>(
+    analysis: &'a Analysis<'_>,
+) -> Vec<(&'a String, &'a Vec<usize>, ManagerName)> {
+    let mut used: Vec<String> = Vec::new();
+    analysis
+        .managers
+        .iter()
+        .map(|(key, indices)| {
+            let base = dedupe(&mut used, safe_module_base(key));
+            let name = ManagerName {
+                class: format!("{}Manager", pascal(&base)),
+                field: camel(&base),
+                module: base,
+            };
+            (key, indices, name)
+        })
+        .collect()
+}
+
+/// The deduped snake_case method bases for a manager's operations, in order —
+/// the single source of truth shared by the manager printer (which camelCases
+/// them at emission and derives the options-interface names) and the docs.
+pub(crate) fn method_bases(
+    program: &ir::Program,
+    base_version: Option<&ir::ApiVersion>,
+    op_indices: &[usize],
+) -> Vec<String> {
+    let mut used = Vec::new();
+    op_indices
+        .iter()
+        .map(|&i| {
+            dedupe(
+                &mut used,
+                operation_base(&program.operations[i], base_version),
+            )
+        })
+        .collect()
 }
 
 /// Generate the `managers` module (one file per manager), the `managers`
@@ -43,22 +87,8 @@ pub fn generate_managers(analysis: &Analysis<'_>, _build: &BuildInfo) -> Vec<Gen
     // Shared module-name registry, so manager type paths agree with the models.
     let modules = module_names(program);
 
-    // Allocate one collision-free base per manager (sorted `BTreeMap` keys) and
-    // reuse it for the module/file, class, and field.
-    let managers: Vec<(&String, &Vec<usize>)> = analysis.managers.iter().collect();
-    let mut used: Vec<String> = Vec::new();
-    let named: Vec<(&String, &Vec<usize>, ManagerName)> = managers
-        .iter()
-        .map(|(key, indices)| {
-            let base = dedupe(&mut used, safe_module_base(key));
-            let name = ManagerName {
-                class: format!("{}Manager", pascal(&base)),
-                field: camel(&base),
-                module: base,
-            };
-            (*key, *indices, name)
-        })
-        .collect();
+    // Allocate one collision-free base per manager (shared with the docs).
+    let named = plan_managers(analysis);
 
     let mut files = Vec::new();
 
@@ -193,17 +223,8 @@ impl Printer<'_> {
     fn manager(&mut self, key: &str, name: &ManagerName, indices: &[usize]) {
         // One deduped method base per operation (distinct source ops can
         // normalize to the same name), reused for the method and its options
-        // interface so the surface can't collide.
-        let mut used = Vec::new();
-        let bases: Vec<String> = indices
-            .iter()
-            .map(|&i| {
-                dedupe(
-                    &mut used,
-                    operation_base(&self.program.operations[i], self.base_version.as_ref()),
-                )
-            })
-            .collect();
+        // interface so the surface can't collide. Shared with the docs.
+        let bases = method_bases(self.program, self.base_version.as_ref(), indices);
 
         // Options interfaces are module-level (TypeScript forbids nesting an
         // interface in a class), emitted before the class so methods name them.
@@ -778,7 +799,7 @@ fn http_method(method: ir::HttpMethod) -> &'static str {
 /// A `camelCase` identifier from a canonical name (snake-normalized first, so
 /// mixed-case input maps consistently), digit- and keyword-safe for use as a
 /// local variable or field.
-fn camel(name: &str) -> String {
+pub(crate) fn camel(name: &str) -> String {
     let snaked = snake(name);
     let mut out = String::with_capacity(snaked.len());
     let mut upper = false;

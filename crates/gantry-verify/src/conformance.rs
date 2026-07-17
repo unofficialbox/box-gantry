@@ -653,18 +653,19 @@ fn rust_guides(files: &[GeneratedView]) -> usize {
 // --- TypeScript recognizers -----------------------------------------------
 
 /// The TypeScript conformance shape: measures the `src/` package the
-/// TypeScript backend emits (manager classes, async operation methods, and the
-/// `buildinfo` provenance), and declares the one documented platform
+/// TypeScript backend emits (manager classes, async operation methods, the
+/// `buildinfo` provenance) and the `docs/` tree (per-manager pages + the
+/// auth/pagination/errors guides), and declares the one documented platform
 /// exclusion — the erased serialization layer (the tri-state is mapped onto
 /// the type system as `?:`/`| null` and dates are ISO-8601 strings, so there
 /// is no `Nullable[T]`/`Date` wrapper package to emit, mirroring Apex
 /// D-138/D-141).
 ///
-/// Generated docs, tests, and pagination are **not yet emitted** (later M6
-/// slices), so those capabilities read zero until they land. Unlike the
-/// serialization exclusion, those shortfalls are pending work, not permanent —
-/// so `conform --target typescript` is a progress report (partial today)
-/// rather than a green CI gate, and it joins the release gate once the
+/// Generated behavioral tests and pagination surfaces are **not yet emitted**
+/// (later M6 slices), so those capabilities read zero until they land. Unlike
+/// the serialization exclusion, those shortfalls are pending work, not
+/// permanent — so `conform --target typescript` is a progress report (partial
+/// today) rather than a green CI gate, and it joins the release gate once the
 /// TypeScript backend reaches parity (as Rust did).
 pub fn typescript_shape() -> TargetShape {
     TargetShape {
@@ -1096,10 +1097,11 @@ mod tests {
     fn typescript_shape_measures_emitted_capabilities() {
         let program = program();
         let analysis = gantry_sema::analyze(&program).unwrap();
-        // A minimal TypeScript SDK as the backend emits it today: one manager
-        // class with two async operation methods and the `buildinfo`
-        // provenance. Docs, tests, and pagination are later M6 slices — absent
-        // here, so those capabilities read zero (pending, not excluded).
+        // A minimal TypeScript SDK: one manager class with two async operation
+        // methods and the `buildinfo` provenance, but no docs, tests, or
+        // pagination — so the recognizers for those read zero and the report is
+        // partial. (The real backend emits the docs tree; this fixture omits it
+        // to exercise absence-detection.)
         let files = vec![
             (
                 "src/managers/files.ts".to_string(),

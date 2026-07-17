@@ -9,13 +9,16 @@
 //! The verification gate is the TypeScript 7 native compiler: `tsc --noEmit`
 //! under `strict` (VR-1.5), the TS analogue of `go build`/`cargo check`.
 //!
-//! This slice emits the model layer, the `Promise`-based managers/client, and
+//! This slice emits the model layer, the `Promise`-based managers/client, the
+//! reference docs (per-manager pages + the auth/pagination/errors guides), and
 //! the package scaffold (`package.json`, `tsconfig.json`, provenance). Not yet
-//! emitted (later M6 slices): the real `fetch` runtime, docs, and tests.
+//! emitted (later M6 slice): the generated behavioral tests.
 
+mod docs;
 mod managers;
 mod models;
 
+pub use docs::generate_docs;
 pub use managers::generate_managers;
 pub use models::generate_models;
 
@@ -88,6 +91,7 @@ pub fn generate(
     ];
     files.extend(generate_models(analysis, build));
     files.extend(generate_managers(analysis, build));
+    files.extend(generate_docs(analysis));
     files.sort_by(|a, b| a.path.cmp(&b.path));
     files
 }
