@@ -11,7 +11,8 @@
 //! The checklist reads a lightweight [`GeneratedView`] (path + content), not
 //! any backend's file type, and takes a [`TargetShape`] that says how *that*
 //! target encodes each capability — so the same contract measures Go, Apex,
-//! and Rust by swapping recognizers, never by forking the checklist. A
+//! Rust, and TypeScript by swapping recognizers, never by forking the
+//! checklist. A
 //! target may also declare **documented platform exclusions** (e.g. Apex
 //! erases the tri-state, so there is no serialization package): parity is
 //! then measured *minus* those, which is exactly the v2 acceptance criterion
@@ -649,6 +650,130 @@ fn rust_guides(files: &[GeneratedView]) -> usize {
         .count()
 }
 
+// --- TypeScript recognizers -----------------------------------------------
+
+/// The TypeScript conformance shape: measures the `src/` package the
+/// TypeScript backend emits (manager classes, async operation methods, and the
+/// `buildinfo` provenance), and declares the one documented platform
+/// exclusion — the erased serialization layer (the tri-state is mapped onto
+/// the type system as `?:`/`| null` and dates are ISO-8601 strings, so there
+/// is no `Nullable[T]`/`Date` wrapper package to emit, mirroring Apex
+/// D-138/D-141).
+///
+/// Generated docs, tests, and pagination are **not yet emitted** (later M6
+/// slices), so those capabilities read zero until they land. Unlike the
+/// serialization exclusion, those shortfalls are pending work, not permanent —
+/// so `conform --target typescript` is a progress report (partial today)
+/// rather than a green CI gate, and it joins the release gate once the
+/// TypeScript backend reaches parity (as Rust did).
+pub fn typescript_shape() -> TargetShape {
+    TargetShape {
+        target: "typescript",
+        count_managers: ts_managers,
+        count_manager_docs: ts_manager_docs,
+        count_operations: ts_operations,
+        count_pagination: ts_pagination,
+        count_serialization: ts_serialization,
+        count_round_trip_tests: ts_round_trip_tests,
+        count_auth: ts_auth,
+        count_traceability: ts_traceability,
+        count_guides: ts_guides,
+        exclusions: TYPESCRIPT_EXCLUSIONS,
+    }
+}
+
+const TYPESCRIPT_EXCLUSIONS: &[Exclusion] = &[Exclusion {
+    capability: "serialization",
+    count: 1,
+    reason: "TypeScript maps the tri-state straight onto the type system \
+             (absent → `field?: T`, null → `T | null`) and types dates as \
+             ISO-8601 strings, so absent-vs-null is expressed structurally — \
+             there is no Nullable[T]/Date package to emit (TR-TS.2, D-157)",
+}];
+
+fn ts_is_manager_file(path: &str) -> bool {
+    path.starts_with("src/managers/") && path.ends_with(".ts") && path != "src/managers/index.ts"
+}
+
+fn ts_managers(files: &[GeneratedView]) -> usize {
+    // One `export class <Name>Manager` per x-box-tag (a module file may hold
+    // several). Match the class definition line, not the `Client` entry point
+    // (which lives in `src/client.ts`, outside `src/managers/`) nor the
+    // per-operation `<Name>ManagerFooOptions` interfaces.
+    files
+        .iter()
+        .filter(|f| ts_is_manager_file(f.path))
+        .map(|f| {
+            f.content
+                .lines()
+                .filter(|l| l.trim_start().starts_with("export class ") && l.contains("Manager {"))
+                .count()
+        })
+        .sum()
+}
+
+fn ts_operations(files: &[GeneratedView]) -> usize {
+    // One `async <method>(` per operation (two-space-indented method bodies);
+    // subtract the paginators to isolate the plain operation methods (none yet).
+    let methods = count_marker(files, ts_is_manager_file, "  async ");
+    methods.saturating_sub(ts_pagination(files))
+}
+
+fn ts_pagination(_files: &[GeneratedView]) -> usize {
+    // Paginated surfaces are a later M6 slice — none emitted yet.
+    0
+}
+
+fn ts_serialization(_files: &[GeneratedView]) -> usize {
+    // Erased onto the type system — see the documented exclusion above.
+    0
+}
+
+fn ts_round_trip_tests(_files: &[GeneratedView]) -> usize {
+    // Generated behavioral tests are a later M6 slice — none emitted yet.
+    0
+}
+
+fn ts_auth(files: &[GeneratedView]) -> usize {
+    // The auth guide documents every Box auth flow the runtime surfaces (a
+    // later docs slice); until it lands there is nothing to measure.
+    files
+        .iter()
+        .find(|f| f.path == "docs/auth.md")
+        .map(|guide| {
+            AUTH_FLOWS
+                .iter()
+                .filter(|name| guide.content.contains(**name))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+fn ts_traceability(files: &[GeneratedView]) -> usize {
+    // The `buildinfo` module names the engine + spec fingerprint (NF-7).
+    usize::from(files.iter().any(|f| {
+        f.path == "src/buildinfo.ts"
+            && f.content.contains("ENGINE")
+            && f.content.contains("SPEC_FINGERPRINT")
+    }))
+}
+
+fn ts_manager_docs(files: &[GeneratedView]) -> usize {
+    // One reference page per manager (a later docs slice), same `docs/managers/`
+    // layout as Go/Rust.
+    files
+        .iter()
+        .filter(|f| f.path.starts_with("docs/managers/") && f.path.ends_with(".md"))
+        .count()
+}
+
+fn ts_guides(files: &[GeneratedView]) -> usize {
+    GUIDES
+        .iter()
+        .filter(|path| files.iter().any(|f| f.path == **path))
+        .count()
+}
+
 /// The four Box auth flows the R§1 contract expects to be surfaced.
 const AUTH_FLOWS: [&str; 4] = ["Developer Token", "Client Credentials", "JWT", "OAuth"];
 
@@ -965,6 +1090,80 @@ mod tests {
         assert_eq!(rt.actual, 0);
         assert_eq!(rt.status, CheckStatus::Fail);
         assert!(!degraded.passed());
+    }
+
+    #[test]
+    fn typescript_shape_measures_emitted_capabilities() {
+        let program = program();
+        let analysis = gantry_sema::analyze(&program).unwrap();
+        // A minimal TypeScript SDK as the backend emits it today: one manager
+        // class with two async operation methods and the `buildinfo`
+        // provenance. Docs, tests, and pagination are later M6 slices — absent
+        // here, so those capabilities read zero (pending, not excluded).
+        let files = vec![
+            (
+                "src/managers/files.ts".to_string(),
+                "export interface FilesManagerGetFilesOptions {\n\
+                 \x20 limit?: number;\n\
+                 }\n\
+                 /** Operations for the \"files\" API area. */\n\
+                 export class FilesManager {\n\
+                 \x20 constructor(private readonly session: runtime.Client) {}\n\
+                 \n\
+                 \x20 async getFiles(opts?: FilesManagerGetFilesOptions): Promise<void> {}\n\
+                 \n\
+                 \x20 async getFilesId(fileId: string): Promise<void> {}\n\
+                 }\n"
+                .to_string(),
+            ),
+            (
+                "src/managers/index.ts".to_string(),
+                "export { FilesManager } from './files.js';\n".to_string(),
+            ),
+            (
+                "src/client.ts".to_string(),
+                "export class Client {\n  readonly files: FilesManager;\n}\n".to_string(),
+            ),
+            (
+                "src/buildinfo.ts".to_string(),
+                "export const ENGINE = \"0.1.0\";\n\
+                 export const SPEC_FINGERPRINT = \"abc\";\n"
+                    .to_string(),
+            ),
+        ];
+        let report = conformance(&typescript_shape(), &analysis, &views(&files));
+        assert!(report.report().contains("conformance (typescript)"));
+
+        let check = |cap: &str| report.checks.iter().find(|c| c.capability == cap).unwrap();
+        // Emitted capabilities are measured and pass.
+        assert_eq!(check("managers").actual, 1);
+        assert_eq!(check("managers").status, CheckStatus::Pass);
+        // The `Client` entry point and the options interface are not counted as
+        // managers; the two `async` methods are the operations.
+        assert_eq!(check("operations").actual, 2);
+        assert_eq!(check("operations").status, CheckStatus::Pass);
+        assert_eq!(check("traceability").actual, 1);
+        assert_eq!(check("traceability").status, CheckStatus::Pass);
+        // Serialization is the one documented platform exclusion: erased onto
+        // the type system, so it passes as not-applicable rather than failing.
+        assert_eq!(check("serialization").actual, 0);
+        assert_eq!(check("serialization").status, CheckStatus::Excluded);
+        assert!(check("serialization").detail.contains("type system"));
+        // Docs, tests, and pagination are pending later slices — honest
+        // shortfalls (Fail), not exclusions, so the report is partial today.
+        assert_eq!(check("manager-docs").actual, 0);
+        assert_eq!(check("manager-docs").status, CheckStatus::Fail);
+        assert_eq!(check("docs-guides").actual, 0);
+        assert_eq!(check("auth-flows").actual, 0);
+        assert_eq!(check("round-trip-tests").actual, 0);
+        // This synthetic program has no paginated operations, so pagination
+        // expects zero and passes trivially; on the real spec (64 paged
+        // surfaces) the pending TS backend reads zero and fails as pending.
+        assert_eq!(check("pagination").actual, 0);
+        // A progress report: exactly one documented exclusion, and it does not
+        // yet pass overall (the pending slices are real failures).
+        assert_eq!(report.excluded(), 1);
+        assert!(!report.passed());
     }
 
     #[test]

@@ -2471,3 +2471,44 @@ ambient decl), staying platform-neutral; the runtime's own gate type-checks
 signing path was smoke-checked against real `node:crypto` (encrypted-key parse →
 valid RS256 signature). A runtime unit test + live smoke are a later testing
 slice, alongside docs/generated tests + `conform --target typescript`.
+
+## D-162 — TypeScript backend, slice 6: `conform --target typescript` (VR-3 progress report)
+
+**Context.** With the model layer, managers/client, and runtime (all four auth
+flows) landed (D-157–D-161), the TypeScript SDK has a measurable capability
+surface. This slice brings TypeScript onto the same R§1 conformance contract
+that gates Go/Apex and reports Rust — a `typescript_shape` recognizer set plus
+the `conform --target typescript` CLI wiring — so the SDK's coverage is tracked
+against the spec, capability by capability, rather than by eyeball.
+
+**One contract, a new recognizer set.** The conformance checklist is
+target-neutral: it derives the *expected* surface from the verified program and
+measures the *actual* surface through a `TargetShape` of per-capability
+recognizers. `typescript_shape()` adds recognizers for the `src/` package the
+backend emits today — manager classes (`export class <Name>Manager` under
+`src/managers/`, excluding the `Client` entry point and the per-operation
+`…Options` interfaces), the two-space-indented `async <method>(` operation
+methods, and the `buildinfo.ts` provenance (`ENGINE` + `SPEC_FINGERPRINT`). On
+the real vendored spec these read **managers 85/85, operations 336/336,
+traceability 1/1** — the same expected counts Go and Apex meet, since the
+contract is target-neutral.
+
+**One documented platform exclusion: serialization.** Like Apex (D-138/D-141),
+TypeScript erases the tri-state onto the type system — absent → `field?: T`,
+null → `T | null` — and types dates as ISO-8601 `string`s (TR-TS.2, D-157), so
+there is no `Nullable[T]`/`Date` wrapper package to emit. That shortfall is a
+**documented exclusion** (recorded here), so it passes as not-applicable rather
+than failing, exactly the "parity minus documented platform exclusions"
+allowance.
+
+**A progress report, not yet a gate.** Docs, generated tests, and pagination are
+later M6 slices, so `manager-docs`, `docs-guides`, `round-trip-tests`,
+`auth-flows` (measured from the not-yet-emitted `docs/auth.md`), and
+`pagination` read zero and fail today. Those are pending work, **not**
+exclusions — so `conform --target typescript` is an honest progress report
+(9 capabilities, 1 excluded, 5 failing, exit 4), mirroring how Rust's conform
+was partial at D-152 before its docs/tests/pagination slices flipped it green
+and it joined the CI release gate. TypeScript joins the gate the same way once
+those slices land. A unit test exercises the shape on a synthetic SDK (managers/
+operations/traceability pass, serialization excluded, the rest pending); the
+real-spec numbers above are produced by the CLI.
