@@ -28,6 +28,16 @@ jobs:
         # Pinned so the `tsc --noEmit` gate can't drift with the npm `latest`
         # tag. TypeScript 7 is the native (Go-ported) compiler.
         run: npm install -g typescript@7.0.2
+      - uses: actions/setup-java@v4
+        with:
+          # The Java backend's VR-1.6 gate (`javac -Xlint:all -Werror`) runs
+          # inside `cargo test --workspace`, pinned to the ship target — Java 26
+          # (Corretto, the `*-amzn` distribution). The model layer uses only
+          # stable language features, so it also compiles on the JDK 21 LTS
+          # floor; later slices' Java-26-only features (HTTP/3, PEM, structured
+          # concurrency, …) make 26 mandatory.
+          distribution: corretto
+          java-version: '26'
       - uses: actions/cache@v4
         with:
           path: |

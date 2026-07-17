@@ -43,12 +43,13 @@ enum Command {
         #[arg(required = true, value_name = "SPEC")]
         specs: Vec<PathBuf>,
         /// Target language(s) (manifest key). `go` is complete; `apex` emits a
-        /// deployable SFDX project; `rust` emits the models + async managers/
-        /// client (M5, in progress). Accepts a comma-separated list or repeated
-        /// flags to build several at once (`--target go,rust`); `all` expands to
-        /// every target. A single target writes into `--out` directly; two or
-        /// more each land in their own `<out>/<target>/` subdirectory.
-        #[arg(long, required = true, value_parser = ["go", "apex", "rust", "typescript", "all"], value_delimiter = ',')]
+        /// deployable SFDX project; `rust` and `typescript` are feature-complete
+        /// SDKs; `java` emits the model layer (M7, in progress). Accepts a
+        /// comma-separated list or repeated flags to build several at once
+        /// (`--target go,rust`); `all` expands to every target. A single target
+        /// writes into `--out` directly; two or more each land in their own
+        /// `<out>/<target>/` subdirectory.
+        #[arg(long, required = true, value_parser = ["go", "apex", "rust", "typescript", "java", "all"], value_delimiter = ',')]
         target: Vec<String>,
         /// Output directory (created if missing). With more than one target,
         /// each SDK lands in a `<out>/<target>/` subdirectory.
@@ -259,7 +260,7 @@ fn generate_files(
 }
 
 /// Every target `all` expands to, in output order.
-const ALL_TARGETS: &[&str] = &["go", "apex", "rust", "typescript"];
+const ALL_TARGETS: &[&str] = &["go", "apex", "rust", "typescript", "java"];
 
 fn generate(specs: &[PathBuf], targets: &[String], out: &Path) -> ExitCode {
     let resolved = resolve_targets(targets);
@@ -319,6 +320,10 @@ fn generate_one(specs: &[PathBuf], target: &str, out: &Path) -> ExitCode {
             Err(code) => return code,
         },
         "typescript" => match generate_typescript(specs) {
+            Ok(files) => files,
+            Err(code) => return code,
+        },
+        "java" => match generate_java(specs) {
             Ok(files) => files,
             Err(code) => return code,
         },
@@ -431,6 +436,42 @@ fn generate_typescript(specs: &[PathBuf]) -> Result<Vec<(String, String)>, ExitC
         .into_iter()
         .map(|f| (f.path, f.content))
         .collect()),
+        Err(errors) => {
+            let engine_bug = errors.iter().any(gantry_sema::SemaError::is_engine_bug);
+            for error in &errors {
+                eprintln!("error: {error}");
+            }
+            Err(ExitCode::from(if engine_bug {
+                exit_codes::ENGINE_BUG
+            } else {
+                exit_codes::SPEC_ERROR
+            }))
+        }
+    }
+}
+
+/// Load → lower → analyze → Java-generate. The Java backend consumes the
+/// `java()` manifest; no toolchain runs here — the VR-1.6 gate (`javac
+/// -Xlint:all -Werror`) runs in the backend's `compile_output` test.
+fn generate_java(specs: &[PathBuf]) -> Result<Vec<(String, String)>, ExitCode> {
+    let set = gantry_spec::SpecSet::load(specs).map_err(|err| {
+        eprintln!("error: {err}");
+        ExitCode::from(exit_codes::SPEC_ERROR)
+    })?;
+    let build = gantry_backend_java::BuildInfo::new(set.fingerprint());
+    let lowering = gantry_spec::lower(&set).map_err(|err| {
+        eprintln!("error: {err}");
+        ExitCode::from(exit_codes::SPEC_ERROR)
+    })?;
+    match gantry_sema::analyze(&lowering.program) {
+        Ok(analysis) => {
+            Ok(
+                gantry_backend_java::generate(&analysis, &gantry_manifest::java(), &build)
+                    .into_iter()
+                    .map(|f| (f.path, f.content))
+                    .collect(),
+            )
+        }
         Err(errors) => {
             let engine_bug = errors.iter().any(gantry_sema::SemaError::is_engine_bug);
             for error in &errors {
