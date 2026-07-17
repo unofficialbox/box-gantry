@@ -240,17 +240,20 @@ fn generation_is_deterministic() {
 /// round-trip suite. CI runs this gate.
 #[test]
 fn the_generated_tests_pass_under_node() {
-    // `node --test` type-strips `.ts` in place only from Node 22.18 / 23.6; on
-    // older Node it fails confusingly, so skip with a clear message instead.
-    let Ok(out) = Command::new("node").arg("--version").output() else {
-        eprintln!("SKIPPED: node not available; CI runs this gate");
+    if !require_tools(&["node"], "VR-4 node --test gate") {
         return;
-    };
+    }
+    // `node --test` type-strips `.ts` in place only from Node 22.18 / 23.6; on
+    // older Node it fails confusingly. A too-old Node in CI is a misconfigured
+    // runner (fail), not a reason to silently pass; skip only for local runs.
+    let out = Command::new("node").arg("--version").output().unwrap();
     let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if !node_strips_types(&version) {
-        eprintln!(
-            "SKIPPED: node {version} < 22.18 lacks default TS type-stripping; CI uses node 22"
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "VR-4 node --test gate: node {version} < 22.18 in CI (needs default TS type-stripping)"
         );
+        eprintln!("SKIPPED locally: node {version} < 22.18 lacks default TS type-stripping");
         return;
     }
     let dir = std::env::temp_dir().join(format!("gantry-ts-nodetest-{}", std::process::id()));
@@ -291,8 +294,7 @@ fn node_strips_types(version: &str) -> bool {
 /// TypeScript 7 native compiler (`tsc --noEmit`). CI runs this gate.
 #[test]
 fn the_real_spec_models_type_check() {
-    if Command::new("tsc").arg("--version").output().is_err() {
-        eprintln!("SKIPPED: tsc not available; CI runs this gate");
+    if !require_tools(&["tsc"], "VR-1.5 tsc gate") {
         return;
     }
     let dir = std::env::temp_dir().join(format!("gantry-ts-models-{}", std::process::id()));
@@ -318,8 +320,7 @@ fn the_real_spec_models_type_check() {
 /// exports the contract's names with matching signatures.
 #[test]
 fn the_generated_sdk_compiles_against_the_real_runtime() {
-    if Command::new("tsc").arg("--version").output().is_err() {
-        eprintln!("SKIPPED: tsc not available; CI runs this gate");
+    if !require_tools(&["tsc"], "FR-5.2 runtime-swap gate") {
         return;
     }
     let dir = std::env::temp_dir().join(format!("gantry-ts-runtime-{}", std::process::id()));
@@ -383,11 +384,7 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
 /// hazard check). Needs tsc + npm + node; skips cleanly otherwise. CI runs this.
 #[test]
 fn the_generated_sdk_packs_and_loads_dual_format() {
-    if Command::new("tsc").arg("--version").output().is_err()
-        || Command::new("npm").arg("--version").output().is_err()
-        || Command::new("node").arg("--version").output().is_err()
-    {
-        eprintln!("SKIPPED: tsc/npm/node not all available; CI runs this gate");
+    if !require_tools(&["tsc", "npm", "node"], "NF-8 pack gate") {
         return;
     }
     let dir = std::env::temp_dir().join(format!("gantry-ts-pack-{}", std::process::id()));
@@ -499,7 +496,7 @@ fn the_generated_sdk_packs_and_loads_dual_format() {
         "import { Client, runtime, buildinfo } from 'box-sdk';\n\
          import { jwtAuth } from 'box-sdk/jwt';\n\
          const c = new Client(runtime.developerToken('dev'));\n\
-         if (Object.keys(c).length === 0) throw new Error('no managers wired');\n\
+         if (typeof c.files !== 'object' || typeof c.folders !== 'object' || Object.keys(c).length < 85) throw new Error('managers not wired');\n\
          if (typeof buildinfo.ENGINE !== 'string') throw new Error('no provenance');\n\
          if (typeof jwtAuth !== 'function') throw new Error('no jwt export');\n",
     )
@@ -509,7 +506,7 @@ fn the_generated_sdk_packs_and_loads_dual_format() {
         "const { Client, runtime, buildinfo } = require('box-sdk');\n\
          const { jwtAuth } = require('box-sdk/jwt');\n\
          const c = new Client(runtime.developerToken('dev'));\n\
-         if (Object.keys(c).length === 0) throw new Error('no managers wired');\n\
+         if (typeof c.files !== 'object' || typeof c.folders !== 'object' || Object.keys(c).length < 85) throw new Error('managers not wired');\n\
          if (typeof buildinfo.ENGINE !== 'string') throw new Error('no provenance');\n\
          if (typeof jwtAuth !== 'function') throw new Error('no jwt export');\n",
     )
@@ -525,6 +522,27 @@ fn the_generated_sdk_packs_and_loads_dual_format() {
 
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&consumer);
+}
+
+/// Ensure the named tools are on `PATH` for a release gate. Returns `true` when
+/// all are present. When any is missing: **panic in CI** — a release gate must
+/// never silently pass on a misconfigured runner — or print a skip note and
+/// return `false` for a local run (detected via the standard `CI` env var).
+fn require_tools(tools: &[&str], gate: &str) -> bool {
+    let missing: Vec<&str> = tools
+        .iter()
+        .copied()
+        .filter(|tool| Command::new(tool).arg("--version").output().is_err())
+        .collect();
+    if missing.is_empty() {
+        return true;
+    }
+    assert!(
+        std::env::var_os("CI").is_none(),
+        "{gate}: required tooling missing in CI: {missing:?}"
+    );
+    eprintln!("SKIPPED locally ({gate}): missing {missing:?}");
+    false
 }
 
 /// Run a command, asserting success with its captured output on failure.
