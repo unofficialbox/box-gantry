@@ -299,53 +299,110 @@ impl Printer<'_> {
     /// A struct lowers to an immutable `record` (the D-164 fit). Each field is a
     /// record component; the tri-state (D-110) picks the component's type shape.
     /// A struct that is a discriminated-union variant `implements` the union's
-    /// sealed interface(s) (all in the same package, so no import).
+    /// sealed interface(s) (all in the same package, so no import). The body
+    /// carries the JSON codec (`toJson`/`fromJson`, D-172).
     fn struct_decl(&mut self, name: &str, id: ir::DeclId, s: &ir::StructDecl) -> String {
         let implements = match self.implemented.get(&id) {
             Some(interfaces) => format!(" implements {}", interfaces.join(", ")),
             None => String::new(),
         };
-        if s.fields.is_empty() {
-            return format!("public record {name}(){implements} {{}}\n");
-        }
         // Distinct source names can normalize to the same Java identifier
         // (`displayName` and `display_name` both → `displayName`); a per-record
-        // allocator keeps them distinct so the code compiles.
+        // allocator keeps them distinct so the accessors, constructor, and codec
+        // all agree. Allocated once here, then reused everywhere below.
         let mut used: Vec<String> = Vec::new();
-        let components: Vec<String> = s
+        let fields: Vec<(String, &ir::Field)> = s
             .fields
             .iter()
             .map(|field| {
-                let ident = dedupe(&mut used, component_ident(field.name.as_str()));
-                let ty = self.component_type(&field.ty);
-                format!("{ty} {ident}")
+                (
+                    dedupe(&mut used, component_ident(field.name.as_str())),
+                    field,
+                )
             })
             .collect();
 
+        let header = self.struct_header(name, &fields, &implements);
+        let body = self.struct_codec(name, &fields);
+        format!("{header} {{\n{body}}}\n")
+    }
+
+    /// The `public record Name(components)implements` declaration line(s), up to
+    /// (but not including) the opening brace — wrapping the components onto
+    /// continuation lines when the single-line form would overflow.
+    fn struct_header(
+        &mut self,
+        name: &str,
+        fields: &[(String, &ir::Field)],
+        implements: &str,
+    ) -> String {
+        let components: Vec<String> = fields
+            .iter()
+            .map(|(ident, field)| format!("{} {ident}", self.component_type(&field.ty)))
+            .collect();
         let single = format!(
-            "public record {name}({}){implements} {{}}",
+            "public record {name}({}){implements}",
             components.join(", ")
         );
         if single.len() <= MAX_WIDTH {
-            return format!("{single}\n");
+            return single;
         }
         let mut out = format!("public record {name}(\n");
         for (i, component) in components.iter().enumerate() {
             let last = i + 1 == components.len();
             let tail = if last {
-                format!("){implements} {{}}")
+                format!("){implements}")
             } else {
                 ",".to_string()
             };
             let _ = writeln!(out, "    {component}{tail}");
         }
+        // Trim the trailing newline: the caller appends ` {`.
+        out.pop();
+        out
+    }
+
+    /// The struct's JSON codec (D-172): `toJson` builds an ordered field map
+    /// (the tri-state omits an absent field, writes an explicit `null`, or
+    /// writes the value — D-110); `fromJson` reconstructs from the parsed tree.
+    fn struct_codec(&mut self, name: &str, fields: &[(String, &ir::Field)]) -> String {
+        let mut out = String::new();
+        out.push_str("    public java.util.Map<String, Object> toJson() {\n");
+        out.push_str(
+            "        java.util.Map<String, Object> _m = new java.util.LinkedHashMap<>();\n",
+        );
+        for (ident, field) in fields {
+            for line in self.encode_field(ident, field) {
+                let _ = writeln!(out, "        {line}");
+            }
+        }
+        out.push_str("        return _m;\n");
+        out.push_str("    }\n\n");
+
+        let _ = writeln!(out, "    public static {name} fromJson(Object _json) {{");
+        if fields.is_empty() {
+            let _ = writeln!(out, "        return new {name}();");
+        } else {
+            out.push_str(
+                "        java.util.Map<String, Object> _m = com.box.sdk.core.Json.asObject(_json);\n",
+            );
+            let _ = writeln!(out, "        return new {name}(");
+            for (i, (_ident, field)) in fields.iter().enumerate() {
+                let last = i + 1 == fields.len();
+                let tail = if last { "" } else { "," };
+                let expr = self.decode_field(field);
+                let _ = writeln!(out, "            {expr}{tail}");
+            }
+            out.push_str("        );\n");
+        }
+        out.push_str("    }\n");
         out
     }
 
     /// Open enums (Box's extensible enums, D-012) lower to a `record` over the
     /// raw `String` with the known values as constants — any unknown value
     /// round-trips untouched. Closed enums lower to a real `enum` that carries
-    /// each value's wire spelling for the (later) serialization slice.
+    /// each value's wire spelling, so serialization (D-172) dispatches on it.
     fn enum_decl(&mut self, name: &str, e: &ir::EnumDecl) -> String {
         match e.extensibility {
             ir::Extensibility::Open => self.open_enum(name, e),
@@ -353,10 +410,10 @@ impl Printer<'_> {
         }
     }
 
+    /// An open enum is transparent over its raw `String`, so its codec (D-172)
+    /// is identity: `toJson` yields the value, `fromJson` wraps whatever came in
+    /// (an unknown value round-trips untouched — the D-012 guarantee).
     fn open_enum(&self, name: &str, e: &ir::EnumDecl) -> String {
-        if e.values.is_empty() {
-            return format!("public record {name}(String value) {{}}\n");
-        }
         let mut out = format!("public record {name}(String value) {{\n");
         // Values that differ only in case (`ASC` vs `asc`) collapse to the same
         // SCREAMING_SNAKE_CASE constant; disambiguate so both keep a constant.
@@ -369,24 +426,37 @@ impl Printer<'_> {
                 java_string(value)
             );
         }
-        out.push_str("}\n");
+        if !e.values.is_empty() {
+            out.push('\n');
+        }
+        out.push_str("    public String toJson() {\n        return value;\n    }\n\n");
+        let _ = writeln!(out, "    public static {name} fromJson(Object _json) {{");
+        let _ = writeln!(
+            out,
+            "        return new {name}(com.box.sdk.core.Json.asString(_json));"
+        );
+        out.push_str("    }\n}\n");
         out
     }
 
+    /// A closed enum is a real `enum` carrying each value's wire spelling; its
+    /// codec (D-172) maps to/from that spelling and **rejects** an unrecognized
+    /// value (the closed-vs-open contract, mirroring Rust/TS).
     fn closed_enum(&self, name: &str, e: &ir::EnumDecl) -> String {
-        if e.values.is_empty() {
-            return format!("public enum {name} {{}}\n");
-        }
         let mut out = format!("public enum {name} {{\n");
         // Distinct values can normalize to the same constant identifier
         // (`foo-bar` and `foo_bar`); keep them apart. Each carries its exact
-        // wire spelling, so dispatch stays correct once serialization lands.
+        // wire spelling, so the codec dispatch stays correct.
         let mut used: Vec<String> = Vec::new();
         let constants: Vec<(String, &String)> = e
             .values
             .iter()
             .map(|value| (dedupe(&mut used, constant_ident(value)), value))
             .collect();
+        // An empty enum still needs the leading `;` before its members.
+        if constants.is_empty() {
+            out.push_str("    ;\n");
+        }
         for (i, (const_name, value)) in constants.iter().enumerate() {
             let last = i + 1 == constants.len();
             let tail = if last { ";" } else { "," };
@@ -397,6 +467,19 @@ impl Printer<'_> {
         out.push_str("    public final String wireValue;\n\n");
         let _ = writeln!(out, "    {name}(String wireValue) {{");
         out.push_str("        this.wireValue = wireValue;\n");
+        out.push_str("    }\n\n");
+        out.push_str("    public String toJson() {\n        return wireValue;\n    }\n\n");
+        let _ = writeln!(out, "    public static {name} fromJson(Object _json) {{");
+        out.push_str("        String _w = com.box.sdk.core.Json.asString(_json);\n");
+        let _ = writeln!(out, "        for ({name} _v : values()) {{");
+        out.push_str("            if (_v.wireValue.equals(_w)) {\n");
+        out.push_str("                return _v;\n");
+        out.push_str("            }\n");
+        out.push_str("        }\n");
+        let _ = writeln!(
+            out,
+            "        throw new IllegalArgumentException(\"unknown {name} wire value: \" + _w);"
+        );
         out.push_str("    }\n}\n");
         out
     }
@@ -406,12 +489,35 @@ impl Printer<'_> {
     /// records — Java's natural `oneOf` shape (D-164), mirroring Rust's typed
     /// unions (D-148). Anything else stays a structural `record(Object value)`
     /// newtype (no discriminator, a non-decl variant, or a cross-package one).
-    fn union_decl(&self, name: &str, id: ir::DeclId, _u: &ir::UnionDecl) -> String {
+    /// Either way it carries the JSON codec (D-172): the typed form dispatches
+    /// `fromJson` by pattern-matching `switch` on the discriminator; the
+    /// structural form is a transparent pass-through of the raw value.
+    fn union_decl(&mut self, name: &str, id: ir::DeclId, u: &ir::UnionDecl) -> String {
         match self.union_plans.get(&id) {
-            Some(UnionPlan::Typed { permits, open }) => sealed_union(name, permits, *open),
-            Some(UnionPlan::Structural) | None => {
-                format!("public record {name}(Object value) {{}}\n")
+            Some(UnionPlan::Typed { permits, open }) => {
+                let permits = permits.clone();
+                let open = *open;
+                let discriminator = u
+                    .discriminator
+                    .clone()
+                    .expect("a typed union has a discriminator");
+                // (discriminator value → variant type name) dispatch arms, in
+                // program order, deduped on the tag so no two `case` labels
+                // collide. Every variant qualifies (that's what Typed means), so
+                // each is a same-package struct referenced by its short name.
+                let mut seen = BTreeSet::new();
+                let mut arms: Vec<(String, String)> = Vec::new();
+                for variant in &u.variants {
+                    if let (Some(tag), ir::Type::Decl(vid)) =
+                        (&variant.discriminator_value, &variant.ty)
+                        && seen.insert(tag.clone())
+                    {
+                        arms.push((tag.clone(), self.names[vid].clone()));
+                    }
+                }
+                sealed_union(name, &permits, open, &discriminator, &arms)
             }
+            Some(UnionPlan::Structural) | None => structural_union(name),
         }
     }
 
@@ -531,6 +637,219 @@ impl Printer<'_> {
             }
         }
     }
+
+    // --- JSON codec (D-172) -------------------------------------------------
+    //
+    // The serialization method bodies reference runtime helpers by fully
+    // qualified name (`com.box.sdk.core.Json`, `java.util.*`, `java.time.*`),
+    // so they never perturb the file's import set — the only imports are the
+    // ones the component *types* already pull in. Encode/decode arms are
+    // enumerated over `ir::Type`, never wildcarded, so a new IR type breaks the
+    // codec at compile time rather than silently mis-serializing (NF-1).
+
+    /// Resolve a top-level alias chain to the type it stands for. Java has no
+    /// type alias, so a field typed as an alias serializes as its target.
+    fn resolve_alias(&self, ty: &ir::Type) -> ir::Type {
+        if let ir::Type::Decl(id) = ty
+            && let ir::DeclKind::Alias(target) = &self.program.decl(*id).kind
+        {
+            return self.resolve_alias(&target.clone());
+        }
+        ty.clone()
+    }
+
+    /// Encode statement(s) that put one field into the `_m` map. The tri-state
+    /// (D-110) is the reason this is statements, not one expression: an absent
+    /// field is *omitted*, an explicit null writes `null`, a value writes the
+    /// value — Box's clear-on-update semantics.
+    fn encode_field(&mut self, ident: &str, field: &ir::Field) -> Vec<String> {
+        let wire = java_string(&field.wire_name);
+        let acc = format!("{ident}()");
+        // Optional<Nullable<T>> is the tri-state; Optional<T> a plain optional;
+        // Nullable<T> a bare nullable reference. Everything else encodes bare.
+        // (`if let` chains, not a `match`, so no wildcard over `ir::Type`.)
+        let ty = self.resolve_alias(&field.ty);
+        if let ir::Type::Optional(inner) = &ty {
+            if let ir::Type::Nullable(n) = &**inner {
+                // Tri-state: omit (absent) / explicit null / value.
+                let enc = self.encode_bare(n, &format!("{acc}.value()"), 0);
+                vec![
+                    format!("if ({acc}.isPresent()) {{ _m.put({wire}, {enc}); }}"),
+                    format!("else if ({acc}.isNull()) {{ _m.put({wire}, null); }}"),
+                ]
+            } else {
+                // A plain optional: present writes the value, absent omits.
+                let enc = self.encode_bare(inner, "_v", 0);
+                vec![format!("{acc}.ifPresent(_v -> _m.put({wire}, {enc}));")]
+            }
+        } else if let ir::Type::Nullable(inner) = &ty {
+            // A bare nullable reference writes its value or an explicit `null`.
+            let enc = self.encode_bare(inner, &acc, 0);
+            vec![format!("_m.put({wire}, {enc});")]
+        } else {
+            let enc = self.encode_bare(&ty, &acc, 0);
+            vec![format!("_m.put({wire}, {enc});")]
+        }
+    }
+
+    /// A constructor-argument expression that decodes one field from the parsed
+    /// `_m` map — the mirror of `encode_field`. The tri-state distinguishes a
+    /// missing key (absent) from a present `null` (`ofNull`).
+    fn decode_field(&mut self, field: &ir::Field) -> String {
+        let wire = java_string(&field.wire_name);
+        let get = format!("_m.get({wire})");
+        let has = format!("_m.containsKey({wire})");
+        let ty = self.resolve_alias(&field.ty);
+        if let ir::Type::Optional(inner) = &ty {
+            if let ir::Type::Nullable(n) = &**inner {
+                // Tri-state: missing key → absent, present null → ofNull.
+                let bare = self.bare(n);
+                let dec = self.decode_bare(n, &get, 0);
+                format!(
+                    "!{has} ? com.box.sdk.core.Tristate.<{bare}>absent() \
+                     : ({get} == null ? com.box.sdk.core.Tristate.<{bare}>ofNull() \
+                     : com.box.sdk.core.Tristate.of({dec}))"
+                )
+            } else {
+                let bare = self.bare(inner);
+                let dec = self.decode_bare(inner, &get, 0);
+                format!(
+                    "(!{has} || {get} == null) ? java.util.Optional.<{bare}>empty() \
+                     : java.util.Optional.of({dec})"
+                )
+            }
+        } else if let ir::Type::Nullable(inner) = &ty {
+            let dec = self.decode_bare(inner, &get, 0);
+            format!("{get} == null ? null : {dec}")
+        } else {
+            self.decode_bare(&ty, &get, 0)
+        }
+    }
+
+    /// Encode a bare (post-optionality) value to a JSON-tree `Object`. Types
+    /// already representable in the tree (scalars, `JsonValue`, and containers
+    /// of them) pass straight through; everything else is transformed, guarding
+    /// `null` so a nullable element or field never dereferences.
+    fn encode_bare(&mut self, ty: &ir::Type, expr: &str, depth: usize) -> String {
+        if self.is_json_writable(ty) {
+            return expr.to_string();
+        }
+        match ty {
+            ir::Type::Date | ir::Type::DateTime => {
+                format!("({expr} == null ? null : {expr}.toString())")
+            }
+            ir::Type::Binary => {
+                format!(
+                    "({expr} == null ? null : java.util.Base64.getEncoder().encodeToString({expr}))"
+                )
+            }
+            ir::Type::List(inner) => {
+                let v = format!("_x{depth}");
+                let enc = self.encode_bare(inner, &v, depth + 1);
+                format!("com.box.sdk.core.Json.encodeList({expr}, {v} -> {enc})")
+            }
+            ir::Type::Map(inner) => {
+                let v = format!("_x{depth}");
+                let enc = self.encode_bare(inner, &v, depth + 1);
+                format!("com.box.sdk.core.Json.encodeMap({expr}, {v} -> {enc})")
+            }
+            // In-container optionality collapses to a nullable element (`bare`).
+            ir::Type::Nullable(inner) | ir::Type::Optional(inner) => {
+                self.encode_bare(inner, expr, depth)
+            }
+            ir::Type::Decl(id) => match &self.program.decl(*id).kind {
+                ir::DeclKind::Alias(target) => {
+                    let target = target.clone();
+                    self.encode_bare(&target, expr, depth)
+                }
+                // A struct / enum / union carries its own `toJson`.
+                ir::DeclKind::Struct(_) | ir::DeclKind::Union(_) | ir::DeclKind::Enum(_) => {
+                    format!("({expr} == null ? null : {expr}.toJson())")
+                }
+            },
+            // Directly writable — handled by the `is_json_writable` shortcut.
+            ir::Type::Bool
+            | ir::Type::Int64
+            | ir::Type::Float64
+            | ir::Type::String
+            | ir::Type::JsonValue => expr.to_string(),
+        }
+    }
+
+    /// Decode a bare value from a JSON-tree `Object` `expr` — the mirror of
+    /// `encode_bare`, producing a value of the `bare` Java type. `null` guards
+    /// keep a nullable element or absent field from dereferencing.
+    fn decode_bare(&mut self, ty: &ir::Type, expr: &str, depth: usize) -> String {
+        match ty {
+            ir::Type::Bool => format!("com.box.sdk.core.Json.asBoolean({expr})"),
+            ir::Type::Int64 => format!("com.box.sdk.core.Json.asLong({expr})"),
+            ir::Type::Float64 => format!("com.box.sdk.core.Json.asDouble({expr})"),
+            ir::Type::String => format!("com.box.sdk.core.Json.asString({expr})"),
+            // Free-form JSON is the parsed tree itself.
+            ir::Type::JsonValue => expr.to_string(),
+            ir::Type::Date => {
+                format!(
+                    "({expr} == null ? null : java.time.LocalDate.parse(com.box.sdk.core.Json.asString({expr})))"
+                )
+            }
+            ir::Type::DateTime => {
+                format!(
+                    "({expr} == null ? null : java.time.OffsetDateTime.parse(com.box.sdk.core.Json.asString({expr})))"
+                )
+            }
+            ir::Type::Binary => {
+                format!(
+                    "({expr} == null ? null : java.util.Base64.getDecoder().decode(com.box.sdk.core.Json.asString({expr})))"
+                )
+            }
+            ir::Type::List(inner) => {
+                let v = format!("_x{depth}");
+                let dec = self.decode_bare(inner, &v, depth + 1);
+                format!("com.box.sdk.core.Json.decodeList({expr}, {v} -> {dec})")
+            }
+            ir::Type::Map(inner) => {
+                let v = format!("_x{depth}");
+                let dec = self.decode_bare(inner, &v, depth + 1);
+                format!("com.box.sdk.core.Json.decodeMap({expr}, {v} -> {dec})")
+            }
+            ir::Type::Nullable(inner) | ir::Type::Optional(inner) => {
+                self.decode_bare(inner, expr, depth)
+            }
+            ir::Type::Decl(id) => match &self.program.decl(*id).kind {
+                ir::DeclKind::Alias(target) => {
+                    let target = target.clone();
+                    self.decode_bare(&target, expr, depth)
+                }
+                ir::DeclKind::Struct(_) | ir::DeclKind::Union(_) | ir::DeclKind::Enum(_) => {
+                    let ref_name = self.decl_type(*id);
+                    format!("({expr} == null ? null : {ref_name}.fromJson({expr}))")
+                }
+            },
+        }
+    }
+
+    /// Whether a value of this type is already a JSON-tree `Object` (so it can
+    /// be `put` or returned as-is on encode): scalars, free-form JSON, and
+    /// containers whose elements are themselves directly writable. Dates,
+    /// binary, and declaration references need transformation.
+    fn is_json_writable(&self, ty: &ir::Type) -> bool {
+        match ty {
+            ir::Type::Bool
+            | ir::Type::Int64
+            | ir::Type::Float64
+            | ir::Type::String
+            | ir::Type::JsonValue => true,
+            ir::Type::List(inner)
+            | ir::Type::Map(inner)
+            | ir::Type::Nullable(inner)
+            | ir::Type::Optional(inner) => self.is_json_writable(inner),
+            ir::Type::Date | ir::Type::DateTime | ir::Type::Binary => false,
+            ir::Type::Decl(id) => match &self.program.decl(*id).kind {
+                ir::DeclKind::Alias(target) => self.is_json_writable(target),
+                ir::DeclKind::Struct(_) | ir::DeclKind::Union(_) | ir::DeclKind::Enum(_) => false,
+            },
+        }
+    }
 }
 
 /// rustfmt-style soft column budget for keeping a record on one line.
@@ -541,28 +860,87 @@ const MAX_WIDTH: usize = 100;
 /// unrecognized discriminator round-trips (VR-4); a `closed` one omits it and so
 /// rejects unknown tags. The `permits` clause wraps to a continuation line when
 /// the declaration would overflow.
-fn sealed_union(name: &str, permits: &[String], open: bool) -> String {
+///
+/// The body carries the JSON codec (D-172): an `Object toJson()` the variant
+/// records implement (covariantly — a struct's `Map<String, Object> toJson()`
+/// overrides it), and a `static fromJson` that reads the discriminator and
+/// pattern-matches a `switch` to the right variant's `fromJson`. An open union
+/// routes an unrecognized (or absent) tag to `Unknown`; a closed one throws.
+fn sealed_union(
+    name: &str,
+    permits: &[String],
+    open: bool,
+    discriminator: &str,
+    arms: &[(String, String)],
+) -> String {
     let mut all: Vec<String> = permits.to_vec();
     if open {
         all.push(format!("{name}.Unknown"));
     }
     let permits_clause = format!("permits {}", all.join(", "));
-    let body = if open {
-        format!(
-            " {{\n    \
-             /** An unrecognized discriminator, retained verbatim (open union). */\n    \
-             record Unknown(Object value) implements {name} {{}}\n}}\n"
-        )
-    } else {
-        " {}\n".to_string()
-    };
     // One line when it fits (up to the opening brace); otherwise wrap `permits`.
     let head_len = "public sealed interface  {".len() + name.len() + permits_clause.len();
-    if head_len <= MAX_WIDTH {
-        format!("public sealed interface {name} {permits_clause}{body}")
+    let head = if head_len <= MAX_WIDTH {
+        format!("public sealed interface {name} {permits_clause}")
     } else {
-        format!("public sealed interface {name}\n    {permits_clause}{body}")
+        format!("public sealed interface {name}\n    {permits_clause}")
+    };
+
+    let mut out = format!("{head} {{\n");
+    out.push_str("    /** Serialize this variant, discriminator and all. */\n");
+    out.push_str("    Object toJson();\n\n");
+    out.push_str("    /** Dispatch on the discriminator to the matching variant. */\n");
+    let _ = writeln!(out, "    static {name} fromJson(Object _json) {{");
+    out.push_str(
+        "        java.util.Map<String, Object> _m = com.box.sdk.core.Json.asObject(_json);\n",
+    );
+    let _ = writeln!(
+        out,
+        "        String _tag = com.box.sdk.core.Json.asString(_m.get({}));",
+        java_string(discriminator)
+    );
+    out.push_str("        return switch (_tag) {\n");
+    for (tag, variant) in arms {
+        let _ = writeln!(
+            out,
+            "            case {} -> {variant}.fromJson(_json);",
+            java_string(tag)
+        );
     }
+    if open {
+        out.push_str("            case null, default -> new Unknown(_json);\n");
+    } else {
+        let _ = writeln!(
+            out,
+            "            case null, default -> throw new IllegalArgumentException(\
+             \"unknown {name} discriminator: \" + _tag);"
+        );
+    }
+    out.push_str("        };\n");
+    out.push_str("    }\n");
+    if open {
+        out.push('\n');
+        out.push_str("    /** An unrecognized discriminator, retained verbatim (open union). */\n");
+        let _ = writeln!(out, "    record Unknown(Object value) implements {name} {{");
+        out.push_str("        public Object toJson() {\n");
+        out.push_str("            return value;\n");
+        out.push_str("        }\n");
+        out.push_str("    }\n");
+    }
+    out.push_str("}\n");
+    out
+}
+
+/// The structural union fallback: a transparent `record(Object value)` newtype
+/// whose codec (D-172) passes the raw parsed value straight through, so an
+/// arbitrary `oneOf` shape round-trips untouched.
+fn structural_union(name: &str) -> String {
+    let mut out = format!("public record {name}(Object value) {{\n");
+    out.push_str("    public Object toJson() {\n        return value;\n    }\n\n");
+    let _ = writeln!(out, "    public static {name} fromJson(Object _json) {{");
+    let _ = writeln!(out, "        return new {name}(_json);");
+    out.push_str("    }\n}\n");
+    out
 }
 
 /// A Java type name from an IR declaration name: PascalCase, guarded against the
@@ -577,12 +955,16 @@ pub(crate) fn type_name(name: &str) -> String {
     }
 }
 
-/// A record-component identifier: camelCase, guarded against Java keywords and
+/// A record-component identifier: camelCase, guarded against Java keywords,
 /// `Object`'s method names (a component generates an accessor of that name, so
-/// `hashCode`/`toString`/… would clash with the record's own members).
+/// `hashCode`/`toString`/… would clash with the record's own members), and the
+/// `toJson`/`fromJson` codec members this backend adds to every model type.
 fn component_ident(name: &str) -> String {
     let base = sanitize_ident(&camel(name));
-    if JAVA_KEYWORDS.contains(&base.as_str()) || OBJECT_METHODS.contains(&base.as_str()) {
+    if JAVA_KEYWORDS.contains(&base.as_str())
+        || OBJECT_METHODS.contains(&base.as_str())
+        || CODEC_METHODS.contains(&base.as_str())
+    {
         format!("{base}_")
     } else {
         base
@@ -713,6 +1095,10 @@ const RESERVED_TYPES: &[&str] = &[
     "OffsetDateTime",
     "Tristate",
 ];
+
+/// The serialization members this backend adds to every model type (D-172); a
+/// record component of the same name would clash with its accessor.
+const CODEC_METHODS: &[&str] = &["toJson", "fromJson"];
 
 /// `Object`'s public/protected method names — unusable as record components
 /// (the component accessor would clash with the inherited method).
@@ -910,7 +1296,14 @@ mod tests {
             "Empty",
         );
         let out = render(&p, s);
-        assert!(out.contains("public record Empty() {}"), "{out}");
+        assert!(out.contains("public record Empty() {"), "{out}");
+        // An empty record still carries the codec: an empty map out, a bare
+        // constructor back (D-172).
+        assert!(
+            out.contains("public java.util.Map<String, Object> toJson()"),
+            "{out}"
+        );
+        assert!(out.contains("return new Empty();"), "{out}");
     }
 
     #[test]
@@ -1001,7 +1394,10 @@ mod tests {
             "Pet",
         );
         let out = render(&p, u);
-        assert!(out.contains("public record Pet(Object value) {}"), "{out}");
+        assert!(out.contains("public record Pet(Object value) {"), "{out}");
+        // The structural fallback's codec passes the raw value straight through.
+        assert!(out.contains("public Object toJson() {"), "{out}");
+        assert!(out.contains("return new Pet(_json);"), "{out}");
     }
 
     /// `Dog`/`Cat` structs (both carrying the `kind` discriminator) + a union
@@ -1060,7 +1456,21 @@ mod tests {
             "{iface}"
         );
         assert!(
-            iface.contains("record Unknown(Object value) implements Pet {}"),
+            iface.contains("record Unknown(Object value) implements Pet {"),
+            "{iface}"
+        );
+        // The codec (D-172) reads the discriminator and dispatches; an
+        // unrecognized (or absent) tag routes to Unknown so it round-trips.
+        assert!(
+            iface.contains("String _tag = com.box.sdk.core.Json.asString(_m.get(\"kind\"));"),
+            "{iface}"
+        );
+        assert!(
+            iface.contains("case \"dog\" -> Dog.fromJson(_json);"),
+            "{iface}"
+        );
+        assert!(
+            iface.contains("case null, default -> new Unknown(_json);"),
             "{iface}"
         );
         // The variant record implements the interface (same package, no import).
@@ -1073,10 +1483,15 @@ mod tests {
         let (p, _dog, pet) = union_program(Extensibility::Closed);
         let iface = render(&p, pet);
         assert!(
-            iface.contains("public sealed interface Pet permits Dog, Cat {}"),
+            iface.contains("public sealed interface Pet permits Dog, Cat {"),
             "{iface}"
         );
         assert!(!iface.contains("Unknown"), "{iface}");
+        // A closed union rejects an unrecognized tag rather than retaining it.
+        assert!(
+            iface.contains("case null, default -> throw new IllegalArgumentException("),
+            "{iface}"
+        );
     }
 
     #[test]
@@ -1119,7 +1534,8 @@ mod tests {
             "Pet",
         );
         let out = render(&p, pet);
-        assert!(out.contains("public record Pet(Object value) {}"), "{out}");
+        assert!(out.contains("public record Pet(Object value) {"), "{out}");
+        assert!(out.contains("return new Pet(_json);"), "{out}");
         let fish_out = render(&p, fish);
         assert!(!fish_out.contains("implements"), "{fish_out}");
     }
@@ -1257,6 +1673,161 @@ mod tests {
         let out = render(&p, s);
         assert!(out.contains("DisplayName first"), "{out}");
         assert!(out.contains("DisplayName_2 second"), "{out}");
+    }
+
+    #[test]
+    fn struct_codec_encodes_tri_state_and_optional() {
+        let mut p = ir::Program::default();
+        let s = add(
+            &mut p,
+            DeclKind::Struct(StructDecl {
+                fields: vec![
+                    Field {
+                        name: ident("id"),
+                        wire_name: "id".into(),
+                        ty: Type::String,
+                    },
+                    Field {
+                        name: ident("displayName"),
+                        wire_name: "display_name".into(),
+                        ty: Type::Optional(Box::new(Type::String)),
+                    },
+                    Field {
+                        name: ident("size"),
+                        wire_name: "size".into(),
+                        ty: Type::Optional(Box::new(Type::Nullable(Box::new(Type::Int64)))),
+                    },
+                ],
+            }),
+            "Widget",
+        );
+        let out = render(&p, s);
+        // Required field: put straight through; read via a typed coercion.
+        assert!(out.contains(r#"_m.put("id", id());"#), "{out}");
+        assert!(
+            out.contains(r#"com.box.sdk.core.Json.asString(_m.get("id"))"#),
+            "{out}"
+        );
+        // Optional: present writes the value (under its *wire* name), absent
+        // omits; decode maps a missing/null key to empty.
+        assert!(
+            out.contains(r#"displayName().ifPresent(_v -> _m.put("display_name", _v));"#),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"java.util.Optional.<String>empty()"#),
+            "{out}"
+        );
+        // Tri-state (D-110): omit / explicit null / value on encode; the three
+        // states reconstructed on decode.
+        assert!(
+            out.contains(r#"if (size().isPresent()) { _m.put("size", size().value()); }"#),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"else if (size().isNull()) { _m.put("size", null); }"#),
+            "{out}"
+        );
+        assert!(
+            out.contains("com.box.sdk.core.Tristate.<Long>absent()"),
+            "{out}"
+        );
+        assert!(
+            out.contains("com.box.sdk.core.Tristate.<Long>ofNull()"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn struct_codec_maps_lists_and_nested_decls() {
+        let mut p = ir::Program::default();
+        let owner = add(
+            &mut p,
+            DeclKind::Struct(StructDecl { fields: vec![] }),
+            "Owner",
+        );
+        let s = add(
+            &mut p,
+            DeclKind::Struct(StructDecl {
+                fields: vec![
+                    Field {
+                        name: ident("tags"),
+                        wire_name: "tags".into(),
+                        ty: Type::List(Box::new(Type::String)),
+                    },
+                    Field {
+                        name: ident("owner"),
+                        wire_name: "owner".into(),
+                        ty: Type::Decl(owner),
+                    },
+                ],
+            }),
+            "Widget",
+        );
+        let out = render(&p, s);
+        // A list of directly-writable elements is `put` as-is; decoded via the
+        // typed helper so no unchecked cast leaks.
+        assert!(out.contains(r#"_m.put("tags", tags());"#), "{out}");
+        assert!(
+            out.contains(r#"com.box.sdk.core.Json.decodeList(_m.get("tags"), _x0 -> com.box.sdk.core.Json.asString(_x0))"#),
+            "{out}"
+        );
+        // A nested declaration delegates to its own codec, null-guarded.
+        assert!(
+            out.contains(r#"_m.put("owner", (owner() == null ? null : owner().toJson()));"#),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"(_m.get("owner") == null ? null : Owner.fromJson(_m.get("owner")))"#),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn enum_codecs_round_trip_wire_values() {
+        let mut p = ir::Program::default();
+        let open = add(
+            &mut p,
+            DeclKind::Enum(EnumDecl {
+                values: vec!["asc".into()],
+                extensibility: Extensibility::Open,
+            }),
+            "Direction",
+        );
+        let closed = add(
+            &mut p,
+            DeclKind::Enum(EnumDecl {
+                values: vec!["foo".into()],
+                extensibility: Extensibility::Closed,
+            }),
+            "Kind",
+        );
+        // Open enum: transparent over the raw string (unknown round-trips).
+        let open_out = render(&p, open);
+        assert!(
+            open_out.contains("public String toJson() {\n        return value;"),
+            "{open_out}"
+        );
+        assert!(
+            open_out.contains("return new Direction(com.box.sdk.core.Json.asString(_json));"),
+            "{open_out}"
+        );
+        // Closed enum: maps to/from the wire spelling and rejects the unknown.
+        let closed_out = render(&p, closed);
+        assert!(
+            closed_out.contains("public String toJson() {\n        return wireValue;"),
+            "{closed_out}"
+        );
+        assert!(
+            closed_out.contains("if (_v.wireValue.equals(_w)) {"),
+            "{closed_out}"
+        );
+        assert!(
+            closed_out.contains(
+                r#"throw new IllegalArgumentException("unknown Kind wire value: " + _w);"#
+            ),
+            "{closed_out}"
+        );
     }
 
     #[test]
