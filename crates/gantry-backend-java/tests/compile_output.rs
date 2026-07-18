@@ -163,3 +163,79 @@ fn the_generated_model_layer_compiles_under_javac() {
         "javac --release 21 -Xlint:all -Werror failed (VR-1.6):\n{log}"
     );
 }
+
+/// FR-5.2: the generated SDK compiles against the **real** hand-written runtime,
+/// not just the stub — proving the stub and the runtime can't drift. The Java
+/// analogue of the Rust "swap the runtime module and `cargo check`" and the
+/// TypeScript "copy the real runtime source and `tsc`" gates. Because the Java
+/// runtime is one dependency-free file, the swap is a single-file overwrite: the
+/// real `Runtime.java` drops over the generated stub at the same package path,
+/// and a smoke driver builds the `Client` from a real auth factory so the whole
+/// manager/client tree type-checks against the runtime.
+#[test]
+fn the_generated_sdk_compiles_against_the_real_runtime() {
+    if Command::new("javac").arg("-version").output().is_err() {
+        eprintln!("SKIPPED: javac not available; CI installs a JDK and runs this gate");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("gantry-java-swap-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut sources = write_all(&dir, &generate());
+
+    // Swap the generated stub for the real runtime (same package + class name).
+    let real_runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../runtimes/java/gantryruntime/src/main/java/com/box/sdk/runtime/Runtime.java");
+    let stub = dir.join("src/main/java/com/box/sdk/runtime/Runtime.java");
+    assert!(
+        stub.exists(),
+        "the generated stub runtime should exist to be swapped"
+    );
+    std::fs::copy(&real_runtime, &stub).expect("copy the real runtime over the stub");
+
+    // A smoke driver: build the real `Client` from a real auth factory, so the
+    // manager surface type-checks against the runtime (the Rust/TS swap pattern).
+    let smoke = dir.join("Smoke.java");
+    std::fs::write(
+        &smoke,
+        "public final class Smoke {\n\
+         \x20   public static com.box.sdk.Client build() {\n\
+         \x20       return new com.box.sdk.Client(com.box.sdk.runtime.Runtime.developerToken(\"dev\"));\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+    sources.push(smoke);
+
+    let argfile = dir.join("sources.txt");
+    let listing: String = sources
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&argfile, listing).unwrap();
+    let out = dir.join("classes");
+    std::fs::create_dir_all(&out).unwrap();
+
+    let javac = Command::new("javac")
+        .arg("--release")
+        .arg("21")
+        .arg("-Xlint:all")
+        .arg("-Werror")
+        .arg("-d")
+        .arg(&out)
+        .arg(format!("@{}", argfile.display()))
+        .output()
+        .unwrap();
+    let ok = javac.status.success();
+    let log = format!(
+        "{}{}",
+        String::from_utf8_lossy(&javac.stdout),
+        String::from_utf8_lossy(&javac.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        ok,
+        "the generated SDK failed to compile against the real runtime (FR-5.2):\n{log}"
+    );
+}
