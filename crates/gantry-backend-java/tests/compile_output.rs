@@ -75,6 +75,24 @@ fn generation_is_deterministic() {
         once.iter()
             .any(|f| f.path.starts_with("src/main/java/com/box/sdk/model/"))
     );
+    // The manager/client/runtime layer (D-173): the runtime stub, the SDK
+    // entry point, the helper, and at least one manager.
+    assert!(
+        once.iter()
+            .any(|f| f.path == "src/main/java/com/box/sdk/runtime/Runtime.java")
+    );
+    assert!(
+        once.iter()
+            .any(|f| f.path == "src/main/java/com/box/sdk/Client.java")
+    );
+    assert!(
+        once.iter()
+            .any(|f| f.path == "src/main/java/com/box/sdk/internal/Internal.java")
+    );
+    assert!(
+        once.iter()
+            .any(|f| f.path.starts_with("src/main/java/com/box/sdk/managers/"))
+    );
 }
 
 /// VR-1.6: the whole generated model tree compiles `javac -Xlint:all -Werror`
@@ -93,7 +111,23 @@ fn the_generated_model_layer_compiles_under_javac() {
     let dir = std::env::temp_dir().join(format!("gantry-java-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let sources = write_all(&dir, &generate());
+    let mut sources = write_all(&dir, &generate());
+
+    // A smoke driver that constructs the public `Client` from an auth flow, so
+    // the whole manager/client surface (D-173) has to type-check as a callable
+    // API, not just internally. (It is compiled, never run — the stub session
+    // throws at construction.)
+    let smoke = dir.join("Smoke.java");
+    std::fs::write(
+        &smoke,
+        "public final class Smoke {\n\
+         \x20   public static com.box.sdk.Client build(com.box.sdk.runtime.Runtime.Auth auth) {\n\
+         \x20       return new com.box.sdk.Client(auth);\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+    sources.push(smoke);
 
     // Pass the (900+) sources via an argfile so the command never overflows the
     // OS argument limit.
