@@ -3325,3 +3325,50 @@ stays deterministic (FR-6.2).
 **Result.** The Java SDK now paginates every paged operation the Go/Rust/TS
 backends do. Remaining for a shipped v5: reference docs, generated behavioral
 tests, and the NF-8 Maven artifact.
+
+## D-177 — Java backend, slice 8: reference docs (per-manager pages + guides) (FR-7.7)
+
+**Context.** The generated Java SDK shipped code but no docs. This slice ports
+the Rust (D-155) and TypeScript (D-163) docs generators — a `docs/` tree emitted
+from the same IR as the code, so the docs describe the real Java surface
+(camelCased method names, record types, blocking methods that throw
+`BoxApiException`, the `for (var … : …Paginate(…))` idiom) and can't drift from
+it.
+
+**What's generated.** `generate_docs` emits `docs/README.md` (an index linking
+the guides and tabulating every manager with its `Client` field and operation
+count), one `docs/managers/<Class>.md` page per API tag (each operation's HTTP
+line, a parameter table with `In`/`Type`/`Required`, request-body and return
+types, and a note pointing a paged operation at its `…Paginate(...)` variant),
+and the three cross-cutting guides `docs/auth.md`, `docs/pagination.md`,
+`docs/errors.md`. Every file carries the do-not-edit header (FR-6.3) and the
+output is deterministic (FR-6.2). On the real spec: the index, 85 manager pages,
+and the three guides.
+
+**Java-flavored, not Rust/TS-flavored.** The `describe` type-renderer mirrors the
+model layer's mapping — `Boolean`/`Long`/`Double`/`String`, `java.time.LocalDate`,
+`java.time.OffsetDateTime`, `byte[]`, `Object`, `List<T>`, `Map<String, T>`, and
+declarations by their real class name — and `Optional`/`Nullable` both read as
+the underlying type (a Java reference is already nullable). The guides show real
+Java call sites: `new Client(Runtime.developerToken(…))`,
+`Runtime.clientCredentials(Runtime.CcgConfig.enterprise(…))`,
+`Runtime.jwt(Runtime.JwtConfig.fromBoxConfig(…))`,
+`Runtime.oauth(new Runtime.OAuthConfig(…), refreshToken)`; the `for`-each
+paginator idiom; and `catch (Runtime.BoxApiException e)` for the unchecked
+error type — the four Box auth flows the docs must document.
+
+**Shared naming, so docs can't drift.** The method-name allocation the manager
+printer used inline is extracted to a free `method_name` + a `deduped_methods`
+helper that both the printer and the docs generator call — so a `## method`
+heading in the docs is exactly the emitted method name (same dedup, same
+`_v<version>` suffixing). Manager class/field names come from the same
+`plan_managers` the code uses, and the paginate note reuses the `<method>Paginate`
+convention. The docs are Markdown (no `javac` surface), so the VR-1.6 gate is
+unchanged — its `write_all` now writes the docs to disk but hands only the
+`.java` sources to `javac`. A backend test asserts the docs name the real
+class/field/method/type surface and link paginators; generation stays
+deterministic.
+
+**Result.** The generated Java SDK now ships reference docs alongside the code.
+Remaining for a shipped v5: generated behavioral tests and the NF-8 Maven
+artifact.

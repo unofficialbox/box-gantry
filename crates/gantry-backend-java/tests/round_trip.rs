@@ -161,15 +161,19 @@ public final class Main {
 }
 "#;
 
+/// Write every generated file; return only the `.java` sources (reference-doc
+/// Markdown is written too, but must not be handed to `javac`).
 fn write_all(dir: &Path, files: &[gantry_backend_java::GeneratedFile]) -> Vec<PathBuf> {
-    let mut written = Vec::new();
+    let mut sources = Vec::new();
     for file in files {
         let path = dir.join(&file.path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, &file.content).unwrap();
-        written.push(path);
+        if file.path.ends_with(".java") {
+            sources.push(path);
+        }
     }
-    written
+    sources
 }
 
 #[test]

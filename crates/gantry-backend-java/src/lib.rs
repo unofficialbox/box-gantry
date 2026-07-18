@@ -33,9 +33,11 @@
 //! (VR-1.6), the Java analogue of `go build` / `cargo check` / `tsc --noEmit`,
 //! and a `java` round-trip exercises the codec end to end.
 
+mod docs;
 mod managers;
 mod models;
 
+pub use docs::generate_docs;
 pub use managers::generate_managers;
 pub use models::generate_models;
 
@@ -114,6 +116,7 @@ pub fn generate(
     ];
     files.extend(generate_models(analysis, build));
     files.extend(generate_managers(analysis, build));
+    files.extend(generate_docs(analysis));
     files.sort_by(|a, b| a.path.cmp(&b.path));
     files
 }

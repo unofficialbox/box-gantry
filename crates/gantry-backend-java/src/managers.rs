@@ -39,12 +39,48 @@ const UTF_8: &str = "java.nio.charset.StandardCharsets.UTF_8";
 
 /// One planned manager: its grouping key, operation indices, and the
 /// collision-free class + field names it lowers to.
-struct ManagerPlan {
-    ops: Vec<usize>,
+pub(crate) struct ManagerPlan {
+    pub(crate) ops: Vec<usize>,
     /// The manager class name, e.g. `FilesManager`.
-    class: String,
+    pub(crate) class: String,
     /// The `Client` field / constructor accessor, e.g. `files`.
-    field: String,
+    pub(crate) field: String,
+}
+
+/// The method name for an operation: `snake` base + variation + a `_v<version>`
+/// suffix for a non-base API version (so base and versioned surfaces never
+/// collide, FR-7.5), camelCased and keyword-guarded. Free-standing so the docs
+/// generator names methods exactly as the manager printer does.
+pub(crate) fn method_name(op: &ir::Operation, base_version: Option<&ir::ApiVersion>) -> String {
+    let mut name = snake(op.name.as_str());
+    if let Some(variation) = &op.variation {
+        name.push('_');
+        name.push_str(&snake(variation.as_str()));
+    }
+    if op.api_version.as_ref() != base_version
+        && let Some(version) = &op.api_version
+    {
+        name.push_str("_v");
+        name.push_str(&version.0.replace(['.', '-'], "_"));
+    }
+    keyword_safe(&camel(&name))
+}
+
+/// The deduped `(op index, method name)` list for a manager's operations — the
+/// single source of truth the manager printer and docs both use, so a method
+/// heading in the docs matches the emitted method name exactly.
+pub(crate) fn deduped_methods(
+    program: &ir::Program,
+    ops: &[usize],
+    base_version: Option<&ir::ApiVersion>,
+) -> Vec<(usize, String)> {
+    let mut used: Vec<String> = Vec::new();
+    ops.iter()
+        .map(|&i| {
+            let name = dedupe(&mut used, method_name(&program.operations[i], base_version));
+            (i, name)
+        })
+        .collect()
 }
 
 /// A field type's optionality wrapper in the model layer (D-110): a plain
@@ -95,7 +131,7 @@ struct PaginationPlan {
 /// is a `BTreeMap`, so managers are planned in sorted-key order (deterministic,
 /// FR-6.2); the dedup accumulator runs across all managers so two keys that
 /// normalize together still get distinct names.
-fn plan_managers(analysis: &Analysis<'_>) -> Vec<ManagerPlan> {
+pub(crate) fn plan_managers(analysis: &Analysis<'_>) -> Vec<ManagerPlan> {
     let mut used: Vec<String> = Vec::new();
     analysis
         .managers
@@ -213,16 +249,9 @@ impl ManagerPrinter<'_> {
     /// has optional parameters.
     fn manager_file(&self, plan: &ManagerPlan, build: &BuildInfo) -> (String, Vec<GeneratedFile>) {
         // Method names dedup per manager, so distinct ops that normalize to the
-        // same name stay distinct — and the options class reuses the name.
-        let mut used: Vec<String> = Vec::new();
-        let methods: Vec<(usize, String)> = plan
-            .ops
-            .iter()
-            .map(|&i| {
-                let name = dedupe(&mut used, self.method_name(&self.program.operations[i]));
-                (i, name)
-            })
-            .collect();
+        // same name stay distinct — and the options class reuses the name. The
+        // docs generator reuses this exact list (`deduped_methods`).
+        let methods = deduped_methods(self.program, &plan.ops, self.base_version);
 
         let mut out = header(build);
         let _ = writeln!(out, "package {MANAGERS_PKG};\n");
@@ -999,24 +1028,6 @@ impl ManagerPrinter<'_> {
             ir::ResponseShape::Binary => STREAM.to_string(),
             ir::ResponseShape::Text | ir::ResponseShape::Redirect => "String".to_string(),
         }
-    }
-
-    /// The method name for an operation: `snake` base + variation + a
-    /// `_v<version>` suffix for a non-base API version (so base and versioned
-    /// surfaces never collide, FR-7.5), camelCased and keyword-guarded.
-    fn method_name(&self, op: &ir::Operation) -> String {
-        let mut name = snake(op.name.as_str());
-        if let Some(variation) = &op.variation {
-            name.push('_');
-            name.push_str(&snake(variation.as_str()));
-        }
-        if op.api_version.as_ref() != self.base_version
-            && let Some(version) = &op.api_version
-        {
-            name.push_str("_v");
-            name.push_str(&version.0.replace(['.', '-'], "_"));
-        }
-        keyword_safe(&camel(&name))
     }
 
     // --- type + value lowering (FQN model references, no imports) -----------
