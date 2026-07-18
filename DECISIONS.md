@@ -3476,5 +3476,5 @@ feature-complete** — model layer, typed unions, codec, managers/client, the
 reference docs, generated behavioral tests, and the ship artifact all landed and
 gated. The remaining step is a credentialed live-smoke run + the release tag (a
 pipeline/manual action, as with Go/Rust/TS), not engineering. With Go shipped and
-Apex/Rust/TypeScript/Java all feature-complete, **the six-target engine rewrite
+Apex/Rust/TypeScript/Java all feature-complete, **the five-target engine rewrite
 is complete** across every backend.
