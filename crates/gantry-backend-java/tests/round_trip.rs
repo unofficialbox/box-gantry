@@ -210,7 +210,7 @@ fn the_generated_codec_round_trips_under_java() {
 
     let javac = Command::new("javac")
         .arg("--release")
-        .arg("21")
+        .arg("26")
         .arg("-Xlint:all")
         .arg("-Werror")
         .arg("-d")

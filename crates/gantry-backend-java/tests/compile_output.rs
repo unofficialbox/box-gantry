@@ -142,10 +142,9 @@ fn generation_is_deterministic() {
 /// VR-1.6: the whole generated model tree compiles `javac -Xlint:all -Werror`
 /// clean on the real Box spec. `-Werror` makes any lint a hard failure, the
 /// Java analogue of `clippy -D warnings` / `tsc` strict. Compiled with
-/// `--release 21` so the gate enforces the documented compatibility floor (the
-/// model layer uses only stable features) regardless of the host JDK — CI runs
-/// it under the Corretto 26 ship-target toolchain, contributors under whatever
-/// JDK ≥ 21 they have.
+/// `--release 26` — the ship-target floor: the runtime now uses HTTP/3 (D-180),
+/// a Java 26 API, so the whole artifact requires JDK 26 (the roadmap's planned
+/// "Java-26-mandatory" step). CI runs it under the Corretto 26 toolchain.
 #[test]
 fn the_generated_model_layer_compiles_under_javac() {
     if Command::new("javac").arg("-version").output().is_err() {
@@ -187,7 +186,7 @@ fn the_generated_model_layer_compiles_under_javac() {
 
     let javac = Command::new("javac")
         .arg("--release")
-        .arg("21")
+        .arg("26")
         .arg("-Xlint:all")
         .arg("-Werror")
         .arg("-d")
@@ -204,7 +203,7 @@ fn the_generated_model_layer_compiles_under_javac() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(
         ok,
-        "javac --release 21 -Xlint:all -Werror failed (VR-1.6):\n{log}"
+        "javac --release 26 -Xlint:all -Werror failed (VR-1.6):\n{log}"
     );
 }
 
@@ -276,7 +275,7 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
 
     let javac = Command::new("javac")
         .arg("--release")
-        .arg("21")
+        .arg("26")
         .arg("-Xlint:all")
         .arg("-Werror")
         .arg("-d")
@@ -439,7 +438,7 @@ fn the_generated_behavioral_tests_pass_under_java() {
 
     let javac = Command::new("javac")
         .arg("--release")
-        .arg("21")
+        .arg("26")
         .arg("-d")
         .arg(&classes)
         .arg(format!("@{}", argfile.display()))

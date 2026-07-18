@@ -48,8 +48,9 @@ caller's business over virtual threads).
 Gated inside `cargo test --workspace` (the JDK is installed in CI), three ways:
 
 - **Standalone** — `Runtime.java` compiles warning-clean under the same
-  `javac --release 21 -Xlint:all -Werror` bar as the generated SDK
-  (`crates/gantry-backend-java/tests/runtime.rs`).
+  `javac --release 26 -Xlint:all -Werror` bar as the generated SDK
+  (`crates/gantry-backend-java/tests/runtime.rs`). It prefers **HTTP/3** (JEP
+  517, a Java 26 API), so 26 is the compile/runtime floor.
 - **Behavioral** — an in-process `com.sun.net.httpserver.HttpServer` drives the
   real code end to end: a 429 is retried and then succeeds, a CCG token is
   threaded as `Authorization: Bearer …`, an OAuth exchange rotates and persists

@@ -38,9 +38,9 @@ pub fn generate_ship(build: &BuildInfo) -> Vec<GeneratedFile> {
     ]
 }
 
-/// The Maven build file: JDK-only (no dependencies), compiled `--release 21`
-/// (the documented floor — the model layer uses only stable features), with the
-/// source + javadoc jars Maven Central requires attached at `package`. Plugin
+/// The Maven build file: JDK-only (no dependencies), compiled `--release 26`
+/// (the ship-target floor — the runtime uses HTTP/3, a Java 26 API, D-180), with
+/// the source + javadoc jars Maven Central requires attached at `package`. Plugin
 /// versions are pinned for reproducibility (NF-6).
 fn pom_xml(build: &BuildInfo) -> String {
     format!(
@@ -80,7 +80,7 @@ fn pom_xml(build: &BuildInfo) -> String {
          \x20 </scm>\n\
          \n\
          \x20 <properties>\n\
-         \x20   <maven.compiler.release>21</maven.compiler.release>\n\
+         \x20   <maven.compiler.release>26</maven.compiler.release>\n\
          \x20   <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>\n\
          \x20 </properties>\n\
          \n\

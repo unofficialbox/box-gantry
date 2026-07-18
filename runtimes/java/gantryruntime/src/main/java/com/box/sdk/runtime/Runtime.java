@@ -142,7 +142,15 @@ public final class Runtime {
         /** Build a runtime session for an authentication flow. */
         public Session(Auth auth) {
             this.auth = auth;
-            this.http = HttpClient.newBuilder().connectTimeout(API_TIMEOUT).build();
+            // Prefer HTTP/3 (JEP 517). With the default ALT_SVC discovery the
+            // first request negotiates over HTTP/2 and upgrades to HTTP/3 for
+            // subsequent requests once the origin advertises it via Alt-Svc
+            // (Box does), transparently falling back to HTTP/2 or HTTP/1.1 when
+            // it doesn't — so no request ever fails for lack of HTTP/3.
+            this.http = HttpClient.newBuilder()
+                    .version(HttpClient.Version.HTTP_3)
+                    .connectTimeout(API_TIMEOUT)
+                    .build();
             this.maxRetries = DEFAULT_MAX_RETRIES;
             this.baseUrls = defaultBaseUrls();
         }
@@ -560,7 +568,10 @@ public final class Runtime {
     }
 
     private static final HttpClient TOKEN_HTTP =
-            HttpClient.newBuilder().connectTimeout(TOKEN_TIMEOUT).build();
+            HttpClient.newBuilder()
+                    .version(HttpClient.Version.HTTP_3)
+                    .connectTimeout(TOKEN_TIMEOUT)
+                    .build();
 
     private static TokenResult postCcgToken(CcgConfig config) {
         Map<String, String> form = new LinkedHashMap<>();
