@@ -141,12 +141,15 @@ pub fn generate(
     files
 }
 
-/// Whether the program carries the whole chunked-upload schema surface the
-/// `BoxChunkedUpload` orchestrator references (D-183). The orchestrator names
-/// concrete `com.box.sdk.model.schemas.*` types, so emitting it against a spec
-/// that lacks any of them would not compile — emit only when all are present
-/// (VR-6: never emit code that can't compile), which also keeps synthetic-spec
-/// gates (round-trip, unit tests) free of the preview dependency.
+/// Whether the program carries the whole chunked-upload surface the
+/// `BoxChunkedUpload` orchestrator references (D-183) — both the concrete
+/// `com.box.sdk.model.schemas.*` types **and** the manager methods it calls, so
+/// emitting it against a spec that lacks any of them would not compile. Emit only
+/// when all are present (VR-6: never emit code that can't compile), which also
+/// keeps synthetic-spec gates (round-trip, unit tests) free of the preview
+/// dependency. The exact method signatures / parameter order can't be checked
+/// here, so the `--enable-preview -Werror` chunked gate is the ultimate compile-
+/// time backstop — a mismatch fails the build, it never ships broken code.
 fn emits_chunked_upload(analysis: &gantry_sema::Analysis<'_>) -> bool {
     let program = analysis.program;
     let packages = models::package_names(program);
@@ -158,7 +161,7 @@ fn emits_chunked_upload(analysis: &gantry_sema::Analysis<'_>) -> bool {
             fqns.insert(format!("{pkg}.{name}"));
         }
     }
-    const REQUIRED: [&str; 7] = [
+    const REQUIRED_TYPES: [&str; 7] = [
         "schemas.UploadSession",
         "schemas.UploadPart",
         "schemas.UploadedPart",
@@ -167,7 +170,27 @@ fn emits_chunked_upload(analysis: &gantry_sema::Analysis<'_>) -> bool {
         "schemas.PostFilesIdUploadSessionsBody",
         "schemas.PostFilesUploadSessionsIdCommitBody",
     ];
-    REQUIRED.iter().all(|r| fqns.contains(*r))
+    if !REQUIRED_TYPES.iter().all(|r| fqns.contains(*r)) {
+        return false;
+    }
+    // The four `ChunkedUploadsManager` methods the orchestrator calls, named the
+    // way the manager printer names them (`managers::method_name`).
+    let base_version = program
+        .operations
+        .first()
+        .and_then(|op| op.api_version.as_ref());
+    let methods: std::collections::HashSet<String> = program
+        .operations
+        .iter()
+        .map(|op| managers::method_name(op, base_version))
+        .collect();
+    const REQUIRED_METHODS: [&str; 4] = [
+        "createFilesUploadSessions",
+        "createFilesByIdUploadSessions",
+        "updateFilesUploadSessionsById",
+        "commitFilesUploadSessionsById",
+    ];
+    REQUIRED_METHODS.iter().all(|m| methods.contains(*m))
 }
 
 /// The repo-relative path of a `.java` file for `type` in `package`
@@ -741,6 +764,9 @@ import com.box.sdk.model.schemas.UploadedPart;
 // the SDK still compiles under the -Xlint:all -Werror gate (with --enable-preview).
 @SuppressWarnings("preview")
 public final class BoxChunkedUpload {
+    /** Max part uploads in flight at once, bounding peak buffer memory. */
+    private static final int MAX_CONCURRENT_PARTS = 4;
+
     private final Client client;
 
     /** Orchestrate over an existing client's session. */
@@ -768,14 +794,28 @@ public final class BoxChunkedUpload {
         if (partSize <= 0) {
             throw fail("session part_size was not positive: " + partSize);
         }
+        // The content is a byte[] (<= 2 GiB), and each part is <= the file, so the
+        // step fits an int once bounded by content.length — narrow *after* the min
+        // so a huge part_size can't overflow to a negative step.
+        int step = (int) Math.min(partSize, (long) content.length);
+        // Cap in-flight part uploads so a many-part file doesn't buffer every part
+        // (its slice + the runtime's copy) at once — bounds peak memory.
+        Semaphore window = new Semaphore(MAX_CONCURRENT_PARTS);
         List<UploadPart> parts;
         try (var scope = StructuredTaskScope.open(
                 StructuredTaskScope.Joiner.<UploadPart>awaitAllSuccessfulOrThrow())) {
             List<StructuredTaskScope.Subtask<UploadPart>> subtasks = new ArrayList<>();
-            for (int offset = 0; offset < content.length; offset += (int) partSize) {
+            for (int offset = 0; offset < content.length; offset += step) {
                 int start = offset;
-                int len = Math.min((int) partSize, content.length - offset);
-                subtasks.add(scope.fork(() -> uploadPart(id, content, start, len)));
+                int len = Math.min(step, content.length - offset);
+                subtasks.add(scope.fork(() -> {
+                    window.acquire();
+                    try {
+                        return uploadPart(id, content, start, len);
+                    } finally {
+                        window.release();
+                    }
+                }));
             }
             scope.join();
             // Read results in fork order so the committed part list is ordered.

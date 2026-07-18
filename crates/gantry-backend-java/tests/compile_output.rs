@@ -645,8 +645,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Mock the Box chunked-upload protocol and drive BoxChunkedUpload end to end. */
 public final class ChunkedSmoke {
@@ -654,6 +656,7 @@ public final class ChunkedSmoke {
     static final AtomicInteger inFlight = new AtomicInteger();
     static final AtomicInteger peak = new AtomicInteger();
     static final AtomicInteger puts = new AtomicInteger();
+    static final AtomicReference<String> commitBody = new AtomicReference<>();
 
     static void reply(HttpExchange ex, int code, String body) throws Exception {
         byte[] b = body.getBytes(StandardCharsets.UTF_8);
@@ -666,7 +669,8 @@ public final class ChunkedSmoke {
     public static void main(String[] args) throws Exception {
         byte[] content = "ABCDEFGHIJKLMNOPQRSTUVW".getBytes(StandardCharsets.UTF_8); // 23 bytes
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.setExecutor(Executors.newFixedThreadPool(8)); // handle part PUTs concurrently
+        ExecutorService exec = Executors.newFixedThreadPool(8); // part PUTs handled concurrently
+        server.setExecutor(exec);
         server.createContext("/files/upload_sessions", ex -> {
             try {
                 String path = ex.getRequestURI().getPath();
@@ -689,6 +693,7 @@ public final class ChunkedSmoke {
                     reply(ex, 200, "{\"part\":{\"part_id\":\"p" + start + "\",\"offset\":" + start
                             + ",\"size\":" + body.length + ",\"sha1\":\"x\"}}");
                 } else if (method.equals("POST") && path.endsWith("/commit")) {
+                    commitBody.set(new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
                     reply(ex, 201, "{\"total_count\":1,\"entries\":[{\"id\":\"FID\"}]}");
                 } else {
                     reply(ex, 404, "{}");
@@ -701,28 +706,38 @@ public final class ChunkedSmoke {
             }
         });
         server.start();
-        int port = server.getAddress().getPort();
-        System.setProperty("box.baseUrl.upload", "http://127.0.0.1:" + port);
-        System.setProperty("box.baseUrl.upload_session", "http://127.0.0.1:" + port);
+        try {
+            int port = server.getAddress().getPort();
+            System.setProperty("box.baseUrl.upload", "http://127.0.0.1:" + port);
+            System.setProperty("box.baseUrl.upload_session", "http://127.0.0.1:" + port);
 
-        com.box.sdk.Client client =
-                new com.box.sdk.Client(com.box.sdk.runtime.Runtime.developerToken("t"));
-        com.box.sdk.model.schemas.Files result =
-                new com.box.sdk.BoxChunkedUpload(client).upload(content, "big.bin", "0");
-        server.stop(0);
+            com.box.sdk.Client client =
+                    new com.box.sdk.Client(com.box.sdk.runtime.Runtime.developerToken("t"));
+            com.box.sdk.model.schemas.Files result =
+                    new com.box.sdk.BoxChunkedUpload(client).upload(content, "big.bin", "0");
 
-        check(puts.get() == 5, "expected 5 part PUTs, got " + puts.get());
-        ByteArrayOutputStream reassembled = new ByteArrayOutputStream();
-        synchronized (received) {
-            for (byte[] b : received.values()) {
-                reassembled.write(b);
+            check(puts.get() == 5, "expected 5 part PUTs, got " + puts.get());
+            ByteArrayOutputStream reassembled = new ByteArrayOutputStream();
+            synchronized (received) {
+                for (byte[] b : received.values()) {
+                    reassembled.write(b);
+                }
             }
+            check(Arrays.equals(reassembled.toByteArray(), content), "reassembled content mismatch");
+            check(result.entries().orElseThrow().size() == 1, "commit should return one file");
+            check(peak.get() >= 2, "parts should upload in parallel; peak concurrency was " + peak.get());
+            // The commit body lists parts in ascending offset order (fork-order read).
+            String body = commitBody.get();
+            check(body != null && body.indexOf("\"offset\":0") >= 0
+                    && body.indexOf("\"offset\":0") < body.indexOf("\"offset\":20"),
+                    "committed parts should be in offset order: " + body);
+            System.out.println("CHUNKED_OK parts=" + puts.get() + " peak=" + peak.get());
+        } finally {
+            // The mock server's executor threads are non-daemon; shut them down so
+            // the JVM exits even when an assertion above fails (never hang CI).
+            server.stop(0);
+            exec.shutdownNow();
         }
-        check(Arrays.equals(reassembled.toByteArray(), content), "reassembled content mismatch");
-        check(result.entries().orElseThrow().size() == 1, "commit should return one file");
-        check(peak.get() >= 2, "parts should upload in parallel; peak concurrency was " + peak.get());
-        System.out.println("CHUNKED_OK parts=" + puts.get() + " peak=" + peak.get());
-        System.exit(0); // the mock server's executor threads are non-daemon; exit cleanly
     }
 
     static void check(boolean cond, String message) {

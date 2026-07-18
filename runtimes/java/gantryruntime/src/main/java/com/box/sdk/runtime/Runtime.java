@@ -163,7 +163,13 @@ public final class Runtime {
          */
         public String baseUrl(String name) {
             String override = System.getProperty("box.baseUrl." + name);
-            if (override != null && !override.isEmpty()) {
+            if (override != null && !override.isBlank()) {
+                // Managers append `/...`, so honor the no-trailing-slash contract
+                // even when an override is set with a stray trailing slash.
+                override = override.strip();
+                while (override.endsWith("/")) {
+                    override = override.substring(0, override.length() - 1);
+                }
                 return override;
             }
             String url = baseUrls.get(name);
