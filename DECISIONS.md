@@ -2592,10 +2592,10 @@ LTS as the floor) is what makes the clean shapes above possible, and several
 recent additions map directly onto SDK-generation concerns — each is adopted for
 a concrete reason, not for novelty:
 
-- **HTTP/3 (QUIC) in `HttpClient`** (Java 26) — the runtime is built on the JDK's
-  `java.net.http.HttpClient`; HTTP/3's UDP/QUIC transport lowers request latency
-  and is negotiated transparently, so the runtime opts in without a third-party
-  HTTP or QUIC library (TR-Java.5).
+- **HTTP/3 (QUIC) in `HttpClient`** (Java 26) — ✅ **done (D-180)**: the runtime's
+  `java.net.http.HttpClient`s prefer HTTP/3 with `ALT_SVC` discovery, negotiated
+  transparently with fallback, no third-party HTTP/QUIC library (TR-Java.5). This
+  landed HTTP/3 and made Java 26 the ship floor.
 - **Standard PEM Encodings** (Java 26 preview) — the JWT auth flow parses an RSA
   private key from a PEM `box_config.json`; the built-in PEM API decodes it with
   no BouncyCastle/third-party crypto dependency, keeping the runtime
@@ -3478,3 +3478,51 @@ gated. The remaining step is a credentialed live-smoke run + the release tag (a
 pipeline/manual action, as with Go/Rust/TS), not engineering. With Go shipped and
 Apex/Rust/TypeScript/Java all feature-complete, **the five-target engine rewrite
 is complete** across every backend.
+
+## D-180 — Java backend: HTTP/3 in the runtime (JEP 517), Java 26 becomes the floor
+
+**Context.** With v5 feature-complete (D-179), the roadmap's deferred Java 25/26
+enhancements remained. The highest-value one — **HTTP/3 in the `java.net.http`
+runtime** — became actionable once building on a real Corretto 26: HTTP/3 (JEP
+517) is **finalized and non-preview in JDK 26** (`HttpClient.Version.HTTP_3`
+compiles under `--release 26` with no `--enable-preview`). This is the slice the
+roadmap anticipated would "make Java 26 mandatory."
+
+**The change — one line per client, safe by construction.** Both `HttpClient`s in
+`Runtime.java` (the session fetch client and the token-endpoint client) now build
+with `.version(HttpClient.Version.HTTP_3)`. With the default **`ALT_SVC`**
+discovery mode, the first request to an origin negotiates over HTTP/2, and the
+client upgrades to HTTP/3 for subsequent requests only once the origin advertises
+it via an `Alt-Svc` header (Box does) — transparently falling back to HTTP/2 or
+HTTP/1.1 when it doesn't. No request ever fails for lack of HTTP/3, and no direct
+HTTP/3 probe is sent to a non-advertising server (so no added latency, no UDP
+attempt against the plaintext test server). This was verified empirically before
+touching the runtime: an `HTTP_3`-preferred client against a cleartext
+`com.sun.net.httpserver.HttpServer` returns `200` negotiated as `HTTP_1_1`.
+
+**Java 26 is now the compile/runtime floor.** HTTP/3 is a Java 26 API, so the
+whole vendored artifact requires 26. The `--release 21` gates (the model-layer
+VR-1.6 gate, the swap test, the round-trip and runtime gates) and the ship
+`pom.xml`'s `<maven.compiler.release>` all move **21 → 26** — the deliberate,
+documented step from the JDK-21 floor to the Java-26 ship target. The generated
+code itself uses no 26-only feature; the floor rises because the hand-written
+runtime does.
+
+**No contract drift.** `.version(...)` sits inside private client construction, so
+the runtime's public surface is unchanged — the `gantry_contract::java_stubs`
+stub (FR-5.3) needs no edit, and the FR-5.2 swap test still compiles the generated
+SDK against the real runtime, now under `--release 26`.
+
+**Verification.** `the_runtime_compiles_standalone` and the full-tree **swap test**
+compile the HTTP/3 runtime warning-clean under `javac --release 26 -Xlint:all
+-Werror`; the behavioral `HttpServer` test (429-retry + all four auth flows) still
+passes, confirming clean fallback; and `mvn package` builds the main + sources +
+javadoc jars with `Runtime.class` at **Java 26 bytecode (major 70)**. The real
+HTTP/3 wire path is exercised by the VR-7 live smoke against Box (which serves
+HTTP/3), run when credentialed.
+
+**Result.** The Java runtime negotiates HTTP/3 where available, with seamless
+fallback. Java 26 is now mandatory for the shipped artifact — the first of the
+roadmap's deferred 26-only enhancements to land. (Still deferred, and best done
+on 26+: structured concurrency for chunked uploads, scoped values, module import
+declarations, the PEM key API once it finalizes — currently preview in 25/26.)

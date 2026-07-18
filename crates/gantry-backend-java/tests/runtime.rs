@@ -23,8 +23,9 @@ fn jdk_available() -> bool {
         && Command::new("java").arg("-version").output().is_ok()
 }
 
-/// The runtime compiles warning-clean under `javac --release 21 -Xlint:all
-/// -Werror` — the same bar as the generated SDK (VR-1.6), on its own.
+/// The runtime compiles warning-clean under `javac --release 26 -Xlint:all
+/// -Werror` — the same bar as the generated SDK (VR-1.6), on its own. It uses
+/// HTTP/3 (D-180), a Java 26 API, so 26 is the floor.
 #[test]
 fn the_runtime_compiles_standalone() {
     if Command::new("javac").arg("-version").output().is_err() {
@@ -36,7 +37,7 @@ fn the_runtime_compiles_standalone() {
     std::fs::create_dir_all(&dir).unwrap();
     let javac = Command::new("javac")
         .arg("--release")
-        .arg("21")
+        .arg("26")
         .arg("-Xlint:all")
         .arg("-Werror")
         .arg("-d")
@@ -214,7 +215,7 @@ fn the_runtime_retries_and_authenticates() {
     // supported com.sun.net.httpserver API, so no -Werror here).
     let javac = Command::new("javac")
         .arg("--release")
-        .arg("21")
+        .arg("26")
         .arg("-d")
         .arg(&classes)
         .arg(runtime_src())
@@ -312,7 +313,7 @@ fn the_live_smoke_compiles_and_runs_when_credentialed() {
 
     let javac = Command::new("javac")
         .arg("--release")
-        .arg("21")
+        .arg("26")
         .arg("-d")
         .arg(&classes)
         .arg(runtime_src())
