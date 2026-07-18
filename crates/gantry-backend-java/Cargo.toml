@@ -11,6 +11,7 @@ gantry-contract.workspace = true
 gantry-ir.workspace = true
 gantry-manifest.workspace = true
 gantry-sema.workspace = true
+gantry-synth.workspace = true
 
 [dev-dependencies]
 gantry-spec.workspace = true

@@ -3260,3 +3260,68 @@ still green. `cargo test --workspace`, `fmt`, and `clippy -D warnings` all clean
 with a live-smoke harness — the runtime half of v5 is done. Remaining for a
 shipped v5: pagination, reference docs, generated behavioral tests, and the NF-8
 Maven artifact.
+
+## D-176 — Java backend, slice 7: pagination as re-iterable `Iterable`s (TR-Java, FR-7.3)
+
+**Context.** The Java SDK shipped only each paged operation's plain single-page
+method. This slice generates a paginator per paged operation — the Java analogue
+of the Rust async paginators (D-154) and the TypeScript `async *` generators
+(D-165), reading the same backend-agnostic `gantry_synth::detect_pagination`
+plan every backend shares.
+
+**An `Iterable<Element>` per paged operation.** For each operation
+`detect_pagination` finds (a marker/offset query param plus an `entries` + cursor
+response envelope), the backend emits — right after the plain method — a
+top-level `<Prefix><Method>Paginator` class in the managers package plus a
+`<method>Paginate(...)` constructor on the manager. The paginator `implements
+java.lang.Iterable<Element>`; its `iterator()` returns an `Iterator` that drains
+a page buffer, then fetches the next page **through the plain method** (so the
+URL/param/body logic is never duplicated, FR-5.2) and advances the cursor. So
+callers write the idiom `for (var item : client.files.getFolderItemsPaginate(id, null))`
+(the options argument is always present — pass `null` for none) — where Rust
+hand-rolls a `next()` state machine and TS leans on generator syntax, Java's
+for-each protocol carries the iteration. It is **re-iterable**: each `iterator()`
+runs an independent pass over a **private copy** of the request options (seeded
+by `_freshOptions()`), so the caller's options object is never mutated —
+matching Rust's cloned-options paginator and TS's spread-copied generator.
+
+**Marker vs offset, threaded through the options object.** The generated manager
+options class exposes each optional param as a public mutable field, so the
+paginator threads the cursor by writing that field before each fetch — no second
+code path. **Marker** style seeds `_cursor` from the caller's marker, writes it
+into `_opts` each page, and reads the response `next_marker` back (a `String`
+threaded directly, or a numeric cursor stringified), stopping on an
+absent/empty cursor. **Offset** style seeds `_cursor` from the caller's offset
+(or `0`), writes it each page, and advances by the page's entry count, stopping
+on an empty page (the response cursor is never read — the same rule Rust/TS
+follow).
+
+**Envelope-shape peeling, and the conservative fallback.** `entries` and the
+cursor field are reached through the model layer's optionality shapes (D-110): a
+plain value, a bare nullable reference, an `Optional<T>` (`.orElse(...)`), or a
+`Tristate<T>` (`.isPresent() && .value() != null ? .value() : …`) — an
+absent-or-null `entries` degrades to an empty list, an absent cursor stops
+iteration. A cursor shape the
+backend doesn't synthesize (a non-string `marker` param, a non-int `offset`
+param, or a `next_marker` that is neither string nor int) **skips only the
+paginator** — the plain method still ships (a documented VR-6 fallback, never
+wrong code, the Rust/TS rule). On the real Box specs all **64** paged operations
+synthesize a paginator.
+
+**No-import, FQN-only, `javac -Werror`-clean.** Each paginator file names every
+type by its fully-qualified name (element, envelope, options, runtime) — no
+imports, no collision with a schema type, matching the manager files' policy.
+Verified in `cargo test --workspace`: the whole real-spec tree (900+ files) now
+compiles **`javac --release 21 -Xlint:all -Werror`** clean *with the 64
+paginators* against both the stub (VR-1.6) and the real hand-written runtime
+(the FR-5.2 swap test) — the swap driver now also drives a paginator through the
+public `for (var … : …Paginate(…))` idiom, so the whole paged path (Client field
+→ paginate method → `Iterable<Element>` → element type) type-checks against the
+real runtime. Backend unit tests cover the marker paginator's shape, the
+private-copy `_freshOptions()`, the tri-state `entries` coalescing, the
+`<method>Paginate` constructor, and the unsupported-cursor fallback; generation
+stays deterministic (FR-6.2).
+
+**Result.** The Java SDK now paginates every paged operation the Go/Rust/TS
+backends do. Remaining for a shipped v5: reference docs, generated behavioral
+tests, and the NF-8 Maven artifact.

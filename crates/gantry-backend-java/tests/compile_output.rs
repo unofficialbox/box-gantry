@@ -195,12 +195,25 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
 
     // A smoke driver: build the real `Client` from a real auth factory, so the
     // manager surface type-checks against the runtime (the Rust/TS swap pattern).
+    // It also drives a paginator through the public `for (var … : …Paginate(…))`
+    // idiom (FR-7.3), so the whole paged path — Client field → paginate method →
+    // `Iterable<Element>` → element type — type-checks against the real runtime.
     let smoke = dir.join("Smoke.java");
     std::fs::write(
         &smoke,
         "public final class Smoke {\n\
          \x20   public static com.box.sdk.Client build() {\n\
          \x20       return new com.box.sdk.Client(com.box.sdk.runtime.Runtime.developerToken(\"dev\"));\n\
+         \x20   }\n\
+         \x20   public static int countAgents() {\n\
+         \x20       int _n = 0;\n\
+         \x20       for (var agent : build().aiStudio.getAiAgentsPaginate(\n\
+         \x20               new com.box.sdk.managers.AiStudioManager.GetAiAgentsOptions())) {\n\
+         \x20           if (agent != null) {\n\
+         \x20               _n++;\n\
+         \x20           }\n\
+         \x20       }\n\
+         \x20       return _n;\n\
          \x20   }\n\
          }\n",
     )
@@ -237,5 +250,56 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
     assert!(
         ok,
         "the generated SDK failed to compile against the real runtime (FR-5.2):\n{log}"
+    );
+}
+
+/// FR-7.3: every paged operation gets a `<Prefix><Method>Paginator` class in the
+/// managers package. On the real Box spec `detect_pagination` finds 64 paged
+/// operations (matching the Go/Rust/TS backends); each synthesizes a paginator
+/// (no cursor shape falls back on the real spec). The `javac -Werror` gate above
+/// already compiles them — this asserts they are actually emitted and shaped as
+/// single-pass `Iterable`s.
+#[test]
+fn paginators_are_generated() {
+    let files = generate();
+    let paginators: Vec<_> = files
+        .iter()
+        .filter(|f| f.path.ends_with("Paginator.java"))
+        .collect();
+    assert_eq!(
+        paginators.len(),
+        64,
+        "expected one paginator per paged operation on the real spec"
+    );
+    for file in &paginators {
+        assert!(
+            file.path.starts_with("src/main/java/com/box/sdk/managers/"),
+            "paginator not in the managers package: {}",
+            file.path
+        );
+        assert!(
+            file.content.contains("implements java.lang.Iterable<"),
+            "paginator {} should be an Iterable",
+            file.path
+        );
+        assert!(
+            file.content.contains("public java.util.Iterator<"),
+            "paginator {} should expose iterator()",
+            file.path
+        );
+    }
+    // Both cursor styles are exercised on the real spec: marker paginators
+    // thread a `next_marker`, offset paginators advance by the page length.
+    assert!(
+        paginators
+            .iter()
+            .any(|f| f.content.contains("_cursor += _items.size()")),
+        "expected at least one offset-style paginator"
+    );
+    assert!(
+        paginators
+            .iter()
+            .any(|f| f.content.contains("!_next.isEmpty()")),
+        "expected at least one marker-style paginator"
     );
 }
