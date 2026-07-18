@@ -155,8 +155,17 @@ public final class Runtime {
             this.baseUrls = defaultBaseUrls();
         }
 
-        /** The configured base URL for a D-106 class, without a trailing slash. */
+        /**
+         * The configured base URL for a D-106 class, without a trailing slash.
+         * A {@code -Dbox.baseUrl.<name>} system property overrides the default —
+         * the hook for sovereign/on-prem Box deployments and for pointing the SDK
+         * at a mock server in tests.
+         */
         public String baseUrl(String name) {
+            String override = System.getProperty("box.baseUrl." + name);
+            if (override != null && !override.isEmpty()) {
+                return override;
+            }
             String url = baseUrls.get(name);
             if (url == null) {
                 throw new BoxApiException("gantryruntime: unknown base URL class: " + name);

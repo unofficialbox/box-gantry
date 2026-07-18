@@ -64,6 +64,12 @@ pub fn java_stubs(contract: &RuntimeContract, manifest: &CapabilityManifest) -> 
          \x20           throw new UnsupportedOperationException(\
          \"gantryruntime stub: Stream.empty is not wired to a real runtime\");\n\
          \x20       }\n\
+         \n\
+         \x20       /** A stream over in-memory bytes (an octet-stream request body). */\n\
+         \x20       public static Stream fromBytes(byte[] data) {\n\
+         \x20           throw new UnsupportedOperationException(\
+         \"gantryruntime stub: Stream.fromBytes is not wired to a real runtime\");\n\
+         \x20       }\n\
          \x20   }\n\
          \n\
          \x20   /** The configured authentication flow (developer token, CCG, OAuth, JWT). */\n\

@@ -467,9 +467,12 @@ impl ManagerPrinter<'_> {
                 );
             }
             ir::RequestMedia::OctetStream => {
+                // The binary body is a `byte[]` parameter; send it as the request
+                // stream (previously stubbed to `Stream.empty()`, which silently
+                // dropped every octet-stream upload — e.g. chunked-upload parts).
                 let _ = writeln!(
                     out,
-                    "        _req = {RUNTIME}.withStreamBody(_req, {STREAM}.empty(), \"application/octet-stream\");"
+                    "        _req = {RUNTIME}.withStreamBody(_req, {STREAM}.fromBytes(body), \"application/octet-stream\");"
                 );
             }
             ir::RequestMedia::Multipart => {

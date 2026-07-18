@@ -2600,10 +2600,10 @@ a concrete reason, not for novelty:
   private key from a PEM `box_config.json`; the built-in PEM API decodes it with
   no BouncyCastle/third-party crypto dependency, keeping the runtime
   dependency-free the way the Go/Rust/TS runtimes are (auth parity).
-- **Structured Concurrency** (Java 26 preview) — the chunked-upload orchestrator
-  fans parts out as a single unit of work in a `try`-with-resources scope: if one
-  part fails, its siblings are cancelled, so a failed upload never leaks threads
-  (TR-Java.5).
+- **Structured Concurrency** (Java 26 preview) — ✅ **done (D-183)**: the new
+  `BoxChunkedUpload` orchestrator fans parts out in a `StructuredTaskScope`; a
+  failed part cancels its siblings, so a failed upload never leaks threads
+  (TR-Java.5). Preview → the SDK now needs `--enable-preview`.
 - **Scoped Values** (Java 25) — request/auth context (the access token, an
   idempotency key) propagates through the call tree as an immutable `ScopedValue`
   instead of a `ThreadLocal`, safe across the virtual threads a blocking-API SDK
@@ -3591,3 +3591,64 @@ deterministic (FR-6.2).
 
 **Result.** Cleaner generated model headers with no behavioral change. Item 3 of
 the deferred Java-26 list; finalized, no `--enable-preview` cost.
+
+## D-183 — Java: parallel chunked-upload orchestrator via structured concurrency (JEP 505)
+
+**Context.** The last deferred Java-26 item with a real home: **structured
+concurrency** for chunked-upload fan-out. The Java SDK had no chunked-upload
+orchestrator (unlike Apex D-136), so this slice builds one and uses JEP 505 to
+upload the parts in parallel — a genuinely useful feature, not a demo.
+
+**A bug surfaced first.** Wiring the orchestrator revealed that the generated
+octet-stream request body was stubbed to `Stream.empty()` — the `byte[] body`
+parameter was **ignored**, so every octet-stream upload (including chunked-upload
+parts) silently sent no data. Fixed in the manager codegen to
+`Stream.fromBytes(body)`; the contract stub gained the matching `Stream.fromBytes`
+so generated managers still compile against it (FR-5.3). (Multipart bodies have
+the same `Stream.empty()` placeholder — a separate, harder fix, flagged for
+later.)
+
+**The orchestrator.** `com.box.sdk.BoxChunkedUpload` (emitted verbatim like
+`Tristate`/`Json`) wraps Box's three-step protocol: create a session, slice the
+content, PUT each part with its `Content-Range` + per-part SHA-1 `Digest`, then
+commit with the whole-file SHA-1 and the ordered parts. `upload(bytes, name,
+folderId)` uploads a new file; `uploadVersion(bytes, name, fileId)` a new version.
+The parts fork into a `StructuredTaskScope` with `awaitAllSuccessfulOrThrow` — all
+run concurrently on virtual threads, the first failure cancels the rest, and the
+committed part list is read back in fork order.
+
+**Emitted only when the spec supports it (VR-6).** The orchestrator names concrete
+`com.box.sdk.model.schemas.*` types, so `emits_chunked_upload` gates emission on
+all seven being present — the real Box spec has them; a synthetic spec (round-trip
+gate, unit tests) does not, so it stays out of those trees and keeps them free of
+the preview dependency.
+
+**Opt-in `--enable-preview`, isolated to one class.** `StructuredTaskScope` is a
+preview API in JDK 26, but the SDK is built so the **core stays a plain JDK-26
+artifact** and only `BoxChunkedUpload` carries the preview flag. The ship
+`pom.xml` compiles in **two passes**: the default compile *excludes*
+`BoxChunkedUpload` (no preview), and a second execution compiles just that class
+with `--enable-preview`. In the resulting jar the core classes are ordinary
+Java-26 bytecode (`Client`/`Runtime`/`ChunkedUploadsManager` → classfile `minor
+0`) and only `BoxChunkedUpload` is preview-marked (`minor 65535`). So **callers
+who never touch chunked upload run on a plain JDK 26; adding `--enable-preview`
+unlocks the parallel path** — a documented opt-in benefit, not a blanket
+requirement. The core `javac`/`java` gates prove it (they compile **and run** the
+core with no flag, `BoxChunkedUpload` excluded); a dedicated gate compiles + runs
+`BoxChunkedUpload` with the flag (`@SuppressWarnings("preview")` keeps its
+`-Werror` compile clean). The preview flag stops being needed at all once JEP 505
+finalizes.
+
+**A base-URL override, for testing and sovereign deployments.** `Session.baseUrl`
+now honors a `-Dbox.baseUrl.<name>` system property. The behavioral gate uses it
+to point the SDK at an in-process mock `HttpServer` implementing the chunked
+protocol, runs `BoxChunkedUpload`, and asserts every part arrived, the bytes
+reassemble, and **peak in-flight PUTs ≥ 2** (proving the fan-out) — on the real
+run all five parts upload concurrently (`CHUNKED_OK parts=5 peak=5`).
+
+**Result.** The Java SDK gains parallel chunked upload; the octet-stream upload
+bug is fixed. With HTTP/3 (D-180), compact source (D-181), module imports (D-182),
+and this, the actionable deferred Java-26 list is done — the remaining items are
+either preview with no honest use site (primitive patterns) or finalized with no
+compelling fit in a blocking, FQN-referencing SDK (scoped values, flexible
+constructor bodies).
