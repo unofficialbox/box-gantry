@@ -12,10 +12,12 @@
 //! async model), never a language name (FR-4.2).
 
 mod go_stubs;
+mod java_stubs;
 mod rust_stubs;
 mod typescript_stubs;
 
 pub use go_stubs::{GO_MOD, go_stubs};
+pub use java_stubs::java_stubs;
 pub use rust_stubs::rust_stubs;
 pub use typescript_stubs::typescript_stubs;
 

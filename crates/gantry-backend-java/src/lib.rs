@@ -33,8 +33,10 @@
 //! (VR-1.6), the Java analogue of `go build` / `cargo check` / `tsc --noEmit`,
 //! and a `java` round-trip exercises the codec end to end.
 
+mod managers;
 mod models;
 
+pub use managers::generate_managers;
 pub use models::generate_models;
 
 /// One generated file, path relative to the SDK project root.
@@ -70,6 +72,12 @@ pub(crate) const ROOT_PKG: &str = "com.box.sdk";
 pub(crate) const MODEL_PKG: &str = "com.box.sdk.model";
 /// The package the hand-written support types live in.
 pub(crate) const CORE_PKG: &str = "com.box.sdk.core";
+/// The package the per-tag manager classes live in.
+pub(crate) const MANAGERS_PKG: &str = "com.box.sdk.managers";
+/// The package the runtime-contract surface (the stub / real runtime) lives in.
+pub(crate) const RUNTIME_PKG: &str = "com.box.sdk.runtime";
+/// The package the generation-side helper (`Internal`) lives in.
+pub(crate) const INTERNAL_PKG: &str = "com.box.sdk.internal";
 /// The Maven/Gradle source-root prefix every `.java` file sits under.
 pub(crate) const SRC_ROOT: &str = "src/main/java";
 
@@ -96,8 +104,16 @@ pub fn generate(
             path: java_path(ROOT_PKG, "BuildInfo"),
             content: build_info_java(manifest, build),
         },
+        // The runtime-contract stub (FR-5.3): generated code compiles against
+        // it without the real runtime, and it can't drift from the declared
+        // surface because both come from the same contract data (FR-5.2).
+        GeneratedFile {
+            path: java_path(RUNTIME_PKG, "Runtime"),
+            content: gantry_contract::java_stubs(&gantry_contract::V1, manifest),
+        },
     ];
     files.extend(generate_models(analysis, build));
+    files.extend(generate_managers(analysis, build));
     files.sort_by(|a, b| a.path.cmp(&b.path));
     files
 }

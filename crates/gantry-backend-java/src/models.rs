@@ -306,22 +306,7 @@ impl Printer<'_> {
             Some(interfaces) => format!(" implements {}", interfaces.join(", ")),
             None => String::new(),
         };
-        // Distinct source names can normalize to the same Java identifier
-        // (`displayName` and `display_name` both → `displayName`); a per-record
-        // allocator keeps them distinct so the accessors, constructor, and codec
-        // all agree. Allocated once here, then reused everywhere below.
-        let mut used: Vec<String> = Vec::new();
-        let fields: Vec<(String, &ir::Field)> = s
-            .fields
-            .iter()
-            .map(|field| {
-                (
-                    dedupe(&mut used, component_ident(field.name.as_str())),
-                    field,
-                )
-            })
-            .collect();
-
+        let fields = struct_components(s);
         let header = self.struct_header(name, &fields, &implements);
         let body = self.struct_codec(name, &fields);
         format!("{header} {{\n{body}}}\n")
@@ -955,11 +940,29 @@ pub(crate) fn type_name(name: &str) -> String {
     }
 }
 
+/// One collision-free `(ident, field)` per struct field, allocated per record.
+/// Distinct source names can normalize to the same Java identifier
+/// (`displayName` and `display_name` both → `displayName`); this keeps them
+/// apart so the record's accessors, constructor, and codec all agree — and the
+/// managers backend reuses it to read a struct's fields (e.g. a form body).
+pub(crate) fn struct_components(s: &ir::StructDecl) -> Vec<(String, &ir::Field)> {
+    let mut used: Vec<String> = Vec::new();
+    s.fields
+        .iter()
+        .map(|field| {
+            (
+                dedupe(&mut used, component_ident(field.name.as_str())),
+                field,
+            )
+        })
+        .collect()
+}
+
 /// A record-component identifier: camelCase, guarded against Java keywords,
 /// `Object`'s method names (a component generates an accessor of that name, so
 /// `hashCode`/`toString`/… would clash with the record's own members), and the
 /// `toJson`/`fromJson` codec members this backend adds to every model type.
-fn component_ident(name: &str) -> String {
+pub(crate) fn component_ident(name: &str) -> String {
     let base = sanitize_ident(&camel(name));
     if JAVA_KEYWORDS.contains(&base.as_str())
         || OBJECT_METHODS.contains(&base.as_str())
@@ -1022,7 +1025,7 @@ fn sanitize_ident(name: &str) -> String {
 
 /// Allocate a collision-free name in a scope: returns `base` if unused, else
 /// `base_2`, `base_3`, … Deterministic given a stable iteration order (FR-6.2).
-fn dedupe(used: &mut Vec<String>, base: String) -> String {
+pub(crate) fn dedupe(used: &mut Vec<String>, base: String) -> String {
     let mut candidate = base.clone();
     let mut n = 2;
     while used.contains(&candidate) {
@@ -1116,7 +1119,7 @@ const OBJECT_METHODS: &[&str] = &[
 
 /// Java reserved words (keywords + `true`/`false`/`null` literals + the
 /// restricted `var`/`record`/`sealed`/… that are unsafe as plain identifiers).
-const JAVA_KEYWORDS: &[&str] = &[
+pub(crate) const JAVA_KEYWORDS: &[&str] = &[
     "abstract",
     "assert",
     "boolean",

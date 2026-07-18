@@ -3081,3 +3081,71 @@ deterministic.
 **Result.** v5's model layer is now a working wire codec end to end. Next:
 managers/client, the `java.net.http` runtime + auth, reference docs, generated
 behavioral tests, and the NF-8 Maven artifact.
+
+## D-173 — Java backend, slice 4: managers, client, and the runtime stub (TR-Java.3, FR-5.3)
+
+**Context.** With the model layer (D-170/D-171) and its JSON codec (D-172) in
+place, the Java SDK had types but no way to *call* Box. This slice adds the
+callable surface — one manager class per API area, a `Client` entry point, and
+the runtime-contract stub the whole thing compiles against — mirroring the Rust
+(D-149) and TypeScript (D-159) manager slices, adapted to Java's manifest axes
+(Sync + Exceptions).
+
+**One `<Pascal>Manager` per tag, blocking methods routing through the contract.**
+Every operation in `Analysis::managers` (the same grouping every backend
+consumes) lowers to one method on its manager class. The method builds the URL
+from the base-URL class + structured path segments (path params percent-escaped
+via a generated `Internal.pathEscape`), applies query/header params under their
+**wire** names, encodes the body per media type, and reaches the network **only
+through the runtime contract** (`session.fetch(...)`, FR-5.2). Unlike Rust's
+`async fn … -> Result<T, E>` with `.await?`, the Java method is an **ordinary
+blocking method returning `T`**: the manifest is `AsyncModel::Sync` (no
+`Future`) and `ErrorModel::Exceptions`, so a failure throws the runtime's
+unchecked `BoxApiException` rather than widening the return type — no `throws`
+clause noise, and the request/decode call sites stay flat.
+
+**Body/response codec reuses the model layer's shape.** A JSON body encodes via
+the model's `toJson()`; a JSON response decodes via `<Model>.fromJson(Json.parse
+(…))` — the managers carry standalone `encode_value`/`decode_value` that mirror
+the model codec (D-172) but fully-qualify model references (managers live in a
+different package). Query/header/path values stringify by a small table: scalars
+and enums to one token (an enum to its **raw** wire value, so `?direction=ASC`,
+not a JSON-quoted `%22ASC%22`), a scalar list comma-joins, and anything complex
+(a struct, a `List<struct>` like `mdfilters`) JSON-encodes — the Box convention,
+matching Rust. Form bodies (the OAuth2 token endpoints) build an ordered field
+map through `Internal.formEncode`, each optional field applied only when set.
+
+**Options objects for optional params.** An operation's optional parameters
+bundle into a nested `static <Method>Options` class of public nullable fields
+(the Java keyword-argument idiom), passed as a trailing argument and applied only
+when non-null — the same required-positional / optional-bundled split as Rust,
+keyed off the deduped method name so the options class can't collide.
+
+**The `Client` and the runtime stub.** A `com.box.sdk.Client` holds one public
+manager field per tag over a **single shared** runtime `Session` built from an
+`Auth` flow (Java references share by default — no `Arc` as Rust needs). The
+contract crate gains a **`java_stubs`** renderer (FR-5.3): it emits the whole
+runtime surface as one `Runtime` class (Java is one public type per file) with
+the envelope types + `Session` as nested classes and the free contract functions
+as `static` methods, rendered from the same `V1` contract data as the Go/Rust/TS
+stubs so it can't drift (FR-5.2). It asserts the manifest axes it implements
+(`Exceptions`/`Sync`) and, like TypeScript, emits **no context parameter** —
+Java's blocking model carries no cancellation object (concurrency is the caller's
+business over virtual threads, the D-164 note). Every stub member throws loudly
+(NF-1) so missing runtime wiring can't hide.
+
+**Verification.** The full real-spec SDK — models + **all managers** + `Client` +
+`Runtime` stub + `Internal` — compiles `javac --release 21 -Xlint:all -Werror`
+clean (VR-1.6), and the gate now also compiles a smoke driver that constructs the
+public `Client` from an `Auth`, so the manager surface has to type-check as a
+*callable* API, not merely internally. Unit tests assert a manager method is
+blocking and routes through the contract, that the `Client` wires one field per
+manager over a shared session, and that optional params bundle into the nested
+options class. Encode/decode/stringify arms stay enumerated over `ir::Type` (NF-1);
+generation stays deterministic (FR-6.2). `cargo test --workspace`, `fmt`, and
+`clippy -D warnings` all clean.
+
+**Result.** The Java SDK is now callable end to end against the declared runtime
+surface. Next: the hand-written `java.net.http` runtime + the four auth flows
+(the real implementation of this contract), then pagination, reference docs,
+generated behavioral tests, and the NF-8 Maven artifact.

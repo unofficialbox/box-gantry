@@ -146,6 +146,7 @@ dependencies = [
 name = "gantry-backend-java"
 version = "0.1.0"
 dependencies = [
+ "gantry-contract",
  "gantry-ir",
  "gantry-manifest",
  "gantry-sema",
