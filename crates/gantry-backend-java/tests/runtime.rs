@@ -1,9 +1,12 @@
 //! Tests for the hand-written Java runtime (`runtimes/java/gantryruntime`),
 //! driven through the real `javac`/`java` toolchain (the runtime is plain JDK
 //! Java, so there is no build tool — the swap gate and these tests compile its
-//! source directly). Two signals: the runtime compiles warning-clean under the
-//! same strict gate as the generated SDK, and it *behaves* — an embedded
-//! `HttpServer` exercises the fetch retry loop and the CCG auth flow end to end.
+//! source directly). Three signals: the runtime compiles warning-clean under the
+//! same strict gate as the generated SDK; it *behaves* — an embedded
+//! `HttpServer` exercises the fetch retry loop and all four auth flows (CCG,
+//! OAuth with refresh-token rotation, JWT assertion signing, developer token);
+//! and the VR-7 live smoke compiles (so it can't rot) and runs against a real
+//! Box account when credentials are present.
 //!
 //! Skips cleanly when the JDK is absent (local dev); CI installs one.
 
@@ -48,15 +51,23 @@ fn the_runtime_compiles_standalone() {
 }
 
 /// The runtime driver: an in-process `HttpServer` proves the fetch retry loop
-/// (a 429 is retried and then succeeds, hitting the endpoint twice) and the CCG
-/// flow (a token is fetched from the token endpoint and threaded as
-/// `Authorization: Bearer …` on the next call).
+/// (a 429 is retried and then succeeds) and all four auth flows — CCG, OAuth
+/// (with refresh-token rotation persisted through a store), JWT (a signed
+/// assertion verified against the generated key), and developer token — thread a
+/// token as `Authorization: Bearer …` on the next call.
 const DRIVER: &str = r#"
 import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpExchange;
 import com.box.sdk.runtime.Runtime;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.PublicKey;
+import java.security.Signature;
+import java.util.Base64;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 public final class RuntimeSmoke {
     static void check(boolean cond, String msg) {
@@ -66,16 +77,38 @@ public final class RuntimeSmoke {
         }
     }
 
-    static void respond(com.sun.net.httpserver.HttpExchange ex, int status, String body) throws java.io.IOException {
+    static void respond(HttpExchange ex, int status, String body) throws java.io.IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         ex.sendResponseHeaders(status, bytes.length);
         ex.getResponseBody().write(bytes);
         ex.close();
     }
 
+    static String formValue(String body, String key) {
+        for (String pair : body.split("&")) {
+            int eq = pair.indexOf('=');
+            if (eq > 0 && pair.substring(0, eq).equals(key)) {
+                return java.net.URLDecoder.decode(pair.substring(eq + 1), StandardCharsets.UTF_8);
+            }
+        }
+        return "";
+    }
+
     public static void main(String[] args) throws Exception {
+        // A key pair for the JWT flow: the runtime signs with the private key
+        // (as an unencrypted PKCS#8 PEM), the server verifies with the public one.
+        KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
+        kpg.initialize(2048);
+        KeyPair keyPair = kpg.generateKeyPair();
+        PublicKey publicKey = keyPair.getPublic();
+        String pem = "-----BEGIN PRIVATE KEY-----\n"
+            + Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.UTF_8))
+                .encodeToString(keyPair.getPrivate().getEncoded())
+            + "\n-----END PRIVATE KEY-----\n";
+
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         AtomicInteger retryHits = new AtomicInteger();
+        AtomicReference<String> savedRefresh = new AtomicReference<>();
 
         // 429 once, then 200 — the retry path.
         server.createContext("/retry", ex -> {
@@ -92,6 +125,34 @@ public final class RuntimeSmoke {
         // Echoes the Authorization header it received.
         server.createContext("/me", ex ->
             respond(ex, 200, "auth=" + ex.getRequestHeaders().getFirst("Authorization")));
+        // OAuth: mints access-oauth-<oldrt> and rotates the refresh token.
+        server.createContext("/oauth", ex -> {
+            String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            String oldRefresh = formValue(body, "refresh_token");
+            respond(ex, 200, "{\"access_token\":\"oauth-" + oldRefresh
+                + "\",\"expires_in\":3600,\"refresh_token\":\"rt-next\"}");
+        });
+        // JWT: verify the RS256 assertion against the public key before issuing.
+        server.createContext("/jwt", ex -> {
+            String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            String assertion = formValue(body, "assertion");
+            String[] parts = assertion.split("\\.");
+            try {
+                Signature verifier = Signature.getInstance("SHA256withRSA");
+                verifier.initVerify(publicKey);
+                verifier.update((parts[0] + "." + parts[1]).getBytes(StandardCharsets.UTF_8));
+                boolean valid = parts.length == 3
+                    && verifier.verify(Base64.getUrlDecoder().decode(parts[2]));
+                String claims = new String(Base64.getUrlDecoder().decode(parts[1]), StandardCharsets.UTF_8);
+                if (valid && claims.contains("\"box_sub_type\":\"enterprise\"")) {
+                    respond(ex, 200, "{\"access_token\":\"jwttok\",\"expires_in\":3600}");
+                } else {
+                    respond(ex, 401, "bad assertion");
+                }
+            } catch (Exception err) {
+                respond(ex, 500, err.getMessage());
+            }
+        });
 
         server.start();
         String base = "http://127.0.0.1:" + server.getAddress().getPort();
@@ -112,13 +173,28 @@ public final class RuntimeSmoke {
         String echoed = new String(Runtime.responseBytes(r2), StandardCharsets.UTF_8);
         check(echoed.equals("auth=Bearer tok123"), "ccg bearer header, got: " + echoed);
 
+        // OAuth: the seed refresh token is exchanged and the rotated one persisted.
+        Runtime.Auth oauth = Runtime.oauthWithStore(
+            new Runtime.OAuthConfig("cid", "csecret").tokenUrl(base + "/oauth"),
+            "rt-0", savedRefresh::set);
+        Runtime.Session oauthSession = new Runtime.Session(oauth);
+        check(oauthSession.accessToken().equals("oauth-rt-0"), "oauth token from rt-0");
+        check("rt-next".equals(savedRefresh.get()), "rotated refresh token persisted, got: " + savedRefresh.get());
+
+        // JWT: a signed assertion the server verifies against the key.
+        Runtime.Auth jwt = Runtime.jwt(
+            Runtime.JwtConfig.enterprise("cid", "csecret", "kid1", pem, null, "ent1")
+                .tokenUrl(base + "/jwt"));
+        Runtime.Session jwtSession = new Runtime.Session(jwt);
+        check(jwtSession.accessToken().equals("jwttok"), "jwt token");
+
         server.stop(0);
         System.out.println("RUNTIME_OK");
     }
 }
 "#;
 
-/// The fetch retry loop and the CCG auth flow work end to end against a real
+/// The fetch retry loop and all four auth flows work end to end against a real
 /// (in-process) HTTP server.
 #[test]
 fn the_runtime_retries_and_authenticates() {
@@ -163,5 +239,114 @@ fn the_runtime_retries_and_authenticates() {
     assert!(
         run.status.success() && stdout.contains("RUNTIME_OK"),
         "runtime behavior check failed:\nstdout: {stdout}\nstderr: {stderr}"
+    );
+}
+
+/// The VR-7 live-smoke driver: one authenticated `GET /users/me` per auth flow
+/// whose credentials are present in the environment (developer token, CCG,
+/// OAuth, JWT from a `box_config.json`). A clean no-op when none are set.
+const LIVE_SMOKE: &str = r#"
+import com.box.sdk.runtime.Runtime;
+
+public final class LiveSmoke {
+    static int ran = 0;
+
+    static void smoke(String name, Runtime.Auth auth) {
+        Runtime.Session session = new Runtime.Session(auth);
+        Runtime.Response response = session.fetch(session.newRequest("GET", session.baseUrl("api") + "/users/me"));
+        long code = Runtime.statusCode(response);
+        if (code != 200) {
+            System.out.println("FAIL " + name + ": status " + code + " "
+                + new String(Runtime.responseBytes(response), java.nio.charset.StandardCharsets.UTF_8));
+            System.exit(1);
+        }
+        System.out.println("OK " + name);
+        ran++;
+    }
+
+    static String env(String name) {
+        String value = System.getenv(name);
+        return value == null ? "" : value;
+    }
+
+    public static void main(String[] args) throws Exception {
+        if (!env("BOX_DEVELOPER_TOKEN").isEmpty()) {
+            smoke("developer", Runtime.developerToken(env("BOX_DEVELOPER_TOKEN")));
+        }
+        String clientId = env("BOX_CLIENT_ID");
+        String clientSecret = env("BOX_CLIENT_SECRET");
+        if (!clientId.isEmpty() && !clientSecret.isEmpty() && !env("BOX_ENTERPRISE_ID").isEmpty()) {
+            smoke("ccg", Runtime.clientCredentials(
+                Runtime.CcgConfig.enterprise(clientId, clientSecret, env("BOX_ENTERPRISE_ID"))));
+        }
+        if (!clientId.isEmpty() && !clientSecret.isEmpty() && !env("BOX_OAUTH_REFRESH_TOKEN").isEmpty()) {
+            smoke("oauth", Runtime.oauth(
+                new Runtime.OAuthConfig(clientId, clientSecret), env("BOX_OAUTH_REFRESH_TOKEN")));
+        }
+        if (!env("BOX_JWT_CONFIG").isEmpty()) {
+            String json = java.nio.file.Files.readString(java.nio.file.Path.of(env("BOX_JWT_CONFIG")));
+            smoke("jwt", Runtime.jwt(Runtime.JwtConfig.fromBoxConfig(json)));
+        }
+        System.out.println(ran == 0 ? "LIVESMOKE_SKIP (no credentials)" : "LIVESMOKE_OK");
+    }
+}
+"#;
+
+/// VR-7: the live smoke **compiles** under the standard gate (so it can't rot),
+/// and **runs** against a real Box account when credentials are present in the
+/// environment — mirroring the Rust runtime's `#[ignore]`d live smoke. In CI (no
+/// credentials) it is compiled but not run.
+#[test]
+fn the_live_smoke_compiles_and_runs_when_credentialed() {
+    if !jdk_available() {
+        eprintln!("SKIPPED: JDK not available; CI installs one and runs this gate");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("gantry-java-live-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let smoke = dir.join("LiveSmoke.java");
+    std::fs::write(&smoke, LIVE_SMOKE).unwrap();
+    let classes = dir.join("classes");
+    std::fs::create_dir_all(&classes).unwrap();
+
+    let javac = Command::new("javac")
+        .arg("--release")
+        .arg("21")
+        .arg("-d")
+        .arg(&classes)
+        .arg(runtime_src())
+        .arg(&smoke)
+        .output()
+        .unwrap();
+    assert!(
+        javac.status.success(),
+        "the live smoke failed to compile:\n{}",
+        String::from_utf8_lossy(&javac.stderr)
+    );
+
+    // Run only when at least one flow's credentials are set; otherwise the
+    // compile above is the signal (the smoke can't rot), mirroring `#[ignore]`.
+    let credentialed = ["BOX_DEVELOPER_TOKEN", "BOX_CLIENT_ID", "BOX_JWT_CONFIG"]
+        .iter()
+        .any(|var| std::env::var(var).is_ok_and(|v| !v.is_empty()));
+    if !credentialed {
+        let _ = std::fs::remove_dir_all(&dir);
+        eprintln!("SKIPPED live run: no BOX_* credentials in the environment (compiled clean)");
+        return;
+    }
+
+    let run = Command::new("java")
+        .arg("-cp")
+        .arg(&classes)
+        .arg("LiveSmoke")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        run.status.success() && stdout.contains("LIVESMOKE_OK"),
+        "live smoke failed:\nstdout: {stdout}\nstderr: {stderr}"
     );
 }

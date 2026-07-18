@@ -3211,3 +3211,52 @@ real runtime, not just the stub. `cargo test --workspace`, `fmt`, and
 proven no-drift against the generated code. Next: OAuth-refresh + JWT (RS256/PEM,
 all `java.security` built-ins) + the VR-7 live smoke, then pagination, docs,
 generated behavioral tests, and the NF-8 Maven artifact.
+
+## D-175 — Java backend, slice 6: OAuth + JWT auth flows, and the VR-7 live smoke (TR-Java.5, VR-7)
+
+**Context.** Slice 5 (D-174) shipped the runtime core with developer-token and
+CCG auth. This slice completes the auth surface — **OAuth-refresh** and **JWT**
+server auth — and adds the **VR-7 live smoke**, closing the Java runtime the way
+Rust's D-151 closed its runtime after D-150. All four Box auth flows now work.
+
+**OAuth-refresh with a durable rotated-token store.** `Runtime.oauth` /
+`oauthWithStore` exchange a `refresh_token` grant and cache the access token to
+expiry. Box **rotates** the refresh token on every exchange, so the newest one
+must survive a restart: `OAuthSource` persists the current token through a
+`RefreshTokenStore` **before** spending it (a crash mid-exchange never strands a
+rotated token) and again after the exchange returns a new one. `OAuthConfig`
+also carries `authorizeUrl` (the consent redirect) and `exchangeCode`
+(authorization-code → `Auth`, seeded with the returned refresh token) — the same
+surface as the Rust/TS runtimes.
+
+**JWT server auth, all `java.security` built-in — no third-party crypto.**
+`Runtime.jwt` parses the app's `box_config.json` RSA key **up front** (so a bad
+key fails at construction, not first request): encrypted PKCS#8 via
+`EncryptedPrivateKeyInfo` + a `PBEKeySpec` passphrase (the shape Box ships), or
+plain PKCS#8 via `PKCS8EncodedKeySpec` — both through `KeyFactory("RSA")`, no
+BouncyCastle. Each refresh RS256-signs (`Signature("SHA256withRSA")`) a fresh,
+**single-use** JWT bearer assertion — `iss`/`sub`/`box_sub_type`/`aud`, a random
+`jti` (UUID), a 45s `exp` — base64url-encoded, and exchanges it at the token
+endpoint. `JwtConfig.fromBoxConfig` reads a `box_config.json` directly (via the
+runtime's own tiny JSON reader, since it can't depend on the SDK's codec).
+
+**VR-7 live smoke.** A driver does one authenticated `GET /users/me` per auth
+flow whose credentials are present in the environment (`BOX_DEVELOPER_TOKEN`;
+`BOX_CLIENT_ID`+`BOX_CLIENT_SECRET`+`BOX_ENTERPRISE_ID`; the same +
+`BOX_OAUTH_REFRESH_TOKEN`; `BOX_JWT_CONFIG` → a `box_config.json`) — the same
+variables the Go/Rust runtimes use. It **compiles** under the gate (so it can't
+rot) and **runs** only when credentialed — a clean no-op otherwise, mirroring the
+Rust runtime's `#[ignore]`d smoke.
+
+**Verification.** The runtime still compiles warning-clean under `javac --release
+21 -Xlint:all -Werror`, and the behavioral `HttpServer` test now covers **all
+four flows** end to end — including a **JWT assertion the test verifies against
+its own generated key** (the runtime signs, the server checks the RS256 signature
+and the `box_sub_type` claim before issuing a token) and an **OAuth exchange that
+rotates and persists** the refresh token. The swap test (FR-5.2) is unchanged and
+still green. `cargo test --workspace`, `fmt`, and `clippy -D warnings` all clean.
+
+**Result.** The Java runtime is **feature-complete for all four Box auth flows**
+with a live-smoke harness — the runtime half of v5 is done. Remaining for a
+shipped v5: pagination, reference docs, generated behavioral tests, and the NF-8
+Maven artifact.
