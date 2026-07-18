@@ -2973,3 +2973,49 @@ them. `generate --target java` is wired; a `java()` manifest is added
 **Result.** v5 Java has a compiling model layer on the real spec. Next slices:
 typed sealed-interface unions, then the JSON codec, managers/client, the
 `java.net.http` runtime + auth, docs, tests, and the NF-8 Maven artifact.
+
+## D-171 — Java backend, slice 2: typed sealed-interface unions (TR-Java.1)
+
+**Context.** Slice 1 (D-170) lowered structs/enums/aliases and left unions as a
+structural `record(Object value)` fallback. This slice adds the typed form —
+Java's natural `oneOf` shape, the sealed interface + record variants the D-164
+roadmap calls out — mirroring how Rust split models (D-147) from typed
+discriminated unions (D-148).
+
+**A sealed interface over the variant records.** A discriminated union whose
+every variant is a **same-package struct that carries the discriminator field**
+lowers to `sealed interface Name permits V1, V2 { … }`, and each variant record
+gains `implements Name`. Java records are implicitly `final`, so they satisfy a
+sealed hierarchy directly — no wrapper enum (as Rust needs) and no boxing: the
+variant *is* a permitted subtype. `permits` and `implements` are derived from
+one qualification pass (`plan_unions`), so they can't disagree — a mismatch is a
+`javac` error, not a silent bug.
+
+**Why the same-package + discriminator-carrying bar.** Two constraints gate the
+typed form. (1) A sealed `permits` across packages needs a *named module*
+(`module-info.java`); keeping every variant in the union's own package makes the
+sealed hierarchy legal with no module, and the variant reference needs no
+import. (2) Every variant must carry the discriminator field as its own
+component — that field *is* the serialized tag, so the typed form stays sound
+for the later serialization slice (the same invariant Rust's typed unions
+enforce). A union that misses either bar (no discriminator, a non-decl variant,
+a cross-package or tagless variant) stays the structural `record(Object value)`
+newtype.
+
+**Open vs closed.** An **open** union additionally permits a nested
+`record Unknown(Object value) implements Name {}` catch-all, so an unrecognized
+discriminator round-trips (VR-4); a **closed** union omits it and so will reject
+an unknown tag. The catch-all is nested inside the interface (`Name.Unknown`) so
+it needs no separate file and no name allocation, and can't collide with a
+schema type.
+
+**Serialization still deferred.** As in slice 1, this slice emits the *type
+structure* only — the tag-dispatching JSON codec (Java's stdlib ships no JSON)
+is the next slice, and will key off exactly this sealed hierarchy. On the real
+spec the backend now emits **23 sealed interfaces** (65 records implementing
+one) alongside 42 structural fallbacks, all compiling `javac --release 21
+-Xlint:all -Werror` clean (VR-1.6). Match arms over IR types stay enumerated
+(NF-1).
+
+**Result.** v5's union layer is now typed where the shape allows. Next: the JSON
+serialization codec, then managers/client, the runtime, docs, tests, and NF-8.
