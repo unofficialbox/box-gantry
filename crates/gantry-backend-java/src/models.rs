@@ -156,6 +156,120 @@ fn decl_carries_field(program: &ir::Program, id: ir::DeclId, wire_name: &str) ->
     )
 }
 
+/// One sealed union's shape, resolved for the generated behavioral tests
+/// (FR-7.8, VR-4) — reusing the same `plan_unions` allocation the codec does,
+/// so a test can never reference a union that lowered to the structural newtype.
+pub(crate) struct UnionTestRow {
+    /// The sealed interface's fully-qualified name.
+    pub(crate) union_fqn: String,
+    /// The discriminator wire name.
+    pub(crate) discriminator: String,
+    /// Whether the union is open (unknown tag → `Unknown`) or closed (rejects).
+    pub(crate) open: bool,
+    /// A representative variant whose minimal `{"disc":"value"}` JSON round-trips
+    /// (its only non-optional field is the discriminator): `(tag, variant_fqn)`.
+    /// `None` when every variant carries another required field.
+    pub(crate) known: Option<(String, String)>,
+}
+
+/// Every typed (sealed-interface) union, resolved for the round-trip tests.
+pub(crate) fn union_test_rows(program: &ir::Program) -> Vec<UnionTestRow> {
+    let packages = package_names(program);
+    let names = type_names(program);
+    let (plans, _) = plan_unions(program, &names);
+    let fqn = |id: ir::DeclId| {
+        format!(
+            "{MODEL_PKG}.{}.{}",
+            packages[&program.decl(id).module],
+            names[&id]
+        )
+    };
+    let mut rows = Vec::new();
+    for (i, decl) in program.decls.iter().enumerate() {
+        let id = ir::DeclId(i as u32);
+        let ir::DeclKind::Union(u) = &decl.kind else {
+            continue;
+        };
+        let Some(UnionPlan::Typed { open, .. }) = plans.get(&id) else {
+            continue;
+        };
+        let Some(discriminator) = u.discriminator.clone() else {
+            continue;
+        };
+        // A "safe" variant carries no required field beyond the discriminator, so
+        // `{"disc":"value"}` deserializes (matching the Rust rule, D-156).
+        let known = u.variants.iter().find_map(|v| {
+            let (Some(tag), ir::Type::Decl(vid)) = (&v.discriminator_value, &v.ty) else {
+                return None;
+            };
+            let ir::DeclKind::Struct(s) = &program.decl(*vid).kind else {
+                return None;
+            };
+            let safe = s
+                .fields
+                .iter()
+                .all(|f| f.wire_name == discriminator || matches!(f.ty, ir::Type::Optional(_)));
+            safe.then(|| (tag.clone(), fqn(*vid)))
+        });
+        rows.push(UnionTestRow {
+            union_fqn: fqn(id),
+            discriminator,
+            open: *open,
+            known,
+        });
+    }
+    rows
+}
+
+/// A real struct usable to exercise the model codec's tri-state (D-110): every
+/// field optional (so `{}` and `{"f":…}` both deserialize) with a `String`
+/// tri-state field to assert absent / null / value on. `None` if the spec has
+/// none (the test block is then skipped).
+pub(crate) struct TristateTarget {
+    pub(crate) struct_fqn: String,
+    pub(crate) wire_name: String,
+    pub(crate) accessor: String,
+}
+
+/// Find a struct suitable for the tri-state round-trip test, in declaration
+/// order (deterministic, FR-6.2).
+pub(crate) fn tristate_test_target(program: &ir::Program) -> Option<TristateTarget> {
+    let packages = package_names(program);
+    let names = type_names(program);
+    let is_string_tristate = |ty: &ir::Type| {
+        matches!(ty, ir::Type::Optional(inner)
+            if matches!(&**inner, ir::Type::Nullable(n) if matches!(**n, ir::Type::String)))
+    };
+    for (i, decl) in program.decls.iter().enumerate() {
+        let ir::DeclKind::Struct(s) = &decl.kind else {
+            continue;
+        };
+        if s.fields.is_empty()
+            || !s
+                .fields
+                .iter()
+                .all(|f| matches!(f.ty, ir::Type::Optional(_)))
+        {
+            continue;
+        }
+        let Some(tri) = s.fields.iter().find(|f| is_string_tristate(&f.ty)) else {
+            continue;
+        };
+        let id = ir::DeclId(i as u32);
+        let accessor = struct_components(s)
+            .into_iter()
+            .find(|(_, f)| f.wire_name == tri.wire_name)
+            .map(|(ident, _)| ident)
+            .expect("the tri-state field is a component of its own struct");
+        return Some(TristateTarget {
+            struct_fqn: format!("{MODEL_PKG}.{}.{}", packages[&decl.module], names[&id]),
+            wire_name: tri.wire_name.clone(),
+            accessor,
+        });
+    }
+    None
+}
+
 /// Generate one `.java` file per declaration (aliases resolve through, so they
 /// emit no file).
 pub fn generate_models(analysis: &Analysis<'_>, build: &BuildInfo) -> Vec<GeneratedFile> {
