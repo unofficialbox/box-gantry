@@ -370,7 +370,21 @@ fn render_decl(
         build.engine, build.spec_fingerprint
     );
     if !printer.imports.is_empty() {
-        for import in &printer.imports {
+        // A single module import declaration (JEP 511, Java 25+) collapses every
+        // `java.base` library import (`java.util.*`, `java.time.*`) into one line;
+        // non-`java.base` imports (the SDK's own `Tristate`) stay explicit. A
+        // locally declared type shadows an on-demand module import, so a model
+        // named like a `java.base` type can't be captured by it.
+        let base: Vec<&String> = printer.imports.iter().filter(|i| in_java_base(i)).collect();
+        let others: Vec<&String> = printer
+            .imports
+            .iter()
+            .filter(|i| !in_java_base(i))
+            .collect();
+        if !base.is_empty() {
+            content.push_str("import module java.base;\n");
+        }
+        for import in others {
             let _ = writeln!(content, "import {import};");
         }
         content.push('\n');
@@ -1042,6 +1056,14 @@ fn structural_union(name: &str) -> String {
     out
 }
 
+/// Whether an FQN import belongs to the `java.base` module — the model layer
+/// only ever imports `java.util.*` and `java.time.*`, both in `java.base`, so
+/// they collapse into a single `import module java.base;` (JEP 511). Anything
+/// else (the SDK's own `com.box.sdk.core.Tristate`) stays an explicit import.
+fn in_java_base(import: &str) -> bool {
+    import.starts_with("java.util.") || import.starts_with("java.time.")
+}
+
 /// A Java type name from an IR declaration name: PascalCase, guarded against the
 /// `java.lang` auto-imports and the library simple-names this backend imports,
 /// so a generated type never shadows them.
@@ -1395,8 +1417,12 @@ mod tests {
         assert!(out.contains("String id"), "{out}");
         // Optional<T> → java.util.Optional (imported).
         assert!(out.contains("Optional<String> displayName"), "{out}");
-        assert!(out.contains("import java.util.Optional;"), "{out}");
-        // Optional<Nullable<T>> → the tri-state wrapper (imported from core).
+        // java.base library types (java.util/java.time) collapse to one module
+        // import (JEP 511); no per-type `import java.util.Optional;` line.
+        assert!(out.contains("import module java.base;"), "{out}");
+        assert!(!out.contains("import java.util."), "{out}");
+        // Optional<Nullable<T>> → the tri-state wrapper (imported from core, kept
+        // explicit — not part of java.base).
         assert!(out.contains("Tristate<Long> size"), "{out}");
         assert!(out.contains("import com.box.sdk.core.Tristate;"), "{out}");
         // Keyword field → suffixed identifier.
