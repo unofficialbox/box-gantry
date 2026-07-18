@@ -78,6 +78,9 @@ struct PaginationPlan {
     stored: Vec<(String, String)>,
     /// The forwarded arguments to the plain method (stored idents).
     forward: Vec<String>,
+    /// The optional-parameter fields (the cursor included) copied into the
+    /// paginator's private working options, so the caller's object is untouched.
+    optional_fields: Vec<String>,
     /// The iterator's cursor-state field declaration (marker or offset).
     cursor_decl: String,
     /// The statement writing the cursor into the working options each page.
@@ -695,6 +698,16 @@ impl ManagerPrinter<'_> {
         }
         let forward: Vec<String> = stored.iter().map(|(ident, _)| ident.clone()).collect();
 
+        // Every optional parameter (the cursor included) — the fields the
+        // paginator copies into its private working options, so the caller's
+        // options object is never mutated and each pass is independent.
+        let optional_fields: Vec<String> = op
+            .params
+            .iter()
+            .filter(|p| matches!(p.ty, ir::Type::Optional(_)))
+            .map(|p| component_ident(p.name.as_str()))
+            .collect();
+
         let prefix = manager
             .class
             .strip_suffix("Manager")
@@ -709,6 +722,7 @@ impl ManagerPrinter<'_> {
             element: self.java_type(&paged.element),
             stored,
             forward,
+            optional_fields,
             cursor_decl,
             cursor_set,
             cursor_advance,
@@ -767,10 +781,12 @@ impl ManagerPrinter<'_> {
         out
     }
 
-    /// The top-level paginator class: an `Iterable` whose iterator drains a page
-    /// buffer, then fetches the next page through the plain method and advances
-    /// the cursor. Single-pass (the cursor advances in place) — the idiomatic
-    /// Java analogue of Rust's `Paginator::next` and TS's `async *` generator.
+    /// The top-level paginator class: a re-iterable `Iterable` whose iterator
+    /// drains a page buffer, then fetches the next page through the plain method
+    /// and advances the cursor. Each `iterator()` is an independent pass over a
+    /// private copy of the request options, so the caller's options object is
+    /// never mutated — the idiomatic Java analogue of Rust's `Paginator::next`
+    /// (which owns a cloned options) and TS's `async *` generator (a spread copy).
     fn paginator_file(&self, plan: &PaginationPlan, build: &BuildInfo) -> String {
         let PaginationPlan {
             class,
@@ -781,6 +797,7 @@ impl ManagerPrinter<'_> {
             element,
             stored,
             forward,
+            optional_fields,
             cursor_decl,
             cursor_set,
             cursor_advance,
@@ -795,7 +812,8 @@ impl ManagerPrinter<'_> {
             "/**\n * Paginator over {{@link {manager_class}#{method}}}, iterating every\n\
              \x20* {{@code {element}}} across pages (FR-7.3). Threads the response cursor back\n\
              \x20* into the request so callers can write {{@code for (var item : paginator)}}.\n\
-             \x20* Single-pass: the cursor advances in place as the pages are consumed.\n */"
+             \x20* Re-iterable: each {{@code iterator()}} is an independent pass over a private\n\
+             \x20* copy of the options, so the caller's options are never mutated.\n */"
         );
         let _ = writeln!(
             out,
@@ -818,6 +836,20 @@ impl ManagerPrinter<'_> {
         }
         out.push_str("        this.options = options;\n    }\n\n");
 
+        // A fresh private copy of the caller's options per pass (never mutate the
+        // caller's object), so every `iterator()` re-seeds the cursor from the
+        // originals and re-iteration is independent.
+        let _ = writeln!(
+            out,
+            "    private {options_ty} _freshOptions() {{\n\
+             \x20       {options_ty} _o = new {options_ty}();\n\
+             \x20       if (options != null) {{"
+        );
+        for field in optional_fields {
+            let _ = writeln!(out, "            _o.{field} = options.{field};");
+        }
+        out.push_str("        }\n        return _o;\n    }\n\n");
+
         // iterator()
         let _ = writeln!(out, "    @Override");
         let _ = writeln!(
@@ -831,7 +863,7 @@ impl ManagerPrinter<'_> {
         );
         let _ = writeln!(
             out,
-            "            private final {options_ty} _opts = options != null ? options : new {options_ty}();"
+            "            private final {options_ty} _opts = _freshOptions();"
         );
         out.push_str(cursor_decl);
         let _ = writeln!(
@@ -884,15 +916,18 @@ impl ManagerPrinter<'_> {
     }
 
     /// A Java expression yielding the page's element `List` (empty when the
-    /// `entries` field is absent/null), peeling the field's optionality layer.
+    /// `entries` field is absent or null), peeling the field's optionality layer.
     fn entries_expr(&self, ty: &ir::Type, acc: &str) -> String {
         match self.optionality_layer(ty).0 {
             OptLayer::Plain => acc.to_string(),
             OptLayer::Nullable => format!("{acc} != null ? {acc} : java.util.List.of()"),
             OptLayer::Optional => format!("{acc}.orElse(java.util.List.of())"),
-            OptLayer::Tristate => {
-                format!("{acc}.isPresent() ? {acc}.value() : java.util.List.of()")
-            }
+            // A `Tristate` PRESENT value is non-null by construction, but guard
+            // it anyway so absent, null, and present-with-value all coalesce to
+            // an empty list per the documented contract.
+            OptLayer::Tristate => format!(
+                "{acc}.isPresent() && {acc}.value() != null ? {acc}.value() : java.util.List.of()"
+            ),
         }
     }
 
@@ -1551,9 +1586,16 @@ mod tests {
         );
     }
 
+    /// How the envelope wraps its `entries` list, exercising each optionality
+    /// layer the model lowers (D-110).
+    enum Entries {
+        Plain,
+        Tristate,
+    }
+
     /// A marker-paginated program: `GET /items?marker=…` → `{ entries: [Item],
-    /// next_marker: String? }`. The building block for the pagination tests.
-    fn paged_program(cursor_ty: Type) -> ir::Program {
+    /// next_marker: … }`. The building block for the pagination tests.
+    fn paged_program(entries: Entries, cursor_ty: Type) -> ir::Program {
         let mut p = ir::Program::default();
         let item = p.add(Decl {
             name: ident("Item"),
@@ -1567,6 +1609,12 @@ mod tests {
                 }],
             }),
         });
+        let list = Type::List(Box::new(Type::Decl(item)));
+        let entries_ty = match entries {
+            Entries::Plain => list,
+            // Optional<Nullable<List<T>>> lowers to the tri-state wrapper.
+            Entries::Tristate => Type::Optional(Box::new(Type::Nullable(Box::new(list)))),
+        };
         let envelope = p.add(Decl {
             name: ident("Items"),
             module: ModulePath(vec![ident("schemas")]),
@@ -1576,7 +1624,7 @@ mod tests {
                     Field {
                         name: ident("entries"),
                         wire_name: "entries".into(),
-                        ty: Type::List(Box::new(Type::Decl(item))),
+                        ty: entries_ty,
                     },
                     Field {
                         name: ident("next_marker"),
@@ -1609,8 +1657,11 @@ mod tests {
 
     #[test]
     fn paged_operation_gets_an_iterable_paginator_and_a_paginate_constructor() {
-        let files = generated(&paged_program(Type::Optional(Box::new(Type::String))));
-        // The paginator is a single-pass `Iterable` over the element type.
+        let files = generated(&paged_program(
+            Entries::Plain,
+            Type::Optional(Box::new(Type::String)),
+        ));
+        // The paginator is a re-iterable `Iterable` over the element type.
         let pag = file_ending(&files, "managers/ItemsGetItemsPaginator.java");
         assert!(
             pag.contains(
@@ -1620,6 +1671,17 @@ mod tests {
         );
         assert!(
             pag.contains("public java.util.Iterator<com.box.sdk.model.schemas.Item> iterator() {"),
+            "{pag}"
+        );
+        // Each pass works on a private copy of the caller's options (never
+        // mutating the caller's object), seeded per `iterator()` call.
+        assert!(
+            pag.contains("private ItemsManager.GetItemsOptions _freshOptions() {"),
+            "{pag}"
+        );
+        assert!(pag.contains("_o.marker = options.marker;"), "{pag}");
+        assert!(
+            pag.contains("private final ItemsManager.GetItemsOptions _opts = _freshOptions();"),
             "{pag}"
         );
         // Marker style: the cursor threads through the options, terminating on an
@@ -1653,11 +1715,31 @@ mod tests {
     }
 
     #[test]
+    fn tristate_entries_coalesce_absent_and_null_to_an_empty_list() {
+        // entries: Optional<Nullable<List<Item>>> → Tristate<List<Item>>. The
+        // extraction must treat both absent and explicit-null as an empty list.
+        let files = generated(&paged_program(
+            Entries::Tristate,
+            Type::Optional(Box::new(Type::String)),
+        ));
+        let pag = file_ending(&files, "managers/ItemsGetItemsPaginator.java");
+        assert!(
+            pag.contains(
+                "java.util.List<com.box.sdk.model.schemas.Item> _items = _page.entries().isPresent() && _page.entries().value() != null ? _page.entries().value() : java.util.List.of();"
+            ),
+            "{pag}"
+        );
+    }
+
+    #[test]
     fn an_unsupported_cursor_shape_skips_only_the_paginator() {
         // A `next_marker` that is neither string nor int is a shape we don't
         // synthesize — the paginator is skipped, but the plain method still
         // ships (VR-6, never wrong code).
-        let files = generated(&paged_program(Type::Optional(Box::new(Type::Bool))));
+        let files = generated(&paged_program(
+            Entries::Plain,
+            Type::Optional(Box::new(Type::Bool)),
+        ));
         assert!(
             !files.iter().any(|f| f.path.ends_with("Paginator.java")),
             "no paginator should be emitted for an unsupported cursor shape"

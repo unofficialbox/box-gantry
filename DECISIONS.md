@@ -3261,7 +3261,7 @@ with a live-smoke harness — the runtime half of v5 is done. Remaining for a
 shipped v5: pagination, reference docs, generated behavioral tests, and the NF-8
 Maven artifact.
 
-## D-176 — Java backend, slice 7: pagination as single-pass `Iterable`s (TR-Java, FR-7.3)
+## D-176 — Java backend, slice 7: pagination as re-iterable `Iterable`s (TR-Java, FR-7.3)
 
 **Context.** The Java SDK shipped only each paged operation's plain single-page
 method. This slice generates a paginator per paged operation — the Java analogue
@@ -3277,10 +3277,13 @@ top-level `<Prefix><Method>Paginator` class in the managers package plus a
 java.lang.Iterable<Element>`; its `iterator()` returns an `Iterator` that drains
 a page buffer, then fetches the next page **through the plain method** (so the
 URL/param/body logic is never duplicated, FR-5.2) and advances the cursor. So
-callers write the idiom `for (var item : client.files.getFolderItemsPaginate(id))`
-— where Rust hand-rolls a `next()` state machine and TS leans on generator
-syntax, Java's for-each protocol carries the iteration. Like both, it is
-**single-pass**: the cursor advances in place as pages are consumed.
+callers write the idiom `for (var item : client.files.getFolderItemsPaginate(id, null))`
+(the options argument is always present — pass `null` for none) — where Rust
+hand-rolls a `next()` state machine and TS leans on generator syntax, Java's
+for-each protocol carries the iteration. It is **re-iterable**: each `iterator()`
+runs an independent pass over a **private copy** of the request options (seeded
+by `_freshOptions()`), so the caller's options object is never mutated —
+matching Rust's cloned-options paginator and TS's spread-copied generator.
 
 **Marker vs offset, threaded through the options object.** The generated manager
 options class exposes each optional param as a public mutable field, so the
@@ -3296,8 +3299,9 @@ follow).
 **Envelope-shape peeling, and the conservative fallback.** `entries` and the
 cursor field are reached through the model layer's optionality shapes (D-110): a
 plain value, a bare nullable reference, an `Optional<T>` (`.orElse(...)`), or a
-`Tristate<T>` (`.isPresent() ? .value() : …`) — an absent/null `entries`
-degrades to an empty list, an absent cursor stops iteration. A cursor shape the
+`Tristate<T>` (`.isPresent() && .value() != null ? .value() : …`) — an
+absent-or-null `entries` degrades to an empty list, an absent cursor stops
+iteration. A cursor shape the
 backend doesn't synthesize (a non-string `marker` param, a non-int `offset`
 param, or a `next_marker` that is neither string nor int) **skips only the
 paginator** — the plain method still ships (a documented VR-6 fallback, never
@@ -3314,6 +3318,7 @@ paginators* against both the stub (VR-1.6) and the real hand-written runtime
 public `for (var … : …Paginate(…))` idiom, so the whole paged path (Client field
 → paginate method → `Iterable<Element>` → element type) type-checks against the
 real runtime. Backend unit tests cover the marker paginator's shape, the
+private-copy `_freshOptions()`, the tri-state `entries` coalescing, the
 `<method>Paginate` constructor, and the unsupported-cursor fallback; generation
 stays deterministic (FR-6.2).
 
