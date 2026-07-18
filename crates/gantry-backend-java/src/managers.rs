@@ -14,12 +14,13 @@
 //! model types — is named by its fully-qualified name, so a manager file needs
 //! no imports and can't collide with a schema type.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
 use gantry_ir as ir;
 use gantry_ir::naming::{camel, pascal, snake};
 use gantry_sema::Analysis;
+use gantry_synth::{PageStyle, PagedOperation, detect_pagination};
 
 use crate::models::{
     JAVA_KEYWORDS, component_ident, dedupe, package_names, struct_components, type_names,
@@ -44,6 +45,47 @@ struct ManagerPlan {
     class: String,
     /// The `Client` field / constructor accessor, e.g. `files`.
     field: String,
+}
+
+/// A field type's optionality wrapper in the model layer (D-110): a plain
+/// value, a bare nullable reference, an `Optional<T>`, or a `Tristate<T>`.
+enum OptLayer {
+    Plain,
+    Nullable,
+    Optional,
+    Tristate,
+}
+
+/// Everything needed to synthesize one paged operation's paginator class and
+/// its `<method>Paginate` constructor (FR-7.3).
+struct PaginationPlan {
+    /// The top-level paginator class, e.g. `FilesGetFolderItemsPaginator`.
+    class: String,
+    /// The owning manager class, e.g. `FilesManager`.
+    manager_class: String,
+    /// The `<method>Paginate` constructor name.
+    paginate: String,
+    /// The plain method the paginator drives, e.g. `getFolderItems`.
+    method: String,
+    /// The nested options type, e.g. `FilesManager.GetFolderItemsOptions`.
+    options_ty: String,
+    /// The response envelope Java type.
+    envelope: String,
+    /// The element Java type yielded across pages.
+    element: String,
+    /// Stored constructor fields = required params (owned), then the body:
+    /// `(ident, java_type)`.
+    stored: Vec<(String, String)>,
+    /// The forwarded arguments to the plain method (stored idents).
+    forward: Vec<String>,
+    /// The iterator's cursor-state field declaration (marker or offset).
+    cursor_decl: String,
+    /// The statement writing the cursor into the working options each page.
+    cursor_set: String,
+    /// The per-page cursor-advance statements (marker or offset style).
+    cursor_advance: String,
+    /// The expression extracting the page's element `List` from `_page`.
+    entries_expr: String,
 }
 
 /// Allocate a collision-free class + field name per manager. `Analysis::managers`
@@ -94,15 +136,21 @@ pub fn generate_managers(analysis: &Analysis<'_>, build: &BuildInfo) -> Vec<Gene
         base_version,
         packages: package_names(program),
         names: type_names(program),
+        paged: detect_pagination(analysis)
+            .into_iter()
+            .map(|p| (p.operation, p))
+            .collect(),
     };
     let plans = plan_managers(analysis);
 
     let mut files = Vec::new();
     for plan in &plans {
+        let (content, paginators) = printer.manager_file(plan, build);
         files.push(GeneratedFile {
             path: java_path(MANAGERS_PKG, &plan.class),
-            content: printer.manager_file(plan, build),
+            content,
         });
+        files.extend(paginators);
     }
     files.push(GeneratedFile {
         path: java_path(ROOT_PKG, "Client"),
@@ -151,13 +199,16 @@ struct ManagerPrinter<'p> {
     base_version: Option<&'p ir::ApiVersion>,
     packages: BTreeMap<ir::ModulePath, String>,
     names: BTreeMap<ir::DeclId, String>,
+    /// Paged operations by operation index (FR-7.3), so a manager method that
+    /// pages also gets a `<method>Paginate` constructor + a paginator class.
+    paged: HashMap<usize, PagedOperation>,
 }
 
 impl ManagerPrinter<'_> {
     /// One manager's complete `.java` file: the class, its shared session, an
     /// operation method per grouped op, and a nested options class per op that
     /// has optional parameters.
-    fn manager_file(&self, plan: &ManagerPlan, build: &BuildInfo) -> String {
+    fn manager_file(&self, plan: &ManagerPlan, build: &BuildInfo) -> (String, Vec<GeneratedFile>) {
         // Method names dedup per manager, so distinct ops that normalize to the
         // same name stay distinct — and the options class reuses the name.
         let mut used: Vec<String> = Vec::new();
@@ -181,9 +232,28 @@ impl ManagerPrinter<'_> {
             "    public {}({SESSION} session) {{\n        this.session = session;\n    }}\n",
             plan.class
         );
+        let mut paginators = Vec::new();
         for (i, name) in &methods {
-            out.push_str(&self.operation(&self.program.operations[*i], name));
+            let op = &self.program.operations[*i];
+            out.push_str(&self.operation(op, name));
             out.push('\n');
+            // A paged operation also gets a `<method>Paginate` constructor plus a
+            // top-level paginator class (FR-7.3) — right after the plain method,
+            // which the paginator drives (URL/param/body logic is never dupli-
+            // cated). A cursor shape we don't synthesize skips only the paginator
+            // (the plain method still ships, VR-6), the same rule Rust/TS follow.
+            if let Some(pplan) = self
+                .paged
+                .get(i)
+                .and_then(|paged| self.pagination_plan(op, plan, name, paged))
+            {
+                out.push_str(&self.paginate_method(op, name, &pplan));
+                out.push('\n');
+                paginators.push(GeneratedFile {
+                    path: java_path(MANAGERS_PKG, &pplan.class),
+                    content: self.paginator_file(&pplan, build),
+                });
+            }
         }
         // Nested options classes, after the methods that reference them.
         for (i, name) in &methods {
@@ -194,7 +264,7 @@ impl ManagerPrinter<'_> {
         }
         out.truncate(out.trim_end().len());
         out.push_str("\n}\n");
-        out
+        (out, paginators)
     }
 
     /// One operation → a blocking method routing through the runtime contract.
@@ -502,6 +572,357 @@ impl ManagerPrinter<'_> {
                 );
             }
         }
+    }
+
+    // --- pagination (FR-7.3) -----------------------------------------------
+
+    /// Resolve everything needed to synthesize a paginator for `op`, or `None`
+    /// when the cursor shape is not one we generate (the plain method still
+    /// ships — a documented fallback, VR-6, never wrong code). Mirrors the Rust
+    /// (D-154) and TypeScript (D-165) pagination slices.
+    fn pagination_plan(
+        &self,
+        op: &ir::Operation,
+        manager: &ManagerPlan,
+        method: &str,
+        paged: &PagedOperation,
+    ) -> Option<PaginationPlan> {
+        // The response envelope (a struct) carries `entries` + the cursor field.
+        let ir::ResponseShape::Json(response_ty) = &op.response else {
+            return None;
+        };
+        let ir::DeclKind::Struct(envelope) = &self.program.decl(decl_of(response_ty)?).kind else {
+            return None;
+        };
+        let components = struct_components(envelope);
+        let component = |wire: &str| {
+            components
+                .iter()
+                .find(|(_, f)| f.wire_name == wire)
+                .map(|(ident, f)| (ident.clone(), (*f).clone()))
+        };
+        let (entries_ident, entries_field) = component(&paged.entries_wire)?;
+        let (cursor_ident, cursor_field) = component(&paged.cursor_wire)?;
+
+        // The cursor query parameter (detection guaranteed it is optional).
+        let cursor_param = op
+            .params
+            .iter()
+            .find(|p| p.location == ir::ParamLocation::Query && p.wire_name == paged.param_wire)?;
+        let param_ident = component_ident(cursor_param.name.as_str());
+
+        let entries_expr =
+            self.entries_expr(&entries_field.ty, &format!("_page.{entries_ident}()"));
+
+        // Marker: the request marker must be a string, the response cursor a
+        // string or int (converted). Offset: the request offset must be an int
+        // and we advance by page length (the response cursor is never read).
+        // Anything else is a shape we don't synthesize — skip the paginator.
+        let (cursor_decl, cursor_set, cursor_advance) = match paged.style {
+            PageStyle::Marker => {
+                if !matches!(unwrap_optionality(&cursor_param.ty), ir::Type::String) {
+                    return None;
+                }
+                let acc = format!("_page.{cursor_ident}()");
+                let next = self.cursor_expr(&cursor_field.ty, &acc);
+                let (_, inner) = self.optionality_layer(&cursor_field.ty);
+                let inner = self.resolve_alias(&inner);
+                // The response cursor is a string (threaded directly) or an int
+                // (stringified). Any other shape we don't synthesize — skip the
+                // paginator (`if`/`matches!`, not a wildcard `match` — NF-1).
+                let advance = if matches!(inner, ir::Type::String) {
+                    format!(
+                        "                    String _next = {next};\n\
+                         \x20                   if (_next != null && !_next.isEmpty()) {{\n\
+                         \x20                       _cursor = _next;\n\
+                         \x20                   }} else {{\n\
+                         \x20                       _done = true;\n\
+                         \x20                   }}\n"
+                    )
+                } else if matches!(inner, ir::Type::Int64) {
+                    format!(
+                        "                    Long _next = {next};\n\
+                         \x20                   if (_next != null) {{\n\
+                         \x20                       _cursor = _next.toString();\n\
+                         \x20                   }} else {{\n\
+                         \x20                       _done = true;\n\
+                         \x20                   }}\n"
+                    )
+                } else {
+                    return None;
+                };
+                (
+                    "            private String _cursor = _opts.".to_string()
+                        + &param_ident
+                        + ";\n",
+                    format!("                    _opts.{param_ident} = _cursor;\n"),
+                    advance,
+                )
+            }
+            PageStyle::Offset => {
+                if !matches!(unwrap_optionality(&cursor_param.ty), ir::Type::Int64) {
+                    return None;
+                }
+                (
+                    format!(
+                        "            private long _cursor = _opts.{param_ident} != null ? _opts.{param_ident} : 0L;\n"
+                    ),
+                    format!("                    _opts.{param_ident} = _cursor;\n"),
+                    "                    if (_items.isEmpty()) {\n\
+                     \x20                       _done = true;\n\
+                     \x20                   } else {\n\
+                     \x20                       _cursor += _items.size();\n\
+                     \x20                   }\n"
+                        .to_string(),
+                )
+            }
+        };
+
+        // Stored constructor fields = the operation's required params (path
+        // params included), then the body — everything the plain method needs
+        // besides the (threaded) options.
+        let mut stored: Vec<(String, String)> = op
+            .params
+            .iter()
+            .filter(|p| !matches!(p.ty, ir::Type::Optional(_)))
+            .map(|p| (component_ident(p.name.as_str()), self.java_type(&p.ty)))
+            .collect();
+        if let Some(body) = &op.request {
+            stored.push((
+                "body".to_string(),
+                self.java_type(unwrap_optionality(&body.ty)),
+            ));
+        }
+        let forward: Vec<String> = stored.iter().map(|(ident, _)| ident.clone()).collect();
+
+        let prefix = manager
+            .class
+            .strip_suffix("Manager")
+            .unwrap_or(&manager.class);
+        Some(PaginationPlan {
+            class: format!("{prefix}{}Paginator", pascal(method)),
+            manager_class: manager.class.clone(),
+            paginate: format!("{method}Paginate"),
+            method: method.to_string(),
+            options_ty: format!("{}.{}Options", manager.class, pascal(method)),
+            envelope: self.java_type(unwrap_optionality(response_ty)),
+            element: self.java_type(&paged.element),
+            stored,
+            forward,
+            cursor_decl,
+            cursor_set,
+            cursor_advance,
+            entries_expr,
+        })
+    }
+
+    /// The `<method>Paginate` constructor on the manager: same required args as
+    /// the plain method (path params, then the body), then the options, handing
+    /// them to the paginator over the shared session.
+    fn paginate_method(&self, op: &ir::Operation, method: &str, plan: &PaginationPlan) -> String {
+        let mut sig: Vec<String> = op
+            .params
+            .iter()
+            .filter(|p| !matches!(p.ty, ir::Type::Optional(_)))
+            .map(|p| {
+                format!(
+                    "{} {}",
+                    self.java_type(&p.ty),
+                    component_ident(p.name.as_str())
+                )
+            })
+            .collect();
+        if let Some(body) = &op.request {
+            sig.push(format!(
+                "{} body",
+                self.java_type(unwrap_optionality(&body.ty))
+            ));
+        }
+        sig.push(format!("{}Options options", pascal(method)));
+
+        let mut args = vec!["session".to_string()];
+        args.extend(plan.forward.iter().cloned());
+        args.push("options".to_string());
+
+        let mut out = String::new();
+        let _ = writeln!(
+            out,
+            "    /** Iterate every {} across pages, threading the cursor (FR-7.3). */",
+            plan.element
+        );
+        let _ = writeln!(
+            out,
+            "    public {} {}({}) {{",
+            plan.class,
+            plan.paginate,
+            sig.join(", ")
+        );
+        let _ = writeln!(
+            out,
+            "        return new {}({});",
+            plan.class,
+            args.join(", ")
+        );
+        out.push_str("    }\n");
+        out
+    }
+
+    /// The top-level paginator class: an `Iterable` whose iterator drains a page
+    /// buffer, then fetches the next page through the plain method and advances
+    /// the cursor. Single-pass (the cursor advances in place) — the idiomatic
+    /// Java analogue of Rust's `Paginator::next` and TS's `async *` generator.
+    fn paginator_file(&self, plan: &PaginationPlan, build: &BuildInfo) -> String {
+        let PaginationPlan {
+            class,
+            manager_class,
+            method,
+            options_ty,
+            envelope,
+            element,
+            stored,
+            forward,
+            cursor_decl,
+            cursor_set,
+            cursor_advance,
+            entries_expr,
+            ..
+        } = plan;
+
+        let mut out = header(build);
+        let _ = writeln!(out, "package {MANAGERS_PKG};\n");
+        let _ = writeln!(
+            out,
+            "/**\n * Paginator over {{@link {manager_class}#{method}}}, iterating every\n\
+             \x20* {{@code {element}}} across pages (FR-7.3). Threads the response cursor back\n\
+             \x20* into the request so callers can write {{@code for (var item : paginator)}}.\n\
+             \x20* Single-pass: the cursor advances in place as the pages are consumed.\n */"
+        );
+        let _ = writeln!(
+            out,
+            "public final class {class} implements java.lang.Iterable<{element}> {{"
+        );
+        let _ = writeln!(out, "    private final {SESSION} session;");
+        for (ident, ty) in stored {
+            let _ = writeln!(out, "    private final {ty} {ident};");
+        }
+        let _ = writeln!(out, "    private final {options_ty} options;\n");
+
+        // Constructor (package-private — callers use `<method>Paginate`).
+        let mut params = vec![format!("{SESSION} session")];
+        params.extend(stored.iter().map(|(ident, ty)| format!("{ty} {ident}")));
+        params.push(format!("{options_ty} options"));
+        let _ = writeln!(out, "    {class}({}) {{", params.join(", "));
+        out.push_str("        this.session = session;\n");
+        for (ident, _) in stored {
+            let _ = writeln!(out, "        this.{ident} = {ident};");
+        }
+        out.push_str("        this.options = options;\n    }\n\n");
+
+        // iterator()
+        let _ = writeln!(out, "    @Override");
+        let _ = writeln!(
+            out,
+            "    public java.util.Iterator<{element}> iterator() {{"
+        );
+        let _ = writeln!(out, "        return new java.util.Iterator<{element}>() {{");
+        let _ = writeln!(
+            out,
+            "            private final {manager_class} _manager = new {manager_class}(session);"
+        );
+        let _ = writeln!(
+            out,
+            "            private final {options_ty} _opts = options != null ? options : new {options_ty}();"
+        );
+        out.push_str(cursor_decl);
+        let _ = writeln!(
+            out,
+            "            private java.util.Iterator<{element}> _buffer = java.util.Collections.emptyIterator();"
+        );
+        out.push_str("            private boolean _done = false;\n\n");
+
+        out.push_str("            private void _advance() {\n");
+        out.push_str("                while (!_buffer.hasNext() && !_done) {\n");
+        out.push_str(cursor_set);
+        let _ = writeln!(
+            out,
+            "                    {envelope} _page = _manager.{method}({});",
+            {
+                let mut a = forward.clone();
+                a.push("_opts".to_string());
+                a.join(", ")
+            }
+        );
+        let _ = writeln!(
+            out,
+            "                    java.util.List<{element}> _items = {entries_expr};"
+        );
+        out.push_str("                    _buffer = _items.iterator();\n");
+        out.push_str(cursor_advance);
+        out.push_str("                }\n            }\n\n");
+
+        out.push_str(
+            "            @Override\n\
+             \x20           public boolean hasNext() {\n\
+             \x20               _advance();\n\
+             \x20               return _buffer.hasNext();\n\
+             \x20           }\n\n",
+        );
+        let _ = writeln!(out, "            @Override");
+        let _ = writeln!(out, "            public {element} next() {{");
+        out.push_str(
+            "                _advance();\n\
+             \x20               if (!_buffer.hasNext()) {\n\
+             \x20                   throw new java.util.NoSuchElementException();\n\
+             \x20               }\n\
+             \x20               return _buffer.next();\n\
+             \x20           }\n\
+             \x20       };\n\
+             \x20   }\n\
+             }\n",
+        );
+        out
+    }
+
+    /// A Java expression yielding the page's element `List` (empty when the
+    /// `entries` field is absent/null), peeling the field's optionality layer.
+    fn entries_expr(&self, ty: &ir::Type, acc: &str) -> String {
+        match self.optionality_layer(ty).0 {
+            OptLayer::Plain => acc.to_string(),
+            OptLayer::Nullable => format!("{acc} != null ? {acc} : java.util.List.of()"),
+            OptLayer::Optional => format!("{acc}.orElse(java.util.List.of())"),
+            OptLayer::Tristate => {
+                format!("{acc}.isPresent() ? {acc}.value() : java.util.List.of()")
+            }
+        }
+    }
+
+    /// A Java expression yielding the response cursor value (or `null` when
+    /// absent), peeling the field's optionality layer.
+    fn cursor_expr(&self, ty: &ir::Type, acc: &str) -> String {
+        match self.optionality_layer(ty).0 {
+            OptLayer::Plain | OptLayer::Nullable => acc.to_string(),
+            OptLayer::Optional => format!("{acc}.orElse(null)"),
+            OptLayer::Tristate => format!("{acc}.isPresent() ? {acc}.value() : null"),
+        }
+    }
+
+    /// Classify a field type's optionality wrapper (matching the model layer's
+    /// `component_type`, D-110) and return the inner base type. Top-level
+    /// aliases resolve through first, as the model does.
+    fn optionality_layer(&self, ty: &ir::Type) -> (OptLayer, ir::Type) {
+        // `if let` chains, not a `match`, so there is no wildcard over the many
+        // `ir::Type` variants (NF-1).
+        let ty = self.resolve_alias(ty);
+        if let ir::Type::Optional(inner) = &ty {
+            if let ir::Type::Nullable(nullable) = &**inner {
+                return (OptLayer::Tristate, (**nullable).clone());
+            }
+            return (OptLayer::Optional, (**inner).clone());
+        }
+        if let ir::Type::Nullable(inner) = &ty {
+            return (OptLayer::Nullable, (**inner).clone());
+        }
+        (OptLayer::Plain, ty)
     }
 
     /// A nested options class bundling the operation's optional parameters
@@ -822,6 +1243,26 @@ fn unwrap_optionality(ty: &ir::Type) -> &ir::Type {
     }
 }
 
+/// The declaration a type resolves to, peeling optionality; `None` for a
+/// non-declaration type.
+fn decl_of(ty: &ir::Type) -> Option<ir::DeclId> {
+    match unwrap_optionality(ty) {
+        ir::Type::Decl(id) => Some(*id),
+        ir::Type::Bool
+        | ir::Type::Int64
+        | ir::Type::Float64
+        | ir::Type::String
+        | ir::Type::Date
+        | ir::Type::DateTime
+        | ir::Type::Binary
+        | ir::Type::Optional(_)
+        | ir::Type::Nullable(_)
+        | ir::Type::List(_)
+        | ir::Type::Map(_)
+        | ir::Type::JsonValue => None,
+    }
+}
+
 /// camelCase, suffix-escaped if it collides with a Java keyword.
 fn keyword_safe(name: &str) -> String {
     if JAVA_KEYWORDS.contains(&name) {
@@ -1108,5 +1549,124 @@ mod tests {
             out.contains("_req = com.box.sdk.runtime.Runtime.withQuery(_req, \"fields\", String.join(\",\", _v));"),
             "{out}"
         );
+    }
+
+    /// A marker-paginated program: `GET /items?marker=…` → `{ entries: [Item],
+    /// next_marker: String? }`. The building block for the pagination tests.
+    fn paged_program(cursor_ty: Type) -> ir::Program {
+        let mut p = ir::Program::default();
+        let item = p.add(Decl {
+            name: ident("Item"),
+            module: ModulePath(vec![ident("schemas")]),
+            api_version: None,
+            kind: DeclKind::Struct(StructDecl {
+                fields: vec![Field {
+                    name: ident("id"),
+                    wire_name: "id".into(),
+                    ty: Type::String,
+                }],
+            }),
+        });
+        let envelope = p.add(Decl {
+            name: ident("Items"),
+            module: ModulePath(vec![ident("schemas")]),
+            api_version: None,
+            kind: DeclKind::Struct(StructDecl {
+                fields: vec![
+                    Field {
+                        name: ident("entries"),
+                        wire_name: "entries".into(),
+                        ty: Type::List(Box::new(Type::Decl(item))),
+                    },
+                    Field {
+                        name: ident("next_marker"),
+                        wire_name: "next_marker".into(),
+                        ty: cursor_ty,
+                    },
+                ],
+            }),
+        });
+        p.operations.push(Operation {
+            name: ident("get_items"),
+            variation: None,
+            manager: ident("items"),
+            api_version: None,
+            method: HttpMethod::Get,
+            base_url: BaseUrl::Api,
+            path: vec![PathSegment::Literal("items".into())],
+            params: vec![Param {
+                name: ident("marker"),
+                wire_name: "marker".into(),
+                location: ParamLocation::Query,
+                ty: Type::Optional(Box::new(Type::String)),
+            }],
+            request: None,
+            response: ResponseShape::Json(Type::Decl(envelope)),
+            deprecated: false,
+        });
+        p
+    }
+
+    #[test]
+    fn paged_operation_gets_an_iterable_paginator_and_a_paginate_constructor() {
+        let files = generated(&paged_program(Type::Optional(Box::new(Type::String))));
+        // The paginator is a single-pass `Iterable` over the element type.
+        let pag = file_ending(&files, "managers/ItemsGetItemsPaginator.java");
+        assert!(
+            pag.contains(
+                "public final class ItemsGetItemsPaginator implements java.lang.Iterable<com.box.sdk.model.schemas.Item> {"
+            ),
+            "{pag}"
+        );
+        assert!(
+            pag.contains("public java.util.Iterator<com.box.sdk.model.schemas.Item> iterator() {"),
+            "{pag}"
+        );
+        // Marker style: the cursor threads through the options, terminating on an
+        // absent/empty next_marker.
+        assert!(
+            pag.contains("private String _cursor = _opts.marker;"),
+            "{pag}"
+        );
+        assert!(pag.contains("_opts.marker = _cursor;"), "{pag}");
+        assert!(
+            pag.contains("if (_next != null && !_next.isEmpty()) {"),
+            "{pag}"
+        );
+        // It drives the plain method (URL/param/body logic is never duplicated).
+        assert!(
+            pag.contains("com.box.sdk.model.schemas.Items _page = _manager.getItems(_opts);"),
+            "{pag}"
+        );
+        // The manager exposes a `<method>Paginate` constructor returning it.
+        let mgr = file_ending(&files, "managers/ItemsManager.java");
+        assert!(
+            mgr.contains(
+                "public ItemsGetItemsPaginator getItemsPaginate(GetItemsOptions options) {"
+            ),
+            "{mgr}"
+        );
+        assert!(
+            mgr.contains("return new ItemsGetItemsPaginator(session, options);"),
+            "{mgr}"
+        );
+    }
+
+    #[test]
+    fn an_unsupported_cursor_shape_skips_only_the_paginator() {
+        // A `next_marker` that is neither string nor int is a shape we don't
+        // synthesize — the paginator is skipped, but the plain method still
+        // ships (VR-6, never wrong code).
+        let files = generated(&paged_program(Type::Optional(Box::new(Type::Bool))));
+        assert!(
+            !files.iter().any(|f| f.path.ends_with("Paginator.java")),
+            "no paginator should be emitted for an unsupported cursor shape"
+        );
+        let mgr = file_ending(&files, "managers/ItemsManager.java");
+        assert!(
+            mgr.contains("public com.box.sdk.model.schemas.Items getItems("),
+            "{mgr}"
+        );
+        assert!(!mgr.contains("getItemsPaginate"), "{mgr}");
     }
 }
