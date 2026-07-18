@@ -36,10 +36,12 @@
 mod docs;
 mod managers;
 mod models;
+mod tests;
 
 pub use docs::generate_docs;
 pub use managers::generate_managers;
 pub use models::generate_models;
+pub use tests::generate_tests;
 
 /// One generated file, path relative to the SDK project root.
 #[derive(Debug)]
@@ -117,6 +119,7 @@ pub fn generate(
     files.extend(generate_models(analysis, build));
     files.extend(generate_managers(analysis, build));
     files.extend(generate_docs(analysis));
+    files.extend(generate_tests(analysis));
     files.sort_by(|a, b| a.path.cmp(&b.path));
     files
 }

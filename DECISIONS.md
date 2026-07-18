@@ -3372,3 +3372,54 @@ deterministic.
 **Result.** The generated Java SDK now ships reference docs alongside the code.
 Remaining for a shipped v5: generated behavioral tests and the NF-8 Maven
 artifact.
+
+## D-178 — Java backend, slice 9: generated behavioral tests (FR-7.8, VR-4)
+
+**Context.** The generated Java SDK shipped models, managers, runtime, docs, and
+pagination, but no generated tests — the last capability the Rust (D-156) and
+TypeScript (D-166) backends closed before their conformance reports went green.
+This slice ports that work to Java: tests generated from the IR that compile
+*and pass* against the real generated codec.
+
+**No framework — a runnable `main`.** Java's standard library ships no test
+runner, and the project stays dependency-free, so the generated
+`src/test/java/com/box/sdk/GeneratedTests.java` is a plain class whose `main`
+runs every check and throws `AssertionError` on the first failure (printing
+`OK: <n> checks passed` on success) — the same shape as the existing
+`java`-executed round-trip gate. The backend gate compiles the whole SDK plus
+the test class and **runs** `java com.box.sdk.GeneratedTests`, asserting a clean
+exit. (`node --test` gave TypeScript a built-in runner; Java has none, so a
+self-checking `main` is the dependency-free analogue.)
+
+**What's covered.** A **per-union round-trip** for every typed (sealed-interface)
+union: known-tag dispatch selects the right variant record (only when a variant's
+minimal `{"disc":"value"}` JSON deserializes — its sole required field is the
+discriminator), the discriminator key survives a re-serialize (`toJson()` writes
+it back), and an unknown tag is **retained** in `Union.Unknown` for an open union
+/ **rejected** with `IllegalArgumentException` for a closed one (G-10/G-11, VR-4).
+Plus fixed **serialization** checks: date/date-time round-trips through the JSON
+tree, and — against a real struct discovered in the IR (every field optional, one
+a `String` tri-state) — the model codec's **tri-state** (D-110): absent omits the
+key, an explicit null reads back `isNull()`, a value round-trips. On the real
+specs: **45 checks** across 23 unions.
+
+**Robust by construction — one shared allocation.** Like the Rust slice, the test
+generator consumes the *same* `plan_unions` allocation the codec does (via a new
+`union_test_rows`), so a test can only reference a union that actually lowered to
+a sealed interface with an `Unknown` variant — never the structural `Object`
+newtype. Union/variant type names and the tri-state struct's accessor come from
+the same `type_names`/`struct_components` maps the models use, so the test code
+can't drift from the emitted surface. JSON literals are built through a JSON-then-
+Java escaping pair so both layers are always correct. Generation stays
+deterministic (FR-6.2).
+
+**Gate wiring.** `write_all` (the test harness) now writes the docs Markdown and
+the `src/test/java` source to disk but hands only `.java` to `javac`; the VR-1.6
+`-Werror` gate and the FR-5.2 swap gate both compile `GeneratedTests` alongside
+the SDK (so it type-checks under `-Xlint:all` and against the real runtime), and
+the new behavioral gate compiles + runs it. `cargo test --workspace`, `fmt`, and
+`clippy -D warnings` all clean.
+
+**Result.** The generated Java SDK now ships behavioral tests that run green
+against its own codec. Only the **NF-8 Maven ship artifact** remains for a
+shipped v5.

@@ -75,7 +75,9 @@ fn generation_is_deterministic() {
                 file.path
             );
             assert!(
-                file.path.starts_with("src/main/java/") && file.path.ends_with(".java"),
+                (file.path.starts_with("src/main/java/")
+                    || file.path.starts_with("src/test/java/"))
+                    && file.path.ends_with(".java"),
                 "unexpected path: {}",
                 file.path
             );
@@ -383,4 +385,71 @@ fn reference_docs_describe_the_java_surface() {
     );
     let errors = doc("docs/errors.md");
     assert!(errors.contains("BoxApiException"), "{errors}");
+}
+
+/// FR-7.8 / VR-4: the generated behavioral tests compile and **run** clean under
+/// the real toolchain — the Java analogue of the Rust `cargo test` (D-156) and
+/// TypeScript `node --test` (D-166) gates. There is no built-in test framework,
+/// so `GeneratedTests` is a plain `main` that exits non-zero on the first failed
+/// check; this gate compiles the whole SDK plus the test class and runs it.
+#[test]
+fn the_generated_behavioral_tests_pass_under_java() {
+    if Command::new("javac").arg("-version").output().is_err()
+        || Command::new("java").arg("-version").output().is_err()
+    {
+        eprintln!("SKIPPED: JDK not available; CI installs one and runs this gate");
+        return;
+    }
+    let files = generate();
+    assert!(
+        files
+            .iter()
+            .any(|f| f.path == "src/test/java/com/box/sdk/GeneratedTests.java"),
+        "the generated behavioral-test class should be emitted"
+    );
+
+    let dir = std::env::temp_dir().join(format!("gantry-java-bt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let sources = write_all(&dir, &files);
+
+    let argfile = dir.join("sources.txt");
+    let listing: String = sources
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&argfile, listing).unwrap();
+    let classes = dir.join("classes");
+    std::fs::create_dir_all(&classes).unwrap();
+
+    let javac = Command::new("javac")
+        .arg("--release")
+        .arg("21")
+        .arg("-d")
+        .arg(&classes)
+        .arg(format!("@{}", argfile.display()))
+        .output()
+        .unwrap();
+    assert!(
+        javac.status.success(),
+        "generated tests failed to compile:\n{}{}",
+        String::from_utf8_lossy(&javac.stdout),
+        String::from_utf8_lossy(&javac.stderr),
+    );
+
+    let run = Command::new("java")
+        .arg("-cp")
+        .arg(&classes)
+        .arg("com.box.sdk.GeneratedTests")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    let ok = run.status.success();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        ok && stdout.contains("OK:"),
+        "generated behavioral tests failed (FR-7.8, VR-4):\n{stdout}{stderr}"
+    );
 }
