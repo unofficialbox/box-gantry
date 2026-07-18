@@ -62,18 +62,115 @@ pub(crate) fn type_names(program: &ir::Program) -> BTreeMap<ir::DeclId, String> 
     map
 }
 
+/// How a union declaration lowers.
+enum UnionPlan {
+    /// A transparent `record(Object value)` — no discriminator, or a variant
+    /// that isn't a same-package, discriminator-carrying struct.
+    Structural,
+    /// A `sealed interface` over the variant records (Java's natural `oneOf`
+    /// shape, D-164). `permits` holds the variant type names (all same package);
+    /// an `open` union additionally permits a nested `Unknown` catch-all so an
+    /// unrecognized discriminator round-trips (VR-4), which a `closed` one omits.
+    Typed { permits: Vec<String>, open: bool },
+}
+
+/// Plan every union's lowering, and the reverse map from a variant decl to the
+/// sealed interfaces it must `implements`. Both come from one qualification
+/// pass, so `permits` and `implements` can't disagree (Java rejects a mismatch).
+fn plan_unions(
+    program: &ir::Program,
+    names: &BTreeMap<ir::DeclId, String>,
+) -> (
+    BTreeMap<ir::DeclId, UnionPlan>,
+    BTreeMap<ir::DeclId, Vec<String>>,
+) {
+    let mut plans = BTreeMap::new();
+    let mut implemented: BTreeMap<ir::DeclId, Vec<String>> = BTreeMap::new();
+    for (i, decl) in program.decls.iter().enumerate() {
+        let ir::DeclKind::Union(u) = &decl.kind else {
+            continue;
+        };
+        let union_id = ir::DeclId(i as u32);
+        match typed_union_variants(program, &decl.module, u) {
+            Some(ids) => {
+                let interface = names[&union_id].clone();
+                let permits = ids
+                    .iter()
+                    .map(|id| {
+                        implemented.entry(*id).or_default().push(interface.clone());
+                        names[id].clone()
+                    })
+                    .collect();
+                let open = matches!(u.extensibility, ir::Extensibility::Open);
+                plans.insert(union_id, UnionPlan::Typed { permits, open });
+            }
+            None => {
+                plans.insert(union_id, UnionPlan::Structural);
+            }
+        }
+    }
+    // Stable, deduped `implements` lists (a struct can be a variant of several
+    // unions).
+    for list in implemented.values_mut() {
+        list.sort();
+        list.dedup();
+    }
+    (plans, implemented)
+}
+
+/// The distinct variant decl ids of a discriminated union that qualifies for the
+/// typed sealed-interface form — every variant a **same-package** struct that
+/// carries the discriminator field (so a sealed `permits` is legal without a
+/// named module, and the tag survives the later serialization slice) — or
+/// `None` for the structural fallback.
+fn typed_union_variants(
+    program: &ir::Program,
+    union_module: &ir::ModulePath,
+    u: &ir::UnionDecl,
+) -> Option<Vec<ir::DeclId>> {
+    let discriminator = u.discriminator.as_deref()?;
+    let mut ids = Vec::new();
+    let mut seen = BTreeSet::new();
+    for variant in &u.variants {
+        match (&variant.discriminator_value, &variant.ty) {
+            (Some(_), ir::Type::Decl(id))
+                if program.decl(*id).module == *union_module
+                    && decl_carries_field(program, *id, discriminator) =>
+            {
+                if seen.insert(*id) {
+                    ids.push(*id);
+                }
+            }
+            _ => return None,
+        }
+    }
+    if ids.is_empty() { None } else { Some(ids) }
+}
+
+/// Whether a decl is a struct with a field serialized under `wire_name` — i.e.
+/// it carries its own discriminator, the invariant the typed union relies on.
+fn decl_carries_field(program: &ir::Program, id: ir::DeclId, wire_name: &str) -> bool {
+    matches!(
+        &program.decl(id).kind,
+        ir::DeclKind::Struct(s) if s.fields.iter().any(|f| f.wire_name == wire_name)
+    )
+}
+
 /// Generate one `.java` file per declaration (aliases resolve through, so they
 /// emit no file).
 pub fn generate_models(analysis: &Analysis<'_>, build: &BuildInfo) -> Vec<GeneratedFile> {
     let program = analysis.program;
     let packages = package_names(program);
     let names = type_names(program);
+    let (union_plans, implemented) = plan_unions(program, &names);
     let mut files = Vec::new();
     for (i, decl) in program.decls.iter().enumerate() {
         if let Some(file) = render_decl(
             program,
             &packages,
             &names,
+            &union_plans,
+            &implemented,
             ir::DeclId(i as u32),
             decl,
             build,
@@ -121,10 +218,13 @@ fn sanitize_lower(text: &str) -> String {
 
 /// Render one declaration into a complete `.java` file, or `None` for an alias
 /// (Java has no type alias — references resolve through to the target type).
+#[allow(clippy::too_many_arguments)]
 fn render_decl(
     program: &ir::Program,
     packages: &BTreeMap<ir::ModulePath, String>,
     names: &BTreeMap<ir::DeclId, String>,
+    union_plans: &BTreeMap<ir::DeclId, UnionPlan>,
+    implemented: &BTreeMap<ir::DeclId, Vec<String>>,
     id: ir::DeclId,
     decl: &ir::Decl,
     build: &BuildInfo,
@@ -139,10 +239,12 @@ fn render_decl(
         program,
         packages,
         names,
+        union_plans,
+        implemented,
         module: &decl.module,
         imports: BTreeSet::new(),
     };
-    let body = printer.decl(&name, decl);
+    let body = printer.decl(&name, id, decl);
 
     let api_version = decl
         .api_version
@@ -173,6 +275,10 @@ struct Printer<'p> {
     /// The per-package deduped type name for every declaration — the same map
     /// used for filenames, so a reference can't disagree with the file it names.
     names: &'p BTreeMap<ir::DeclId, String>,
+    /// How each union lowers (structural fallback vs typed sealed interface).
+    union_plans: &'p BTreeMap<ir::DeclId, UnionPlan>,
+    /// The sealed interfaces each variant decl must `implements`.
+    implemented: &'p BTreeMap<ir::DeclId, Vec<String>>,
     module: &'p ir::ModulePath,
     /// Fully-qualified imports this file needs (library types only; model
     /// cross-package references are inlined as FQNs, so they never collide).
@@ -180,11 +286,11 @@ struct Printer<'p> {
 }
 
 impl Printer<'_> {
-    fn decl(&mut self, name: &str, decl: &ir::Decl) -> String {
+    fn decl(&mut self, name: &str, id: ir::DeclId, decl: &ir::Decl) -> String {
         match &decl.kind {
-            ir::DeclKind::Struct(s) => self.struct_decl(name, s),
+            ir::DeclKind::Struct(s) => self.struct_decl(name, id, s),
             ir::DeclKind::Enum(e) => self.enum_decl(name, e),
-            ir::DeclKind::Union(u) => self.union_decl(name, u),
+            ir::DeclKind::Union(u) => self.union_decl(name, id, u),
             // Aliases are filtered out in `render_decl` before reaching here.
             ir::DeclKind::Alias(_) => unreachable!("aliases emit no file"),
         }
@@ -192,9 +298,15 @@ impl Printer<'_> {
 
     /// A struct lowers to an immutable `record` (the D-164 fit). Each field is a
     /// record component; the tri-state (D-110) picks the component's type shape.
-    fn struct_decl(&mut self, name: &str, s: &ir::StructDecl) -> String {
+    /// A struct that is a discriminated-union variant `implements` the union's
+    /// sealed interface(s) (all in the same package, so no import).
+    fn struct_decl(&mut self, name: &str, id: ir::DeclId, s: &ir::StructDecl) -> String {
+        let implements = match self.implemented.get(&id) {
+            Some(interfaces) => format!(" implements {}", interfaces.join(", ")),
+            None => String::new(),
+        };
         if s.fields.is_empty() {
-            return format!("public record {name}() {{}}\n");
+            return format!("public record {name}(){implements} {{}}\n");
         }
         // Distinct source names can normalize to the same Java identifier
         // (`displayName` and `display_name` both → `displayName`); a per-record
@@ -210,14 +322,21 @@ impl Printer<'_> {
             })
             .collect();
 
-        let single = format!("public record {name}({}) {{}}", components.join(", "));
+        let single = format!(
+            "public record {name}({}){implements} {{}}",
+            components.join(", ")
+        );
         if single.len() <= MAX_WIDTH {
             return format!("{single}\n");
         }
         let mut out = format!("public record {name}(\n");
         for (i, component) in components.iter().enumerate() {
             let last = i + 1 == components.len();
-            let tail = if last { ") {}" } else { "," };
+            let tail = if last {
+                format!("){implements} {{}}")
+            } else {
+                ",".to_string()
+            };
             let _ = writeln!(out, "    {component}{tail}");
         }
         out
@@ -282,12 +401,18 @@ impl Printer<'_> {
         out
     }
 
-    /// Unions lower to a structural `record(Object value)` fallback in this
-    /// slice. The typed sealed-interface-over-records form — Java's natural
-    /// `oneOf` shape (D-164) — is the next slice, mirroring how Rust split
-    /// models (D-147) from typed discriminated unions (D-148).
-    fn union_decl(&self, name: &str, _u: &ir::UnionDecl) -> String {
-        format!("public record {name}(Object value) {{}}\n")
+    /// A discriminated union whose variants are all same-package,
+    /// discriminator-carrying structs lowers to a `sealed interface` over those
+    /// records — Java's natural `oneOf` shape (D-164), mirroring Rust's typed
+    /// unions (D-148). Anything else stays a structural `record(Object value)`
+    /// newtype (no discriminator, a non-decl variant, or a cross-package one).
+    fn union_decl(&self, name: &str, id: ir::DeclId, _u: &ir::UnionDecl) -> String {
+        match self.union_plans.get(&id) {
+            Some(UnionPlan::Typed { permits, open }) => sealed_union(name, permits, *open),
+            Some(UnionPlan::Structural) | None => {
+                format!("public record {name}(Object value) {{}}\n")
+            }
+        }
     }
 
     /// A struct field's record-component type (the tri-state, D-110). Arms are
@@ -410,6 +535,35 @@ impl Printer<'_> {
 
 /// rustfmt-style soft column budget for keeping a record on one line.
 const MAX_WIDTH: usize = 100;
+
+/// Emit a `sealed interface` over a discriminated union's variant records. An
+/// `open` union also permits (and nests) an `Unknown` catch-all so an
+/// unrecognized discriminator round-trips (VR-4); a `closed` one omits it and so
+/// rejects unknown tags. The `permits` clause wraps to a continuation line when
+/// the declaration would overflow.
+fn sealed_union(name: &str, permits: &[String], open: bool) -> String {
+    let mut all: Vec<String> = permits.to_vec();
+    if open {
+        all.push(format!("{name}.Unknown"));
+    }
+    let permits_clause = format!("permits {}", all.join(", "));
+    let body = if open {
+        format!(
+            " {{\n    \
+             /** An unrecognized discriminator, retained verbatim (open union). */\n    \
+             record Unknown(Object value) implements {name} {{}}\n}}\n"
+        )
+    } else {
+        " {}\n".to_string()
+    };
+    // One line when it fits (up to the opening brace); otherwise wrap `permits`.
+    let head_len = "public sealed interface  {".len() + name.len() + permits_clause.len();
+    if head_len <= MAX_WIDTH {
+        format!("public sealed interface {name} {permits_clause}{body}")
+    } else {
+        format!("public sealed interface {name}\n    {permits_clause}{body}")
+    }
+}
 
 /// A Java type name from an IR declaration name: PascalCase, guarded against the
 /// `java.lang` auto-imports and the library simple-names this backend imports,
@@ -667,9 +821,19 @@ mod tests {
         let build = BuildInfo::new("testfp");
         let packages = package_names(program);
         let names = type_names(program);
-        render_decl(program, &packages, &names, id, program.decl(id), &build)
-            .expect("decl emits a file")
-            .content
+        let (plans, implemented) = plan_unions(program, &names);
+        render_decl(
+            program,
+            &packages,
+            &names,
+            &plans,
+            &implemented,
+            id,
+            program.decl(id),
+            &build,
+        )
+        .expect("decl emits a file")
+        .content
     }
 
     /// The `.java` path a decl renders to (or `None` for an alias).
@@ -677,7 +841,18 @@ mod tests {
         let build = BuildInfo::new("testfp");
         let packages = package_names(program);
         let names = type_names(program);
-        render_decl(program, &packages, &names, id, program.decl(id), &build).map(|f| f.path)
+        let (plans, implemented) = plan_unions(program, &names);
+        render_decl(
+            program,
+            &packages,
+            &names,
+            &plans,
+            &implemented,
+            id,
+            program.decl(id),
+            &build,
+        )
+        .map(|f| f.path)
     }
 
     #[test]
@@ -827,6 +1002,126 @@ mod tests {
         );
         let out = render(&p, u);
         assert!(out.contains("public record Pet(Object value) {}"), "{out}");
+    }
+
+    /// `Dog`/`Cat` structs (both carrying the `kind` discriminator) + a union
+    /// over them at extensibility `ext`.
+    fn union_program(ext: Extensibility) -> (ir::Program, ir::DeclId, ir::DeclId) {
+        let mut p = ir::Program::default();
+        let dog = add(
+            &mut p,
+            DeclKind::Struct(StructDecl {
+                fields: vec![Field {
+                    name: ident("kind"),
+                    wire_name: "kind".into(),
+                    ty: Type::String,
+                }],
+            }),
+            "Dog",
+        );
+        let cat = add(
+            &mut p,
+            DeclKind::Struct(StructDecl {
+                fields: vec![Field {
+                    name: ident("kind"),
+                    wire_name: "kind".into(),
+                    ty: Type::String,
+                }],
+            }),
+            "Cat",
+        );
+        let pet = add(
+            &mut p,
+            DeclKind::Union(UnionDecl {
+                discriminator: Some("kind".into()),
+                variants: vec![
+                    UnionVariant {
+                        discriminator_value: Some("dog".into()),
+                        ty: Type::Decl(dog),
+                    },
+                    UnionVariant {
+                        discriminator_value: Some("cat".into()),
+                        ty: Type::Decl(cat),
+                    },
+                ],
+                extensibility: ext,
+            }),
+            "Pet",
+        );
+        (p, dog, pet)
+    }
+
+    #[test]
+    fn open_discriminated_union_is_a_sealed_interface_with_unknown() {
+        let (p, dog, pet) = union_program(Extensibility::Open);
+        let iface = render(&p, pet);
+        assert!(
+            iface.contains("public sealed interface Pet permits Dog, Cat, Pet.Unknown {"),
+            "{iface}"
+        );
+        assert!(
+            iface.contains("record Unknown(Object value) implements Pet {}"),
+            "{iface}"
+        );
+        // The variant record implements the interface (same package, no import).
+        let dog_out = render(&p, dog);
+        assert!(dog_out.contains("implements Pet"), "{dog_out}");
+    }
+
+    #[test]
+    fn closed_discriminated_union_omits_the_unknown_catch_all() {
+        let (p, _dog, pet) = union_program(Extensibility::Closed);
+        let iface = render(&p, pet);
+        assert!(
+            iface.contains("public sealed interface Pet permits Dog, Cat {}"),
+            "{iface}"
+        );
+        assert!(!iface.contains("Unknown"), "{iface}");
+    }
+
+    #[test]
+    fn union_with_a_tagless_variant_falls_back_to_structural() {
+        // `Fish` lacks the `kind` discriminator field, so the typed form can't
+        // carry the tag — the union stays structural and Fish implements nothing.
+        let mut p = ir::Program::default();
+        let dog = add(
+            &mut p,
+            DeclKind::Struct(StructDecl {
+                fields: vec![Field {
+                    name: ident("kind"),
+                    wire_name: "kind".into(),
+                    ty: Type::String,
+                }],
+            }),
+            "Dog",
+        );
+        let fish = add(
+            &mut p,
+            DeclKind::Struct(StructDecl { fields: vec![] }),
+            "Fish",
+        );
+        let pet = add(
+            &mut p,
+            DeclKind::Union(UnionDecl {
+                discriminator: Some("kind".into()),
+                variants: vec![
+                    UnionVariant {
+                        discriminator_value: Some("dog".into()),
+                        ty: Type::Decl(dog),
+                    },
+                    UnionVariant {
+                        discriminator_value: Some("fish".into()),
+                        ty: Type::Decl(fish),
+                    },
+                ],
+                extensibility: Extensibility::Open,
+            }),
+            "Pet",
+        );
+        let out = render(&p, pet);
+        assert!(out.contains("public record Pet(Object value) {}"), "{out}");
+        let fish_out = render(&p, fish);
+        assert!(!fish_out.contains("implements"), "{fish_out}");
     }
 
     #[test]
