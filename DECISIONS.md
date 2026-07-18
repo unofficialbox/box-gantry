@@ -3524,8 +3524,9 @@ HTTP/3), run when credentialed.
 **Result.** The Java runtime negotiates HTTP/3 where available, with seamless
 fallback. Java 26 is now mandatory for the shipped artifact — the first of the
 roadmap's deferred 26-only enhancements to land. (Still deferred, and best done
-on 26+: structured concurrency for chunked uploads, scoped values, module import
-declarations, the PEM key API once it finalizes — currently preview in 25/26.)
+on 26+: structured concurrency for chunked uploads, scoped values, and the PEM
+key API once it finalizes — currently preview in 25/26. Module import
+declarations then landed in D-182.)
 
 ## D-181 — Java runtime: the live-smoke driver as a JDK 25 compact source file (JEP 512)
 
@@ -3552,10 +3553,10 @@ driver keeps its explicit class form — it is not the "entry point" the deferre
 item names, and an implicit class buys it nothing.
 
 **Result.** Two deferred JDK-26 items now landed (HTTP/3 in D-180, compact source
-here). Still deferred, and correctly held until finalized/justified: the PEM key
-API, structured concurrency, and primitive patterns (all preview in 25/26);
-scoped values and module import declarations (finalized but no compelling use in
-a blocking, FQN-referencing SDK).
+here); module import declarations follow in D-182 below. Still deferred, and
+correctly held until finalized/justified: the PEM key API, structured
+concurrency, and primitive patterns (all preview in 25/26); and scoped values
+(finalized but no compelling use in a blocking, FQN-referencing SDK).
 
 ## D-182 — Java models: module import declarations (JEP 511)
 
