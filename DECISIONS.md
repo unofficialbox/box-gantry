@@ -3149,3 +3149,65 @@ generation stays deterministic (FR-6.2). `cargo test --workspace`, `fmt`, and
 surface. Next: the hand-written `java.net.http` runtime + the four auth flows
 (the real implementation of this contract), then pagination, reference docs,
 generated behavioral tests, and the NF-8 Maven artifact.
+
+## D-174 — Java backend, slice 5: the hand-written `java.net.http` runtime (core + dev-token/CCG) (TR-Java.5, FR-5.2)
+
+**Context.** Slice 4 (D-173) generated managers that call a runtime contract and
+compile against a **stub**. This slice writes the **real** runtime that
+implements the contract — the first half, mirroring how the Rust runtime split
+its core + three flows (D-150) from JWT + live smoke (D-151). OAuth-refresh, JWT,
+and the VR-7 live smoke are the next slice.
+
+**One dependency-free file.** `runtimes/java/gantryruntime/.../Runtime.java` is
+pure JDK — `java.net.http.HttpClient` for transport, no third-party dependency —
+so it needs **no build tool**: the swap gate and its tests compile the source
+directly with `javac` (the TypeScript-runtime posture, not Rust's Cargo crate).
+The whole surface lives in one file — envelope types + `Session` as nested
+classes, free contract functions as `static` methods — so the swap is a
+**single-file overwrite** (the Java analogue of Rust's one-line re-export),
+which structurally guarantees zero package/name drift from the stub. The public
+surface is byte-compatible with what `java_stubs` emits (D-173), so the generated
+SDK compiles against it unchanged.
+
+**Blocking + exceptions, no context.** Unlike the async Rust/TS runtimes,
+`Session.fetch` is a **blocking** call returning `Response` directly, and a
+failure throws the unchecked `BoxApiException` — the Java manifest's Sync +
+Exceptions axes. There is no context/cancellation parameter (concurrency is the
+caller's business over virtual threads).
+
+**The retry policy, ported faithfully.** The fetch loop matches the Rust/TS
+reference: the token is acquired **once** before the loop; each attempt sets
+`Authorization: Bearer …`, sends, and on a transport error retries only
+idempotent methods (never past the budget). A **429** retries for any method, a
+**5xx** only for idempotent ones (a write is never silently replayed). Backoff is
+`500ms · 2ⁿ` capped at **30s** with full jitter; a numeric `Retry-After` raises
+the floor and a **300s** ceiling caps the result (Rust's deliberate two-tier cap,
+chosen over TS's single 30s). A **401** triggers **one** single-flight
+force-refresh past the token cache, consuming one attempt from the budget. The
+request body is fully buffered so a retry can replay it.
+
+**Auth: developer-token + CCG.** `Runtime.developerToken` is a fixed token (a
+persistent 401 surfaces rather than looping); `Runtime.clientCredentials` posts
+the CCG `client_credentials` grant (enterprise or user subject) to the token
+endpoint and caches the result until 60s before expiry behind a single-flight
+`ReentrantLock`. The `Auth` interface (`accessToken`/`forceRefresh`) and the
+`CachedToken` cache are shaped to accept OAuth and JWT next. The runtime can't
+depend on the SDK's generated JSON codec, so a tiny embedded reader parses the
+flat token response (`access_token`/`expires_in`).
+
+**Verification — three ways, all inside `cargo test --workspace`** (CI installs
+the JDK): (1) **standalone** — `Runtime.java` compiles warning-clean under the
+same `javac --release 21 -Xlint:all -Werror` bar as the SDK; (2) **behavioral** —
+an in-process `com.sun.net.httpserver.HttpServer` drives the real code, proving a
+429 is retried then succeeds (endpoint hit twice) and a CCG token is fetched and
+threaded as a bearer credential on the next call; (3) **contract conformance
+(FR-5.2)** — the new **swap test** overwrites the generated stub with this file
+and `javac`s the whole SDK plus a smoke driver that builds the `Client` from
+`Runtime.developerToken(...)`, so the manager surface type-checks against the
+real runtime, not just the stub. `cargo test --workspace`, `fmt`, and
+`clippy -D warnings` all clean.
+
+**Result.** The Java SDK now has a working, tested runtime for two auth flows and
+proven no-drift against the generated code. Next: OAuth-refresh + JWT (RS256/PEM,
+all `java.security` built-ins) + the VR-7 live smoke, then pagination, docs,
+generated behavioral tests, and the NF-8 Maven artifact.
