@@ -3019,3 +3019,65 @@ one) alongside 42 structural fallbacks, all compiling `javac --release 21
 
 **Result.** v5's union layer is now typed where the shape allows. Next: the JSON
 serialization codec, then managers/client, the runtime, docs, tests, and NF-8.
+
+## D-172 — Java backend, slice 3: the JSON serialization codec (TR-Java.2, VR-4)
+
+**Context.** Slices 1–2 (D-170/D-171) emitted the *type structure* — records,
+enums, and the sealed-interface unions — but no serialization, because Java's
+standard library ships no JSON (unlike serde, Go's `encoding/json`, or the
+native `JSON` in TS/Apex). This slice adds the wire codec: the last piece before
+the model layer can actually talk to Box.
+
+**A hand-written, dependency-free runtime.** `com.box.sdk.core.Json` is a
+minimal JSON reader/writer over a plain `Object` tree — `Map<String, Object>` /
+`List<Object>` / `String` / `Long` / `Double` / `Boolean` / `null`. `parse`
+recursive-descends a string into that tree; `write` serializes it back. Parsed
+objects are `LinkedHashMap`s, so written key order is stable (determinism,
+FR-6.2). It carries the typed coercions (`asString`/`asLong`/…) and generic
+`encodeList`/`decodeList`/`encodeMap`/`decodeMap` helpers the generated code
+leans on, so no unchecked cast ever escapes the runtime (the one
+`@SuppressWarnings("unchecked")` is localized to `asObject`/`asList`, whose
+inputs the parser itself produced). No third-party dependency — the same
+self-contained-runtime posture as the Go/Rust/TS backends.
+
+**A `toJson`/`fromJson` pair on every model type.** Rather than annotations
+(Java has none for this without a library) or reflection, each generated type
+carries its own codec, co-located like serde derives on the Rust models:
+
+- **Struct record** → `Map<String, Object> toJson()` building an ordered field
+  map, and `static X fromJson(Object)` reconstructing from the parsed tree. The
+  field ↔ **wire-name** mapping (kept distinct in the IR, so naming rules never
+  round-trip through JSON keys) is applied here.
+- **Open enum** → identity over its raw string (an unknown value round-trips,
+  D-012); **closed enum** → maps to/from each constant's wire spelling and
+  **rejects** an unrecognized value (the closed-vs-open contract).
+- **Sealed union** → the interface declares `Object toJson()` (a variant record's
+  `Map<String, Object> toJson()` overrides it covariantly) and a `static
+  fromJson` that reads the discriminator and **pattern-matches a `switch`** to
+  the right variant's `fromJson` — the exact dispatch the D-164 roadmap named.
+  An **open** union routes an unrecognized (or absent) tag to its `Unknown`
+  catch-all so it round-trips (VR-4); a **closed** one throws. The structural
+  fallback passes the raw value straight through.
+
+**The tri-state carries its weight here (D-110).** The `Tristate<T>` wrapper
+existed since slice 1 but only now does anything: `toJson` **omits** an absent
+field, writes an explicit `null` for a null one, and writes the value for a
+present one — Box's clear-on-update semantics — and `fromJson` distinguishes a
+missing key (absent) from a present `null` (`ofNull`). A plain `Optional<T>`
+omits when empty; a bare nullable reference always serializes (null included).
+
+**Verification — it round-trips, not just compiles.** Two gates. (1) The whole
+real-spec tree (900+ files) now carries codecs and still compiles `javac
+--release 21 -Xlint:all -Werror` clean (VR-1.6) — encode/decode arms are
+enumerated over `ir::Type`, never wildcarded, so a new IR type breaks the codec
+at compile time (NF-1). (2) A new `java`-executed round-trip test (VR-4) drives
+a generated SDK through real decode → inspect → re-encode: it asserts the
+tri-state's absent/null/value distinctions survive the wire, a plain optional's
+omission, a closed enum's wire value, union dispatch, and — the retention
+guarantee — that an unknown discriminator on an open union comes back through
+`Unknown` with its payload intact. Match arms stay enumerated; generation stays
+deterministic.
+
+**Result.** v5's model layer is now a working wire codec end to end. Next:
+managers/client, the `java.net.http` runtime + auth, reference docs, generated
+behavioral tests, and the NF-8 Maven artifact.
