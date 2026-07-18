@@ -370,9 +370,149 @@ public final class Runtime {
         }
     }
 
+    /** OAuth 2.0 authorization-code auth, resumed from a stored refresh token. */
+    public static Auth oauth(OAuthConfig config, String refreshToken) {
+        return new OAuthSource(config, refreshToken, null);
+    }
+
+    /**
+     * OAuth 2.0 auth that persists each rotated refresh token through a store,
+     * so a restart reloads the live token rather than one Box has invalidated.
+     */
+    public static Auth oauthWithStore(OAuthConfig config, String refreshToken, RefreshTokenStore store) {
+        return new OAuthSource(config, refreshToken, store);
+    }
+
+    /** A durable sink for the rotated refresh token (Box rotates it each exchange). */
+    public interface RefreshTokenStore {
+        void save(String refreshToken);
+    }
+
+    /** OAuth client configuration. */
+    public static final class OAuthConfig {
+        private static final String AUTHORIZE_URL = "https://account.box.com/api/oauth2/authorize";
+        private final String clientId;
+        private final String clientSecret;
+        private String tokenUrl = DEFAULT_TOKEN_URL;
+
+        public OAuthConfig(String clientId, String clientSecret) {
+            this.clientId = clientId;
+            this.clientSecret = clientSecret;
+        }
+
+        /** Override the token endpoint (custom deployments). */
+        public OAuthConfig tokenUrl(String url) {
+            this.tokenUrl = url;
+            return this;
+        }
+
+        /** The consent URL to redirect a user to (authorization-code flow). */
+        public String authorizeUrl(String redirectUri, String state) {
+            return AUTHORIZE_URL
+                    + "?response_type=code&client_id=" + encode(clientId)
+                    + "&redirect_uri=" + encode(redirectUri)
+                    + "&state=" + encode(state);
+        }
+
+        /** Exchange an authorization code for auth (seeded with the returned refresh token). */
+        public Auth exchangeCode(String code, String redirectUri) {
+            Map<String, String> form = new LinkedHashMap<>();
+            form.put("grant_type", "authorization_code");
+            form.put("code", code);
+            form.put("client_id", clientId);
+            form.put("client_secret", clientSecret);
+            form.put("redirect_uri", redirectUri);
+            TokenResult result = postTokenForm(tokenUrl, form);
+            if (result.refreshToken() == null) {
+                throw new BoxApiException("gantryruntime: code exchange returned no refresh_token");
+            }
+            return new OAuthSource(this, result.refreshToken(), null);
+        }
+    }
+
+    /** JWT server auth (signing-key assertions from a `box_config.json` key). */
+    public static Auth jwt(JwtConfig config) {
+        Signer signer = new Signer(config);
+        String tokenUrl = config.tokenUrl == null ? DEFAULT_TOKEN_URL : config.tokenUrl;
+        return new CachedToken(() -> postJwtToken(signer, config, tokenUrl));
+    }
+
+    /** JWT configuration — the fields Box's `box_config.json` carries. */
+    public static final class JwtConfig {
+        private final String clientId;
+        private final String clientSecret;
+        private final String publicKeyId;
+        private final String privateKeyPem;
+        private final String passphrase;
+        private final String subjectType;
+        private final String subjectId;
+        private String tokenUrl;
+
+        private JwtConfig(String clientId, String clientSecret, String publicKeyId, String privateKeyPem,
+                String passphrase, String subjectType, String subjectId) {
+            this.clientId = clientId;
+            this.clientSecret = clientSecret;
+            this.publicKeyId = publicKeyId;
+            this.privateKeyPem = privateKeyPem;
+            this.passphrase = passphrase;
+            this.subjectType = subjectType;
+            this.subjectId = subjectId;
+        }
+
+        /** Authenticate as the enterprise service account. */
+        public static JwtConfig enterprise(String clientId, String clientSecret, String publicKeyId,
+                String privateKeyPem, String passphrase, String enterpriseId) {
+            return new JwtConfig(clientId, clientSecret, publicKeyId, privateKeyPem, passphrase,
+                    "enterprise", enterpriseId);
+        }
+
+        /** Authenticate as a managed user. */
+        public static JwtConfig user(String clientId, String clientSecret, String publicKeyId,
+                String privateKeyPem, String passphrase, String userId) {
+            return new JwtConfig(clientId, clientSecret, publicKeyId, privateKeyPem, passphrase,
+                    "user", userId);
+        }
+
+        /** Override the token endpoint (custom deployments). */
+        public JwtConfig tokenUrl(String url) {
+            this.tokenUrl = url;
+            return this;
+        }
+
+        /** Parse a Box `box_config.json` into an enterprise JWT config. */
+        public static JwtConfig fromBoxConfig(String json) {
+            Map<String, Object> root = JsonLite.parseObject(json);
+            Map<String, Object> settings = childObject(root, "boxAppSettings");
+            Map<String, Object> appAuth = childObject(settings, "appAuth");
+            return enterprise(
+                    string(settings, "clientID"),
+                    string(settings, "clientSecret"),
+                    string(appAuth, "publicKeyID"),
+                    string(appAuth, "privateKey"),
+                    appAuth.get("passphrase") instanceof String p ? p : null,
+                    string(root, "enterpriseID"));
+        }
+
+        private static Map<String, Object> childObject(Map<String, Object> parent, String key) {
+            if (parent.get(key) instanceof Map<?, ?> child) {
+                Map<String, Object> out = new LinkedHashMap<>();
+                child.forEach((k, v) -> out.put(String.valueOf(k), v));
+                return out;
+            }
+            throw new BoxApiException("gantryruntime: box_config.json missing object '" + key + "'");
+        }
+
+        private static String string(Map<String, Object> parent, String key) {
+            if (parent.get(key) instanceof String value) {
+                return value;
+            }
+            throw new BoxApiException("gantryruntime: box_config.json missing string '" + key + "'");
+        }
+    }
+
     // ----------------------------------------------- token cache (single-flight)
 
-    private record TokenResult(String token, long ttlSeconds) {}
+    private record TokenResult(String token, long ttlSeconds, String refreshToken) {}
 
     private static final class CachedToken implements Auth {
         private final Supplier<TokenResult> refresh;
@@ -464,7 +604,220 @@ public final class Runtime {
             throw new BoxApiException("gantryruntime: token endpoint returned no access_token");
         }
         long ttl = parsed.get("expires_in") instanceof Number expires ? expires.longValue() : 0L;
-        return new TokenResult(accessToken, ttl);
+        String refreshToken = parsed.get("refresh_token") instanceof String rt ? rt : null;
+        return new TokenResult(accessToken, ttl, refreshToken);
+    }
+
+    /**
+     * The OAuth refresh-token source: caches the access token to expiry and
+     * rotates the refresh token Box returns on every exchange, persisting each
+     * new one through the store so a restart never replays a dead token.
+     */
+    private static final class OAuthSource implements Auth {
+        private final OAuthConfig config;
+        private final RefreshTokenStore store;
+        private final ReentrantLock lock = new ReentrantLock();
+        private String token = "";
+        private long expiryMillis;
+        private String refreshToken;
+        // The seed token is unpersisted until either saved or first successfully used.
+        private boolean refreshTokenPersisted;
+
+        OAuthSource(OAuthConfig config, String refreshToken, RefreshTokenStore store) {
+            this.config = config;
+            this.refreshToken = refreshToken;
+            this.store = store;
+            this.refreshTokenPersisted = store == null;
+        }
+
+        @Override
+        public String accessToken() {
+            lock.lock();
+            try {
+                if (!token.isEmpty() && System.currentTimeMillis() < expiryMillis - REFRESH_MARGIN_MS) {
+                    return token;
+                }
+                return exchange();
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        @Override
+        public String forceRefresh(String stale) {
+            lock.lock();
+            try {
+                if (!token.isEmpty() && !token.equals(stale)) {
+                    return token;
+                }
+                return exchange();
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        private String exchange() {
+            // Persist the current refresh token before spending it, so a crash
+            // mid-exchange doesn't strand a token Box may already have rotated.
+            if (!refreshTokenPersisted && store != null) {
+                store.save(refreshToken);
+                refreshTokenPersisted = true;
+            }
+            Map<String, String> form = new LinkedHashMap<>();
+            form.put("grant_type", "refresh_token");
+            form.put("refresh_token", refreshToken);
+            form.put("client_id", config.clientId);
+            form.put("client_secret", config.clientSecret);
+            TokenResult result = postTokenForm(config.tokenUrl, form);
+            if (result.refreshToken() != null && !result.refreshToken().equals(refreshToken)) {
+                refreshToken = result.refreshToken();
+                refreshTokenPersisted = false;
+                if (store != null) {
+                    store.save(refreshToken);
+                    refreshTokenPersisted = true;
+                }
+            }
+            token = result.token();
+            expiryMillis = System.currentTimeMillis() + result.ttlSeconds() * 1000L;
+            return token;
+        }
+    }
+
+    /**
+     * A parsed signing key plus the immutable claim inputs. Re-used across
+     * refreshes; each {@code assertion} call mints a fresh, single-use JWT.
+     */
+    private static final class Signer {
+        private final java.security.PrivateKey key;
+        private final String clientId;
+        private final String publicKeyId;
+        private final String subjectType;
+        private final String subjectId;
+
+        Signer(JwtConfig config) {
+            this.key = parseRsaPrivateKey(config.privateKeyPem, config.passphrase);
+            this.clientId = config.clientId;
+            this.publicKeyId = config.publicKeyId;
+            this.subjectType = config.subjectType;
+            this.subjectId = config.subjectId;
+        }
+
+        /** Build and RS256-sign the single-use JWT bearer assertion for the token endpoint. */
+        String assertion(String audience) {
+            String header = jsonObject(
+                    "alg", "RS256",
+                    "typ", "JWT",
+                    "kid", publicKeyId);
+            long exp = java.time.Instant.now().getEpochSecond() + 45;
+            String claims = "{"
+                    + "\"iss\":" + jsonString(clientId) + ","
+                    + "\"sub\":" + jsonString(subjectId) + ","
+                    + "\"box_sub_type\":" + jsonString(subjectType) + ","
+                    + "\"aud\":" + jsonString(audience) + ","
+                    + "\"jti\":" + jsonString(java.util.UUID.randomUUID().toString()) + ","
+                    + "\"exp\":" + exp
+                    + "}";
+            String signingInput = b64Url(header.getBytes(StandardCharsets.UTF_8))
+                    + "." + b64Url(claims.getBytes(StandardCharsets.UTF_8));
+            try {
+                java.security.Signature rsa = java.security.Signature.getInstance("SHA256withRSA");
+                rsa.initSign(key);
+                rsa.update(signingInput.getBytes(StandardCharsets.UTF_8));
+                return signingInput + "." + b64Url(rsa.sign());
+            } catch (java.security.GeneralSecurityException err) {
+                throw new BoxApiException("gantryruntime: signing JWT assertion: " + err.getMessage(), err);
+            }
+        }
+    }
+
+    private static TokenResult postJwtToken(Signer signer, JwtConfig config, String tokenUrl) {
+        Map<String, String> form = new LinkedHashMap<>();
+        form.put("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer");
+        form.put("assertion", signer.assertion(tokenUrl));
+        form.put("client_id", config.clientId);
+        form.put("client_secret", config.clientSecret);
+        return postTokenForm(tokenUrl, form);
+    }
+
+    // Decode a PEM RSA key: encrypted PKCS#8 when a passphrase is present (Box's
+    // box_config keys), else unencrypted PKCS#8. All java.security built-in.
+    private static java.security.PrivateKey parseRsaPrivateKey(String pem, String passphrase) {
+        try {
+            if (pem.contains("ENCRYPTED PRIVATE KEY")) {
+                if (passphrase == null) {
+                    throw new BoxApiException(
+                            "gantryruntime: private key is encrypted but no passphrase was given");
+                }
+                byte[] der = pemBody(pem, "ENCRYPTED PRIVATE KEY");
+                javax.crypto.EncryptedPrivateKeyInfo info = new javax.crypto.EncryptedPrivateKeyInfo(der);
+                javax.crypto.SecretKeyFactory factory =
+                        javax.crypto.SecretKeyFactory.getInstance(info.getAlgName());
+                javax.crypto.SecretKey secret =
+                        factory.generateSecret(new javax.crypto.spec.PBEKeySpec(passphrase.toCharArray()));
+                java.security.spec.PKCS8EncodedKeySpec spec = info.getKeySpec(secret);
+                return java.security.KeyFactory.getInstance("RSA").generatePrivate(spec);
+            }
+            if (pem.contains("BEGIN PRIVATE KEY")) {
+                byte[] der = pemBody(pem, "PRIVATE KEY");
+                return java.security.KeyFactory.getInstance("RSA")
+                        .generatePrivate(new java.security.spec.PKCS8EncodedKeySpec(der));
+            }
+            throw new BoxApiException(
+                    "gantryruntime: unsupported private key PEM (expected PKCS#8, encrypted or plain)");
+        } catch (java.security.GeneralSecurityException | java.io.IOException err) {
+            throw new BoxApiException("gantryruntime: parsing private key: " + err.getMessage(), err);
+        }
+    }
+
+    // The DER bytes inside a PEM block, with the armor and whitespace stripped.
+    private static byte[] pemBody(String pem, String label) {
+        String begin = "-----BEGIN " + label + "-----";
+        String end = "-----END " + label + "-----";
+        int from = pem.indexOf(begin);
+        int to = pem.indexOf(end);
+        if (from < 0 || to < 0) {
+            throw new BoxApiException("gantryruntime: malformed PEM (missing " + label + " armor)");
+        }
+        String base64 = pem.substring(from + begin.length(), to).replaceAll("\\s", "");
+        return java.util.Base64.getDecoder().decode(base64);
+    }
+
+    private static String b64Url(byte[] bytes) {
+        return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+    }
+
+    // A JSON object literal from alternating string key/value pairs.
+    private static String jsonObject(String... pairs) {
+        StringBuilder out = new StringBuilder("{");
+        for (int i = 0; i < pairs.length; i += 2) {
+            if (i > 0) {
+                out.append(',');
+            }
+            out.append(jsonString(pairs[i])).append(':').append(jsonString(pairs[i + 1]));
+        }
+        return out.append('}').toString();
+    }
+
+    private static String jsonString(String value) {
+        StringBuilder out = new StringBuilder("\"");
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            switch (c) {
+                case '"' -> out.append("\\\"");
+                case '\\' -> out.append("\\\\");
+                case '\n' -> out.append("\\n");
+                case '\r' -> out.append("\\r");
+                case '\t' -> out.append("\\t");
+                default -> {
+                    if (c < 0x20) {
+                        out.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        out.append(c);
+                    }
+                }
+            }
+        }
+        return out.append('"').toString();
     }
 
     // ---------------------------------------------------------------- helpers

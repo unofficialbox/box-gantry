@@ -32,18 +32,16 @@ caller's business over virtual threads).
   builders set the content type; `withMultipartBody` assembles a Box-style
   multipart body with a sanitized filename) and buffered response reads
   (`responseHeader` is case-insensitive and returns `""` when absent).
-- **Auth** — `Runtime.developerToken` (a fixed token) and
-  `Runtime.clientCredentials` (CCG server auth), the token cached until shortly
-  before expiry behind a single-flight `ReentrantLock`. The `Auth` interface
-  (`accessToken` / `forceRefresh`) and the cache are already shaped to accept
-  the OAuth-refresh and JWT flows in the next slice.
-
-> **Scope.** This runtime currently ships the **developer-token and CCG** auth
-> flows. **OAuth-refresh** (with a durable rotated-refresh-token store) and
-> **JWT** server auth (RS256-signed assertions from a `box_config.json` key, all
-> `java.security` built-ins), plus the **VR-7 live smoke** against a real Box
-> account, are the next runtime slice — mirroring how the Rust runtime split its
-> core (D-150) from JWT + smoke (D-151).
+- **Auth — all four Box flows.** `Runtime.developerToken` (a fixed token),
+  `Runtime.clientCredentials` (CCG server auth), `Runtime.oauth` /
+  `oauthWithStore` (authorization-code, resumed from a stored refresh token —
+  Box rotates the refresh token on every exchange, so each new one is persisted
+  through a `RefreshTokenStore` and the current one is saved *before* it is
+  spent), and `Runtime.jwt` (server auth: the app's `box_config.json` RSA key is
+  parsed up front — encrypted or plain PKCS#8, all `java.security` built-ins, no
+  third-party crypto — and each refresh RS256-signs a fresh, single-use JWT
+  bearer assertion). Tokens are cached until shortly before expiry behind a
+  single-flight `ReentrantLock`; a 401 triggers one force-refresh.
 
 ## Verification
 
@@ -53,11 +51,18 @@ Gated inside `cargo test --workspace` (the JDK is installed in CI), three ways:
   `javac --release 21 -Xlint:all -Werror` bar as the generated SDK
   (`crates/gantry-backend-java/tests/runtime.rs`).
 - **Behavioral** — an in-process `com.sun.net.httpserver.HttpServer` drives the
-  real code: a 429 is retried and then succeeds, and a CCG token is fetched from
-  a token endpoint and threaded as `Authorization: Bearer …` on the next call
-  (same file).
+  real code end to end: a 429 is retried and then succeeds, a CCG token is
+  threaded as `Authorization: Bearer …`, an OAuth exchange rotates and persists
+  the refresh token, and a JWT assertion is RS256-signed and **verified against
+  the generated key** by the server before it issues a token (same file).
 - **Contract conformance (FR-5.2)** — the generated SDK is compiled against this
   runtime: the swap test overwrites the generated stub with this file and
   `javac`s the whole SDK plus a smoke driver that builds the `Client` from
   `Runtime.developerToken(...)`
   (`crates/gantry-backend-java/tests/compile_output.rs`).
+- **Live smoke (VR-7)** — a driver does one authenticated `GET /users/me` per
+  auth flow whose credentials are in the environment (`BOX_DEVELOPER_TOKEN`;
+  `BOX_CLIENT_ID`+`BOX_CLIENT_SECRET`+`BOX_ENTERPRISE_ID`; `…`+
+  `BOX_OAUTH_REFRESH_TOKEN`; `BOX_JWT_CONFIG` → a `box_config.json`). It compiles
+  under the gate (so it can't rot) and runs only when credentialed — a clean
+  no-op otherwise (same file).
