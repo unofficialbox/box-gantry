@@ -2608,9 +2608,9 @@ a concrete reason, not for novelty:
   idempotency key) propagates through the call tree as an immutable `ScopedValue`
   instead of a `ThreadLocal`, safe across the virtual threads a blocking-API SDK
   spawns.
-- **Module Import Declarations** (Java 25) — generated files collapse framework
-  imports to `import module java.base;`, cutting generated-import boilerplate
-  (FR-6, determinism preserved).
+- **Module Import Declarations** (Java 25) — ✅ **done (D-182)**: generated model
+  files collapse `java.util`/`java.time` imports to `import module java.base;`,
+  cutting import boilerplate (FR-6, determinism preserved).
 - **Flexible Constructor Bodies** (Java 25) — model records and the JWT config
   validate their arguments *before* `super()`/`this()`, so a bad key or a
   malformed tri-state wrapper "fails loudly at construction" (the same guarantee
@@ -3556,3 +3556,37 @@ here). Still deferred, and correctly held until finalized/justified: the PEM key
 API, structured concurrency, and primitive patterns (all preview in 25/26);
 scoped values and module import declarations (finalized but no compelling use in
 a blocking, FQN-referencing SDK).
+
+## D-182 — Java models: module import declarations (JEP 511)
+
+**Context.** The third deferred Java-26 enhancement. Generated model files each
+carried per-type library imports (`import java.util.Optional;`,
+`import java.util.List;`, `import java.time.OffsetDateTime;`, …). JEP 511
+(**Module Import Declarations**, finalized in JDK 25) collapses all of a module's
+exported packages into one on-demand import.
+
+**The change.** The model layer only ever imports from `java.util` and
+`java.time` — both in `java.base` — so those collapse to a single
+`import module java.base;`. The SDK's own `com.box.sdk.core.Tristate` is not in
+`java.base`, so it stays an explicit single-type import. A generated model file
+now opens with at most two import lines regardless of how many `java.base` types
+it uses.
+
+**Safe against name capture.** A module import is on-demand, and both a
+locally-declared type and an explicit single-type import take precedence over it
+(JLS shadowing), so a Box model named like a `java.base` type (`List`, `Map`, …)
+can never be captured by the module import — the local record wins. The only real
+risk, an *ambiguous* on-demand reference, can't arise here: the model code
+references just `Optional`/`List`/`Map`/`LocalDate`/`OffsetDateTime`, each a
+unique simple name within `java.base`. Confirmed empirically: the whole real-spec
+tree (900 files) still compiles **`javac --release 26 -Xlint:all -Werror`** clean
+with the module import (VR-1.6), and against the real runtime (the FR-5.2 swap
+test) — the compiler is the oracle for any collision, and there is none.
+
+**Scoped to `java.base`.** The collapse is deliberately narrow (`in_java_base`
+matches only `java.util.`/`java.time.`): a future model import from a non-base
+module would stay explicit rather than be silently dropped. Generation stays
+deterministic (FR-6.2).
+
+**Result.** Cleaner generated model headers with no behavioral change. Item 3 of
+the deferred Java-26 list; finalized, no `--enable-preview` cost.
