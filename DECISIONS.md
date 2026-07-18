@@ -3423,3 +3423,58 @@ the new behavioral gate compiles + runs it. `cargo test --workspace`, `fmt`, and
 **Result.** The generated Java SDK now ships behavioral tests that run green
 against its own codec. Only the **NF-8 Maven ship artifact** remains for a
 shipped v5.
+
+## D-179 — Java backend, slice 10: NF-8 Maven ship artifact (publishable JAR)
+
+**Context.** Go ships a `go.mod` module, TypeScript a dual ESM/CJS npm package
+(D-167), Rust a `cargo publish`-clean crate (D-169). Java's NF-8 obligation is a
+**publishable Maven Central artifact** — a `mvn package` that builds the main +
+sources + javadoc JARs Central requires. This is the last slice before v5 is
+feature-complete.
+
+**Vendor the runtime, don't depend on it.** Until now the generated tree carried
+a compile *stub* for the runtime (`Runtime.java` from `gantry_contract::java_stubs`)
+so the SDK type-checks against the declared surface without the real runtime
+(FR-5.3) — but a package shipping only the stub isn't usable. The SDK is otherwise
+**dependency-free** (pure JDK), so — exactly like Go/Rust/TS — the release
+assembly **vendors the hand-written runtime** over the stub. Because the Java
+runtime is one file, this is the single-file overwrite the FR-5.2 swap test
+already performs: copy `runtimes/java/.../Runtime.java` over
+`src/main/java/com/box/sdk/runtime/Runtime.java`. The POM then declares **no
+`<dependencies>`** and the JAR is self-contained.
+
+**The POM.** `generate_ship` emits a `pom.xml` (jar packaging, compiled
+`--release 21` — the documented floor, so the artifact runs on JDK 21+ while the
+ship toolchain is 26) with the Maven Central metadata (`name`, `description`,
+`url`, MIT `license`, `developer`, `scm`) and the **source + javadoc plugins**
+bound to the `package` phase (javadoc set `doclint=none`/`failOnError=false`, as
+the generated javadoc is for humans, not a doc-lint gate). Plugin versions are
+pinned for reproducibility (NF-6). `groupId`/`artifactId`/`version` and the URL
+are placeholders (the reserved `.invalid` TLD, RFC 2606, so an un-substituted URL
+fails safe) that the release pipeline substitutes with the real coordinates and
+the FR-9 `MAJOR.MINOR.PATCH` — the same placeholder-then-pipeline shape Go's
+module tag and Rust's crate name use. A short `README.md` ships the install
+coordinates, a first call, and a pointer at the `docs/` tree.
+
+**The gate.** `the_generated_sdk_packages_for_publish` writes the whole tree
+(Java + docs + pom + README), vendors the runtime, and runs `mvn -B -ntp -q
+package`, asserting a clean exit **and** that all three jars
+(`box-sdk-0.1.0{,-sources,-javadoc}.jar`) land in `target/` — Maven Central's
+required set. It skips cleanly when `mvn` is absent (like the `javac` gate); CI
+installs Maven. No external system or secret is needed (unlike Apex's on-platform
+2GP job), so no separate packaging workflow — it runs in `cargo test --workspace`.
+The deterministic-output test additionally asserts the `pom.xml` + `README.md`
+are emitted and headed. The behavioral-test class under `src/test/java` compiles
+under the same `mvn package` (Surefire finds no framework tests and runs none —
+the generated tests execute via their own `java`-run gate), confirming the tree
+is Maven-buildable end to end.
+
+**Result.** NF-8 for Java is met: `mvn package` produces a self-contained,
+publishable artifact with sources and javadoc. **v5 (Java 26) is now
+feature-complete** — model layer, typed unions, codec, managers/client, the
+`java.net.http` runtime with all four auth flows + VR-7 smoke, pagination,
+reference docs, generated behavioral tests, and the ship artifact all landed and
+gated. The remaining step is a credentialed live-smoke run + the release tag (a
+pipeline/manual action, as with Go/Rust/TS), not engineering. With Go shipped and
+Apex/Rust/TypeScript/Java all feature-complete, **the five-target engine rewrite
+is complete** across every backend.
