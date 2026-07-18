@@ -246,57 +246,63 @@ fn the_runtime_retries_and_authenticates() {
 /// The VR-7 live-smoke driver: one authenticated `GET /users/me` per auth flow
 /// whose credentials are present in the environment (developer token, CCG,
 /// OAuth, JWT from a `box_config.json`). A clean no-op when none are set.
+// A JDK 25+ compact source file (JEP 512): no explicit class declaration and an
+// instance `void main()` — the script-shaped entry point the live smoke wants.
+// The gate compiles it with `javac` (the implicit class is named after the file,
+// `LiveSmoke`) and runs it with `java -cp classes LiveSmoke`, unchanged.
 const LIVE_SMOKE: &str = r#"
 import com.box.sdk.runtime.Runtime;
 
-public final class LiveSmoke {
-    static int ran = 0;
+int ran = 0;
 
-    static void smoke(String name, Runtime.Auth auth) {
-        Runtime.Session session = new Runtime.Session(auth);
-        Runtime.Response response = session.fetch(session.newRequest("GET", session.baseUrl("api") + "/users/me"));
-        long code = Runtime.statusCode(response);
-        if (code != 200) {
-            System.out.println("FAIL " + name + ": status " + code + " "
-                + new String(Runtime.responseBytes(response), java.nio.charset.StandardCharsets.UTF_8));
-            System.exit(1);
-        }
-        System.out.println("OK " + name);
-        ran++;
+void smoke(String name, Runtime.Auth auth) {
+    Runtime.Session session = new Runtime.Session(auth);
+    Runtime.Response response = session.fetch(session.newRequest("GET", session.baseUrl("api") + "/users/me"));
+    long code = Runtime.statusCode(response);
+    if (code != 200) {
+        System.out.println("FAIL " + name + ": status " + code + " "
+            + new String(Runtime.responseBytes(response), java.nio.charset.StandardCharsets.UTF_8));
+        System.exit(1);
     }
+    System.out.println("OK " + name);
+    ran++;
+}
 
-    static String env(String name) {
-        String value = System.getenv(name);
-        return value == null ? "" : value;
-    }
+String env(String name) {
+    String value = System.getenv(name);
+    return value == null ? "" : value;
+}
 
-    public static void main(String[] args) throws Exception {
-        if (!env("BOX_DEVELOPER_TOKEN").isEmpty()) {
-            smoke("developer", Runtime.developerToken(env("BOX_DEVELOPER_TOKEN")));
-        }
-        String clientId = env("BOX_CLIENT_ID");
-        String clientSecret = env("BOX_CLIENT_SECRET");
-        if (!clientId.isEmpty() && !clientSecret.isEmpty() && !env("BOX_ENTERPRISE_ID").isEmpty()) {
-            smoke("ccg", Runtime.clientCredentials(
-                Runtime.CcgConfig.enterprise(clientId, clientSecret, env("BOX_ENTERPRISE_ID"))));
-        }
-        if (!clientId.isEmpty() && !clientSecret.isEmpty() && !env("BOX_OAUTH_REFRESH_TOKEN").isEmpty()) {
-            smoke("oauth", Runtime.oauth(
-                new Runtime.OAuthConfig(clientId, clientSecret), env("BOX_OAUTH_REFRESH_TOKEN")));
-        }
-        if (!env("BOX_JWT_CONFIG").isEmpty()) {
-            String json = java.nio.file.Files.readString(java.nio.file.Path.of(env("BOX_JWT_CONFIG")));
-            smoke("jwt", Runtime.jwt(Runtime.JwtConfig.fromBoxConfig(json)));
-        }
-        System.out.println(ran == 0 ? "LIVESMOKE_SKIP (no credentials)" : "LIVESMOKE_OK");
+void main() throws Exception {
+    if (!env("BOX_DEVELOPER_TOKEN").isEmpty()) {
+        smoke("developer", Runtime.developerToken(env("BOX_DEVELOPER_TOKEN")));
     }
+    String clientId = env("BOX_CLIENT_ID");
+    String clientSecret = env("BOX_CLIENT_SECRET");
+    if (!clientId.isEmpty() && !clientSecret.isEmpty() && !env("BOX_ENTERPRISE_ID").isEmpty()) {
+        smoke("ccg", Runtime.clientCredentials(
+            Runtime.CcgConfig.enterprise(clientId, clientSecret, env("BOX_ENTERPRISE_ID"))));
+    }
+    if (!clientId.isEmpty() && !clientSecret.isEmpty() && !env("BOX_OAUTH_REFRESH_TOKEN").isEmpty()) {
+        smoke("oauth", Runtime.oauth(
+            new Runtime.OAuthConfig(clientId, clientSecret), env("BOX_OAUTH_REFRESH_TOKEN")));
+    }
+    if (!env("BOX_JWT_CONFIG").isEmpty()) {
+        String json = java.nio.file.Files.readString(java.nio.file.Path.of(env("BOX_JWT_CONFIG")));
+        smoke("jwt", Runtime.jwt(Runtime.JwtConfig.fromBoxConfig(json)));
+    }
+    System.out.println(ran == 0 ? "LIVESMOKE_SKIP (no credentials)" : "LIVESMOKE_OK");
 }
 "#;
 
 /// VR-7: the live smoke **compiles** under the standard gate (so it can't rot),
 /// and **runs** against a real Box account when credentials are present in the
 /// environment — mirroring the Rust runtime's `#[ignore]`d live smoke. In CI (no
-/// credentials) it is compiled but not run.
+/// credentials) it is compiled but not run. The driver is a JDK 25+ **compact
+/// source file** (JEP 512) — no class boilerplate, an instance `void main()` —
+/// which the gate's `javac` + `java -cp classes LiveSmoke` flow runs unchanged
+/// (the implicit class is named after the file). This is why the runtime floor
+/// is Java 26 (D-180); the compact form needs ≥ 25.
 #[test]
 fn the_live_smoke_compiles_and_runs_when_credentialed() {
     if !jdk_available() {

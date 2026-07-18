@@ -2618,8 +2618,8 @@ a concrete reason, not for novelty:
 - **Primitive patterns in `switch`** (Java 26 preview) — the sealed-interface
   union dispatch pattern-matches without manual boxing when a discriminator is a
   primitive.
-- **Compact Source Files + instance `main`** (Java 25) — the generated VR-7 live-
-  smoke / example entry point is a compact `void main()`, not a
+- **Compact Source Files + instance `main`** (Java 25) — ✅ **done (D-181)**: the
+  VR-7 live-smoke driver is now a compact `void main()`, not a
   `public class … static void main(String[])` ceremony.
 - **Compact Object Headers** (Java 25, standard) — a free 10–20% heap reduction
   for the model-heavy response graphs a Box SDK deserializes; no code change,
@@ -3526,3 +3526,33 @@ fallback. Java 26 is now mandatory for the shipped artifact — the first of the
 roadmap's deferred 26-only enhancements to land. (Still deferred, and best done
 on 26+: structured concurrency for chunked uploads, scoped values, module import
 declarations, the PEM key API once it finalizes — currently preview in 25/26.)
+
+## D-181 — Java runtime: the live-smoke driver as a JDK 25 compact source file (JEP 512)
+
+**Context.** With Java 26 the mandatory floor (D-180), the finalized JDK 25/26
+language features on the deferred list became usable in the runtime's own tooling.
+The smallest, zero-risk one: the **VR-7 live-smoke entry point**. It was a
+classic `public final class LiveSmoke { … public static void main(String[]) … }`
+driver; JEP 512 (**Compact Source Files + instance `main`**, finalized in JDK 25)
+lets a script-shaped entry point drop the class boilerplate entirely.
+
+**The change.** `LIVE_SMOKE` is now a compact source file: no class declaration,
+top-level fields/helpers, and an instance `void main()` (no `public static`, no
+`String[] args`). Only the driver string changed — the gate is untouched: `javac
+--release 26` compiles the compact file to a class named after the file
+(`LiveSmoke`), and `java -cp classes LiveSmoke` runs its instance `main`, exactly
+as before. Verified end-to-end under Corretto 26: it compiles clean and, run with
+no credentials, prints `LIVESMOKE_SKIP` via the instance main (the credentialed
+path is unchanged, exercised against real Box in the VR-7 run).
+
+**Scope — tooling only, no product surface.** The live smoke is a test/tooling
+driver, never shipped, so this touches no generated code and no compatibility
+promise (the floor is already 26 from D-180). The behavioral `RuntimeSmoke`
+driver keeps its explicit class form — it is not the "entry point" the deferred
+item names, and an implicit class buys it nothing.
+
+**Result.** Two deferred JDK-26 items now landed (HTTP/3 in D-180, compact source
+here). Still deferred, and correctly held until finalized/justified: the PEM key
+API, structured concurrency, and primitive patterns (all preview in 25/26);
+scoped values and module import declarations (finalized but no compelling use in
+a blocking, FQN-referencing SDK).
