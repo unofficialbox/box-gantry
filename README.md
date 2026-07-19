@@ -21,21 +21,17 @@ cargo run -p gantry-cli -- check \
 The `gantry` CLI has five subcommands: `check` (ingest + validate a spec
 set), `generate` (emit an SDK), `verify` (generate then compile with the
 target toolchain), `conform` (the R§1 capability checklist), and `diff` (the
-breaking-change report between two spec sets). The **Go SDK (v1) is shipped**;
-Apex (v2) is essentially complete; **Rust (v3) has reached full capability
-parity** with Go (`verify --target rust` gates the toolchain — rustfmt +
-`cargo check` + clippy + `cargo test` — while `conform --target rust` reports
-9/9 and gates the CI release check); and TypeScript (v4) is next — see
-[`PROGRESS.md`](./PROGRESS.md).
+breaking-change report between two spec sets). The **Go SDK (v1) is shipped**,
+and Apex (v2), Rust (v3), TypeScript (v4), and Java (v5) are feature-complete —
+each with a `verify` toolchain gate (formatter + compiler + tests) and a
+`conform` capability checklist gating the CI release check.
 
 ## Generating SDKs
 
 `generate` emits **one** target per run — `--target` takes a single manifest
-key and `--out` the output directory. Three targets are implemented in the CLI
-today: `go` (shipped), `apex` (near-complete), and `rust` (capability parity);
-`typescript` (v4) is planned and not yet selectable.
-The trailing arguments are the spec set: the base spec plus each versioned
-overlay, ingested together.
+key and `--out` the output directory. All five targets are selectable —
+`go`, `apex`, `rust`, `typescript`, and `java`. The trailing arguments are the
+spec set: the base spec plus each versioned overlay, ingested together.
 
 ```sh
 # One SDK — Apex into ./out/apex
@@ -87,10 +83,6 @@ Start here:
 | Doc | Role |
 |---|---|
 | [`ARCHITECTURE.md`](./ARCHITECTURE.md) | Components, the pipeline, directory breakdown |
-| [`PROGRESS.md`](./PROGRESS.md) | Effort-weighted percentage breakdown |
-| [`SCOPE.md`](./SCOPE.md) | One-page orientation and hard boundaries |
-| [`NEW_ENGINE_REQUIREMENTS.md`](./NEW_ENGINE_REQUIREMENTS.md) | Normative requirements, estimates, acceptance criteria |
-| [`REWRITE_ASSESSMENT.md`](./REWRITE_ASSESSMENT.md) | Why net-new, why Rust, lessons learned |
-| [`PLAN.md`](./PLAN.md) | Milestones, verification cadence, risks |
-| [`DECISIONS.md`](./DECISIONS.md) | Decision records |
-| [`ISSUES.md`](./ISSUES.md) | Engineering issue log |
+| [`NEW_ENGINE_REQUIREMENTS.md`](./NEW_ENGINE_REQUIREMENTS.md) | Normative requirements and acceptance criteria |
+| [`DECISIONS.md`](./DECISIONS.md) | Decision records (`D-###`) |
+| [`CONTRIBUTING.md`](./CONTRIBUTING.md) | How to build, test, and contribute |

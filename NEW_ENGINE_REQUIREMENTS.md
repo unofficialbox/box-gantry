@@ -1,9 +1,8 @@
 # 🏗️ box-gantry — New Codegen Engine Requirements
 
-Requirements for **box-gantry**, the net-new SDK generator described in
-[`REWRITE_ASSESSMENT.md`](./REWRITE_ASSESSMENT.md) and planned in
-[`PLAN.md`](./PLAN.md). This document is the normative specification for
-this repository. box-codegen is **consultable prior art**: its designs and
+Requirements for **box-gantry**, the net-new SDK generator. This document is
+the normative specification for this repository. box-codegen is **consultable
+prior art**: its designs and
 lessons inform this spec, but no requirement or acceptance criterion depends
 on its code or its output.
 
@@ -20,7 +19,7 @@ and lives in this repository.
 | ✅ | Satisfied — exists in this repository today |
 | 🔶 | Partial — a proven design or reference implementation exists in box-codegen to consult; the work must be re-expressed here (nothing is treated as verbatim-portable) |
 | ❌ | Not started — net-new work with no meaningful prior art |
-| **Est. hrs 👤 (🤖)** | Estimated effort in **human engineer-hours**, with **AI-agent-driven hours** in parentheses. The 🤖 column is derived mechanically at the ~3× throughput observed on the box-codegen Go target — it is not an independent estimate, and is re-baselined at each milestone exit (see PLAN.md) |
+| **Est. hrs 👤 (🤖)** | Estimated effort in **human engineer-hours**, with **AI-agent-driven hours** in parentheses. The 🤖 column is derived mechanically at the ~3× throughput observed on the box-codegen Go target — it is not an independent estimate |
 | **% Complete** | Section score: ✅ = 100, 🔶 = 50, ❌ = 0 per row, averaged. 🔶 credit reflects consultable designs, not code — this repository is 0 lines of engine code today |
 | MUST / SHOULD / MAY | RFC 2119 |
 | G-n / D-n | box-codegen's `ISSUES.md` / `DECISIONS.md` entries (prior art, in that repository; this repo's own decisions start at D-101 in [`DECISIONS.md`](./DECISIONS.md)) |
@@ -49,9 +48,8 @@ and lives in this repository.
 | **TOTAL** | **3,790 (1,142)** | **~14%** |
 
 > Hours are effort, not calendar: with agent-driven parallelism the calendar
-> path is PLAN.md (~6–8 months to v1). This roll-up is the project-start
-> snapshot (superseded by [`PROGRESS.md`](./PROGRESS.md) for live status); the
-> ~16% reflected that the Go
+> path was ~6–8 months to v1. This roll-up is the project-start
+> snapshot; the ~16% reflected that the Go
 > lowering design, fixture semantics, verification-loop procedure, and
 > feature designs (D-003…D-013) exist in box-codegen as prior art to
 > consult — the code in this repository starts at zero lines, and nothing

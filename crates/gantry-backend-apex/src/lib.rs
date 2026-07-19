@@ -11,7 +11,7 @@
 //!
 //! This first slice lowers the **model layer**: every schema declaration
 //! becomes a top-level Apex class. Managers, the client, serialization, and
-//! the Apex runtime land in later slices (see PLAN.md, M4). Because no Apex
+//! the Apex runtime land in later slices. Because no Apex
 //! toolchain runs here, the per-commit signal is structural + determinism
 //! tests; the scratch-org `sf project deploy validate` loop (VR-1.3) is the
 //! CI/merge gate once a Dev Hub is configured.
