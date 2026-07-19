@@ -3760,19 +3760,20 @@ GitHub org, applied per each registry's naming rules:
 | Go | module `github.com/unofficialbox/box-open-sdk` |
 | Rust | crate `box-open-sdk` |
 | npm | scoped `@unofficialbox/box-open-sdk` (with `publishConfig.access = public`) |
-| Maven | `io.github.unofficialbox:box-open-sdk` |
+| Maven | `dev.unofficialbox:box-open-sdk` |
 | Apex | namespace **`unbox`** (unchanged) |
 
 **Two ecosystem adaptations.** (1) **Maven** splits into `groupId:artifactId`;
 the artifactId is `box-open-sdk`, but the groupId must be a namespace we can
-verify on Central — `io.github.unofficialbox` (verified via the GitHub org), not
-`com.box` (Box's, unverifiable and misleading). (2) **Apex** namespaces are
+verify on Central — `dev.unofficialbox` (verified by DNS on the owned
+`unofficialbox.dev` domain), not `com.box` (Box's, unverifiable and misleading).
+(2) **Apex** namespaces are
 alphanumeric, ≤15 chars, no hyphens, so `box-open-sdk` is invalid there; `unbox`
 stays as-is per the existing D-142 registration.
 
 **Scope — publish coordinates only.** This changes the *published identity*, not
 in-code identifiers. Notably the generated **Java code still lives in the
-`com.box.sdk` package** (the `ROOT_PKG`); realigning that to the `io.github.unofficialbox`
+`com.box.sdk` package** (the `ROOT_PKG`); realigning that to the `dev.unofficialbox`
 namespace is a larger, separate change (every file/import/test) tracked as a
 follow-up. The Go module rename threaded through all generated imports; the Rust
 crate rename updated the `box_open_sdk::` identifier in the README + swap/roundtrip

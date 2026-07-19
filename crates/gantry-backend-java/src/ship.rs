@@ -8,19 +8,20 @@
 //! (a single-file overwrite, the same self-contained shape Go/Rust/TS ship),
 //! not declared as a dependency.
 //!
-//! `groupId`/`artifactId` are the community coordinates `io.github.unofficialbox`
-//! / `box-open-sdk` — a namespace we can verify on Maven Central (via the GitHub
-//! org) and a name that marks these as distinct from Box's official SDKs. The
-//! `version` is set by the release pipeline (`MAJOR.MINOR.PATCH` from the FR-9
-//! spec diff), as the Go module tag is. Note: the `groupId` is the *publish*
-//! coordinate; the generated Java **code** still lives in the `com.box.sdk`
-//! package (an in-code naming concern, tracked separately).
+//! `groupId`/`artifactId` are the community coordinates `dev.unofficialbox`
+//! / `box-open-sdk` — a namespace we verify on Maven Central via the
+//! `unofficialbox.dev` domain (DNS), and a name that marks these as distinct
+//! from Box's official SDKs. The `version` is set by the release pipeline
+//! (`MAJOR.MINOR.PATCH` from the FR-9 spec diff), as the Go module tag is. Note:
+//! the `groupId` is the *publish* coordinate; the generated Java **code** still
+//! lives in the `com.box.sdk` package (an in-code naming concern, tracked
+//! separately).
 
 use crate::{BuildInfo, GeneratedFile};
 
 /// The published Maven coordinates. The `version` is a default the release
 /// pipeline overrides with the FR-9 `MAJOR.MINOR.PATCH` (as Go/Rust do).
-const GROUP_ID: &str = "io.github.unofficialbox";
+const GROUP_ID: &str = "dev.unofficialbox";
 const ARTIFACT_ID: &str = "box-open-sdk";
 const VERSION: &str = "0.1.0";
 /// The project's GitHub home (also the Maven Central namespace we verify against).
