@@ -102,6 +102,25 @@ fn generation_is_deterministic() {
     assert!(once.iter().any(|f| f.path == "docs/auth.md"));
     assert!(once.iter().any(|f| f.path == "docs/pagination.md"));
     assert!(once.iter().any(|f| f.path == "docs/errors.md"));
+    // The chunked-upload guide ships with the orchestrator (the real spec has it).
+    let chunked_guide = once.iter().find(|f| f.path == "docs/chunked-upload.md");
+    assert!(
+        chunked_guide.is_some(),
+        "the chunked-upload guide should ship alongside BoxChunkedUpload on the real spec"
+    );
+    assert!(
+        chunked_guide.unwrap().content.contains("BoxChunkedUpload")
+            && chunked_guide.unwrap().content.contains("--enable-preview"),
+        "the chunked-upload guide should name the class and the opt-in preview flag"
+    );
+    // …and the index links it.
+    let index = once.iter().find(|f| f.path == "docs/README.md").unwrap();
+    assert!(
+        index
+            .content
+            .contains("[Chunked upload](chunked-upload.md)"),
+        "the docs index should link the chunked-upload guide"
+    );
     assert!(
         once.iter()
             .any(|f| f.path.starts_with("docs/managers/") && f.path.ends_with(".md"))
@@ -406,6 +425,12 @@ fn reference_docs_describe_the_java_surface() {
     );
     let errors = doc("docs/errors.md");
     assert!(errors.contains("BoxApiException"), "{errors}");
+    let chunked = doc("docs/chunked-upload.md");
+    assert!(
+        chunked.contains("new com.box.sdk.BoxChunkedUpload(client)")
+            && chunked.contains(".upload(bytes, \"large.bin\", folderId)"),
+        "{chunked}"
+    );
 }
 
 /// FR-7.8 / VR-4: the generated behavioral tests compile and **run** clean under

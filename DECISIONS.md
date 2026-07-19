@@ -3722,3 +3722,25 @@ JWT flow will be re-confirmed on the next credentialed dispatch.
 **Result.** Go's JWT server auth works with real Box `box_config.json` keys,
 closing a latent bug in the shipped Go runtime and restoring all four runtimes to
 green on the release live smoke.
+
+## D-186 — Java docs: a chunked-upload guide (doc parity for D-183)
+
+**Context.** D-183 added the `BoxChunkedUpload` orchestrator and documented it in
+the ship `README.md`, but the generated `docs/` guide tree (auth / pagination /
+errors, D-177) had no chunked-upload guide — the one shipped feature without a
+reference page.
+
+**The change.** `generate_docs` now emits a fourth guide, `docs/chunked-upload.md`
+(a `CHUNKED_UPLOAD_GUIDE` constant alongside the others), and the index links it.
+Both are **gated on `emits_chunked_upload(analysis)`** (VR-6): the guide and its
+index link ship only when the orchestrator itself does, so a synthetic spec that
+never emits `BoxChunkedUpload` gets neither a dangling guide nor a dead link. The
+guide mirrors the ship README — the `upload`/`uploadVersion` call sites, the
+opt-in `--enable-preview` note, the `BoxApiException` failure mode (cross-linked
+to the errors guide).
+
+**Verification.** The determinism gate asserts `docs/chunked-upload.md` ships on
+the real spec, names the class + the preview flag, and is linked from the index;
+the docs-content gate checks the real call sites. `cargo fmt`/`clippy` clean.
+
+**Result.** Every shipped Java feature now has a reference page — full doc parity.

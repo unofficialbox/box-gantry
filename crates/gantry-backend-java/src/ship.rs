@@ -187,18 +187,20 @@ fn readme() -> String {
          \n\
          ## Parallel chunked upload (opt-in)\n\
          \n\
-         The core SDK runs on a plain JDK 26. `BoxChunkedUpload` uploads a large\n\
-         file's parts **in parallel** using structured concurrency, a Java 26\n\
-         **preview** API — so it (and only it) needs `--enable-preview` at run time.\n\
-         Enable it to unlock the parallel path:\n\
+         The core SDK compiles and runs on a plain JDK 26. `BoxChunkedUpload`\n\
+         uploads a large file's parts **in parallel** using structured\n\
+         concurrency, a Java 26 **preview** API — so it is a preview-marked class,\n\
+         and code that calls it must pass `--enable-preview` at **both** compile\n\
+         and run time (with `--release 26` for `javac`) to unlock the parallel path:\n\
          \n\
          ```java\n\
-         // run with: java --enable-preview ...\n\
+         // compile: javac --release 26 --enable-preview ...\n\
+         // run:     java --enable-preview ...\n\
          var file = new com.box.sdk.BoxChunkedUpload(client)\n\
          \x20       .upload(bytes, \"large.bin\", folderId);\n\
          ```\n\
          \n\
-         Everything else works without the flag.\n\
+         Everything else compiles and runs without the flag.\n\
          \n\
          See the `docs/` directory for per-manager reference and the\n\
          authentication, pagination, and errors guides.\n"
