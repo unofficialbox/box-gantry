@@ -322,10 +322,13 @@ const CHUNKED_UPLOAD_GUIDE: &str = "# Chunked upload\n\n\
 Large files upload faster through `com.box.sdk.BoxChunkedUpload`, which splits the\n\
 content into parts and uploads them **in parallel** (create session → upload each\n\
 part with its `Content-Range` and SHA-1 → commit). It uses structured\n\
-concurrency, a Java 26 **preview** API, so it — and only it — needs\n\
-`--enable-preview` at run time; the rest of the SDK runs on a plain JDK 26.\n\n\
+concurrency, a Java 26 **preview** API. `BoxChunkedUpload` is therefore a\n\
+preview-marked class, so code that calls it must pass `--enable-preview` at\n\
+**both** compile and run time (with `--release 26` for `javac`) — the rest of\n\
+the SDK compiles and runs on a plain JDK 26, and only this class needs the flag.\n\n\
 ```java\n\
-// run with: java --enable-preview ...\n\
+// compile: javac --release 26 --enable-preview ...\n\
+// run:     java --enable-preview ...\n\
 var file = new com.box.sdk.BoxChunkedUpload(client)\n\
         .upload(bytes, \"large.bin\", folderId);\n\n\
 // or upload a new version of an existing file:\n\
