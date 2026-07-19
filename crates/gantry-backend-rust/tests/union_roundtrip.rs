@@ -79,7 +79,7 @@ fn synthetic_program() -> Program {
 }
 
 const ROUNDTRIP_TEST: &str = r#"
-use box_sdk::models::schemas::*;
+use box_open_sdk::models::schemas::*;
 
 #[test]
 fn open_union_dispatches_roundtrips_and_retains_unknown() {

@@ -123,18 +123,17 @@ pub fn generate(
 /// fields (lean feature set — `serde` + `alloc`, no clock/OS-timezone
 /// machinery). Carries the package metadata `cargo publish` requires; the
 /// release pipeline vendors the real runtime (adding its deps) and sets the
-/// real `name`/`version`/`repository` from the FR-9 spec-diff + release
-/// identity, as Go's module tag is set. The placeholder `repository` uses the
-/// reserved `.invalid` TLD (RFC 2606) precisely so an un-substituted value can
-/// never resolve to — and so never mislead a consumer toward — a real site.
+/// `version` from the FR-9 spec-diff, as Go's module tag is set. The crate name
+/// `box-open-sdk` (org `unofficialbox`) marks these as community SDKs, distinct
+/// from Box's official ones.
 fn cargo_toml() -> String {
     "[package]\n\
-     name = \"box-sdk\"\n\
+     name = \"box-open-sdk\"\n\
      version = \"0.1.0\"\n\
      edition = \"2021\"\n\
-     description = \"Generated Box API SDK for Rust.\"\n\
+     description = \"Generated Box API SDK for Rust (community, unofficial).\"\n\
      license = \"MIT\"\n\
-     repository = \"https://example.invalid/box-sdk\"\n\
+     repository = \"https://github.com/unofficialbox/box-open-sdk\"\n\
      readme = \"README.md\"\n\
      \n\
      [dependencies]\n\
@@ -153,7 +152,7 @@ fn readme() -> String {
      A generated Rust SDK for the Box API.\n\
      \n\
      ```rust,ignore\n\
-     let client = box_sdk::client::Client::new(box_sdk::runtime::Auth::developer_token(\"DEVELOPER_TOKEN\"));\n\
+     let client = box_open_sdk::client::Client::new(box_open_sdk::runtime::Auth::developer_token(\"DEVELOPER_TOKEN\"));\n\
      ```\n\
      \n\
      See the `docs/` tree for the manager reference and the authentication,\n\

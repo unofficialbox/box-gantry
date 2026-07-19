@@ -31,7 +31,7 @@ pub fn generate_models(analysis: &Analysis<'_>, build: &crate::BuildInfo) -> Vec
 
     let mut files = vec![GeneratedFile {
         path: "go.mod".to_string(),
-        content: "module boxgantry.invalid/boxsdk\n\ngo 1.23\n".to_string(),
+        content: "module github.com/unofficialbox/box-open-sdk\n\ngo 1.23\n".to_string(),
     }];
     for (module, indices) in &modules {
         files.push(render_module(program, module, indices, build));
@@ -333,7 +333,7 @@ impl Printer<'_> {
             ir::Type::String => "string".into(),
             ir::Type::Date => {
                 self.imports
-                    .insert("boxgantry.invalid/boxsdk/serialization");
+                    .insert("github.com/unofficialbox/box-open-sdk/serialization");
                 "serialization.Date".into()
             }
             ir::Type::DateTime => {
@@ -359,7 +359,7 @@ impl Printer<'_> {
     /// `serialization.Nullable[T]`, importing the package.
     fn nullable_type(&mut self, inner: &ir::Type) -> String {
         self.imports
-            .insert("boxgantry.invalid/boxsdk/serialization");
+            .insert("github.com/unofficialbox/box-open-sdk/serialization");
         format!("serialization.Nullable[{}]", self.bare_type(inner))
     }
 }
