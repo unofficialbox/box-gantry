@@ -43,10 +43,15 @@ jobs:
         run: |
           printf '%s' "$BOX_JWT_CONFIG_JSON" > "$RUNNER_TEMP/box_config.json"
           echo "BOX_JWT_CONFIG=$RUNNER_TEMP/box_config.json" >> "$GITHUB_ENV"
+      # Each runtime's smoke runs independently (`if: ${{ !cancelled() }}`) so one
+      # runtime's failure surfaces on its own step and doesn't mask the others'
+      # results; the job still fails overall if any runtime fails.
       - name: Run the Go live smoke (one call per auth flow + upload/download/paginate)
+        if: ${{ !cancelled() }}
         working-directory: runtimes/go
         run: go test -tags live -run TestLiveSmoke -v ./gantryruntime/...
       - name: Run the Rust live smoke (same flows, the hand-written reqwest/tokio runtime)
+        if: ${{ !cancelled() }}
         working-directory: runtimes/rust/gantryruntime
         # The OAuth refresh token rotates on use, so the Go step above already
         # consumed it — null it here so the Rust smoke skips OAuth rather than
@@ -57,6 +62,7 @@ jobs:
           BOX_OAUTH_REFRESH_TOKEN: ""
         run: cargo test --test livesmoke -- --ignored --nocapture
       - name: Run the TypeScript live smoke (same flows, the hand-written fetch runtime)
+        if: ${{ !cancelled() }}
         working-directory: runtimes/typescript/gantryruntime
         # Node's strip-only TS mode can't run the runtime's NodeNext `.js`
         # specifiers or parameter-property classes, so build to JS first, then
@@ -71,14 +77,14 @@ jobs:
           tsc -p tsconfig.livesmoke.json
           node --test dist-livesmoke/livesmoke.test.js
       - name: Run the Java live smoke (same flows, the hand-written java.net.http runtime)
+        if: ${{ !cancelled() }}
         # The VR-7 driver (D-175/D-181) compiles against the real runtime and
         # runs one authenticated `GET /users/me` per credentialed flow; the gate
-        # skips the run (compiles only) when no BOX_* creds are set. Rust honors
-        # rust-toolchain.toml automatically. OAuth's refresh token rotates on use
-        # and the Go step above already consumed it — null it so the Java smoke
-        # skips OAuth rather than failing on a stale token (Go covers the shared
-        # OAuth flow; Java covers developer/CCG/JWT live, its OAuth path sharing
-        # the CCG cached-refresh machinery the smoke does exercise).
+        # skips the run (compiles only) when no BOX_* creds are set. The Rust
+        # toolchain that runs this cargo test honors rust-toolchain.toml
+        # automatically. OAuth's refresh token rotates on use, so it's nulled here
+        # (Go covers the shared OAuth flow; Java covers developer/CCG/JWT live, its
+        # OAuth path sharing the CCG cached-refresh machinery the smoke exercises).
         env:
           BOX_OAUTH_REFRESH_TOKEN: ""
         run: >
