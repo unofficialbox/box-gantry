@@ -155,6 +155,10 @@ fn the_generated_model_layer_compiles_under_javac() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut sources = write_all(&dir, &generate());
+    // The core SDK is preview-free: BoxChunkedUpload (structured concurrency, a
+    // preview API) is excluded here and gated separately (D-183), so this gate
+    // proves the rest of the SDK compiles on a plain JDK 26.
+    sources.retain(|p| !p.ends_with("BoxChunkedUpload.java"));
 
     // A smoke driver that constructs the public `Client` from an auth flow, so
     // the whole manager/client surface (D-173) has to type-check as a callable
@@ -225,6 +229,10 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut sources = write_all(&dir, &generate());
+    // The core SDK is preview-free: BoxChunkedUpload (structured concurrency, a
+    // preview API) is excluded here and gated separately (D-183), so this gate
+    // proves the rest of the SDK compiles on a plain JDK 26.
+    sources.retain(|p| !p.ends_with("BoxChunkedUpload.java"));
 
     // Swap the generated stub for the real runtime (same package + class name).
     let real_runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -424,7 +432,9 @@ fn the_generated_behavioral_tests_pass_under_java() {
     let dir = std::env::temp_dir().join(format!("gantry-java-bt-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let sources = write_all(&dir, &files);
+    let mut sources = write_all(&dir, &files);
+    // Core SDK is preview-free — exclude the one preview class (D-183).
+    sources.retain(|p| !p.ends_with("BoxChunkedUpload.java"));
 
     let argfile = dir.join("sources.txt");
     let listing: String = sources
@@ -452,6 +462,9 @@ fn the_generated_behavioral_tests_pass_under_java() {
     );
 
     let run = Command::new("java")
+        // The core SDK does NOT require --enable-preview (D-183): BoxChunkedUpload,
+        // the only preview-API class, is excluded from this gate — so the core
+        // compiles and runs on a plain JDK 26.
         .arg("-cp")
         .arg(&classes)
         .arg("com.box.sdk.GeneratedTests")
@@ -533,3 +546,204 @@ fn the_generated_sdk_packages_for_publish() {
         "mvn package failed to produce a publishable artifact (NF-8); missing {missing:?}:\n{log}"
     );
 }
+
+/// D-183: the chunked-upload orchestrator uploads a large file's parts *in
+/// parallel* (structured concurrency, a preview API) and reassembles correctly.
+/// A mock `HttpServer` implements the three-step Box protocol; the driver points
+/// the SDK at it via the `-Dbox.baseUrl.*` override, runs `BoxChunkedUpload`, and
+/// asserts every part arrived, the bytes reassemble, and the peak in-flight PUT
+/// count proves the fan-out (`CHUNKED_OK`). The whole tree compiles/runs under
+/// `--enable-preview`.
+#[test]
+fn the_chunked_upload_runs_parts_in_parallel() {
+    if Command::new("javac").arg("-version").output().is_err()
+        || Command::new("java").arg("-version").output().is_err()
+    {
+        eprintln!("SKIPPED: JDK not available; CI installs one and runs this gate");
+        return;
+    }
+    let files = generate();
+    assert!(
+        files
+            .iter()
+            .any(|f| f.path == "src/main/java/com/box/sdk/BoxChunkedUpload.java"),
+        "the chunked-upload orchestrator should be emitted for the real spec"
+    );
+
+    let dir = std::env::temp_dir().join(format!("gantry-java-chunk-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut sources = write_all(&dir, &files);
+
+    // Vendor the real runtime over the stub (the orchestrator needs a live session).
+    let real_runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../runtimes/java/gantryruntime/src/main/java/com/box/sdk/runtime/Runtime.java");
+    std::fs::copy(
+        &real_runtime,
+        dir.join("src/main/java/com/box/sdk/runtime/Runtime.java"),
+    )
+    .unwrap();
+
+    let driver = dir.join("ChunkedSmoke.java");
+    std::fs::write(&driver, CHUNKED_SMOKE).unwrap();
+    sources.push(driver);
+
+    let argfile = dir.join("sources.txt");
+    std::fs::write(
+        &argfile,
+        sources
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .unwrap();
+    let classes = dir.join("classes");
+    std::fs::create_dir_all(&classes).unwrap();
+
+    let javac = Command::new("javac")
+        .arg("--release")
+        .arg("26")
+        .arg("--enable-preview")
+        .arg("-d")
+        .arg(&classes)
+        .arg(format!("@{}", argfile.display()))
+        .output()
+        .unwrap();
+    assert!(
+        javac.status.success(),
+        "chunked-upload SDK failed to compile:\n{}{}",
+        String::from_utf8_lossy(&javac.stdout),
+        String::from_utf8_lossy(&javac.stderr),
+    );
+
+    let run = Command::new("java")
+        .arg("--enable-preview")
+        .arg("-cp")
+        .arg(&classes)
+        .arg("ChunkedSmoke")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    let ok = run.status.success();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        ok && stdout.contains("CHUNKED_OK"),
+        "chunked upload did not complete (D-183):\n{stdout}{stderr}"
+    );
+}
+
+/// The chunked-upload behavioral driver: mocks the Box protocol and drives
+/// `BoxChunkedUpload`. Compiled + run only by the gate above.
+const CHUNKED_SMOKE: &str = r#"import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpExchange;
+import java.io.ByteArrayOutputStream;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.Map;
+import java.util.TreeMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+
+/** Mock the Box chunked-upload protocol and drive BoxChunkedUpload end to end. */
+public final class ChunkedSmoke {
+    static final Map<Integer, byte[]> received = new TreeMap<>();
+    static final AtomicInteger inFlight = new AtomicInteger();
+    static final AtomicInteger peak = new AtomicInteger();
+    static final AtomicInteger puts = new AtomicInteger();
+    static final AtomicReference<String> commitBody = new AtomicReference<>();
+
+    static void reply(HttpExchange ex, int code, String body) throws Exception {
+        byte[] b = body.getBytes(StandardCharsets.UTF_8);
+        ex.sendResponseHeaders(code, b.length);
+        try (OutputStream os = ex.getResponseBody()) {
+            os.write(b);
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        byte[] content = "ABCDEFGHIJKLMNOPQRSTUVW".getBytes(StandardCharsets.UTF_8); // 23 bytes
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        ExecutorService exec = Executors.newFixedThreadPool(8); // part PUTs handled concurrently
+        server.setExecutor(exec);
+        server.createContext("/files/upload_sessions", ex -> {
+            try {
+                String path = ex.getRequestURI().getPath();
+                String method = ex.getRequestMethod();
+                if (method.equals("POST") && path.equals("/files/upload_sessions")) {
+                    reply(ex, 201, "{\"id\":\"SID\",\"part_size\":5,\"total_parts\":5}");
+                } else if (method.equals("PUT")) {
+                    int now = inFlight.incrementAndGet();
+                    peak.getAndUpdate(p -> Math.max(p, now));
+                    puts.incrementAndGet();
+                    String range = ex.getRequestHeaders().getFirst("Content-range");
+                    String nums = range.substring(range.indexOf(' ') + 1, range.indexOf('/'));
+                    int start = Integer.parseInt(nums.substring(0, nums.indexOf('-')));
+                    byte[] body = ex.getRequestBody().readAllBytes();
+                    synchronized (received) {
+                        received.put(start, body);
+                    }
+                    Thread.sleep(60); // hold so overlap is observable
+                    inFlight.decrementAndGet();
+                    reply(ex, 200, "{\"part\":{\"part_id\":\"p" + start + "\",\"offset\":" + start
+                            + ",\"size\":" + body.length + ",\"sha1\":\"x\"}}");
+                } else if (method.equals("POST") && path.endsWith("/commit")) {
+                    commitBody.set(new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+                    reply(ex, 201, "{\"total_count\":1,\"entries\":[{\"id\":\"FID\"}]}");
+                } else {
+                    reply(ex, 404, "{}");
+                }
+            } catch (Exception e) {
+                try {
+                    reply(ex, 500, e.toString());
+                } catch (Exception ignored) {
+                }
+            }
+        });
+        server.start();
+        try {
+            int port = server.getAddress().getPort();
+            System.setProperty("box.baseUrl.upload", "http://127.0.0.1:" + port);
+            System.setProperty("box.baseUrl.upload_session", "http://127.0.0.1:" + port);
+
+            com.box.sdk.Client client =
+                    new com.box.sdk.Client(com.box.sdk.runtime.Runtime.developerToken("t"));
+            com.box.sdk.model.schemas.Files result =
+                    new com.box.sdk.BoxChunkedUpload(client).upload(content, "big.bin", "0");
+
+            check(puts.get() == 5, "expected 5 part PUTs, got " + puts.get());
+            ByteArrayOutputStream reassembled = new ByteArrayOutputStream();
+            synchronized (received) {
+                for (byte[] b : received.values()) {
+                    reassembled.write(b);
+                }
+            }
+            check(Arrays.equals(reassembled.toByteArray(), content), "reassembled content mismatch");
+            check(result.entries().orElseThrow().size() == 1, "commit should return one file");
+            check(peak.get() >= 2, "parts should upload in parallel; peak concurrency was " + peak.get());
+            // The commit body lists parts in ascending offset order (fork-order read).
+            String body = commitBody.get();
+            check(body != null && body.indexOf("\"offset\":0") >= 0
+                    && body.indexOf("\"offset\":0") < body.indexOf("\"offset\":20"),
+                    "committed parts should be in offset order: " + body);
+            System.out.println("CHUNKED_OK parts=" + puts.get() + " peak=" + peak.get());
+        } finally {
+            // The mock server's executor threads are non-daemon; shut them down so
+            // the JVM exits even when an assertion above fails (never hang CI).
+            server.stop(0);
+            exec.shutdownNow();
+        }
+    }
+
+    static void check(boolean cond, String message) {
+        if (!cond) {
+            throw new AssertionError(message);
+        }
+    }
+}
+"#;

@@ -86,10 +86,35 @@ fn pom_xml(build: &BuildInfo) -> String {
          \n\
          \x20 <build>\n\
          \x20   <plugins>\n\
+         \x20     <!-- Two-pass compile so the core SDK is a plain JDK-26 artifact and\n\
+         \x20          only BoxChunkedUpload carries the preview flag (D-183): callers\n\
+         \x20          who never touch chunked upload need no preview flag; those who\n\
+         \x20          do add enable-preview at run time to unlock the parallel path. -->\n\
          \x20     <plugin>\n\
          \x20       <groupId>org.apache.maven.plugins</groupId>\n\
          \x20       <artifactId>maven-compiler-plugin</artifactId>\n\
          \x20       <version>3.13.0</version>\n\
+         \x20       <executions>\n\
+         \x20         <execution>\n\
+         \x20           <id>default-compile</id>\n\
+         \x20           <configuration>\n\
+         \x20             <excludes>\n\
+         \x20               <exclude>com/box/sdk/BoxChunkedUpload.java</exclude>\n\
+         \x20             </excludes>\n\
+         \x20           </configuration>\n\
+         \x20         </execution>\n\
+         \x20         <execution>\n\
+         \x20           <id>compile-chunked-upload-preview</id>\n\
+         \x20           <phase>compile</phase>\n\
+         \x20           <goals><goal>compile</goal></goals>\n\
+         \x20           <configuration>\n\
+         \x20             <includes>\n\
+         \x20               <include>com/box/sdk/BoxChunkedUpload.java</include>\n\
+         \x20             </includes>\n\
+         \x20             <compilerArgs><arg>--enable-preview</arg></compilerArgs>\n\
+         \x20           </configuration>\n\
+         \x20         </execution>\n\
+         \x20       </executions>\n\
          \x20     </plugin>\n\
          \x20     <plugin>\n\
          \x20       <groupId>org.apache.maven.plugins</groupId>\n\
@@ -111,6 +136,10 @@ fn pom_xml(build: &BuildInfo) -> String {
          \x20         <doclint>none</doclint>\n\
          \x20         <quiet>true</quiet>\n\
          \x20         <failOnError>false</failOnError>\n\
+         \x20         <release>26</release>\n\
+         \x20         <additionalOptions>\n\
+         \x20           <additionalOption>--enable-preview</additionalOption>\n\
+         \x20         </additionalOptions>\n\
          \x20       </configuration>\n\
          \x20       <executions>\n\
          \x20         <execution>\n\
@@ -155,6 +184,21 @@ fn readme() -> String {
          com.box.sdk.Client client = new com.box.sdk.Client(\n\
          \x20       com.box.sdk.runtime.Runtime.developerToken(\"DEVELOPER_TOKEN\"));\n\
          ```\n\
+         \n\
+         ## Parallel chunked upload (opt-in)\n\
+         \n\
+         The core SDK runs on a plain JDK 26. `BoxChunkedUpload` uploads a large\n\
+         file's parts **in parallel** using structured concurrency, a Java 26\n\
+         **preview** API — so it (and only it) needs `--enable-preview` at run time.\n\
+         Enable it to unlock the parallel path:\n\
+         \n\
+         ```java\n\
+         // run with: java --enable-preview ...\n\
+         var file = new com.box.sdk.BoxChunkedUpload(client)\n\
+         \x20       .upload(bytes, \"large.bin\", folderId);\n\
+         ```\n\
+         \n\
+         Everything else works without the flag.\n\
          \n\
          See the `docs/` directory for per-manager reference and the\n\
          authentication, pagination, and errors guides.\n"
