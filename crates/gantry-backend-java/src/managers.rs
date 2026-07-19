@@ -9,8 +9,8 @@
 //! manager per tag over a shared runtime `Session`; optional parameters bundle
 //! into a per-operation options object.
 //!
-//! Everything the method bodies reference — the runtime (`com.box.sdk.runtime`),
-//! the JSON codec (`com.box.sdk.core.Json`), the `Internal` helpers, and the
+//! Everything the method bodies reference — the runtime (`dev.unofficialbox.runtime`),
+//! the JSON codec (`dev.unofficialbox.core.Json`), the `Internal` helpers, and the
 //! model types — is named by its fully-qualified name, so a manager file needs
 //! no imports and can't collide with a schema type.
 
@@ -28,13 +28,13 @@ use crate::models::{
 use crate::{BuildInfo, GeneratedFile, INTERNAL_PKG, MANAGERS_PKG, MODEL_PKG, ROOT_PKG, java_path};
 
 /// Fully-qualified runtime references used across the generated managers.
-const RUNTIME: &str = "com.box.sdk.runtime.Runtime";
-const REQUEST: &str = "com.box.sdk.runtime.Runtime.Request";
-const SESSION: &str = "com.box.sdk.runtime.Runtime.Session";
-const STREAM: &str = "com.box.sdk.runtime.Runtime.Stream";
-const AUTH: &str = "com.box.sdk.runtime.Runtime.Auth";
-const JSON: &str = "com.box.sdk.core.Json";
-const INTERNAL: &str = "com.box.sdk.internal.Internal";
+const RUNTIME: &str = "dev.unofficialbox.runtime.Runtime";
+const REQUEST: &str = "dev.unofficialbox.runtime.Runtime.Request";
+const SESSION: &str = "dev.unofficialbox.runtime.Runtime.Session";
+const STREAM: &str = "dev.unofficialbox.runtime.Runtime.Stream";
+const AUTH: &str = "dev.unofficialbox.runtime.Runtime.Auth";
+const JSON: &str = "dev.unofficialbox.core.Json";
+const INTERNAL: &str = "dev.unofficialbox.internal.Internal";
 const UTF_8: &str = "java.nio.charset.StandardCharsets.UTF_8";
 
 /// One planned manager: its grouping key, operation indices, and the
@@ -258,7 +258,7 @@ impl ManagerPrinter<'_> {
         let _ = writeln!(out, "/** Operations for the {} API area. */", plan.field);
         let _ = writeln!(out, "public final class {} {{", plan.class);
         let _ = writeln!(out, "    private final {SESSION} session;\n");
-        out.push_str("    /** Construct over a shared runtime session (used by {@link com.box.sdk.Client}). */\n");
+        out.push_str("    /** Construct over a shared runtime session (used by {@link dev.unofficialbox.Client}). */\n");
         let _ = writeln!(
             out,
             "    public {}({SESSION} session) {{\n        this.session = session;\n    }}\n",
@@ -1513,12 +1513,12 @@ mod tests {
         let out = file_ending(&files, "managers/FilesManager.java");
         assert!(out.contains("public final class FilesManager {"), "{out}");
         assert!(
-            out.contains("private final com.box.sdk.runtime.Runtime.Session session;"),
+            out.contains("private final dev.unofficialbox.runtime.Runtime.Session session;"),
             "{out}"
         );
         // A synchronous method (no Future), returning the model type directly.
         assert!(
-            out.contains("public com.box.sdk.model.schemas.File getById(String fileId) {"),
+            out.contains("public dev.unofficialbox.model.schemas.File getById(String fileId) {"),
             "{out}"
         );
         // The URL is built from the base-URL class + structured path (escaped).
@@ -1529,7 +1529,7 @@ mod tests {
         assert!(out.contains("_url.append(\"/files\");"), "{out}");
         assert!(
             out.contains(
-                "_url.append(\"/\").append(com.box.sdk.internal.Internal.pathEscape(fileId));"
+                "_url.append(\"/\").append(dev.unofficialbox.internal.Internal.pathEscape(fileId));"
             ),
             "{out}"
         );
@@ -1539,11 +1539,11 @@ mod tests {
             "{out}"
         );
         assert!(
-            out.contains("com.box.sdk.runtime.Runtime.responseBytes(session.fetch(_req))"),
+            out.contains("dev.unofficialbox.runtime.Runtime.responseBytes(session.fetch(_req))"),
             "{out}"
         );
         assert!(
-            out.contains("com.box.sdk.model.schemas.File.fromJson(_tree)"),
+            out.contains("dev.unofficialbox.model.schemas.File.fromJson(_tree)"),
             "{out}"
         );
     }
@@ -1551,19 +1551,19 @@ mod tests {
     #[test]
     fn client_wires_one_field_per_manager_over_a_shared_session() {
         let files = generated(&program());
-        let out = file_ending(&files, "com/box/sdk/Client.java");
+        let out = file_ending(&files, "dev/unofficialbox/Client.java");
         assert!(
-            out.contains("public final com.box.sdk.managers.FilesManager files;"),
+            out.contains("public final dev.unofficialbox.managers.FilesManager files;"),
             "{out}"
         );
         assert!(
             out.contains(
-                "com.box.sdk.runtime.Runtime.Session session = new com.box.sdk.runtime.Runtime.Session(auth);"
+                "dev.unofficialbox.runtime.Runtime.Session session = new dev.unofficialbox.runtime.Runtime.Session(auth);"
             ),
             "{out}"
         );
         assert!(
-            out.contains("this.files = new com.box.sdk.managers.FilesManager(session);"),
+            out.contains("this.files = new dev.unofficialbox.managers.FilesManager(session);"),
             "{out}"
         );
     }
@@ -1595,7 +1595,7 @@ mod tests {
             "{out}"
         );
         assert!(
-            out.contains("_req = com.box.sdk.runtime.Runtime.withQuery(_req, \"fields\", String.join(\",\", _v));"),
+            out.contains("_req = dev.unofficialbox.runtime.Runtime.withQuery(_req, \"fields\", String.join(\",\", _v));"),
             "{out}"
         );
     }
@@ -1679,12 +1679,14 @@ mod tests {
         let pag = file_ending(&files, "managers/ItemsGetItemsPaginator.java");
         assert!(
             pag.contains(
-                "public final class ItemsGetItemsPaginator implements java.lang.Iterable<com.box.sdk.model.schemas.Item> {"
+                "public final class ItemsGetItemsPaginator implements java.lang.Iterable<dev.unofficialbox.model.schemas.Item> {"
             ),
             "{pag}"
         );
         assert!(
-            pag.contains("public java.util.Iterator<com.box.sdk.model.schemas.Item> iterator() {"),
+            pag.contains(
+                "public java.util.Iterator<dev.unofficialbox.model.schemas.Item> iterator() {"
+            ),
             "{pag}"
         );
         // Each pass works on a private copy of the caller's options (never
@@ -1711,7 +1713,7 @@ mod tests {
         );
         // It drives the plain method (URL/param/body logic is never duplicated).
         assert!(
-            pag.contains("com.box.sdk.model.schemas.Items _page = _manager.getItems(_opts);"),
+            pag.contains("dev.unofficialbox.model.schemas.Items _page = _manager.getItems(_opts);"),
             "{pag}"
         );
         // The manager exposes a `<method>Paginate` constructor returning it.
@@ -1739,7 +1741,7 @@ mod tests {
         let pag = file_ending(&files, "managers/ItemsGetItemsPaginator.java");
         assert!(
             pag.contains(
-                "java.util.List<com.box.sdk.model.schemas.Item> _items = _page.entries().isPresent() && _page.entries().value() != null ? _page.entries().value() : java.util.List.of();"
+                "java.util.List<dev.unofficialbox.model.schemas.Item> _items = _page.entries().isPresent() && _page.entries().value() != null ? _page.entries().value() : java.util.List.of();"
             ),
             "{pag}"
         );
@@ -1760,7 +1762,7 @@ mod tests {
         );
         let mgr = file_ending(&files, "managers/ItemsManager.java");
         assert!(
-            mgr.contains("public com.box.sdk.model.schemas.Items getItems("),
+            mgr.contains("public dev.unofficialbox.model.schemas.Items getItems("),
             "{mgr}"
         );
         assert!(!mgr.contains("getItemsPaginate"), "{mgr}");

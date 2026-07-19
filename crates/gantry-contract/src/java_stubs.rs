@@ -16,7 +16,7 @@
 //! `Runtime` class with the envelope types (`Request`/`Response`/`Stream`/
 //! `Auth`/`BoxApiException`) and the runtime `Session` as nested classes, and
 //! the free contract functions as its `static` methods. Generated code refers to
-//! them as `com.box.sdk.runtime.Runtime.Session` / `Runtime.withQuery(...)`.
+//! them as `dev.unofficialbox.runtime.Runtime.Session` / `Runtime.withQuery(...)`.
 
 use std::fmt::Write as _;
 
@@ -45,7 +45,7 @@ pub fn java_stubs(contract: &RuntimeContract, manifest: &CapabilityManifest) -> 
          // Compilable stubs for the hand-written runtime surface (FR-5.3).\n\
          // Generated SDK code compiles against this class; the real runtime\n\
          // implements the same contract.\n\
-         package com.box.sdk.runtime;\n\
+         package dev.unofficialbox.runtime;\n\
          \n\
          /** The hand-written runtime surface (FR-5). */\n\
          public final class Runtime {\n\

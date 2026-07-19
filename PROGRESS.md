@@ -209,6 +209,7 @@ that beyond the original three.
 **Publish naming (D-187):** all targets standardize on **`box-open-sdk`** under
 the `unofficialbox` org — Go `github.com/unofficialbox/box-open-sdk`, Rust crate
 `box-open-sdk`, npm `@unofficialbox/box-open-sdk`, Maven
-`dev.unofficialbox:box-open-sdk`; Apex keeps the `unbox` namespace. The
-Java **code** package stays `com.box.sdk` for now (a separate in-code-naming
-follow-up). Version is still set by the release pipeline (FR-9 spec-diff).
+`dev.unofficialbox:box-open-sdk`; Apex keeps the `unbox` namespace. The Java
+**code** package was also renamed `com.box.sdk` → **`dev.unofficialbox`** (D-188)
+— it collided with Box's official SDK's package — so code, groupId, and domain
+all align. Version is still set by the release pipeline (FR-9 spec-diff).

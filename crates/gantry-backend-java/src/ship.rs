@@ -12,10 +12,9 @@
 //! / `box-open-sdk` — a namespace we verify on Maven Central via the
 //! `unofficialbox.dev` domain (DNS), and a name that marks these as distinct
 //! from Box's official SDKs. The `version` is set by the release pipeline
-//! (`MAJOR.MINOR.PATCH` from the FR-9 spec diff), as the Go module tag is. Note:
-//! the `groupId` is the *publish* coordinate; the generated Java **code** still
-//! lives in the `com.box.sdk` package (an in-code naming concern, tracked
-//! separately).
+//! (`MAJOR.MINOR.PATCH` from the FR-9 spec diff), as the Go module tag is. The
+//! generated Java code also lives under the same `dev.unofficialbox` package
+//! (D-188), so the SDK is co-installable with Box's official `com.box.sdk`.
 
 use crate::{BuildInfo, GeneratedFile};
 
@@ -102,7 +101,7 @@ fn pom_xml(build: &BuildInfo) -> String {
          \x20           <id>default-compile</id>\n\
          \x20           <configuration>\n\
          \x20             <excludes>\n\
-         \x20               <exclude>com/box/sdk/BoxChunkedUpload.java</exclude>\n\
+         \x20               <exclude>dev/unofficialbox/BoxChunkedUpload.java</exclude>\n\
          \x20             </excludes>\n\
          \x20           </configuration>\n\
          \x20         </execution>\n\
@@ -112,7 +111,7 @@ fn pom_xml(build: &BuildInfo) -> String {
          \x20           <goals><goal>compile</goal></goals>\n\
          \x20           <configuration>\n\
          \x20             <includes>\n\
-         \x20               <include>com/box/sdk/BoxChunkedUpload.java</include>\n\
+         \x20               <include>dev/unofficialbox/BoxChunkedUpload.java</include>\n\
          \x20             </includes>\n\
          \x20             <compilerArgs><arg>--enable-preview</arg></compilerArgs>\n\
          \x20           </configuration>\n\
@@ -168,7 +167,7 @@ fn readme() -> String {
          # {ARTIFACT_ID}\n\
          \n\
          A generated Java client for the Box API — one resource manager per API\n\
-         area behind a single `com.box.sdk.Client`, over a dependency-free\n\
+         area behind a single `dev.unofficialbox.Client`, over a dependency-free\n\
          `java.net.http` runtime.\n\
          \n\
          ## Install (Maven)\n\
@@ -184,8 +183,8 @@ fn readme() -> String {
          ## Usage\n\
          \n\
          ```java\n\
-         com.box.sdk.Client client = new com.box.sdk.Client(\n\
-         \x20       com.box.sdk.runtime.Runtime.developerToken(\"DEVELOPER_TOKEN\"));\n\
+         dev.unofficialbox.Client client = new dev.unofficialbox.Client(\n\
+         \x20       dev.unofficialbox.runtime.Runtime.developerToken(\"DEVELOPER_TOKEN\"));\n\
          ```\n\
          \n\
          ## Parallel chunked upload (opt-in)\n\
@@ -199,7 +198,7 @@ fn readme() -> String {
          ```java\n\
          // compile: javac --release 26 --enable-preview ...\n\
          // run:     java --enable-preview ...\n\
-         var file = new com.box.sdk.BoxChunkedUpload(client)\n\
+         var file = new dev.unofficialbox.BoxChunkedUpload(client)\n\
          \x20       .upload(bytes, \"large.bin\", folderId);\n\
          ```\n\
          \n\
