@@ -28,6 +28,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - uses: actions/setup-java@v4
+        with:
+          # The Java live smoke compiles + runs the generated VR-7 driver against
+          # the real runtime under the ship target — Java 26 (Corretto), matching
+          # ci.yml's VR-1.6 gate. The runtime uses HTTP/3 (D-180), so 26 is the
+          # floor.
+          distribution: corretto
+          java-version: '26'
       - name: Install TypeScript 7 (to build the TS live smoke)
         run: npm install -g typescript@7.0.2
       - name: Write the JWT config, if provided
@@ -62,3 +70,17 @@ jobs:
         run: |
           tsc -p tsconfig.livesmoke.json
           node --test dist-livesmoke/livesmoke.test.js
+      - name: Run the Java live smoke (same flows, the hand-written java.net.http runtime)
+        # The VR-7 driver (D-175/D-181) compiles against the real runtime and
+        # runs one authenticated `GET /users/me` per credentialed flow; the gate
+        # skips the run (compiles only) when no BOX_* creds are set. Rust honors
+        # rust-toolchain.toml automatically. OAuth's refresh token rotates on use
+        # and the Go step above already consumed it — null it so the Java smoke
+        # skips OAuth rather than failing on a stale token (Go covers the shared
+        # OAuth flow; Java covers developer/CCG/JWT live, its OAuth path sharing
+        # the CCG cached-refresh machinery the smoke does exercise).
+        env:
+          BOX_OAUTH_REFRESH_TOKEN: ""
+        run: >
+          cargo test -p gantry-backend-java --test runtime
+          the_live_smoke_compiles_and_runs_when_credentialed -- --nocapture
