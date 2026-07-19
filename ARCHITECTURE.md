@@ -199,11 +199,11 @@ box-gantry/
 ├── Cargo.toml / Cargo.lock    # workspace + locked deps (NF-6)
 ├── rust-toolchain.toml        # pinned toolchain (NF-6)
 │
-└── docs:
-    ├── NEW_ENGINE_REQUIREMENTS.md  # normative spec (R§n, FR/VR/NF/TR)
-    ├── DECISIONS.md                # design decisions (D-###)
-    ├── CONTRIBUTING.md             # build, test, contribute
-    └── ARCHITECTURE.md             # this file
+├── NEW_ENGINE_REQUIREMENTS.md # normative spec (R§n, FR/VR/NF/TR)
+├── DECISIONS.md               # design decisions (D-###)
+├── CONTRIBUTING.md            # build, test, contribute
+├── AGENTS.md / CLAUDE.md      # AI-assistant project guide
+└── ARCHITECTURE.md            # this file
 ```
 
 ## Generated SDK layout (the output)

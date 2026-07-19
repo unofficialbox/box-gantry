@@ -29,11 +29,9 @@ each with a `verify` toolchain gate (formatter + compiler + tests) and a
 ## Generating SDKs
 
 `generate` emits **one** target per run — `--target` takes a single manifest
-key and `--out` the output directory. Three targets are implemented in the CLI
-today: `go` (shipped), `apex` (near-complete), and `rust` (capability parity);
-`typescript` (v4) is planned and not yet selectable.
-The trailing arguments are the spec set: the base spec plus each versioned
-overlay, ingested together.
+key and `--out` the output directory. All five targets are selectable —
+`go`, `apex`, `rust`, `typescript`, and `java`. The trailing arguments are the
+spec set: the base spec plus each versioned overlay, ingested together.
 
 ```sh
 # One SDK — Apex into ./out/apex
