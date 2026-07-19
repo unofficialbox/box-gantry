@@ -105,10 +105,12 @@ func decryptPKCS8(der, password []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	// An explicit keyLength in the PBKDF2 params, when present, is authoritative
-	// (it should agree with the cipher's key size).
-	if kdf.KeyLength != 0 {
-		keyLen = kdf.KeyLength
+	// The AES scheme's OID is authoritative for the key size. A PBKDF2 keyLength,
+	// when present, must agree with it; a mismatched value (or a negative/huge one
+	// from a malformed key) is rejected rather than honored — trusting it would
+	// derive the wrong AES variant or panic the dk[:keyLen] slice.
+	if kdf.KeyLength != 0 && kdf.KeyLength != keyLen {
+		return nil, fmt.Errorf("PBKDF2 key length %d does not match the %d-byte AES-CBC key", kdf.KeyLength, keyLen)
 	}
 
 	block, err := aes.NewCipher(pbkdf2Key(password, kdf.Salt, kdf.Iterations, keyLen, prf))
