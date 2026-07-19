@@ -3744,3 +3744,47 @@ the real spec, names the class + the preview flag, and is linked from the index;
 the docs-content gate checks the real call sites. `cargo fmt`/`clippy` clean.
 
 **Result.** Every shipped Java feature now has a reference page — full doc parity.
+
+## D-187 — Standardize published package coordinates on `box-open-sdk`
+
+**Context.** Every backend's ship artifact carried a placeholder publish name
+(`box-sdk` / `boxgantry.invalid/boxsdk` / `com.box:box-sdk`). We want one
+consistent name across ecosystems that also signals these are **community
+SDKs**, distinct from Box's official ones.
+
+**The decision.** Standardize on **`box-open-sdk`** under the **`unofficialbox`**
+GitHub org, applied per each registry's naming rules:
+
+| Target | Published coordinate |
+|---|---|
+| Go | module `github.com/unofficialbox/box-open-sdk` |
+| Rust | crate `box-open-sdk` |
+| npm | scoped `@unofficialbox/box-open-sdk` (with `publishConfig.access = public`) |
+| Maven | `dev.unofficialbox:box-open-sdk` |
+| Apex | namespace **`unbox`** (unchanged) |
+
+**Two ecosystem adaptations.** (1) **Maven** splits into `groupId:artifactId`;
+the artifactId is `box-open-sdk`, but the groupId must be a namespace we can
+verify on Central — `dev.unofficialbox` (verified by DNS on the owned
+`unofficialbox.dev` domain), not `com.box` (Box's, unverifiable and misleading).
+(2) **Apex** namespaces are
+alphanumeric, ≤15 chars, no hyphens, so `box-open-sdk` is invalid there; `unbox`
+stays as-is per the existing D-142 registration.
+
+**Scope — publish coordinates only.** This changes the *published identity*, not
+in-code identifiers. Notably the generated **Java code still lives in the
+`com.box.sdk` package** (the `ROOT_PKG`); realigning that to the `dev.unofficialbox`
+namespace is a larger, separate change (every file/import/test) tracked as a
+follow-up. The Go module rename threaded through all generated imports; the Rust
+crate rename updated the `box_open_sdk::` identifier in the README + swap/roundtrip
+tests; the npm rename updated the scoped import + `./jwt` subpath in the dual
+ESM/CJS load test; Java updated the coordinate + jar-name assertions.
+
+**Verification.** All backend gates green on the real toolchains: Go `go build`,
+Rust swap + `cargo publish --dry-run` ("Uploading box-open-sdk"), TS dual
+import/require of `@unofficialbox/box-open-sdk` (+ `/jwt`), Java `mvn package`
+producing `box-open-sdk-0.1.0{,-sources,-javadoc}.jar`. `version` stays the
+release-pipeline value (FR-9 spec-diff).
+
+**Result.** One consistent, deliberately-community publish identity across all
+five targets, replacing the `.invalid`/placeholder coordinates.

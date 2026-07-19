@@ -223,8 +223,8 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
         import (\n\
         \t\"context\"\n\
         \t\"fmt\"\n\n\
-        \t\"boxgantry.invalid/boxsdk/client\"\n\
-        \t\"boxgantry.invalid/boxsdk/gantryruntime\"\n\
+        \t\"github.com/unofficialbox/box-open-sdk/client\"\n\
+        \t\"github.com/unofficialbox/box-open-sdk/gantryruntime\"\n\
         )\n\n\
         func main() {\n\
         \tc := client.NewClient(gantryruntime.DeveloperToken(\"dev-token\"))\n\

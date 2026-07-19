@@ -126,13 +126,14 @@ pub fn generate(
 /// tree (ESM + CJS + `.d.ts`), and only `dist/` (with the docs) ships — the
 /// `src/` stub runtime is a build input, not shipped. The JWT flow is a
 /// separate `./jwt` subpath (Node-only, mirroring the runtime's own export).
-/// `name`/`version` are placeholders; the release pipeline sets the real scope
-/// and the `vMAJOR.MINOR.PATCH` from the FR-9 spec-diff (as Go's tag is).
+/// The scoped name `@unofficialbox/box-open-sdk` marks these as community SDKs,
+/// distinct from Box's official ones; `version` is set by the release pipeline
+/// from the FR-9 spec-diff (as Go's tag is).
 fn package_json() -> String {
     "{\n\
-     \x20 \"name\": \"box-sdk\",\n\
+     \x20 \"name\": \"@unofficialbox/box-open-sdk\",\n\
      \x20 \"version\": \"0.1.0\",\n\
-     \x20 \"description\": \"Generated TypeScript SDK for the Box API.\",\n\
+     \x20 \"description\": \"Generated TypeScript SDK for the Box API (community, unofficial).\",\n\
      \x20 \"license\": \"MIT\",\n\
      \x20 \"type\": \"module\",\n\
      \x20 \"sideEffects\": false,\n\
@@ -153,6 +154,7 @@ fn package_json() -> String {
      \x20   }\n\
      \x20 },\n\
      \x20 \"files\": [\"dist\", \"docs\", \"README.md\"],\n\
+     \x20 \"publishConfig\": { \"access\": \"public\" },\n\
      \x20 \"scripts\": {\n\
      \x20   \"build\": \"tsc -p tsconfig.build.json && tsc -p tsconfig.cjs.json && node scripts/postbuild.mjs\"\n\
      \x20 }\n\
@@ -221,7 +223,7 @@ fn readme() -> String {
      shipped type declarations.\n\
      \n\
      ```ts\n\
-     import { Client, runtime } from 'box-sdk';\n\
+     import { Client, runtime } from '@unofficialbox/box-open-sdk';\n\
      const client = new Client(runtime.developerToken('DEVELOPER_TOKEN'));\n\
      ```\n\
      \n\

@@ -556,9 +556,9 @@ fn the_generated_sdk_packages_for_publish() {
     // Maven Central requires the artifact + sources + javadoc jars.
     let target = dir.join("target");
     let jars = [
-        "box-sdk-0.1.0.jar",
-        "box-sdk-0.1.0-sources.jar",
-        "box-sdk-0.1.0-javadoc.jar",
+        "box-open-sdk-0.1.0.jar",
+        "box-open-sdk-0.1.0-sources.jar",
+        "box-open-sdk-0.1.0-javadoc.jar",
     ];
     let missing: Vec<&str> = jars
         .iter()

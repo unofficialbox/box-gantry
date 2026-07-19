@@ -8,21 +8,24 @@
 //! (a single-file overwrite, the same self-contained shape Go/Rust/TS ship),
 //! not declared as a dependency.
 //!
-//! `groupId`/`artifactId`/`version` and the project URL are placeholders (the
-//! reserved `.invalid` TLD, RFC 2606, so an un-substituted URL can never resolve
-//! to a real site); the release pipeline sets the real coordinates, the
-//! `MAJOR.MINOR.PATCH` from the FR-9 spec diff, and the repository URL — exactly
-//! as the Go module tag and the Rust crate name are set at release.
+//! `groupId`/`artifactId` are the community coordinates `dev.unofficialbox`
+//! / `box-open-sdk` — a namespace we verify on Maven Central via the
+//! `unofficialbox.dev` domain (DNS), and a name that marks these as distinct
+//! from Box's official SDKs. The `version` is set by the release pipeline
+//! (`MAJOR.MINOR.PATCH` from the FR-9 spec diff), as the Go module tag is. Note:
+//! the `groupId` is the *publish* coordinate; the generated Java **code** still
+//! lives in the `com.box.sdk` package (an in-code naming concern, tracked
+//! separately).
 
 use crate::{BuildInfo, GeneratedFile};
 
-/// Placeholder Maven coordinates (the release pipeline substitutes the real
-/// values, as Go/Rust do for their module path / crate name).
-const GROUP_ID: &str = "com.box";
-const ARTIFACT_ID: &str = "box-sdk";
+/// The published Maven coordinates. The `version` is a default the release
+/// pipeline overrides with the FR-9 `MAJOR.MINOR.PATCH` (as Go/Rust do).
+const GROUP_ID: &str = "dev.unofficialbox";
+const ARTIFACT_ID: &str = "box-open-sdk";
 const VERSION: &str = "0.1.0";
-/// The reserved `.invalid` TLD (RFC 2606) — a placeholder URL that fails safe.
-const PROJECT_URL: &str = "https://example.invalid/box-sdk";
+/// The project's GitHub home (also the Maven Central namespace we verify against).
+const PROJECT_URL: &str = "https://github.com/unofficialbox/box-open-sdk";
 
 /// Emit the Maven packaging files (`pom.xml`, `README.md`).
 pub fn generate_ship(build: &BuildInfo) -> Vec<GeneratedFile> {
@@ -57,7 +60,7 @@ fn pom_xml(build: &BuildInfo) -> String {
          \x20 <packaging>jar</packaging>\n\
          \n\
          \x20 <name>{ARTIFACT_ID}</name>\n\
-         \x20 <description>Generated Box API client for Java.</description>\n\
+         \x20 <description>Generated Box API client for Java (community, unofficial).</description>\n\
          \x20 <url>{PROJECT_URL}</url>\n\
          \n\
          \x20 <licenses>\n\

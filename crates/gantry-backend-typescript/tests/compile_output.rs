@@ -493,8 +493,8 @@ fn the_generated_sdk_packs_and_loads_dual_format() {
     // module system.
     std::fs::write(
         consumer.join("esm.mjs"),
-        "import { Client, runtime, buildinfo } from 'box-sdk';\n\
-         import { jwtAuth } from 'box-sdk/jwt';\n\
+        "import { Client, runtime, buildinfo } from '@unofficialbox/box-open-sdk';\n\
+         import { jwtAuth } from '@unofficialbox/box-open-sdk/jwt';\n\
          const c = new Client(runtime.developerToken('dev'));\n\
          if (typeof c.files !== 'object' || typeof c.folders !== 'object' || Object.keys(c).length < 85) throw new Error('managers not wired');\n\
          if (typeof buildinfo.ENGINE !== 'string') throw new Error('no provenance');\n\
@@ -503,8 +503,8 @@ fn the_generated_sdk_packs_and_loads_dual_format() {
     .unwrap();
     std::fs::write(
         consumer.join("cjs.cjs"),
-        "const { Client, runtime, buildinfo } = require('box-sdk');\n\
-         const { jwtAuth } = require('box-sdk/jwt');\n\
+        "const { Client, runtime, buildinfo } = require('@unofficialbox/box-open-sdk');\n\
+         const { jwtAuth } = require('@unofficialbox/box-open-sdk/jwt');\n\
          const c = new Client(runtime.developerToken('dev'));\n\
          if (typeof c.files !== 'object' || typeof c.folders !== 'object' || Object.keys(c).length < 85) throw new Error('managers not wired');\n\
          if (typeof buildinfo.ENGINE !== 'string') throw new Error('no provenance');\n\

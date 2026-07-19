@@ -250,7 +250,7 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
         dir.join("examples/smoke.rs"),
         "fn main() {\n\
          \x20   let _client =\n\
-         \x20       box_sdk::client::Client::new(box_sdk::runtime::Auth::developer_token(\"dev\"));\n\
+         \x20       box_open_sdk::client::Client::new(box_open_sdk::runtime::Auth::developer_token(\"dev\"));\n\
          }\n",
     )
     .unwrap();
@@ -289,7 +289,7 @@ fn the_generated_sdk_packages_for_publish() {
     cmd.args(["publish", "--dry-run", "--allow-dirty"])
         .current_dir(&dir)
         // Force plain, deterministic output: CI sets `CARGO_TERM_COLOR=always`,
-        // whose ANSI escapes split the "Uploading box-sdk" success line the
+        // whose ANSI escapes split the "Uploading box-open-sdk" success line the
         // assertion below matches on (`Uploading\x1b[0m box-sdk`).
         .env("CARGO_TERM_COLOR", "never");
     // The crate is assembled in a temp dir *outside* the repo, so the workspace
@@ -314,7 +314,7 @@ fn the_generated_sdk_packages_for_publish() {
     // non-zero exit even though the crate is fully publish-ready, so the exit
     // code is not a reliable pass/fail signal here — the log is.
     assert!(
-        log.contains("Uploading box-sdk"),
+        log.contains("Uploading box-open-sdk"),
         "cargo publish --dry-run did not complete packaging + verify (NF-8):\n{log}"
     );
 }
