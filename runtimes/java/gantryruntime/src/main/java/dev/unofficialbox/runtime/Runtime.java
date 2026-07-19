@@ -11,7 +11,7 @@
 // envelopes, and the developer-token + CCG (client-credentials) auth flows. The
 // OAuth-refresh and JWT flows + the VR-7 live smoke are the next slice; the Auth
 // abstraction and single-flight token cache are already shaped to accept them.
-package com.box.sdk.runtime;
+package dev.unofficialbox.runtime;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;

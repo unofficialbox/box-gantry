@@ -9,7 +9,7 @@ transport, no third-party dependency, so it needs no build tool — the swap gat
 and its tests compile the source directly with `javac`.
 
 The whole surface lives in one file,
-`gantryruntime/src/main/java/com/box/sdk/runtime/Runtime.java`, so the swap is a
+`gantryruntime/src/main/java/dev/unofficialbox/runtime/Runtime.java`, so the swap is a
 single-file overwrite (the Java analogue of the Rust runtime's one-line
 re-export) — the envelope types (`Request`/`Response`/`Stream`/`Auth`/
 `BoxApiException`) and the `Session` are nested classes, and the free contract

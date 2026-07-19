@@ -297,7 +297,7 @@ pub fn generate_models(analysis: &Analysis<'_>, build: &BuildInfo) -> Vec<Genera
 
 /// A Java sub-package name for an IR module path: every segment sanitized and
 /// joined with `_`, so nested paths stay collision-free flat siblings under
-/// `com.box.sdk.model` (`[schemas, v2025_0]` → `schemas_v2025_0`).
+/// `dev.unofficialbox.model` (`[schemas, v2025_0]` → `schemas_v2025_0`).
 pub(crate) fn package_name(module: &ir::ModulePath) -> String {
     if module.0.is_empty() {
         return "root".to_string();
@@ -497,7 +497,7 @@ impl Printer<'_> {
             let _ = writeln!(out, "        return new {name}();");
         } else {
             out.push_str(
-                "        java.util.Map<String, Object> _m = com.box.sdk.core.Json.asObject(_json);\n",
+                "        java.util.Map<String, Object> _m = dev.unofficialbox.core.Json.asObject(_json);\n",
             );
             let _ = writeln!(out, "        return new {name}(");
             for (i, (_ident, field)) in fields.iter().enumerate() {
@@ -546,7 +546,7 @@ impl Printer<'_> {
         let _ = writeln!(out, "    public static {name} fromJson(Object _json) {{");
         let _ = writeln!(
             out,
-            "        return new {name}(com.box.sdk.core.Json.asString(_json));"
+            "        return new {name}(dev.unofficialbox.core.Json.asString(_json));"
         );
         out.push_str("    }\n}\n");
         out
@@ -583,7 +583,7 @@ impl Printer<'_> {
         out.push_str("    }\n\n");
         out.push_str("    public String toJson() {\n        return wireValue;\n    }\n\n");
         let _ = writeln!(out, "    public static {name} fromJson(Object _json) {{");
-        out.push_str("        String _w = com.box.sdk.core.Json.asString(_json);\n");
+        out.push_str("        String _w = dev.unofficialbox.core.Json.asString(_json);\n");
         let _ = writeln!(out, "        for ({name} _v : values()) {{");
         out.push_str("            if (_v.wireValue.equals(_w)) {\n");
         out.push_str("                return _v;\n");
@@ -754,7 +754,7 @@ impl Printer<'_> {
     // --- JSON codec (D-172) -------------------------------------------------
     //
     // The serialization method bodies reference runtime helpers by fully
-    // qualified name (`com.box.sdk.core.Json`, `java.util.*`, `java.time.*`),
+    // qualified name (`dev.unofficialbox.core.Json`, `java.util.*`, `java.time.*`),
     // so they never perturb the file's import set — the only imports are the
     // ones the component *types* already pull in. Encode/decode arms are
     // enumerated over `ir::Type`, never wildcarded, so a new IR type breaks the
@@ -819,9 +819,9 @@ impl Printer<'_> {
                 let bare = self.bare(n);
                 let dec = self.decode_bare(n, &get, 0);
                 format!(
-                    "!{has} ? com.box.sdk.core.Tristate.<{bare}>absent() \
-                     : ({get} == null ? com.box.sdk.core.Tristate.<{bare}>ofNull() \
-                     : com.box.sdk.core.Tristate.of({dec}))"
+                    "!{has} ? dev.unofficialbox.core.Tristate.<{bare}>absent() \
+                     : ({get} == null ? dev.unofficialbox.core.Tristate.<{bare}>ofNull() \
+                     : dev.unofficialbox.core.Tristate.of({dec}))"
                 )
             } else {
                 let bare = self.bare(inner);
@@ -859,12 +859,12 @@ impl Printer<'_> {
             ir::Type::List(inner) => {
                 let v = format!("_x{depth}");
                 let enc = self.encode_bare(inner, &v, depth + 1);
-                format!("com.box.sdk.core.Json.encodeList({expr}, {v} -> {enc})")
+                format!("dev.unofficialbox.core.Json.encodeList({expr}, {v} -> {enc})")
             }
             ir::Type::Map(inner) => {
                 let v = format!("_x{depth}");
                 let enc = self.encode_bare(inner, &v, depth + 1);
-                format!("com.box.sdk.core.Json.encodeMap({expr}, {v} -> {enc})")
+                format!("dev.unofficialbox.core.Json.encodeMap({expr}, {v} -> {enc})")
             }
             // In-container optionality collapses to a nullable element (`bare`).
             ir::Type::Nullable(inner) | ir::Type::Optional(inner) => {
@@ -894,36 +894,36 @@ impl Printer<'_> {
     /// keep a nullable element or absent field from dereferencing.
     fn decode_bare(&mut self, ty: &ir::Type, expr: &str, depth: usize) -> String {
         match ty {
-            ir::Type::Bool => format!("com.box.sdk.core.Json.asBoolean({expr})"),
-            ir::Type::Int64 => format!("com.box.sdk.core.Json.asLong({expr})"),
-            ir::Type::Float64 => format!("com.box.sdk.core.Json.asDouble({expr})"),
-            ir::Type::String => format!("com.box.sdk.core.Json.asString({expr})"),
+            ir::Type::Bool => format!("dev.unofficialbox.core.Json.asBoolean({expr})"),
+            ir::Type::Int64 => format!("dev.unofficialbox.core.Json.asLong({expr})"),
+            ir::Type::Float64 => format!("dev.unofficialbox.core.Json.asDouble({expr})"),
+            ir::Type::String => format!("dev.unofficialbox.core.Json.asString({expr})"),
             // Free-form JSON is the parsed tree itself.
             ir::Type::JsonValue => expr.to_string(),
             ir::Type::Date => {
                 format!(
-                    "({expr} == null ? null : java.time.LocalDate.parse(com.box.sdk.core.Json.asString({expr})))"
+                    "({expr} == null ? null : java.time.LocalDate.parse(dev.unofficialbox.core.Json.asString({expr})))"
                 )
             }
             ir::Type::DateTime => {
                 format!(
-                    "({expr} == null ? null : java.time.OffsetDateTime.parse(com.box.sdk.core.Json.asString({expr})))"
+                    "({expr} == null ? null : java.time.OffsetDateTime.parse(dev.unofficialbox.core.Json.asString({expr})))"
                 )
             }
             ir::Type::Binary => {
                 format!(
-                    "({expr} == null ? null : java.util.Base64.getDecoder().decode(com.box.sdk.core.Json.asString({expr})))"
+                    "({expr} == null ? null : java.util.Base64.getDecoder().decode(dev.unofficialbox.core.Json.asString({expr})))"
                 )
             }
             ir::Type::List(inner) => {
                 let v = format!("_x{depth}");
                 let dec = self.decode_bare(inner, &v, depth + 1);
-                format!("com.box.sdk.core.Json.decodeList({expr}, {v} -> {dec})")
+                format!("dev.unofficialbox.core.Json.decodeList({expr}, {v} -> {dec})")
             }
             ir::Type::Map(inner) => {
                 let v = format!("_x{depth}");
                 let dec = self.decode_bare(inner, &v, depth + 1);
-                format!("com.box.sdk.core.Json.decodeMap({expr}, {v} -> {dec})")
+                format!("dev.unofficialbox.core.Json.decodeMap({expr}, {v} -> {dec})")
             }
             ir::Type::Nullable(inner) | ir::Type::Optional(inner) => {
                 self.decode_bare(inner, expr, depth)
@@ -1005,11 +1005,11 @@ fn sealed_union(
     out.push_str("    /** Dispatch on the discriminator to the matching variant. */\n");
     let _ = writeln!(out, "    static {name} fromJson(Object _json) {{");
     out.push_str(
-        "        java.util.Map<String, Object> _m = com.box.sdk.core.Json.asObject(_json);\n",
+        "        java.util.Map<String, Object> _m = dev.unofficialbox.core.Json.asObject(_json);\n",
     );
     let _ = writeln!(
         out,
-        "        String _tag = com.box.sdk.core.Json.asString(_m.get({}));",
+        "        String _tag = dev.unofficialbox.core.Json.asString(_m.get({}));",
         java_string(discriminator)
     );
     out.push_str("        return switch (_tag) {\n");
@@ -1059,7 +1059,7 @@ fn structural_union(name: &str) -> String {
 /// Whether an FQN import belongs to the `java.base` module — the model layer
 /// only ever imports `java.util.*` and `java.time.*`, both in `java.base`, so
 /// they collapse into a single `import module java.base;` (JEP 511). Anything
-/// else (the SDK's own `com.box.sdk.core.Tristate`) stays an explicit import.
+/// else (the SDK's own `dev.unofficialbox.core.Tristate`) stays an explicit import.
 fn in_java_base(import: &str) -> bool {
     import.starts_with("java.util.") || import.starts_with("java.time.")
 }
@@ -1412,7 +1412,10 @@ mod tests {
             "Widget",
         );
         let out = render(&p, s);
-        assert!(out.contains("package com.box.sdk.model.schemas;"), "{out}");
+        assert!(
+            out.contains("package dev.unofficialbox.model.schemas;"),
+            "{out}"
+        );
         assert!(out.contains("public record Widget("), "{out}");
         assert!(out.contains("String id"), "{out}");
         // Optional<T> → java.util.Optional (imported).
@@ -1424,7 +1427,10 @@ mod tests {
         // Optional<Nullable<T>> → the tri-state wrapper (imported from core, kept
         // explicit — not part of java.base).
         assert!(out.contains("Tristate<Long> size"), "{out}");
-        assert!(out.contains("import com.box.sdk.core.Tristate;"), "{out}");
+        assert!(
+            out.contains("import dev.unofficialbox.core.Tristate;"),
+            "{out}"
+        );
         // Keyword field → suffixed identifier.
         assert!(out.contains("String class_"), "{out}");
         assert!(out.contains("DO NOT EDIT"), "{out}");
@@ -1605,7 +1611,7 @@ mod tests {
         // The codec (D-172) reads the discriminator and dispatches; an
         // unrecognized (or absent) tag routes to Unknown so it round-trips.
         assert!(
-            iface.contains("String _tag = com.box.sdk.core.Json.asString(_m.get(\"kind\"));"),
+            iface.contains("String _tag = dev.unofficialbox.core.Json.asString(_m.get(\"kind\"));"),
             "{iface}"
         );
         assert!(
@@ -1848,7 +1854,7 @@ mod tests {
         // Required field: put straight through; read via a typed coercion.
         assert!(out.contains(r#"_m.put("id", id());"#), "{out}");
         assert!(
-            out.contains(r#"com.box.sdk.core.Json.asString(_m.get("id"))"#),
+            out.contains(r#"dev.unofficialbox.core.Json.asString(_m.get("id"))"#),
             "{out}"
         );
         // Optional: present writes the value (under its *wire* name), absent
@@ -1872,11 +1878,11 @@ mod tests {
             "{out}"
         );
         assert!(
-            out.contains("com.box.sdk.core.Tristate.<Long>absent()"),
+            out.contains("dev.unofficialbox.core.Tristate.<Long>absent()"),
             "{out}"
         );
         assert!(
-            out.contains("com.box.sdk.core.Tristate.<Long>ofNull()"),
+            out.contains("dev.unofficialbox.core.Tristate.<Long>ofNull()"),
             "{out}"
         );
     }
@@ -1912,7 +1918,7 @@ mod tests {
         // typed helper so no unchecked cast leaks.
         assert!(out.contains(r#"_m.put("tags", tags());"#), "{out}");
         assert!(
-            out.contains(r#"com.box.sdk.core.Json.decodeList(_m.get("tags"), _x0 -> com.box.sdk.core.Json.asString(_x0))"#),
+            out.contains(r#"dev.unofficialbox.core.Json.decodeList(_m.get("tags"), _x0 -> dev.unofficialbox.core.Json.asString(_x0))"#),
             "{out}"
         );
         // A nested declaration delegates to its own codec, null-guarded.
@@ -1952,7 +1958,7 @@ mod tests {
             "{open_out}"
         );
         assert!(
-            open_out.contains("return new Direction(com.box.sdk.core.Json.asString(_json));"),
+            open_out.contains("return new Direction(dev.unofficialbox.core.Json.asString(_json));"),
             "{open_out}"
         );
         // Closed enum: maps to/from the wire spelling and rejects the unknown.
