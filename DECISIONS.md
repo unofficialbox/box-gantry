@@ -3679,3 +3679,46 @@ skips the run, so a dry dispatch still passes.
 **Result.** All four non-Apex runtimes now share one release live-smoke workflow;
 the Java SDK has a credentialed VR-7 path, closing the last release-tooling gap
 before a Java live-smoke run + tag. No product-code change.
+
+## D-185 — Go runtime: decrypt encrypted PKCS#8 (PBES2) JWT keys
+
+**Context.** The first credentialed VR-7 live-smoke run (D-184) failed at the Go
+step with `parsing private key: asn1: structure error: tags don't match (2 vs
+…tag:16…) int @2`. Root cause: `parseRSAPrivateKey` only handled the **legacy
+RFC 1423** encrypted PEM (`x509.IsEncryptedPEMBlock`/`DecryptPEMBlock`), but Box's
+`box_config.json` ships the RSA key as **encrypted PKCS#8** (`-----BEGIN ENCRYPTED
+PRIVATE KEY-----`, RFC 8018 PBES2 — PBKDF2 + AES-CBC), the format the Developer
+Console issues today. `IsEncryptedPEMBlock` returns false for it, so the code
+never decrypted and fed the still-encrypted `EncryptedPrivateKeyInfo` (whose first
+inner element is the PBES2 `AlgorithmIdentifier` SEQUENCE) to `ParsePKCS8PrivateKey`,
+which expects the `version` INTEGER first — exactly the tag mismatch. The Go
+runtime's JWT flow had therefore never worked against a real Box key; its
+behavioral test used a self-generated PKCS#1 key, which masked the gap. Rust, TS,
+and Java were unaffected — each already detects `ENCRYPTED PRIVATE KEY` and
+decrypts PKCS#8 via its platform crypto (`from_pkcs8_encrypted_pem`,
+`createPrivateKey`, `EncryptedPrivateKeyInfo`), and all three passed the same run.
+
+**The change.** `parseRSAPrivateKey` now branches on PEM type: an `ENCRYPTED
+PRIVATE KEY` block goes through a new dependency-free `decryptPKCS8` (`pkcs8.go`)
+that parses `EncryptedPrivateKeyInfo` + PBES2 params and decrypts with PBKDF2
+(HMAC-SHA1/224/256/384/512) + AES-128/192/256-CBC — the schemes real Box keys
+use — reporting a clear error for anything else; the legacy path is retained for
+older keys. PBKDF2 is hand-rolled (~20 lines over `crypto/hmac`) because
+`crypto/pbkdf2` is Go 1.24+ and the module floor is **1.23**, and because the
+runtime carries **no third-party dependency** (the standing design rule across
+all backends) — so hand-rolling over stdlib beats adding a crypto dep or bumping
+the floor. This brings Go to parity with how Rust/TS/Java already handle the key.
+
+**Verification.** New table-driven tests decrypt two real openssl-generated
+encrypted-PKCS#8 fixtures (PBKDF2-HMAC-SHA256 + AES-256-CBC, and the default-PRF
+HMAC-SHA1 + AES-128-CBC), validate the recovered RSA key, and RS256-sign+verify
+with it; wrong-passphrase and no-passphrase both fail loudly (PKCS#7 padding
+check). `go test ./...`, `go vet`, and `gofmt` are clean, and the Go backend swap
+gate still compiles the generated SDK against the vendored runtime (`pkcs8.go`
+is picked up by the directory-glob vendoring, and the compile-time stub is
+unchanged — the decryptor is unexported, off the contract surface). The live
+JWT flow will be re-confirmed on the next credentialed dispatch.
+
+**Result.** Go's JWT server auth works with real Box `box_config.json` keys,
+closing a latent bug in the shipped Go runtime and restoring all four runtimes to
+green on the release live smoke.

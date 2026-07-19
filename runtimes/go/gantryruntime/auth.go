@@ -308,21 +308,32 @@ func JWTAuth(cfg JWTConfig) (TokenSource, error) {
 	return ct, nil
 }
 
-// parseRSAPrivateKey decodes a PEM RSA key, decrypting a legacy
-// passphrase-protected block (Box's box_config keys) when present, and
-// accepts either PKCS#1 or PKCS#8 encoding.
+// parseRSAPrivateKey decodes a PEM RSA key and accepts either PKCS#1 or PKCS#8
+// encoding. It decrypts a passphrase-protected key in either form Box ships:
+// a modern encrypted PKCS#8 block (`ENCRYPTED PRIVATE KEY`, PBES2 — what the
+// Developer Console issues today) or a legacy RFC 1423 encrypted PEM (older keys).
 func parseRSAPrivateKey(pemBytes []byte, passphrase string) (*rsa.PrivateKey, error) {
 	block, _ := pem.Decode(pemBytes)
 	if block == nil {
 		return nil, errors.New("gantryruntime: no PEM block in the private key")
 	}
 	der := block.Bytes
-	//nolint:staticcheck // legacy encrypted PEM is exactly Box's key format
-	if x509.IsEncryptedPEMBlock(block) {
+	switch {
+	case block.Type == "ENCRYPTED PRIVATE KEY":
+		// Modern encrypted PKCS#8 (PBES2) — Box's box_config.json format.
 		if passphrase == "" {
 			return nil, errors.New("gantryruntime: private key is encrypted but no passphrase was given")
 		}
-		decrypted, err := x509.DecryptPEMBlock(block, []byte(passphrase))
+		decrypted, err := decryptPKCS8(der, []byte(passphrase))
+		if err != nil {
+			return nil, fmt.Errorf("gantryruntime: decrypting private key: %w", err)
+		}
+		der = decrypted
+	case x509.IsEncryptedPEMBlock(block): //nolint:staticcheck // legacy encrypted PEM is an older Box key format
+		if passphrase == "" {
+			return nil, errors.New("gantryruntime: private key is encrypted but no passphrase was given")
+		}
+		decrypted, err := x509.DecryptPEMBlock(block, []byte(passphrase)) //nolint:staticcheck // paired with the deprecated IsEncryptedPEMBlock above
 		if err != nil {
 			return nil, fmt.Errorf("gantryruntime: decrypting private key: %w", err)
 		}
