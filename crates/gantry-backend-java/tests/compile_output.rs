@@ -128,34 +128,34 @@ fn generation_is_deterministic() {
     // The support + provenance scaffold and at least one model file are present.
     assert!(
         once.iter()
-            .any(|f| f.path == "src/main/java/com/box/sdk/core/Tristate.java")
+            .any(|f| f.path == "src/main/java/dev/unofficialbox/core/Tristate.java")
     );
     assert!(
         once.iter()
-            .any(|f| f.path == "src/main/java/com/box/sdk/BuildInfo.java")
+            .any(|f| f.path == "src/main/java/dev/unofficialbox/BuildInfo.java")
     );
     assert!(
         once.iter()
-            .any(|f| f.path.starts_with("src/main/java/com/box/sdk/model/"))
+            .any(|f| f.path.starts_with("src/main/java/dev/unofficialbox/model/"))
     );
     // The manager/client/runtime layer (D-173): the runtime stub, the SDK
     // entry point, the helper, and at least one manager.
     assert!(
         once.iter()
-            .any(|f| f.path == "src/main/java/com/box/sdk/runtime/Runtime.java")
+            .any(|f| f.path == "src/main/java/dev/unofficialbox/runtime/Runtime.java")
     );
     assert!(
         once.iter()
-            .any(|f| f.path == "src/main/java/com/box/sdk/Client.java")
+            .any(|f| f.path == "src/main/java/dev/unofficialbox/Client.java")
     );
     assert!(
         once.iter()
-            .any(|f| f.path == "src/main/java/com/box/sdk/internal/Internal.java")
+            .any(|f| f.path == "src/main/java/dev/unofficialbox/internal/Internal.java")
     );
-    assert!(
-        once.iter()
-            .any(|f| f.path.starts_with("src/main/java/com/box/sdk/managers/"))
-    );
+    assert!(once.iter().any(|f| {
+        f.path
+            .starts_with("src/main/java/dev/unofficialbox/managers/")
+    }));
 }
 
 /// VR-1.6: the whole generated model tree compiles `javac -Xlint:all -Werror`
@@ -187,8 +187,8 @@ fn the_generated_model_layer_compiles_under_javac() {
     std::fs::write(
         &smoke,
         "public final class Smoke {\n\
-         \x20   public static com.box.sdk.Client build(com.box.sdk.runtime.Runtime.Auth auth) {\n\
-         \x20       return new com.box.sdk.Client(auth);\n\
+         \x20   public static dev.unofficialbox.Client build(dev.unofficialbox.runtime.Runtime.Auth auth) {\n\
+         \x20       return new dev.unofficialbox.Client(auth);\n\
          \x20   }\n\
          }\n",
     )
@@ -254,9 +254,10 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
     sources.retain(|p| !p.ends_with("BoxChunkedUpload.java"));
 
     // Swap the generated stub for the real runtime (same package + class name).
-    let real_runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../runtimes/java/gantryruntime/src/main/java/com/box/sdk/runtime/Runtime.java");
-    let stub = dir.join("src/main/java/com/box/sdk/runtime/Runtime.java");
+    let real_runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "../../runtimes/java/gantryruntime/src/main/java/dev/unofficialbox/runtime/Runtime.java",
+    );
+    let stub = dir.join("src/main/java/dev/unofficialbox/runtime/Runtime.java");
     assert!(
         stub.exists(),
         "the generated stub runtime should exist to be swapped"
@@ -272,13 +273,13 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
     std::fs::write(
         &smoke,
         "public final class Smoke {\n\
-         \x20   public static com.box.sdk.Client build() {\n\
-         \x20       return new com.box.sdk.Client(com.box.sdk.runtime.Runtime.developerToken(\"dev\"));\n\
+         \x20   public static dev.unofficialbox.Client build() {\n\
+         \x20       return new dev.unofficialbox.Client(dev.unofficialbox.runtime.Runtime.developerToken(\"dev\"));\n\
          \x20   }\n\
          \x20   public static int countAgents() {\n\
          \x20       int _n = 0;\n\
          \x20       for (var agent : build().aiStudio.getAiAgentsPaginate(\n\
-         \x20               new com.box.sdk.managers.AiStudioManager.GetAiAgentsOptions())) {\n\
+         \x20               new dev.unofficialbox.managers.AiStudioManager.GetAiAgentsOptions())) {\n\
          \x20           if (agent != null) {\n\
          \x20               _n++;\n\
          \x20           }\n\
@@ -343,7 +344,8 @@ fn paginators_are_generated() {
     );
     for file in &paginators {
         assert!(
-            file.path.starts_with("src/main/java/com/box/sdk/managers/"),
+            file.path
+                .starts_with("src/main/java/dev/unofficialbox/managers/"),
             "paginator not in the managers package: {}",
             file.path
         );
@@ -427,7 +429,7 @@ fn reference_docs_describe_the_java_surface() {
     assert!(errors.contains("BoxApiException"), "{errors}");
     let chunked = doc("docs/chunked-upload.md");
     assert!(
-        chunked.contains("new com.box.sdk.BoxChunkedUpload(client)")
+        chunked.contains("new dev.unofficialbox.BoxChunkedUpload(client)")
             && chunked.contains(".upload(bytes, \"large.bin\", folderId)"),
         "{chunked}"
     );
@@ -450,7 +452,7 @@ fn the_generated_behavioral_tests_pass_under_java() {
     assert!(
         files
             .iter()
-            .any(|f| f.path == "src/test/java/com/box/sdk/GeneratedTests.java"),
+            .any(|f| f.path == "src/test/java/dev/unofficialbox/GeneratedTests.java"),
         "the generated behavioral-test class should be emitted"
     );
 
@@ -492,7 +494,7 @@ fn the_generated_behavioral_tests_pass_under_java() {
         // compiles and runs on a plain JDK 26.
         .arg("-cp")
         .arg(&classes)
-        .arg("com.box.sdk.GeneratedTests")
+        .arg("dev.unofficialbox.GeneratedTests")
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&run.stdout);
@@ -530,9 +532,10 @@ fn the_generated_sdk_packages_for_publish() {
 
     // Vendor the hand-written runtime over the generated stub (the ship shape
     // Go/Rust/TS use), so the jar is self-contained with no unpublished dep.
-    let real_runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../runtimes/java/gantryruntime/src/main/java/com/box/sdk/runtime/Runtime.java");
-    let stub = dir.join("src/main/java/com/box/sdk/runtime/Runtime.java");
+    let real_runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "../../runtimes/java/gantryruntime/src/main/java/dev/unofficialbox/runtime/Runtime.java",
+    );
+    let stub = dir.join("src/main/java/dev/unofficialbox/runtime/Runtime.java");
     assert!(
         stub.exists(),
         "the generated stub runtime should exist to vendor over"
@@ -591,7 +594,7 @@ fn the_chunked_upload_runs_parts_in_parallel() {
     assert!(
         files
             .iter()
-            .any(|f| f.path == "src/main/java/com/box/sdk/BoxChunkedUpload.java"),
+            .any(|f| f.path == "src/main/java/dev/unofficialbox/BoxChunkedUpload.java"),
         "the chunked-upload orchestrator should be emitted for the real spec"
     );
 
@@ -601,11 +604,12 @@ fn the_chunked_upload_runs_parts_in_parallel() {
     let mut sources = write_all(&dir, &files);
 
     // Vendor the real runtime over the stub (the orchestrator needs a live session).
-    let real_runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../runtimes/java/gantryruntime/src/main/java/com/box/sdk/runtime/Runtime.java");
+    let real_runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "../../runtimes/java/gantryruntime/src/main/java/dev/unofficialbox/runtime/Runtime.java",
+    );
     std::fs::copy(
         &real_runtime,
-        dir.join("src/main/java/com/box/sdk/runtime/Runtime.java"),
+        dir.join("src/main/java/dev/unofficialbox/runtime/Runtime.java"),
     )
     .unwrap();
 
@@ -736,10 +740,10 @@ public final class ChunkedSmoke {
             System.setProperty("box.baseUrl.upload", "http://127.0.0.1:" + port);
             System.setProperty("box.baseUrl.upload_session", "http://127.0.0.1:" + port);
 
-            com.box.sdk.Client client =
-                    new com.box.sdk.Client(com.box.sdk.runtime.Runtime.developerToken("t"));
-            com.box.sdk.model.schemas.Files result =
-                    new com.box.sdk.BoxChunkedUpload(client).upload(content, "big.bin", "0");
+            dev.unofficialbox.Client client =
+                    new dev.unofficialbox.Client(dev.unofficialbox.runtime.Runtime.developerToken("t"));
+            dev.unofficialbox.model.schemas.Files result =
+                    new dev.unofficialbox.BoxChunkedUpload(client).upload(content, "big.bin", "0");
 
             check(puts.get() == 5, "expected 5 part PUTs, got " + puts.get());
             ByteArrayOutputStream reassembled = new ByteArrayOutputStream();

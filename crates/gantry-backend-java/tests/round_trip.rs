@@ -129,8 +129,8 @@ public final class Main {
     public static void main(String[] args) {
         String in = "{\"id\":\"x\",\"size\":null,\"note\":null,\"tags\":[\"a\",\"b\"],"
             + "\"pet\":{\"kind\":\"dog\",\"bark\":\"woof\"},\"color\":\"red\"}";
-        com.box.sdk.model.schemas.Widget w =
-            com.box.sdk.model.schemas.Widget.fromJson(com.box.sdk.core.Json.parse(in));
+        dev.unofficialbox.model.schemas.Widget w =
+            dev.unofficialbox.model.schemas.Widget.fromJson(dev.unofficialbox.core.Json.parse(in));
 
         // Tri-state: an explicit wire null decodes to NULL, not absent.
         check(w.size().isNull(), "size should be explicit null");
@@ -139,10 +139,10 @@ public final class Main {
         // A bare nullable decodes to a null reference.
         check(w.note() == null, "note should be null");
         check(w.tags().size() == 2 && w.tags().get(0).equals("a"), "tags");
-        check(w.color() == com.box.sdk.model.schemas.Color.RED, "color");
-        check(w.pet() instanceof com.box.sdk.model.schemas.Dog, "pet dispatches to Dog");
+        check(w.color() == dev.unofficialbox.model.schemas.Color.RED, "color");
+        check(w.pet() instanceof dev.unofficialbox.model.schemas.Dog, "pet dispatches to Dog");
 
-        String out = com.box.sdk.core.Json.write(w.toJson());
+        String out = dev.unofficialbox.core.Json.write(w.toJson());
         // An explicit null re-encodes as null; an absent field is omitted.
         check(out.contains("\"size\":null"), "size null must re-encode: " + out);
         check(!out.contains("\"name\""), "absent name must be omitted: " + out);
@@ -150,10 +150,10 @@ public final class Main {
         check(out.contains("\"color\":\"red\""), "enum wire value must round-trip: " + out);
 
         // An unrecognized discriminator on an open union is retained verbatim.
-        com.box.sdk.model.schemas.Pet unknown = com.box.sdk.model.schemas.Pet.fromJson(
-            com.box.sdk.core.Json.parse("{\"kind\":\"bird\",\"wings\":2}"));
-        check(unknown instanceof com.box.sdk.model.schemas.Pet.Unknown, "unknown discriminator retained");
-        check(com.box.sdk.core.Json.write(unknown.toJson()).contains("\"wings\":2"),
+        dev.unofficialbox.model.schemas.Pet unknown = dev.unofficialbox.model.schemas.Pet.fromJson(
+            dev.unofficialbox.core.Json.parse("{\"kind\":\"bird\",\"wings\":2}"));
+        check(unknown instanceof dev.unofficialbox.model.schemas.Pet.Unknown, "unknown discriminator retained");
+        check(dev.unofficialbox.core.Json.write(unknown.toJson()).contains("\"wings\":2"),
             "unknown payload must round-trip");
 
         System.out.println("ROUNDTRIP_OK");

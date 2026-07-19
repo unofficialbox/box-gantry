@@ -14,8 +14,9 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn runtime_src() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../runtimes/java/gantryruntime/src/main/java/com/box/sdk/runtime/Runtime.java")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "../../runtimes/java/gantryruntime/src/main/java/dev/unofficialbox/runtime/Runtime.java",
+    )
 }
 
 fn jdk_available() -> bool {
@@ -59,7 +60,7 @@ fn the_runtime_compiles_standalone() {
 const DRIVER: &str = r#"
 import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpExchange;
-import com.box.sdk.runtime.Runtime;
+import dev.unofficialbox.runtime.Runtime;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
@@ -251,7 +252,7 @@ fn the_runtime_retries_and_authenticates() {
 // The gate compiles it with `javac` (the implicit class is named after the file,
 // `LiveSmoke`) and runs it with `java -cp classes LiveSmoke`, unchanged.
 const LIVE_SMOKE: &str = r#"
-import com.box.sdk.runtime.Runtime;
+import dev.unofficialbox.runtime.Runtime;
 
 int ran = 0;
 

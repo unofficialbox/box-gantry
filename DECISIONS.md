@@ -3788,3 +3788,39 @@ release-pipeline value (FR-9 spec-diff).
 
 **Result.** One consistent, deliberately-community publish identity across all
 five targets, replacing the `.invalid`/placeholder coordinates.
+
+## D-188 — Java code package: `com.box.sdk` → `dev.unofficialbox`
+
+**Context.** D-187 standardized the *publish* coordinates on `box-open-sdk` but
+left the generated Java **code** in the `com.box.sdk` package — which is
+**exactly Box's official Java SDK's package** (`box/box-java-sdk`). That's not
+cosmetic: it's a hard **classpath collision** — an app depending on both this SDK
+and Box's official one would get duplicate/ambiguous `com.box.sdk.*` types — and
+publishing into `com.box.*` (a namespace we don't own) is squatting. Major
+libraries deliberately avoid this (AWS moved v1 `com.amazonaws` → v2
+`software.amazon.awssdk` for the same reason).
+
+**The decision.** Rename the root package to **`dev.unofficialbox`** — the
+reverse-DNS of the owned `unofficialbox.dev` domain, matching the Maven groupId
+(D-187). No trailing product segment (classes sit directly under it, the
+`dev.failsafe` shape), so: `dev.unofficialbox.Client`,
+`dev.unofficialbox.managers.FilesManager`, `dev.unofficialbox.runtime.Runtime`,
+`dev.unofficialbox.model.schemas.*`, `dev.unofficialbox.core.Tristate`,
+`dev.unofficialbox.BoxChunkedUpload`. "Box" survives only in class names (correct
+— it *is* a Box SDK); the namespace is clean and collision-free.
+
+**The change.** The 6 `*_PKG` consts (the printer's single source), all
+hardcoded FQNs across the backend/contract/tests, the pom's two-pass
+include/exclude paths, and the hand-written runtime's package + file location
+(`.../com/box/sdk/runtime/Runtime.java` → `.../dev/unofficialbox/runtime/Runtime.java`)
+all move together — ~147 references. Purely mechanical.
+
+**Verification.** The full Java gate is the oracle: `javac -Xlint:all -Werror`
+over the 900-file tree, the FR-5.2 swap (real runtime dropped over the stub at
+the new package path), the behavioral `HttpServer` run, the chunked-upload
+`--enable-preview` gate, and `mvn package` all pass; the contract crate's
+`java_stubs` tests pass. fmt + clippy clean.
+
+**Result.** The Java SDK is fully namespaced under `dev.unofficialbox` — code,
+groupId, and domain all aligned — and co-installable with Box's official
+`com.box.sdk`.
