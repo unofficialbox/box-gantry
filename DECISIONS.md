@@ -3652,3 +3652,30 @@ and this, the actionable deferred Java-26 list is done — the remaining items a
 either preview with no honest use site (primitive patterns) or finalized with no
 compelling fit in a blocking, FQN-referencing SDK (scoped values, flexible
 constructor bodies).
+
+## D-184 — Java: wire the VR-7 live smoke into the release workflow
+
+**Context.** D-175 landed the Java VR-7 live-smoke driver and a backend gate that
+**compiles** it against the real runtime every CI run (so it can't rot) and
+**runs** it only when `BOX_*` credentials are present. But the release workflow
+`livesmoke.yml` — the on-demand `workflow_dispatch` that runs the credentialed
+smoke across runtimes — invoked only Go, Rust, and TypeScript. Java (feature-
+complete since M7) was absent, so its live smoke had no credentialed path to run
+before a Java release. (Apex has its own `apex-livesmoke.yml`; this workflow
+covers the four `java.net.http`/`fetch`/`reqwest`/`net/http`-family runtimes.)
+
+**The change.** `livesmoke.yml` gains a Corretto-26 `setup-java` (the ship-target
+floor, D-180) and a final step that runs the existing gate directly —
+`cargo test -p gantry-backend-java --test runtime
+the_live_smoke_compiles_and_runs_when_credentialed` — with the `BOX_*` secrets
+mapped through, so the same driver the per-commit gate compiles now also **runs**
+against real Box on dispatch. As with the Rust and TS steps, `BOX_OAUTH_REFRESH_TOKEN`
+is nulled for the Java step: Box rotates the OAuth refresh token on use and the
+Go step (first) already spent it, so Java skips OAuth (Go covers the shared flow;
+Java runs developer/CCG/JWT live, its OAuth path sharing the CCG cached-refresh
+machinery the smoke exercises). No credentials → the gate compiles clean and
+skips the run, so a dry dispatch still passes.
+
+**Result.** All four non-Apex runtimes now share one release live-smoke workflow;
+the Java SDK has a credentialed VR-7 path, closing the last release-tooling gap
+before a Java live-smoke run + tag. No product-code change.
