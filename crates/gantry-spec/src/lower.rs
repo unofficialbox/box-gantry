@@ -91,6 +91,7 @@ pub fn lower(set: &SpecSet) -> Result<Lowering, IngestError> {
             ids: IndexMap::new(),
             used_names: HashSet::new(),
             method_names: HashMap::new(),
+            idless_body_seeds: HashSet::new(),
             shapes: HashMap::new(),
         }
         .lower_document()?;
@@ -157,6 +158,11 @@ struct DocLowerer<'a> {
     /// short name (D-126) can collapse distinct operations (e.g. one vs two
     /// `{id}` path params), so a collision falls back to a fuller name.
     method_names: HashMap<String, HashSet<String>>,
+    /// The terse request-body names claimed by **id-less** operations (D-189),
+    /// gathered in a pre-pass. An id-addressed body only keeps its `{id}`
+    /// selector (`FileIdContentCreateRequest`) when its terse name is in here;
+    /// otherwise it takes the clean name (`FileUpdateRequest`). Order-independent.
+    idless_body_seeds: HashSet<String>,
     /// Structural dedupe (D-127): the canonical decl id for each *synthesized*
     /// shape, keyed on the `DeclKind`'s structure. An inline shape identical
     /// to one already synthesized reuses it instead of minting a copy, so the
@@ -182,6 +188,25 @@ impl<'a> DocLowerer<'a> {
             let decl = self.decl(&location, name, kind)?;
             let id = self.ids[name];
             self.arena[id.0 as usize] = Some(decl);
+        }
+        // Pre-pass (D-189): record the terse request-body name of every id-less
+        // operation, so an id-addressed body only earns an `…Id…` disambiguator
+        // when an id-less sibling truly shares its name — regardless of the order
+        // the two appear in the spec.
+        for item in doc.paths.values() {
+            for (method, op) in item.operations() {
+                if op.request_body.is_none() {
+                    continue;
+                }
+                let Some(tag) = op.box_tag.as_deref() else {
+                    continue;
+                };
+                let tokens = short_op_tokens(op.operation_id.as_deref().unwrap_or(""), tag);
+                if !tokens.iter().any(|t| t.eq_ignore_ascii_case("id")) {
+                    self.idless_body_seeds
+                        .insert(body_seed_for(tag, method, &tokens, false));
+                }
+            }
         }
         for (path_key, item) in &doc.paths {
             for (method, op) in item.operations() {
@@ -707,11 +732,33 @@ impl<'a> DocLowerer<'a> {
             "{box_tag}\u{0}{}",
             variation.as_ref().map_or("", ir::Identifier::as_str)
         );
+        // A collection read leads with the `list` verb instead of `get`, so the
+        // single-item read keeps the clean `get` name (`getFileMetadata` for one,
+        // `listFileMetadata` for all). Using the verb — not a `List` suffix —
+        // lets each backend's casing render the idiomatic form for its language
+        // (`ListFileMetadata`, `list_file_metadata`, …). Computed before the
+        // `taken` borrow.
+        let is_list = method == "get" && self.returns_collection(op);
+        let relabel = |snake: String| -> String {
+            match is_list {
+                true => snake
+                    .strip_prefix("get")
+                    .map_or(snake.clone(), |rest| format!("list{rest}")),
+                false => snake,
+            }
+        };
         let taken = self.method_names.entry(scope).or_default();
         let method_ident = {
-            let pretty = clean_name(&method_name(&short_tokens, false));
-            let full = clean_name(&method_name(&short_tokens, true));
-            let mut chosen = pretty.clone();
+            // Terse first (no redundant trailing `ById`); fall back to the
+            // `…ById` form, then the keep-all-ids form, then a numeric suffix —
+            // so `ById` reappears only when a sibling would otherwise collide.
+            let terse = clean_name(&relabel(method_name(&short_tokens, false, true)));
+            let pretty = clean_name(&relabel(method_name(&short_tokens, false, false)));
+            let full = clean_name(&relabel(method_name(&short_tokens, true, false)));
+            let mut chosen = terse.clone();
+            if taken.contains(&chosen.to_ascii_lowercase()) {
+                chosen = pretty.clone();
+            }
             if taken.contains(&chosen.to_ascii_lowercase()) {
                 chosen = full.clone();
             }
@@ -737,7 +784,7 @@ impl<'a> DocLowerer<'a> {
 
         let params = self.lower_params(&location, &owner, op)?;
         let path = self.lower_path(&location, path_key, &params)?;
-        let request = self.lower_request_body(&location, &owner, op)?;
+        let request = self.lower_request_body(&location, &owner, op, box_tag, method)?;
         let response = self.lower_response(&location, &owner, op)?;
         let base_url = self.lower_base_url(&location, op)?;
 
@@ -914,6 +961,8 @@ impl<'a> DocLowerer<'a> {
         location: &str,
         owner: &str,
         op: &'a RawOperation,
+        box_tag: &str,
+        method: &str,
     ) -> Result<Option<ir::RequestBody>, IngestError> {
         let Some(body) = &op.request_body else {
             return Ok(None);
@@ -941,15 +990,29 @@ impl<'a> DocLowerer<'a> {
                 ));
             }
         };
+        // Name request bodies after their operation, not a generic `PostBody`
+        // (D-189). The base is the operation's *distinctive* path tokens
+        // (`FileUploadSessionsCreateRequest`, `FileUploadSessionCommitRequest`),
+        // falling back to the singular manager subject when the operation has no
+        // distinctive path (`FolderCreateRequest`). A trailing curated action
+        // (`commit`) is the verb; otherwise the HTTP verb supplies it.
+        let all = short_op_tokens(op.operation_id.as_deref().unwrap_or(""), box_tag);
+        let has_id = all.iter().any(|t| t.eq_ignore_ascii_case("id"));
+        let terse_seed = body_seed_for(box_tag, method, &all, false);
+        // An id-addressed body keeps its `{id}` selector only when an id-less
+        // sibling claims the same terse name (`FileContentCreateRequest` +
+        // `FileIdContentCreateRequest`); otherwise it takes the clean terse name
+        // (`FileUpdateRequest`, no redundant `Id`). The id-less seeds are gathered
+        // in a pre-pass (`gather_idless_body_seeds`), so this is order-independent.
+        let body_seed = if has_id && self.idless_body_seeds.contains(&terse_seed) {
+            body_seed_for(box_tag, method, &all, true)
+        } else {
+            terse_seed
+        };
         let mut ty = match &media.schema {
             Some(schema) => self.lower_type(
                 &format!("{body_location}.content[{media_key:?}]"),
-                // "Body", not "RequestBody": synthesized names must stay
-                // short — 337 identifiers blew Apex's 40-char limit before
-                // this (D-108 finding 2, D-110). The body's own fields thread
-                // `owner` as their leaf, so they read `<Op><Field>`, and
-                // deeper levels drop to immediate context.
-                &format!("{owner}Body"),
+                &body_seed,
                 owner,
                 schema,
             )?,
@@ -1083,6 +1146,42 @@ impl<'a> DocLowerer<'a> {
             .ok_or_else(|| self.unresolved(location, reference))
     }
 
+    /// Whether the operation's success response is a Box **collection** — a
+    /// paginated wrapper carrying an `entries` array, or a bare array. A list
+    /// read takes a `List` suffix (`getFileMetadataList`) so the single-item
+    /// read keeps the clean name (`getFileMetadata`).
+    fn returns_collection(&self, op: &'a RawOperation) -> bool {
+        let mut codes: Vec<&String> = op.responses.keys().filter(|c| c.starts_with('2')).collect();
+        codes.sort();
+        codes.into_iter().any(|code| {
+            op.responses[code]
+                .content
+                .values()
+                .filter_map(|m| m.schema.as_ref())
+                .any(|s| self.schema_is_collection(s, 0))
+        })
+    }
+
+    fn schema_is_collection(&self, schema: &'a RawSchema, depth: usize) -> bool {
+        if depth > 4 {
+            return false;
+        }
+        if schema.schema_type.as_deref() == Some("array")
+            || schema.properties.contains_key("entries")
+        {
+            return true;
+        }
+        if let Some(reference) = &schema.reference
+            && let Ok(target) = self.resolve_raw("", reference)
+        {
+            return self.schema_is_collection(target, depth + 1);
+        }
+        schema
+            .all_of
+            .iter()
+            .any(|s| self.schema_is_collection(s, depth + 1))
+    }
+
     fn resolve_raw(&self, location: &str, reference: &str) -> Result<&'a RawSchema, IngestError> {
         let name = self.ref_name(location, reference)?;
         self.doc
@@ -1174,7 +1273,113 @@ fn short_op_tokens(base_id: &str, box_tag: &str) -> Vec<String> {
             .map(str::to_string)
             .collect();
     }
+    // Legacy "stored as a fixed metadata template" endpoints (D-189): Box keeps
+    // file classifications and skills cards under a hardcoded
+    // `.../metadata/{enterprise|global}/{template}` path, so the whole path is a
+    // storage mechanism the manager tag (`file_classifications`, `skills`)
+    // already names — pure noise. Reduce to the verb (+ any trailing action), so
+    // it reads `client.fileClassifications.get(id)`, not the pathy
+    // `getFileMetadataEnterpriseSecurityClassification…`. (The generic
+    // `file_metadata` endpoint takes `{scope}` as a *parameter*, so its tokens
+    // carry no `enterprise`/`global` literal and are untouched.)
+    if tokens.iter().any(|t| t == "metadata")
+        && tokens.iter().any(|t| t == "enterprise" || t == "global")
+    {
+        const HTTP: [&str; 7] = ["get", "post", "put", "patch", "delete", "options", "head"];
+        let verb = tokens
+            .first()
+            .filter(|t| HTTP.contains(&t.as_str()))
+            .cloned();
+        let action = tokens
+            .last()
+            .filter(|t| ACTION_VERBS.contains(&t.as_str()))
+            .cloned();
+        let reduced: Vec<String> = verb.into_iter().chain(action).collect();
+        if !reduced.is_empty() {
+            tokens = reduced;
+        }
+    }
+    // Every resource segment that is part of the *path* to an instance is
+    // singularized (`createFoldersMetadataById` → `createFolderMetadataById`,
+    // `commitFilesUploadSession…` → `…FileUploadSession…`). Two stay plural: the
+    // last token (a true trailing collection — `getFolderItems`), and the object
+    // of a trailing action verb (`levels:append` → `appendLevels`, since you
+    // append *many* levels — it's the object, not a path container).
+    let last = tokens.len().saturating_sub(1);
+    for i in 0..last {
+        if !ACTION_VERBS.contains(&tokens[i + 1].as_str()) {
+            tokens[i] = singularize(&tokens[i]);
+        }
+    }
     tokens
+}
+
+/// The request-body type name for an operation (D-189): its distinctive path
+/// tokens + a verb, falling back to the singular manager subject when there is
+/// no distinctive path (`FolderCreateRequest`). `keep_id` retains the `{id}`
+/// selector (`FileIdContentCreateRequest`), used only to disambiguate an
+/// id-addressed body from an id-less sibling of the same name.
+fn body_seed_for(box_tag: &str, method: &str, op_tokens: &[String], keep_id: bool) -> String {
+    let verb = match method {
+        "post" => "Create",
+        "put" | "patch" => "Update",
+        "delete" => "Delete",
+        _ => "",
+    };
+    let tokens: Vec<&str> = op_tokens
+        .iter()
+        .map(String::as_str)
+        .filter(|t| !matches!(*t, "get" | "post" | "put" | "patch" | "delete"))
+        .filter(|t| keep_id || !t.eq_ignore_ascii_case("id"))
+        .collect();
+    if tokens.is_empty() {
+        let mut tag_tokens: Vec<String> = box_tag.split('_').map(str::to_string).collect();
+        if let Some(last) = tag_tokens.last_mut() {
+            *last = singularize(last);
+        }
+        format!("{}{verb}Request", pascal(&tag_tokens.join("_")))
+    } else if ACTION_VERBS.contains(tokens.last().unwrap()) {
+        // A trailing curated action (`commit`, `copy`) is the semantic verb. If
+        // no resource tokens precede it the subject was the manager tag (stripped
+        // as an echo), so prepend it: `copy` under `files` → `FileCopyRequest`,
+        // not a bare `CopyRequest` that collides across managers.
+        if tokens.len() == 1 {
+            let mut tag_tokens: Vec<String> = box_tag.split('_').map(str::to_string).collect();
+            if let Some(last) = tag_tokens.last_mut() {
+                *last = singularize(last);
+            }
+            format!(
+                "{}{}Request",
+                pascal(&tag_tokens.join("_")),
+                pascal(tokens[0])
+            )
+        } else {
+            format!("{}Request", pascal(&tokens.join("_")))
+        }
+    } else {
+        format!("{}{verb}Request", pascal(&tokens.join("_")))
+    }
+}
+
+/// Singularize a resource token that addresses one instance. Box resource names
+/// are regular English plurals, so a small rule set covers them; anything
+/// already singular (or not matching) passes through unchanged.
+fn singularize(token: &str) -> String {
+    let lower = token.to_ascii_lowercase();
+    let cut = |n: usize| token[..token.len() - n].to_string();
+    if lower.len() > 3 && lower.ends_with("ies") {
+        format!("{}y", cut(3)) // policies → policy, taxonomies → taxonomy
+    } else if lower.ends_with("ches") || lower.ends_with("shes") || lower.ends_with("sses") {
+        cut(2) // batches → batch, statuses → status
+    } else if lower.ends_with('s')
+        && !lower.ends_with("ss")
+        && !lower.ends_with("us")
+        && lower != "s"
+    {
+        cut(1) // folders → folder, files → file, users → user
+    } else {
+        token.to_string()
+    }
 }
 
 /// Box custom-action verbs that appear as the trailing token of an
@@ -1211,7 +1416,7 @@ const ACTION_VERBS: &[&str] = &[
 /// `keep_all_ids` renders *every* id as `by_id` instead of dropping interior
 /// ones — the collision fallback for multi-`{id}` paths (`…_id_id` →
 /// `GetByIdById`), so one- and two-id endpoints stay distinct.
-fn method_name(short_tokens: &[String], keep_all_ids: bool) -> String {
+fn method_name(short_tokens: &[String], keep_all_ids: bool, drop_trailing_id: bool) -> String {
     const HTTP_VERBS: &[&str] = &["get", "post", "put", "patch", "delete", "options", "head"];
 
     // Strip a leading HTTP verb, remembering its semantic mapping.
@@ -1244,8 +1449,12 @@ fn method_name(short_tokens: &[String], keep_all_ids: bool) -> String {
         if token == "id" {
             // A trailing id targets a specific resource (`ById`); an interior
             // id is just parent-path context and drops — unless a collision
-            // forced `keep_all_ids`, which keeps each id to stay distinct.
-            if keep_all_ids || index == body.len() - 1 {
+            // forced `keep_all_ids`, which keeps each id to stay distinct. The
+            // trailing `ById` is itself usually redundant (the id is a required
+            // arg), so `drop_trailing_id` omits it too; it's re-added only when a
+            // terser name would collide with a sibling (the dedup fallback).
+            let is_trailing = index == body.len() - 1;
+            if keep_all_ids || (is_trailing && !drop_trailing_id) {
                 out.push("by".to_string());
                 out.push("id".to_string());
             }

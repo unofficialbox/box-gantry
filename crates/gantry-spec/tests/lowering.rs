@@ -451,30 +451,25 @@ fn method_names_are_shortened_and_collisions_fall_back() {
             .map(|o| o.name.as_str().to_string())
             .collect()
     };
-    // files: GET by id → `get_by_id`; POST .../copy → `copy_by_id` (the
-    // curated action verb `copy` leads, the HTTP verb drops, D-126).
+    // files: GET by id → `get` (the redundant trailing `ById` drops when it
+    // isn't needed to disambiguate, D-189); POST .../copy → `copy` (the curated
+    // action verb `copy` leads, the HTTP verb drops, D-126).
     let files_ops = names_for("files");
-    assert!(
-        files_ops.contains(&"get_by_id".to_string()),
-        "{files_ops:?}"
-    );
-    assert!(
-        files_ops.contains(&"copy_by_id".to_string()),
-        "{files_ops:?}"
-    );
-    // metadata_taxonomies: the one-id and two-id GETs both want `get_by_id`;
-    // the collision keeps them distinct (which one keeps the short name
-    // depends on spec order, so assert distinctness, not a specific pair).
+    assert!(files_ops.contains(&"get".to_string()), "{files_ops:?}");
+    assert!(files_ops.contains(&"copy".to_string()), "{files_ops:?}");
+    // metadata_taxonomies: the one-id and two-id GETs both want the terse `get`;
+    // the collision keeps them distinct — one stays `get`, the other falls back
+    // to the `…ById` form (which one depends on spec order).
     let tax = names_for("metadata_taxonomies");
     assert_eq!(tax.len(), 2, "{tax:?}");
-    assert!(tax.contains(&"get_by_id".to_string()), "{tax:?}");
+    assert!(tax.contains(&"get".to_string()), "{tax:?}");
     assert!(
         tax[0] != tax[1],
         "the collision must stay distinct: {tax:?}"
     );
     assert!(
-        tax.iter().all(|n| n.starts_with("get_by_id")),
-        "both target-by-id names share the prefix: {tax:?}"
+        tax.iter().all(|n| n.starts_with("get")),
+        "both target-by-id names share the `get` prefix: {tax:?}"
     );
 }
 

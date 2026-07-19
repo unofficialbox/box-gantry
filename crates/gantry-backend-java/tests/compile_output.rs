@@ -278,8 +278,8 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
          \x20   }\n\
          \x20   public static int countAgents() {\n\
          \x20       int _n = 0;\n\
-         \x20       for (var agent : build().aiStudio.getAiAgentsPaginate(\n\
-         \x20               new dev.unofficialbox.managers.AiStudioManager.GetAiAgentsOptions())) {\n\
+         \x20       for (var agent : build().aiStudio.listAiAgentsPaginate(\n\
+         \x20               new dev.unofficialbox.managers.AiStudioManager.ListAiAgentsOptions())) {\n\
          \x20           if (agent != null) {\n\
          \x20               _n++;\n\
          \x20           }\n\

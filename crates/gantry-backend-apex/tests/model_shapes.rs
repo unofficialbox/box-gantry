@@ -946,7 +946,7 @@ fn the_generated_test_suite_exercises_the_managers_through_a_mock() {
     assert_contains(files_test, "BoxCalloutMock mock = new BoxCalloutMock();");
     assert_contains(files_test, "BoxFiles svc = new BoxFiles(mock);");
     assert_contains(files_test, "Test.startTest();");
-    assert_contains(files_test, "svc.getById(");
+    assert_contains(files_test, "svc.get(");
     assert_contains(files_test, "Test.stopTest();");
     // A binary (Blob) response is fed as a Blob, an array response as `[]`.
     assert_contains(files_test, "mock.bodyBlob = Blob.valueOf('x');");
@@ -992,8 +992,8 @@ fn each_endpoint_has_a_markdown_doc_with_a_runnable_snippet() {
     // types it touches, and a copy-pasteable example calling the real method.
     let get_file = files
         .iter()
-        .find(|f| f.path == "docs/files/getById.md")
-        .expect("docs/files/getById.md");
+        .find(|f| f.path == "docs/files/get.md")
+        .expect("docs/files/get.md");
     let body = &get_file.content;
     assert_contains(body, "`GET /files/{file_id}`");
     assert_contains(body, "## Imports & setup");
@@ -1002,19 +1002,19 @@ fn each_endpoint_has_a_markdown_doc_with_a_runnable_snippet() {
     assert_contains(body, "Box client = new Box(myBoxClient);");
     assert_contains(
         body,
-        "FileFull result = client.files.getById(fileId, null, null, null, null);",
+        "FileFull result = client.files.get(fileId, null, null, null, null);",
     );
     // A non-paged endpoint has no pagination section.
     assert!(!body.contains("## Pagination"));
 
     // A paged endpoint documents the cursor loop (no page classes — the
-    // envelope is the page, D-131). Folders' `getItems` is marker-paged.
+    // envelope is the page, D-131). Folders' `listItems` is marker-paged.
     let get_items = files
         .iter()
-        .find(|f| f.path == "docs/folders/getItems.md")
-        .expect("docs/folders/getItems.md");
+        .find(|f| f.path == "docs/folders/listItems.md")
+        .expect("docs/folders/listItems.md");
     let paged = &get_items.content;
     assert_contains(paged, "## Pagination");
     assert_contains(paged, "while (String.isNotBlank(page.next_marker)) {");
-    assert_contains(paged, "page = client.folders.getItems(");
+    assert_contains(paged, "page = client.folders.listItems(");
 }

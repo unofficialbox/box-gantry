@@ -229,7 +229,7 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
         func main() {\n\
         \tc := client.NewClient(gantryruntime.DeveloperToken(\"dev-token\"))\n\
         \tif false {\n\
-        \t\t_, _ = c.Files.GetById(context.Background(), \"123\", nil)\n\
+        \t\t_, _ = c.Files.Get(context.Background(), \"123\", nil)\n\
         \t}\n\
         \tfmt.Println(c)\n\
         }\n";
