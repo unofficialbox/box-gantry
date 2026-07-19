@@ -4,7 +4,7 @@
 //! manager grouping, Box quirks (FR-1.2, FR-1.3). Drivers cannot bypass it
 //! — the `PostFolders` lesson (G-18).
 //!
-//! Built loud-fail first (FR-1.4, per PLAN.md): every error names the
+//! Built loud-fail first (FR-1.4): every error names the
 //! offending file and the JSON path inside it, and any error fails the
 //! whole run. There is no partial ingestion.
 //!

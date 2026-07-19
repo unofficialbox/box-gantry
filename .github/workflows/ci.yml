@@ -1,4 +1,4 @@
-# The primary CI signal (PLAN.md, verification cadence). The toolchain is
+# The primary CI signal (verification cadence). The toolchain is
 # pinned by rust-toolchain.toml (NF-6); rustup respects it automatically.
 name: CI
 

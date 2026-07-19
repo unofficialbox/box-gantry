@@ -1,7 +1,7 @@
 //! The typed intermediate representation (FR-2).
 //!
-//! Design rules, from `NEW_ENGINE_REQUIREMENTS.md` and the box-codegen
-//! lessons (`REWRITE_ASSESSMENT.md` §2):
+//! Design rules, from `NEW_ENGINE_REQUIREMENTS.md`, and the box-codegen
+//! lessons:
 //!
 //! - **Closed node set** (FR-2.1): every shape a backend must handle is a
 //!   variant of an exhaustive enum. Adding a variant breaks every lowering

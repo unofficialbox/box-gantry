@@ -4,7 +4,7 @@ box-gantry is a Rust engine that reads the **Box OpenAPI specification** and
 generates **Box SDKs** — Go (v1, shipped), Salesforce Apex (v2), and Rust
 (v3). This document maps the codebase: the pipeline, each component, and the
 directory layout. For *why* things are the way they are, see
-[`DECISIONS.md`](./DECISIONS.md); for *what's next*, [`PLAN.md`](./PLAN.md).
+[`DECISIONS.md`](./DECISIONS.md).
 
 ## The pipeline
 
@@ -43,8 +43,7 @@ sees anything but a checked program.
  generated SDK  +  runtimes/<lang>  (hand-written, shipped alongside)
 ```
 
-Two invariants hold across the whole pipeline (the ground rules in
-[`PLAN.md`](./PLAN.md)): **no semantics in strings** — optionality,
+Two invariants hold across the whole pipeline: **no semantics in strings** — optionality,
 references, and operation kinds are structured data, never parsed out of a
 name — and **loud, never silent** — an unclassifiable shape is an error, not
 a pass-through.
@@ -200,14 +199,10 @@ box-gantry/
 ├── Cargo.toml / Cargo.lock    # workspace + locked deps (NF-6)
 ├── rust-toolchain.toml        # pinned toolchain (NF-6)
 │
-└── docs regime (NF-5):        # kept current as the work moves
+└── docs:
     ├── NEW_ENGINE_REQUIREMENTS.md  # normative spec (R§n, FR/VR/NF/TR)
-    ├── REWRITE_ASSESSMENT.md       # rationale + estimates (§n)
-    ├── PLAN.md                     # milestones + execution log
-    ├── DECISIONS.md                # irreversible choices (D-101…)
-    ├── ISSUES.md                   # engine defects found by verification (BG-n)
-    ├── SCOPE.md                    # target/version scope
-    ├── PROGRESS.md                 # effort-weighted % breakdown
+    ├── DECISIONS.md                # design decisions (D-###)
+    ├── CONTRIBUTING.md             # build, test, contribute
     └── ARCHITECTURE.md             # this file
 ```
 
