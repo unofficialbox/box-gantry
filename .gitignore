@@ -29,3 +29,6 @@ runtimes/typescript/gantryruntime/dist-livesmoke/
 
 # macOS
 .DS_Store
+
+# Claude Code personal (per-user) settings — the shared .claude/settings.json is committed
+.claude/settings.local.json

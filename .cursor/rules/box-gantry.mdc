@@ -1,0 +1,41 @@
+---
+description: box-gantry — project guide for AI assistants
+alwaysApply: true
+---
+
+box-gantry is a Rust engine that generates Box API SDKs (Go, Apex, Rust,
+TypeScript, Java) from the Box OpenAPI spec. One typed IR feeds five backends;
+per-language behavior comes from a capability manifest, never from branching on
+the language name.
+
+## Build & verify (run before finishing any change — this is the CI gate)
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+`cargo test` includes each backend's gate, which compiles the generated SDK with
+that target's toolchain (Go, Node + TypeScript 7, JDK 26, Salesforce CLI); a gate
+skips cleanly if its toolchain isn't installed.
+
+## Conventions — do not violate
+
+- Deterministic output: same specs in → same files out, sorted by path.
+- No semantics in strings: optionality, refs, and operation kinds are structured
+  data, never parsed from a name.
+- Loud, never silent: an unclassifiable shape is an error naming the file + JSON
+  path, not a fallback.
+- No new runtime dependencies in generated SDKs or runtimes without discussion.
+- Match the surrounding code's style, naming, and comment density.
+
+## Orientation
+
+- `ARCHITECTURE.md` — the pipeline and directory map (read first).
+- `NEW_ENGINE_REQUIREMENTS.md` — normative requirements (`FR`/`NF`/`TR`/`VR`/`G-`).
+- `DECISIONS.md` — design decisions (`D-###`); code comments cite them.
+- `CONTRIBUTING.md` — setup, gates, PR workflow. `AGENTS.md` — the same guide for other assistants.
+
+Branch off `main`, keep changes focused and the gates green, add/adjust tests for
+new shapes, and cite relevant `D-###` / requirement IDs in the PR.
