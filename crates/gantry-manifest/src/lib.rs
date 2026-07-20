@@ -8,6 +8,18 @@
 //! The axes are drafted here in M0/M1 so the {Go, Apex, Rust} extremes are
 //! visible from the start (assessment §4); the full manifests are M2 work.
 
+/// The published version stamped into every generated SDK's package manifest
+/// (`Cargo.toml`, `package.json`, `pom.xml`, `sfdx-project.json`).
+///
+/// One constant for all backends: the release layout had each backend hardcode
+/// its own `"0.1.0"`, with nothing keeping them in step — which is how npm
+/// shipped `0.1.0` while Go's tag-derived version moved to `0.1.1` (D-192
+/// fallout). Go is the deliberate exception: its version is the git tag, so it
+/// carries no in-file version to align.
+///
+/// A single-place bump here re-versions the whole fleet at once.
+pub const SDK_VERSION: &str = "0.1.1";
+
 /// The capability axes of one target language (FR-4.1).
 ///
 /// Every field is total — there is no "unknown" — so adding an axis forces

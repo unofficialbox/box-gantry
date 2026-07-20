@@ -184,9 +184,10 @@ fn nest_submodule(source: &str) -> String {
 /// `box-open-sdk` (org `unofficialbox`) marks these as community SDKs, distinct
 /// from Box's official ones.
 fn cargo_toml() -> String {
-    "[package]\n\
+    format!(
+        "[package]\n\
      name = \"box-open-sdk\"\n\
-     version = \"0.1.0\"\n\
+     version = \"{version}\"\n\
      edition = \"2021\"\n\
      description = \"Generated Box API SDK for Rust (community, unofficial).\"\n\
      license = \"MIT\"\n\
@@ -194,11 +195,11 @@ fn cargo_toml() -> String {
      readme = \"README.md\"\n\
      \n\
      [dependencies]\n\
-     chrono = { version = \"0.4\", default-features = false, features = [\"serde\", \"alloc\"] }\n\
-     serde = { version = \"1\", features = [\"derive\"] }\n\
-     serde_json = \"1\"\n"
-        .to_string()
-        + &runtime_dependencies()
+     chrono = {{ version = \"0.4\", default-features = false, features = [\"serde\", \"alloc\"] }}\n\
+     serde = {{ version = \"1\", features = [\"derive\"] }}\n\
+     serde_json = \"1\"\n",
+        version = gantry_manifest::SDK_VERSION,
+    ) + &runtime_dependencies()
 }
 
 /// The vendored runtime's own `[dependencies]`, appended to the SDK manifest.

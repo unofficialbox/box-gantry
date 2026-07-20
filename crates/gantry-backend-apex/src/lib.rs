@@ -217,8 +217,11 @@ fn remote_site_settings() -> Vec<GeneratedFile> {
 /// the README's Packaging section). The `.NEXT` build segment auto-increments
 /// per version; the major.minor is set from the FR-9 spec-diff at release.
 fn sfdx_project_json() -> String {
+    // `versionNumber` is `major.minor.patch.build`; `.NEXT` auto-increments the
+    // build segment per release. Both fields derive from the one SDK version.
+    let version = gantry_manifest::SDK_VERSION;
     format!(
-        "{{\n  \"packageDirectories\": [\n    {{\n      \"path\": \"force-app\",\n      \"default\": true,\n      \"package\": \"{APEX_PACKAGE_NAME}\",\n      \"versionName\": \"ver 0.1\",\n      \"versionNumber\": \"0.1.0.NEXT\"\n    }}\n  ],\n  \"name\": \"box-gantry-apex\",\n  \"namespace\": \"{APEX_NAMESPACE}\",\n  \"sfdcLoginUrl\": \"https://login.salesforce.com\",\n  \"sourceApiVersion\": \"{APEX_API_VERSION}\",\n  \"packageAliases\": {{}}\n}}\n"
+        "{{\n  \"packageDirectories\": [\n    {{\n      \"path\": \"force-app\",\n      \"default\": true,\n      \"package\": \"{APEX_PACKAGE_NAME}\",\n      \"versionName\": \"ver {version}\",\n      \"versionNumber\": \"{version}.NEXT\"\n    }}\n  ],\n  \"name\": \"box-gantry-apex\",\n  \"namespace\": \"{APEX_NAMESPACE}\",\n  \"sfdcLoginUrl\": \"https://login.salesforce.com\",\n  \"sourceApiVersion\": \"{APEX_API_VERSION}\",\n  \"packageAliases\": {{}}\n}}\n"
     )
 }
 

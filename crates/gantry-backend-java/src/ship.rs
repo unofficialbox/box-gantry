@@ -22,7 +22,7 @@ use crate::{BuildInfo, GeneratedFile};
 /// pipeline overrides with the FR-9 `MAJOR.MINOR.PATCH` (as Go/Rust do).
 const GROUP_ID: &str = "dev.unofficialbox";
 const ARTIFACT_ID: &str = "box-open-sdk";
-const VERSION: &str = "0.1.0";
+const VERSION: &str = gantry_manifest::SDK_VERSION;
 /// The project's GitHub home. Each language ships from its own repository; the
 /// `dev.unofficialbox` groupId is verified against the DNS domain, not this URL.
 const PROJECT_URL: &str = "https://github.com/unofficialbox/box-open-java-sdk";

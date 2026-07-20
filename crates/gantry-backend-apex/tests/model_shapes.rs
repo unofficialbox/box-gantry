@@ -774,7 +774,7 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     // from the FR-9 spec-diff.
     assert_eq!(
         parsed["packageDirectories"][0]["versionNumber"],
-        "0.1.0.NEXT"
+        format!("{}.NEXT", gantry_manifest::SDK_VERSION)
     );
     // Emitted as an empty object: the generated project is overwritten on every
     // run, so it carries no persisted alias — the durable handle is the `0Ho…`
