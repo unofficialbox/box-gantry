@@ -14,6 +14,28 @@ mod managers;
 mod models;
 mod tests;
 
+/// The published module path — the `go.mod` `module` line and the prefix of
+/// every intra-SDK import.
+///
+/// Go resolves a module by its path, so this must be the SDK repository's real
+/// URL and `go.mod` must sit at that repository's root. Each language ships
+/// from its own repository (`box-open-sdk-<lang>`), which is what keeps this a
+/// bare root path with plain `v0.1.0` tags rather than a `/go` subdirectory
+/// needing `go/v0.1.0`-prefixed ones.
+/// The one place the path is written. A macro, not a `const`, so the package
+/// paths below can be built with `concat!` and stay `&'static str` — the
+/// import sets are static-only.
+macro_rules! module_path_literal {
+    () => {
+        "github.com/unofficialbox/box-open-sdk-go"
+    };
+}
+
+pub(crate) const MODULE: &str = module_path_literal!();
+/// The intra-SDK packages imported by name from more than one printer.
+pub(crate) const SERIALIZATION_IMPORT: &str = concat!(module_path_literal!(), "/serialization");
+pub(crate) const RUNTIME_IMPORT: &str = concat!(module_path_literal!(), "/gantryruntime");
+
 pub use docs::generate_docs;
 pub use managers::{BackendError, generate_managers};
 pub use models::{GeneratedFile, generate_models};

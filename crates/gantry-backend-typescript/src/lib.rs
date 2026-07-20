@@ -135,6 +135,8 @@ fn package_json() -> String {
      \x20 \"version\": \"0.1.0\",\n\
      \x20 \"description\": \"Generated TypeScript SDK for the Box API (community, unofficial).\",\n\
      \x20 \"license\": \"MIT\",\n\
+     \x20 \"repository\": { \"type\": \"git\", \"url\": \"git+https://github.com/unofficialbox/box-open-sdk-ts.git\" },\n\
+     \x20 \"homepage\": \"https://github.com/unofficialbox/box-open-sdk-ts\",\n\
      \x20 \"type\": \"module\",\n\
      \x20 \"sideEffects\": false,\n\
      \x20 \"engines\": { \"node\": \">=20\" },\n\

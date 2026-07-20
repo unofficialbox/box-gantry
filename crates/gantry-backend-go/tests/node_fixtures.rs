@@ -124,7 +124,7 @@ fn primitive_scalars_map_directly() {
 fn date_maps_to_the_serialization_date_type() {
     let go = render_field(ir::Type::Date);
     assert_contains(&go, "F serialization.Date `json:\"f\"`");
-    assert_contains(&go, "github.com/unofficialbox/box-open-sdk/serialization");
+    assert_contains(&go, "github.com/unofficialbox/box-open-sdk-go/serialization");
 }
 
 #[test]
