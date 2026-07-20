@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 use gantry_ir as ir;
-use gantry_ir::naming::{camel, constant, pascal};
+use gantry_ir::naming::{camel, pascal};
 use gantry_sema::Analysis;
 use gantry_synth::{PageStyle, PagedOperation};
 
@@ -173,7 +173,22 @@ impl ManagerPrinter<'_> {
     }
 
     fn method_name(&self, op: &ir::Operation) -> String {
-        method_name(op, self.base_version.as_ref())
+        method_name(op)
+    }
+
+    /// Set the `box-version` header for a non-base operation (D-191). The header
+    /// is a required constant equal to the operation's API version, so the
+    /// engine sends it automatically rather than exposing it as a parameter.
+    fn version_header(&mut self, op: &ir::Operation) {
+        if op.api_version.as_ref() != self.base_version.as_ref()
+            && let Some(version) = &op.api_version
+        {
+            let _ = writeln!(
+                self.body,
+                "\treq = gantryruntime.WithHeader(req, \"box-version\", {:?})",
+                version.0
+            );
+        }
     }
 
     /// One operation → a single-page method. `method` is the emitted func name;
@@ -277,6 +292,7 @@ impl ManagerPrinter<'_> {
             self.apply_params(&optional, true, &context)?;
             self.body.push_str("\t}\n");
         }
+        self.version_header(op);
         self.request_body(op, &context)?;
 
         // Failure return matching the signature (D-003 (T, error)).
@@ -1008,16 +1024,14 @@ impl ManagerPrinter<'_> {
 /// The Go method name for an operation (shared with docs). Versioned
 /// operations carry the version so base and versioned surfaces never
 /// collide (FR-7.5).
-pub(crate) fn method_name(op: &ir::Operation, base_version: Option<&ir::ApiVersion>) -> String {
+pub(crate) fn method_name(op: &ir::Operation) -> String {
     let mut name = pascal(op.name.as_str());
     if let Some(variation) = &op.variation {
         name.push_str(&pascal(variation.as_str()));
     }
-    if op.api_version.as_ref() != base_version
-        && let Some(version) = &op.api_version
-    {
-        name.push_str(&constant(&version.0));
-    }
+    // The API version no longer suffixes the name (D-191): the `box-version`
+    // header is set automatically per endpoint, and versioned operations live
+    // in their own managers so nothing collides.
     name
 }
 

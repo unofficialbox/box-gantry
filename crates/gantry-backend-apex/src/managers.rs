@@ -345,6 +345,21 @@ fn render_operation(
             ir::ParamLocation::Path => {}
         }
     }
+    // The `box-version` header is a constant set automatically for a non-base
+    // operation (D-191), not a caller-facing parameter.
+    if let Some(version) = &op.api_version {
+        let base = program
+            .operations
+            .first()
+            .and_then(|o| o.api_version.as_ref());
+        if Some(version) != base {
+            let _ = writeln!(
+                out,
+                "        request.headers.put('box-version', '{}');",
+                escape(&version.0)
+            );
+        }
+    }
     if let Some(body) = &op.request {
         match body.media {
             ir::RequestMedia::OctetStream => {
@@ -552,13 +567,9 @@ pub(crate) fn unique_method_name(op: &ir::Operation, used: &mut HashSet<String>)
     // A method named for a reserved word (`delete`, `update`, …) is rejected
     // by the platform just like a field is; give it the same `_r` escape.
     base = safe_word(&base);
-    if let Some(version) = &op.api_version {
-        // Distinguish same-named operations across API versions.
-        let suffix = version.0.replace(['.', '-'], "");
-        if used.contains(&base) {
-            base.push_str(&format!("V{suffix}"));
-        }
-    }
+    // The API version no longer distinguishes names (D-191): the `box-version`
+    // header is set automatically per endpoint, and versioned operations live in
+    // their own managers, so a collision falls back to the numeric suffix below.
     let mut candidate = base.clone();
     for n in 2u32.. {
         if used.insert(candidate.clone()) {

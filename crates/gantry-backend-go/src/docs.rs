@@ -19,23 +19,13 @@ use crate::models::GeneratedFile;
 /// Generate `docs/` — an index, one page per manager, and the guides.
 pub fn generate_docs(analysis: &Analysis<'_>, paged: &[PagedOperation]) -> Vec<GeneratedFile> {
     let program = analysis.program;
-    let base_version = program
-        .operations
-        .first()
-        .and_then(|op| op.api_version.clone());
     let paged_by_op: HashMap<usize, &PagedOperation> =
         paged.iter().map(|p| (p.operation, p)).collect();
 
     let mut files = Vec::new();
     files.push(index_page(analysis));
     for (manager, op_indices) in &analysis.managers {
-        files.push(manager_page(
-            program,
-            base_version.as_ref(),
-            &paged_by_op,
-            manager,
-            op_indices,
-        ));
+        files.push(manager_page(program, &paged_by_op, manager, op_indices));
     }
     files.push(guide("auth", AUTH_GUIDE));
     files.push(guide("pagination", PAGINATION_GUIDE));
@@ -67,7 +57,6 @@ fn index_page(analysis: &Analysis<'_>) -> GeneratedFile {
 
 fn manager_page(
     program: &ir::Program,
-    base_version: Option<&ir::ApiVersion>,
     paged: &HashMap<usize, &PagedOperation>,
     manager: &str,
     op_indices: &[usize],
@@ -80,7 +69,7 @@ fn manager_page(
     );
     for &index in op_indices {
         let op = &program.operations[index];
-        let method = method_name(op, base_version);
+        let method = method_name(op);
         let _ = writeln!(body, "## {method}\n");
         if op.deprecated {
             body.push_str("> **Deprecated.**\n\n");

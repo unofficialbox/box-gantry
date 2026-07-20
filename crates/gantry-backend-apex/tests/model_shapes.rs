@@ -684,10 +684,11 @@ fn the_real_spec_lowers_to_apex_classes() {
     let files = real_spec_files();
 
     // Every struct/union/enum decl becomes one class; aliases (2 in the
-    // real spec) do not. After structural dedupe (D-127) and the version merge
-    // (D-190) the spec lowers to 879 decls − 2 aliases = 877 classes. Pinned so
-    // the count only moves deliberately with the spec (VR-6 lineage).
-    assert_eq!(files.len(), 877, "expected one class per non-alias decl");
+    // real spec) do not. After structural dedupe (D-127), the version merge
+    // (D-190), and stripping the box-version header enums (D-191) the spec
+    // lowers to 877 decls − 2 aliases = 875 classes. Pinned so the count only
+    // moves deliberately with the spec (VR-6 lineage).
+    assert_eq!(files.len(), 875, "expected one class per non-alias decl");
 
     // Every class name obeys the platform identifier limit (TR-Apex.1) and
     // is globally unique (flat namespace), and every file carries the
@@ -793,8 +794,8 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     // suite = 4 (D-146): the 220 structs that carry a generated wire static
     // (`normalizeKeys`/`denormalizeKeys`/`deserialize`) exercised with populated
     // inputs, chunked ≤ 60 structs per class so no method overruns Apex's
-    // compiled-size limit. The version merge (D-190) drops 21 model classes.
-    // 978 + 87 + 1 + 4 = 1070 classes total.
+    // compiled-size limit. The version merge (D-190) drops 21 model classes and
+    // the box-version strip (D-191) drops 2 more. 976 + 87 + 1 + 4 = 1068 total.
     let classes: Vec<&str> = files
         .iter()
         .filter(|f| f.path.ends_with(".cls"))
@@ -802,7 +803,7 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         .collect();
     assert_eq!(
         classes.len(),
-        978 + 87 + 1 + 4,
+        976 + 87 + 1 + 4,
         "models + managers + client + stubs + runtime + @isTest suite + BoxBuildInfo + wire-hook suite"
     );
     // The generated test suite ships with the deployable tree.
@@ -895,9 +896,9 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         425,
         "endpoint + manager + top-index + guide docs"
     );
-    // 5 base scaffolding + 4 Remote Site Settings + 1070 classes + 1070 metas
+    // 5 base scaffolding + 4 Remote Site Settings + 1068 classes + 1068 metas
     // + 425 docs.
-    assert_eq!(files.len(), 5 + 4 + (978 + 87 + 1 + 4) * 2 + 425);
+    assert_eq!(files.len(), 5 + 4 + (976 + 87 + 1 + 4) * 2 + 425);
 
     // Deterministic and path-sorted.
     let sorted: Vec<&String> = {

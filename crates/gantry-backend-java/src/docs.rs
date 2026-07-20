@@ -22,10 +22,6 @@ use crate::models::type_names;
 /// Generate `docs/` — an index, one page per manager, and the guides.
 pub fn generate_docs(analysis: &Analysis<'_>) -> Vec<GeneratedFile> {
     let program = analysis.program;
-    let base_version = program
-        .operations
-        .first()
-        .and_then(|op| op.api_version.clone());
     let paged: HashMap<usize, ()> = detect_pagination(analysis)
         .into_iter()
         .map(|p| (p.operation, ()))
@@ -41,13 +37,7 @@ pub fn generate_docs(analysis: &Analysis<'_>) -> Vec<GeneratedFile> {
     let mut files = Vec::new();
     files.push(index_page(&plans, has_chunked));
     for plan in &plans {
-        files.push(manager_page(
-            program,
-            base_version.as_ref(),
-            &paged,
-            &names,
-            plan,
-        ));
+        files.push(manager_page(program, &paged, &names, plan));
     }
     files.push(guide("auth", AUTH_GUIDE));
     files.push(guide("pagination", PAGINATION_GUIDE));
@@ -92,7 +82,6 @@ fn index_page(plans: &[ManagerPlan], has_chunked: bool) -> GeneratedFile {
 /// line, parameter table, request/response types, and a pagination note.
 fn manager_page(
     program: &ir::Program,
-    base_version: Option<&ir::ApiVersion>,
     paged: &HashMap<usize, ()>,
     names: &BTreeMap<ir::DeclId, String>,
     plan: &ManagerPlan,
@@ -105,7 +94,7 @@ fn manager_page(
         class = plan.class,
         field = plan.field,
     );
-    for (index, method) in deduped_methods(program, &plan.ops, base_version) {
+    for (index, method) in deduped_methods(program, &plan.ops) {
         let op = &program.operations[index];
         let _ = writeln!(body, "## {method}\n");
         if op.deprecated {

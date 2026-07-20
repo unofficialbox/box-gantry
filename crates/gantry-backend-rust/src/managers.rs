@@ -187,12 +187,7 @@ impl Printer<'_> {
         let mut used = Vec::new();
         let methods: Vec<String> = indices
             .iter()
-            .map(|&i| {
-                dedupe(
-                    &mut used,
-                    method_name(&self.program.operations[i], self.base_version.as_ref()),
-                )
-            })
+            .map(|&i| dedupe(&mut used, method_name(&self.program.operations[i])))
             .collect();
 
         // A pagination plan per operation (None when not paged or the cursor
@@ -662,7 +657,9 @@ impl Printer<'_> {
             .params
             .iter()
             .any(|p| p.location != ir::ParamLocation::Path)
-            || op.request.is_some();
+            || op.request.is_some()
+            // A versioned op reassigns `req` to set the `box-version` header.
+            || self.is_versioned(op);
         let req_binding = if modifies { "let mut req" } else { "let req" };
         let _ = writeln!(
             self.body,
@@ -675,6 +672,7 @@ impl Printer<'_> {
                 .push_str("        let opts = opts.unwrap_or_default();\n");
             self.apply_params(&optional, true);
         }
+        self.version_header(op);
         self.request_body(op);
         self.fetch_and_decode(op);
         self.body.push_str("    }\n");
@@ -767,6 +765,27 @@ impl Printer<'_> {
                 let value = self.string_value(&field_ident(param.name.as_str()), &param.ty);
                 self.emit_with_call("        ", call, &wire, &value);
             }
+        }
+    }
+
+    /// Whether the operation targets a non-base API version (so it carries the
+    /// `box-version` header).
+    fn is_versioned(&self, op: &ir::Operation) -> bool {
+        op.api_version.is_some() && op.api_version.as_ref() != self.base_version.as_ref()
+    }
+
+    /// Set the `box-version` header for a non-base operation (D-191). The header
+    /// is a required constant equal to the operation's API version, so the engine
+    /// sends it automatically rather than exposing it as a parameter.
+    fn version_header(&mut self, op: &ir::Operation) {
+        if self.is_versioned(op)
+            && let Some(version) = &op.api_version
+        {
+            let _ = writeln!(
+                self.body,
+                "        req = runtime::with_header(req, \"box-version\", {:?});",
+                version.0
+            );
         }
     }
 
@@ -1069,18 +1088,15 @@ impl Printer<'_> {
 /// The Rust method name for an operation (snake_case). Versioned/variation
 /// operations get suffixed so base and versioned surfaces never collide
 /// (FR-7.5).
-pub(crate) fn method_name(op: &ir::Operation, base_version: Option<&ir::ApiVersion>) -> String {
+pub(crate) fn method_name(op: &ir::Operation) -> String {
     let mut name = snake(op.name.as_str());
     if let Some(variation) = &op.variation {
         name.push('_');
         name.push_str(&snake(variation.as_str()));
     }
-    if op.api_version.as_ref() != base_version
-        && let Some(version) = &op.api_version
-    {
-        name.push_str("_v");
-        name.push_str(&version.0.replace(['.', '-'], "_"));
-    }
+    // The API version no longer suffixes the name (D-191): the `box-version`
+    // header is set automatically per endpoint, and versioned operations live
+    // in their own managers so nothing collides.
     // Keyword-safe (raw identifier where needed).
     field_ident(&name)
 }

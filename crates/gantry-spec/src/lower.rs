@@ -73,9 +73,9 @@ pub struct LoweringStats {
 
 /// Lower every document of the set into one typed [`ir::Program`].
 ///
-/// Declarations keep spec order per document; versioned documents get
-/// their own module (`schemas::v2025_0`, FR-7.5) so nothing collides with
-/// the base spec (G-9).
+/// Declarations keep spec order per document, lowered into per-version modules
+/// so nothing collides mid-lowering; the version merge (D-190) then collapses
+/// them into one `schemas` namespace, superset-merging same-named types.
 pub fn lower(set: &SpecSet) -> Result<Lowering, IngestError> {
     let mut arena: Vec<Option<ir::Decl>> = Vec::new();
     let mut operations: Vec<ir::Operation> = Vec::new();
@@ -202,7 +202,9 @@ impl<'a> DocLowerer<'a> {
                 let Some(tag) = op.box_tag.as_deref() else {
                     continue;
                 };
-                let tokens = short_op_tokens(op.operation_id.as_deref().unwrap_or(""), tag);
+                let base_id =
+                    base_operation_id(op.operation_id.as_deref().unwrap_or(""), &doc.api_version);
+                let tokens = short_op_tokens(base_id, tag);
                 if !tokens.iter().any(|t| t.eq_ignore_ascii_case("id")) {
                     self.idless_body_seeds
                         .insert(body_seed_for(tag, method, &tokens, false));
@@ -690,8 +692,7 @@ impl<'a> DocLowerer<'a> {
         // That is version plumbing, not part of the name: the operation
         // already carries its api_version. Strip the *matching* suffix; a
         // mismatched version marker is a spec inconsistency and fails.
-        let own_suffix = format!("_v{}", doc.api_version);
-        let base_id = base_id.strip_suffix(&own_suffix).unwrap_or(base_id);
+        let base_id = strip_version_suffix(base_id, &doc.api_version);
         if let Some(index) = base_id.rfind("_v")
             && base_id[index + 2..]
                 .chars()
@@ -859,6 +860,13 @@ impl<'a> DocLowerer<'a> {
                     ));
                 }
             };
+            // The `box-version` header is a required, single-value constant
+            // equal to the operation's API version — the engine sets it
+            // automatically per endpoint (D-191), so it is not a caller-facing
+            // parameter and its inline version enum is never synthesized.
+            if param_kind == ir::ParamLocation::Header && wire_name == "box-version" {
+                continue;
+            }
             if param_kind == ir::ParamLocation::Path && !resolved.required {
                 return Err(self.unsupported(&param_location, "path parameter not marked required"));
             }
@@ -997,7 +1005,11 @@ impl<'a> DocLowerer<'a> {
         // falling back to the singular manager subject when the operation has no
         // distinctive path (`FolderCreateRequest`). A trailing curated action
         // (`commit`) is the verb; otherwise the HTTP verb supplies it.
-        let all = short_op_tokens(op.operation_id.as_deref().unwrap_or(""), box_tag);
+        let base_id = base_operation_id(
+            op.operation_id.as_deref().unwrap_or(""),
+            &self.doc.api_version,
+        );
+        let all = short_op_tokens(base_id, box_tag);
         let has_id = all.iter().any(|t| t.eq_ignore_ascii_case("id"));
         let terse_seed = body_seed_for(box_tag, method, &all, false);
         // An id-addressed body keeps its `{id}` selector only when an id-less
@@ -1240,6 +1252,24 @@ fn clean_name(raw: &str) -> String {
 ///   so repeating the `x-box-tag` tokens is redundant. The first contiguous
 ///   run matching the tag is dropped (never emptying the token list).
 ///
+/// Strip a versioned document's own `_v<version>` operationId suffix — version
+/// plumbing already captured in `api_version`, never part of a name (D-191).
+fn strip_version_suffix<'a>(base_id: &'a str, api_version: &str) -> &'a str {
+    base_id
+        .strip_suffix(&format!("_v{api_version}"))
+        .unwrap_or(base_id)
+}
+
+/// The operationId reduced to the base that method names *and* type seeds
+/// derive from: its `#variation` fragment (D-104) and its own `_v<version>`
+/// suffix (D-191) removed, so neither leaks into a generated name.
+fn base_operation_id<'a>(operation_id: &'a str, api_version: &str) -> &'a str {
+    let base = operation_id
+        .split_once('#')
+        .map_or(operation_id, |(base, _)| base);
+    strip_version_suffix(base, api_version)
+}
+
 /// No dictionary or semantic guessing, so the result is deterministic and
 /// 1:1 with the spec.
 fn short_op_tokens(base_id: &str, box_tag: &str) -> Vec<String> {

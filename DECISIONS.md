@@ -3906,3 +3906,40 @@ some versions declare becomes optional) and the loud-conflict path.
 **Result.** One `schemas` namespace. `models.schemas.UserMini` is the only
 `UserMini`, and a type shared across API versions is a single superset that
 accepts every version's payload.
+
+## D-191 — `box-version` as an auto-set header (drop the version method suffix + the header parameter)
+
+**Context.** Box's versioned endpoints require a `box-version` header — a
+required parameter whose schema is a single-value enum equal to the operation's
+API version (`["2025.0"]`). The engine surfaced it two ways, both noise: a
+`_v2025_0` / `V20250` suffix on every versioned method name (`createV20250`), and
+a `boxVersion` parameter the caller had to pass on every call — a parameter that
+can only ever hold one value. The operation already carries its `api_version`, so
+both are redundant plumbing.
+
+**The decision.** The version is set automatically per endpoint, never surfaced.
+Lowering strips the `box-version` header parameter (and never synthesizes its
+inline version enum); each backend emits the header as a constant for a non-base
+operation (`req = withHeader(req, "box-version", "2025.0")`), and `method_name`
+drops the version suffix. So `client.archives.create(body)` — no version in the
+name, no version argument — and the SDK sends `box-version: 2025.0` for you.
+Safe because versioned operations live in their own managers (archives, docgen,
+hubs, notes…), so dropping the disambiguating suffix collides with nothing; a
+hypothetical future same-manager collision falls back to the numeric-suffix
+dedup every backend already has.
+
+**The fix that fell out.** The version marker also leaked into request-body type
+names (`V20250CreateRequest`) because two token sites — the id-less body-seed
+pre-pass and `lower_request_body` — read the raw operationId while only the
+method-name path stripped the `_v<version>` suffix. Factoring the strip into a
+shared `base_operation_id` and applying it at all three sites makes the bodies
+`ArchiveCreateRequest` as intended.
+
+**Verification.** Every backend generates exactly 12 `box-version` headers and no
+`V2025`/`V2026`/`_v2025` marker anywhere in its surface; all five compile and
+behavioral gates pass. Rust needed the request binding promoted to `let mut req`
+for a header-only operation. The pinned decl/class counts dropped by the 2
+stripped version enums.
+
+**Result.** The API version is invisible in the surface and automatic on the
+wire — the last piece of the naming overhaul before the first release.

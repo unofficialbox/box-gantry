@@ -60,20 +60,11 @@ pub(crate) fn plan_managers<'a>(
 /// The deduped snake_case method bases for a manager's operations, in order —
 /// the single source of truth shared by the manager printer (which camelCases
 /// them at emission and derives the options-interface names) and the docs.
-pub(crate) fn method_bases(
-    program: &ir::Program,
-    base_version: Option<&ir::ApiVersion>,
-    op_indices: &[usize],
-) -> Vec<String> {
+pub(crate) fn method_bases(program: &ir::Program, op_indices: &[usize]) -> Vec<String> {
     let mut used = Vec::new();
     op_indices
         .iter()
-        .map(|&i| {
-            dedupe(
-                &mut used,
-                operation_base(&program.operations[i], base_version),
-            )
-        })
+        .map(|&i| dedupe(&mut used, operation_base(&program.operations[i])))
         .collect()
 }
 
@@ -233,7 +224,7 @@ impl Printer<'_> {
         // One deduped method base per operation (distinct source ops can
         // normalize to the same name), reused for the method and its options
         // interface so the surface can't collide. Shared with the docs.
-        let bases = method_bases(self.program, self.base_version.as_ref(), indices);
+        let bases = method_bases(self.program, indices);
 
         // Options interfaces are module-level (TypeScript forbids nesting an
         // interface in a class), emitted before the class so methods name them.
@@ -365,9 +356,25 @@ impl Printer<'_> {
             self.body.push_str("    const options = opts ?? {};\n");
             self.apply_params(&optional, Some("options"));
         }
+        self.version_header(op);
         self.request_body(op);
         self.fetch_and_decode(op);
         self.body.push_str("  }\n");
+    }
+
+    /// Set the `box-version` header for a non-base operation (D-191). The header
+    /// is a required constant equal to the operation's API version, so the engine
+    /// sends it automatically rather than exposing it as a parameter.
+    fn version_header(&mut self, op: &ir::Operation) {
+        if op.api_version.as_ref() != self.base_version.as_ref()
+            && let Some(version) = &op.api_version
+        {
+            let _ = writeln!(
+                self.body,
+                "    req = runtime.withHeader(req, \"box-version\", {:?});",
+                version.0
+            );
+        }
     }
 
     /// Emit an async-generator paginator for a paged operation as the public
@@ -847,18 +854,15 @@ impl Printer<'_> {
 /// The base method name for an operation (snake_case, camelCased at emission).
 /// Versioned/variation operations get suffixed so base and versioned surfaces
 /// never collide (FR-7.5).
-fn operation_base(op: &ir::Operation, base_version: Option<&ir::ApiVersion>) -> String {
+fn operation_base(op: &ir::Operation) -> String {
     let mut name = snake(op.name.as_str());
     if let Some(variation) = &op.variation {
         name.push('_');
         name.push_str(&snake(variation.as_str()));
     }
-    if op.api_version.as_ref() != base_version
-        && let Some(version) = &op.api_version
-    {
-        name.push_str("_v");
-        name.push_str(&version.0.replace(['.', '-'], "_"));
-    }
+    // The API version no longer suffixes the name (D-191): the `box-version`
+    // header is set automatically per endpoint, and versioned operations live
+    // in their own managers so nothing collides.
     name
 }
 

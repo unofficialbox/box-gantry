@@ -175,14 +175,10 @@ fn emits_chunked_upload(analysis: &gantry_sema::Analysis<'_>) -> bool {
     }
     // The four `ChunkedUploadsManager` methods the orchestrator calls, named the
     // way the manager printer names them (`managers::method_name`).
-    let base_version = program
-        .operations
-        .first()
-        .and_then(|op| op.api_version.as_ref());
     let methods: std::collections::HashSet<String> = program
         .operations
         .iter()
-        .map(|op| managers::method_name(op, base_version))
+        .map(managers::method_name)
         .collect();
     const REQUIRED_METHODS: [&str; 4] = [
         "createFileUploadSessions",

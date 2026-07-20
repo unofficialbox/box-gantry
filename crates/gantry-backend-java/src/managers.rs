@@ -47,21 +47,16 @@ pub(crate) struct ManagerPlan {
     pub(crate) field: String,
 }
 
-/// The method name for an operation: `snake` base + variation + a `_v<version>`
-/// suffix for a non-base API version (so base and versioned surfaces never
-/// collide, FR-7.5), camelCased and keyword-guarded. Free-standing so the docs
-/// generator names methods exactly as the manager printer does.
-pub(crate) fn method_name(op: &ir::Operation, base_version: Option<&ir::ApiVersion>) -> String {
+/// The method name for an operation: `snake` base + variation, camelCased and
+/// keyword-guarded. The API version no longer suffixes the name (D-191): the
+/// `box-version` header is set automatically per endpoint, and versioned
+/// operations live in their own managers so nothing collides. Free-standing so
+/// the docs generator names methods exactly as the manager printer does.
+pub(crate) fn method_name(op: &ir::Operation) -> String {
     let mut name = snake(op.name.as_str());
     if let Some(variation) = &op.variation {
         name.push('_');
         name.push_str(&snake(variation.as_str()));
-    }
-    if op.api_version.as_ref() != base_version
-        && let Some(version) = &op.api_version
-    {
-        name.push_str("_v");
-        name.push_str(&version.0.replace(['.', '-'], "_"));
     }
     keyword_safe(&camel(&name))
 }
@@ -69,15 +64,11 @@ pub(crate) fn method_name(op: &ir::Operation, base_version: Option<&ir::ApiVersi
 /// The deduped `(op index, method name)` list for a manager's operations — the
 /// single source of truth the manager printer and docs both use, so a method
 /// heading in the docs matches the emitted method name exactly.
-pub(crate) fn deduped_methods(
-    program: &ir::Program,
-    ops: &[usize],
-    base_version: Option<&ir::ApiVersion>,
-) -> Vec<(usize, String)> {
+pub(crate) fn deduped_methods(program: &ir::Program, ops: &[usize]) -> Vec<(usize, String)> {
     let mut used: Vec<String> = Vec::new();
     ops.iter()
         .map(|&i| {
-            let name = dedupe(&mut used, method_name(&program.operations[i], base_version));
+            let name = dedupe(&mut used, method_name(&program.operations[i]));
             (i, name)
         })
         .collect()
@@ -253,7 +244,7 @@ impl ManagerPrinter<'_> {
         // Method names dedup per manager, so distinct ops that normalize to the
         // same name stay distinct — and the options class reuses the name. The
         // docs generator reuses this exact list (`deduped_methods`).
-        let methods = deduped_methods(self.program, &plan.ops, self.base_version);
+        let methods = deduped_methods(self.program, &plan.ops);
 
         let mut out = header(build);
         let _ = writeln!(out, "package {MANAGERS_PKG};\n");
@@ -379,10 +370,26 @@ impl ManagerPrinter<'_> {
         );
         self.apply_params(&mut out, &required, false);
         self.apply_params(&mut out, &optional, true);
+        self.version_header(&mut out, op);
         self.request_body(&mut out, op);
         self.fetch_and_decode(&mut out, op);
         out.push_str("    }\n");
         out
+    }
+
+    /// Set the `box-version` header for a non-base operation (D-191). The header
+    /// is a required constant equal to the operation's API version, so the
+    /// engine sends it automatically rather than exposing it as a parameter.
+    fn version_header(&self, out: &mut String, op: &ir::Operation) {
+        if op.api_version.as_ref() != self.base_version
+            && let Some(version) = &op.api_version
+        {
+            let _ = writeln!(
+                out,
+                "        _req = {RUNTIME}.withHeader(_req, \"box-version\", {:?});",
+                version.0
+            );
+        }
     }
 
     /// Build the request URL into a `StringBuilder _url` from the base-URL class

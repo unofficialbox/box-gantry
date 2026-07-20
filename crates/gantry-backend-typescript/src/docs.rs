@@ -19,10 +19,6 @@ use crate::models::type_name;
 /// Generate `docs/` — an index, one page per manager, and the guides.
 pub fn generate_docs(analysis: &Analysis<'_>) -> Vec<GeneratedFile> {
     let program = analysis.program;
-    let base_version = program
-        .operations
-        .first()
-        .and_then(|op| op.api_version.clone());
     let paged: HashMap<usize, PagedOperation> = detect_pagination(analysis)
         .into_iter()
         .map(|p| (p.operation, p))
@@ -34,7 +30,6 @@ pub fn generate_docs(analysis: &Analysis<'_>) -> Vec<GeneratedFile> {
     for (key, indices, name) in &planned {
         files.push(manager_page(
             program,
-            base_version.as_ref(),
             &paged,
             key,
             indices,
@@ -75,7 +70,6 @@ fn index_page(planned: &[(&String, &Vec<usize>, crate::managers::ManagerName)]) 
 #[allow(clippy::too_many_arguments)]
 fn manager_page(
     program: &ir::Program,
-    base_version: Option<&ir::ApiVersion>,
     paged: &HashMap<usize, PagedOperation>,
     _key: &str,
     op_indices: &[usize],
@@ -88,7 +82,7 @@ fn manager_page(
          Reach these methods through the `{field}` field on `Client`.\n\n",
     );
     // Deduped method bases (shared with the printer), camelCased per method.
-    let bases = method_bases(program, base_version, op_indices);
+    let bases = method_bases(program, op_indices);
     for (pos, &index) in op_indices.iter().enumerate() {
         let op = &program.operations[index];
         let method = camel(&bases[pos]);
