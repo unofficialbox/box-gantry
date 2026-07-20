@@ -67,6 +67,11 @@ fn generation_is_deterministic() {
         "\"require\"",
         "./dist/types/index.d.ts",
         "\"./jwt\"",
+        // `scripts.build` runs `tsc`, so the package must declare it: a clone
+        // has to build with `npm install && npm run build` alone. The compile
+        // gates put `tsc` on `PATH` themselves and would not catch its absence.
+        "\"devDependencies\"",
+        "\"typescript\"",
     ] {
         assert!(
             pkg.content.contains(needle),

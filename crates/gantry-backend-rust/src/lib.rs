@@ -133,7 +133,7 @@ fn cargo_toml() -> String {
      edition = \"2021\"\n\
      description = \"Generated Box API SDK for Rust (community, unofficial).\"\n\
      license = \"MIT\"\n\
-     repository = \"https://github.com/unofficialbox/box-open-sdk\"\n\
+     repository = \"https://github.com/unofficialbox/box-open-rust-sdk\"\n\
      readme = \"README.md\"\n\
      \n\
      [dependencies]\n\

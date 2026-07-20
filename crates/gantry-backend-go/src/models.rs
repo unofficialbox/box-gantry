@@ -7,6 +7,8 @@ use gantry_ir as ir;
 use gantry_ir::naming::{constant, pascal};
 use gantry_sema::Analysis;
 
+use crate::{MODULE, SERIALIZATION_IMPORT};
+
 /// One generated file, path relative to the SDK root.
 #[derive(Debug)]
 pub struct GeneratedFile {
@@ -31,7 +33,7 @@ pub fn generate_models(analysis: &Analysis<'_>, build: &crate::BuildInfo) -> Vec
 
     let mut files = vec![GeneratedFile {
         path: "go.mod".to_string(),
-        content: "module github.com/unofficialbox/box-open-sdk\n\ngo 1.23\n".to_string(),
+        content: format!("module {MODULE}\n\ngo 1.23\n"),
     }];
     for (module, indices) in &modules {
         files.push(render_module(program, module, indices, build));
@@ -332,8 +334,7 @@ impl Printer<'_> {
             ir::Type::Float64 => "float64".into(),
             ir::Type::String => "string".into(),
             ir::Type::Date => {
-                self.imports
-                    .insert("github.com/unofficialbox/box-open-sdk/serialization");
+                self.imports.insert(SERIALIZATION_IMPORT);
                 "serialization.Date".into()
             }
             ir::Type::DateTime => {
@@ -358,8 +359,7 @@ impl Printer<'_> {
 
     /// `serialization.Nullable[T]`, importing the package.
     fn nullable_type(&mut self, inner: &ir::Type) -> String {
-        self.imports
-            .insert("github.com/unofficialbox/box-open-sdk/serialization");
+        self.imports.insert(SERIALIZATION_IMPORT);
         format!("serialization.Nullable[{}]", self.bare_type(inner))
     }
 }

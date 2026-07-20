@@ -42,9 +42,9 @@ enum Command {
     Generate {
         #[arg(required = true, value_name = "SPEC")]
         specs: Vec<PathBuf>,
-        /// Target language(s) (manifest key). `go` is complete; `apex` emits a
-        /// deployable SFDX project; `rust` and `typescript` are feature-complete
-        /// SDKs; `java` emits the model layer (M7, in progress). Accepts a
+        /// Target language(s) (manifest key). `go`, `rust`, `typescript`, and
+        /// `java` are feature-complete SDKs; `apex` emits a deployable SFDX
+        /// project. Accepts a
         /// comma-separated list or repeated flags to build several at once
         /// (`--target go,rust`); `all` expands to every target. A single target
         /// writes into `--out` directly; two or more each land in their own
