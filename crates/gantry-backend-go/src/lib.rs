@@ -88,8 +88,9 @@ pub fn generate(
     files.extend(generate_managers(analysis, &paged)?);
     files.extend(generate_docs(analysis, &paged));
     files.extend(generate_tests(analysis));
-    // The runtime stubs are rendered from the contract data (FR-5.2):
-    // generated managers compile against exactly the declared surface.
+    // The real runtime is vendored here (D-192); generated managers still call
+    // only the declared contract surface (FR-5.2), which is what lets the
+    // hand-written implementation drop in unchanged.
     files.extend(runtime_files());
     files.push(GeneratedFile {
         path: "serialization/serialization.go".to_string(),

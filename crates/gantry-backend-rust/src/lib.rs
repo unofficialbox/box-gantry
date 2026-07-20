@@ -166,10 +166,11 @@ fn vendored(origin: &str, source: String) -> String {
 /// Vendor a runtime submodule: strip its tests and re-root its paths.
 ///
 /// `auth.rs`/`jwt.rs` are crate-level modules of the standalone runtime, so they
-/// reach its root as `crate::`. Nested under the SDK's `runtime` module that
-/// root becomes `super::` — without the rewrite every such path would resolve to
-/// the *SDK* crate root and fail to compile. `mod.rs` needs no rewrite: its own
-/// `crate::` references are doc links only.
+/// reach its root as `crate::` — both in `use` items and in intra-doc links.
+/// Nested under the SDK's `runtime` module that root becomes `super::`; without
+/// the rewrite every such path would resolve to the *SDK* crate root and fail to
+/// compile. `mod.rs` needs no rewrite because it carries no `crate::` paths at
+/// all — it *is* the root being referred to.
 fn nest_submodule(source: &str) -> String {
     strip_tests(source).replace("crate::", "super::")
 }

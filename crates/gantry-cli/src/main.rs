@@ -501,10 +501,25 @@ fn write_pairs(root: &Path, files: &[(String, String)]) -> std::io::Result<()> {
     // never touched.
     let emitted: std::collections::BTreeSet<&str> =
         files.iter().map(|(path, _)| path.as_str()).collect();
-    if let Ok(previous) = std::fs::read_to_string(root.join(MANIFEST)) {
-        for stale in previous.lines().filter(|p| !emitted.contains(p)) {
-            // Best-effort: a file the user already deleted is not an error.
-            let _ = std::fs::remove_file(root.join(stale));
+
+    // Only a *missing* manifest is benign — that is the first generation into
+    // this directory. Any other read failure, and any deletion failure, is
+    // reported rather than swallowed: the manifest is rewritten below, so a
+    // silently-skipped prune would drop the stale path from the record and
+    // leave the file orphaned forever, with nothing left pointing at it.
+    let previous = match std::fs::read_to_string(root.join(MANIFEST)) {
+        Ok(previous) => previous,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err),
+    };
+    for stale in previous
+        .lines()
+        .filter(|path| !path.is_empty() && !emitted.contains(path))
+    {
+        match std::fs::remove_file(root.join(stale)) {
+            // Already gone (deleted by hand) — the desired end state.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            other => other?,
         }
     }
 
