@@ -3,7 +3,7 @@
 //! Per-manager Markdown plus the auth / pagination / errors cross-cutting
 //! guides, generated from the same IR the code is — so the docs describe the
 //! real Java surface (camelCased method names, record types, blocking methods
-//! that throw `BoxApiException`, the `for (var … : …Paginate(…))` idiom) and
+//! that throw `BoxApiException`, the auto-paging `for (var … : list…(…))` idiom) and
 //! can't drift from it. The Java analogue of the Rust (D-155) and TypeScript
 //! (D-163) docs slices. Deterministic, like all output (FR-6.2).
 
@@ -149,9 +149,9 @@ fn manager_page(
         if paged.contains_key(&index) {
             let _ = writeln!(
                 body,
-                "Paginated — also available as `{method}Paginate(...)`, returning an\n\
-                 `Iterable` you loop with `for (var item : …)`. See the\n\
-                 [pagination guide](../pagination.md).\n"
+                "Paginated — `{method}(...)` returns an auto-paging `Iterable` you\n\
+                 loop with `for (var item : …)`, threading the cursor for you. See\n\
+                 the [pagination guide](../pagination.md).\n"
             );
         }
     }
@@ -340,11 +340,11 @@ Both return the uploaded `Files` object. A failure throws\n\
 [errors guide](errors.md)); the first part to fail cancels the rest.\n";
 
 const PAGINATION_GUIDE: &str = "# Pagination\n\n\
-Marker- and offset-paginated list operations expose an extra `…Paginate`\n\
-method alongside the plain single-page method. It returns an `Iterable` that\n\
-threads the cursor for you, so you loop it with an enhanced `for`:\n\n\
+Marker- and offset-paginated list operations return an `Iterable` that threads\n\
+the cursor for you — the list method *is* the paginator, so you loop it directly\n\
+with an enhanced `for`:\n\n\
 ```java\n\
-for (var item : client.files.getFolderItemsPaginate(folderId, null)) {\n\
+for (var item : client.folders.listItems(folderId, null)) {\n\
     // use item\n\
 }\n\
 ```\n\n\
