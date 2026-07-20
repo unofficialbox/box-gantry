@@ -320,7 +320,10 @@ fn go_operations(files: &[GeneratedView]) -> usize {
 }
 
 fn go_pagination(files: &[GeneratedView]) -> usize {
-    count_marker(files, go_is_manager_file, "Paginate(ctx context.Context")
+    // Option A: the exported list method *is* the paginator — it returns
+    // `iter.Seq2[*T, error]`, so count that return type (the `Paginate` suffix
+    // is gone). The single-page fetch it drives is the unexported `<method>Page`.
+    count_marker(files, go_is_manager_file, ") iter.Seq2[*")
 }
 
 fn go_serialization(files: &[GeneratedView]) -> usize {
@@ -590,15 +593,18 @@ fn rust_managers(files: &[GeneratedView]) -> usize {
 }
 
 fn rust_operations(files: &[GeneratedView]) -> usize {
-    // One `pub async fn` per operation, plus one `async fn next` per paginator;
-    // subtract the paginators to isolate the operation methods.
-    let async_fns = count_marker(files, rust_is_manager_file, "pub async fn ");
+    // One async fetch per operation. Non-paged ops are `pub async fn`; Option A
+    // makes a paged op's single-page fetch the private `async fn <method>_page`
+    // (no `pub`), so count all `async fn ` and subtract the paginators' own
+    // `pub async fn next` to isolate the per-operation methods.
+    let async_fns = count_marker(files, rust_is_manager_file, "async fn ");
     async_fns.saturating_sub(rust_pagination(files))
 }
 
 fn rust_pagination(files: &[GeneratedView]) -> usize {
-    // One `<method>_paginate` constructor per paginated operation.
-    count_marker(files, rust_is_manager_file, "_paginate(")
+    // Option A: the public `<method>` returns the paginator (no `_paginate`
+    // suffix); each paginator is driven by exactly one `pub async fn next`.
+    count_marker(files, rust_is_manager_file, "pub async fn next(")
 }
 
 fn rust_serialization(files: &[GeneratedView]) -> usize {
@@ -712,14 +718,19 @@ fn ts_managers(files: &[GeneratedView]) -> usize {
 }
 
 fn ts_operations(files: &[GeneratedView]) -> usize {
-    // Every method (plain or paginator) is `  async `; the paginators are the
-    // `async *` generators, so subtract them to isolate the operation methods.
-    let methods = count_marker(files, ts_is_manager_file, "  async ");
-    methods.saturating_sub(ts_pagination(files))
+    // Every operation is one non-generator method. Public methods (non-paged
+    // ops and the generators) are `  async `; the paginators are the `async *`
+    // generators, subtracted to isolate the plain surface. Option A makes a
+    // paged op's single-page fetch the `  private async <method>Page` helper,
+    // which `  async ` doesn't match, so add those back.
+    let public_async = count_marker(files, ts_is_manager_file, "  async ");
+    let private_page = count_marker(files, ts_is_manager_file, "  private async ");
+    (public_async + private_page).saturating_sub(ts_pagination(files))
 }
 
 fn ts_pagination(files: &[GeneratedView]) -> usize {
-    // One `async *<method>Paginate` generator per paginated operation.
+    // Option A: one `async *<method>` generator per paginated operation — the
+    // public list method *is* the paginator (no `Paginate` suffix).
     count_marker(files, ts_is_manager_file, "async *")
 }
 
@@ -976,7 +987,8 @@ mod tests {
         let program = program();
         let analysis = gantry_sema::analyze(&program).unwrap();
         // A minimal but complete Rust SDK: one manager with two operation
-        // methods and a paginator (struct + `next` + `_paginate` constructor),
+        // methods and a paginator (struct + `next` + the public `get_files`
+        // entry driving the private single-page `get_files_page`, Option A),
         // the tri-state helper, the buildinfo provenance, the `docs/` tree
         // (per-manager page + the guides), and the generated round-trip tests.
         let files =
@@ -990,9 +1002,9 @@ mod tests {
                  pub struct FilesManager {}\n\
                  impl FilesManager {\n\
                  \x20   pub(crate) fn new() -> Self { Self {} }\n\
-                 \x20   pub async fn get_files(&self) {}\n\
+                 \x20   async fn get_files_page(&self) {}\n\
                  \x20   pub async fn get_files_id(&self) {}\n\
-                 \x20   pub fn get_files_paginate(&self) {}\n\
+                 \x20   pub fn get_files(&self) {}\n\
                  }\n"
                 .to_string(),
             ),
@@ -1040,10 +1052,11 @@ mod tests {
         // Emitted capabilities are measured and pass.
         assert_eq!(check("managers").actual, 1);
         assert_eq!(check("managers").status, CheckStatus::Pass);
-        // Operations subtract the paginator's `next` from the async-fn count.
+        // Operations subtract the paginator's `next` from the async-fn count
+        // (the private `get_files_page` fetch + non-paged `get_files_id`).
         assert_eq!(check("operations").actual, 2);
         assert_eq!(check("operations").status, CheckStatus::Pass);
-        // The `_paginate` constructor is counted as a paged surface.
+        // The paginator (its `pub async fn next`) is counted as a paged surface.
         assert_eq!(check("pagination").actual, 1);
         assert_eq!(check("serialization").status, CheckStatus::Pass);
         assert_eq!(check("traceability").status, CheckStatus::Pass);
@@ -1120,11 +1133,11 @@ mod tests {
                  export class FilesManager {\n\
                  \x20 constructor(private readonly session: runtime.Client) {}\n\
                  \n\
-                 \x20 async getFiles(opts?: FilesManagerGetFilesOptions): Promise<void> {}\n\
+                 \x20 private async getFilesPage(opts?: FilesManagerGetFilesOptions): Promise<void> {}\n\
                  \n\
                  \x20 async getFilesId(fileId: string): Promise<void> {}\n\
                  \n\
-                 \x20 async *getFilesPaginate(opts?: FilesManagerGetFilesOptions): \
+                 \x20 async *getFiles(opts?: FilesManagerGetFilesOptions): \
                  AsyncIterableIterator<unknown> {}\n\
                  }\n"
                 .to_string(),
@@ -1152,8 +1165,9 @@ mod tests {
         assert_eq!(check("managers").actual, 1);
         assert_eq!(check("managers").status, CheckStatus::Pass);
         // The `Client` entry point and the options interface are not counted as
-        // managers; the two plain `async` methods are the operations, with the
-        // `async *` paginator subtracted from the async-method count.
+        // managers. Two operations: the non-paged `getFilesId` and the paged
+        // op's private `getFilesPage` fetch (Option A) — the `async *getFiles`
+        // paginator is subtracted from the async-method count.
         assert_eq!(check("operations").actual, 2);
         assert_eq!(check("operations").status, CheckStatus::Pass);
         assert_eq!(check("traceability").actual, 1);
