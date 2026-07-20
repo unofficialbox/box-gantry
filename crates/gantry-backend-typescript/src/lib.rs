@@ -129,6 +129,11 @@ pub fn generate(
 /// The scoped name `@unofficialbox/box-open-sdk` marks these as community SDKs,
 /// distinct from Box's official ones; `version` is set by the release pipeline
 /// from the FR-9 spec-diff (as Go's tag is).
+///
+/// `typescript` is a declared devDependency because `scripts.build` invokes
+/// `tsc`: a clone must be buildable with `npm install && npm run build` alone.
+/// The compile gates put `tsc` on `PATH` themselves, so nothing else here would
+/// notice its absence — hence the explicit assertion in the ship test.
 fn package_json() -> String {
     "{\n\
      \x20 \"name\": \"@unofficialbox/box-open-sdk\",\n\
@@ -157,6 +162,7 @@ fn package_json() -> String {
      \x20 },\n\
      \x20 \"files\": [\"dist\", \"docs\", \"README.md\"],\n\
      \x20 \"publishConfig\": { \"access\": \"public\" },\n\
+     \x20 \"devDependencies\": { \"typescript\": \"^7.0.2\" },\n\
      \x20 \"scripts\": {\n\
      \x20   \"build\": \"tsc -p tsconfig.build.json && tsc -p tsconfig.cjs.json && node scripts/postbuild.mjs\"\n\
      \x20 }\n\
