@@ -183,9 +183,13 @@ fn vendored(origin: &str, source: &str) -> String {
 /// The compile gates put `tsc` on `PATH` themselves, so nothing else here would
 /// notice its absence — hence the explicit assertion in the ship test.
 fn package_json() -> String {
-    "{\n\
+    // `@VERSION@` sentinel rather than `format!`: the manifest is dense with
+    // literal `{ }` (the `exports` map, `engines`, `scripts`), all of which
+    // would need doubling under `format!`. One `replace` keeps the JSON readable
+    // and leaves no hardcoded version behind.
+    const TEMPLATE: &str = "{\n\
      \x20 \"name\": \"@unofficialbox/box-open-sdk\",\n\
-     \x20 \"version\": \"0.1.0\",\n\
+     \x20 \"version\": \"@VERSION@\",\n\
      \x20 \"description\": \"Generated TypeScript SDK for the Box API (community, unofficial).\",\n\
      \x20 \"license\": \"MIT\",\n\
      \x20 \"repository\": { \"type\": \"git\", \"url\": \"git+https://github.com/unofficialbox/box-open-ts-sdk.git\" },\n\
@@ -214,8 +218,8 @@ fn package_json() -> String {
      \x20 \"scripts\": {\n\
      \x20   \"build\": \"tsc -p tsconfig.build.json && tsc -p tsconfig.cjs.json && node scripts/postbuild.mjs\"\n\
      \x20 }\n\
-     }\n"
-    .to_string()
+     }\n";
+    TEMPLATE.replace("@VERSION@", gantry_manifest::SDK_VERSION)
 }
 
 /// The ESM + declarations build config (NF-8). Emits ES modules into

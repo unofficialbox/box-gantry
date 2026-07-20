@@ -559,14 +559,15 @@ fn the_generated_sdk_packages_for_publish() {
     );
     // Maven Central requires the artifact + sources + javadoc jars.
     let target = dir.join("target");
+    let v = gantry_manifest::SDK_VERSION;
     let jars = [
-        "box-open-sdk-0.1.0.jar",
-        "box-open-sdk-0.1.0-sources.jar",
-        "box-open-sdk-0.1.0-javadoc.jar",
+        format!("box-open-sdk-{v}.jar"),
+        format!("box-open-sdk-{v}-sources.jar"),
+        format!("box-open-sdk-{v}-javadoc.jar"),
     ];
     let missing: Vec<&str> = jars
         .iter()
-        .copied()
+        .map(String::as_str)
         .filter(|j| !target.join(j).exists())
         .collect();
     let _ = std::fs::remove_dir_all(&dir);
