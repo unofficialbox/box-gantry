@@ -124,8 +124,8 @@ fn manager_page(
         if paged.contains_key(&index) {
             let _ = writeln!(
                 body,
-                "Paginated — also available as `{method}_paginate(...)`, returning a \
-                 paginator you drive with `.next().await`. See the \
+                "Paginated — `{method}(...)` returns a paginator you drive with \
+                 `.next().await`, threading the cursor for you. See the \
                  [pagination guide](../pagination.md).\n"
             );
         }
@@ -296,12 +296,11 @@ let client = Client::new(auth);\n\
 ```\n";
 
 const PAGINATION_GUIDE: &str = "# Pagination\n\n\
-Marker- and offset-paginated list operations expose an extra `_paginate`\n\
-constructor alongside the plain single-page method. It returns a paginator\n\
-you drive with `.next().await`, which yields one element at a time and\n\
-threads the cursor for you:\n\n\
+Marker- and offset-paginated list operations return a paginator — the list\n\
+method *is* the paginator. You drive it with `.next().await`, which yields one\n\
+element at a time and threads the cursor for you:\n\n\
 ```rust\n\
-let mut pages = client.files.get_folder_items_paginate(folder_id, None);\n\
+let mut pages = client.folders.list_items(folder_id, None);\n\
 while let Some(item) = pages.next().await {\n\
     let item = item?;\n\
     // use item\n\

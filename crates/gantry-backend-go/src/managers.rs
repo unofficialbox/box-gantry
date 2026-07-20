@@ -156,9 +156,17 @@ impl ManagerPrinter<'_> {
         );
         for &index in op_indices {
             let op = self.analysis.program.operations[index].clone();
-            self.operation(&type_name, &op)?;
-            if let Some(paged) = self.paged.get(&index).copied() {
-                self.paginator(&type_name, &op, paged)?;
+            let public = self.method_name(&op);
+            match self.paged.get(&index).copied() {
+                // Option A (FR-7.3): the exported `{Method}` is the paginator
+                // (`iter.Seq2`); the single-page fetch it drives ships as the
+                // unexported `{method}Page` (same package, so reachable).
+                Some(paged) => {
+                    self.operation(&type_name, &op, &page_method(&public), &public)?;
+                    self.paginator(&type_name, &op, paged)?;
+                }
+                // Not paged: the exported single-page `{Method}` is the entry point.
+                None => self.operation(&type_name, &op, &public, &public)?,
             }
         }
         Ok(())
@@ -168,9 +176,18 @@ impl ManagerPrinter<'_> {
         method_name(op, self.base_version.as_ref())
     }
 
-    fn operation(&mut self, manager_type: &str, op: &ir::Operation) -> Result<(), BackendError> {
+    /// One operation → a single-page method. `method` is the emitted func name;
+    /// `options_method` names its package-level `Options` struct (they differ
+    /// only for a paged op, whose single-page fetch is the unexported
+    /// `<method>Page` yet shares the public method's options struct — Option A).
+    fn operation(
+        &mut self,
+        manager_type: &str,
+        op: &ir::Operation,
+        method: &str,
+        options_method: &str,
+    ) -> Result<(), BackendError> {
         let context = format!("operation {}/{}", op.manager.as_str(), op.name.as_str());
-        let method = self.method_name(op);
         self.imports.insert("context".to_string());
         self.imports
             .insert("github.com/unofficialbox/box-open-sdk/gantryruntime".to_string());
@@ -200,7 +217,7 @@ impl ManagerPrinter<'_> {
         // Manager-qualified: method names are unique per manager (they are
         // receiver-scoped), but this options struct is package-level, so it
         // must carry the manager to stay unique across the `managers` package.
-        let options_type = format!("{}{method}Options", pascal(op.manager.as_str()));
+        let options_type = format!("{}{options_method}Options", pascal(op.manager.as_str()));
         if !optional.is_empty() {
             args.push(format!("opts *{options_type}"));
         }
@@ -324,11 +341,12 @@ impl ManagerPrinter<'_> {
         Ok(())
     }
 
-    /// A `{Method}Paginate` iterator over a paged operation (TR-Go.4,
-    /// FR-7.3). It wraps the plain method, threading the cursor and
-    /// yielding one element at a time as `iter.Seq2[*Element, error]`
-    /// (Go ≥ 1.23). The cursor lives in a *copy* of the caller's options
-    /// so pagination never mutates the caller's struct.
+    /// The exported `{Method}` over a paged operation (TR-Go.4, FR-7.3,
+    /// Option A): the paged operation's sole public entry point. It drives the
+    /// unexported single-page `{method}Page`, threading the cursor and yielding
+    /// one element at a time as `iter.Seq2[*Element, error]` (Go ≥ 1.23). The
+    /// cursor lives in a *copy* of the caller's options so pagination never
+    /// mutates the caller's struct.
     fn paginator(
         &mut self,
         manager_type: &str,
@@ -337,6 +355,7 @@ impl ManagerPrinter<'_> {
     ) -> Result<(), BackendError> {
         let context = format!("paginate {}/{}", op.manager.as_str(), op.name.as_str());
         let method = self.method_name(op);
+        let page = page_method(&method);
         self.imports.insert("iter".to_string());
 
         // Rebuild the plain method's signature prefix (ctx, required
@@ -386,7 +405,7 @@ impl ManagerPrinter<'_> {
 
         let _ = writeln!(
             self.body,
-            "func (m *{manager_type}) {method}Paginate({sig}) iter.Seq2[*{element_go}, error] {{",
+            "func (m *{manager_type}) {method}({sig}) iter.Seq2[*{element_go}, error] {{",
             sig = sig.join(", "),
         );
         let _ = writeln!(
@@ -436,7 +455,7 @@ impl ManagerPrinter<'_> {
                 let _ = writeln!(
                     self.body,
                     "\t\tfor {{\n\
-                     \t\t\tpage, err := m.{method}({call})\n\
+                     \t\t\tpage, err := m.{page}({call})\n\
                      \t\t\tif err != nil {{\n\t\t\t\tyield(nil, err)\n\t\t\t\treturn\n\t\t\t}}\n\
                      \t\t\tfor i := range page.{entries_field} {{\n\
                      \t\t\t\tif !yield(&page.{entries_field}[i], nil) {{\n\t\t\t\t\treturn\n\t\t\t\t}}\n\t\t\t}}",
@@ -467,7 +486,7 @@ impl ManagerPrinter<'_> {
                     "\t\tvar offset int64\n\t\tif o.{cursor_field} != nil {{\n\t\t\toffset = *o.{cursor_field}\n\t\t}}\n\
                      \t\tfor {{\n\
                      \t\t\to.{cursor_field} = &offset\n\
-                     \t\t\tpage, err := m.{method}({call})\n\
+                     \t\t\tpage, err := m.{page}({call})\n\
                      \t\t\tif err != nil {{\n\t\t\t\tyield(nil, err)\n\t\t\t\treturn\n\t\t\t}}\n\
                      \t\t\tfor i := range page.{entries_field} {{\n\
                      \t\t\t\tif !yield(&page.{entries_field}[i], nil) {{\n\t\t\t\t\treturn\n\t\t\t\t}}\n\t\t\t}}\n\
@@ -1000,6 +1019,17 @@ pub(crate) fn method_name(op: &ir::Operation, base_version: Option<&ir::ApiVersi
         name.push_str(&constant(&version.0));
     }
     name
+}
+
+/// The unexported single-page fetch a paginator drives (Option A): the public
+/// method name with a lowercased initial (so it stays inside the `managers`
+/// package) and a `Page` suffix, e.g. `ListItems` → `listItemsPage`.
+fn page_method(public: &str) -> String {
+    let mut chars = public.chars();
+    match chars.next() {
+        Some(first) => format!("{}{}Page", first.to_ascii_lowercase(), chars.as_str()),
+        None => "page".to_string(),
+    }
 }
 
 /// Go types that are already nilable: pointer-wrapping them is wrong

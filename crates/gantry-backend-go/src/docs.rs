@@ -124,8 +124,8 @@ fn manager_page(
         if paged.contains_key(&index) {
             let _ = writeln!(
                 body,
-                "Paginated — also available as `{method}Paginate(...)` returning \
-                 `iter.Seq2[*T, error]`. See the [pagination guide](../pagination.md).\n"
+                "Paginated — `{method}(...)` returns `iter.Seq2[*T, error]`, \
+                 threading the cursor for you. See the [pagination guide](../pagination.md).\n"
             );
         }
     }
@@ -285,11 +285,11 @@ c := client.NewClient(src)\n\
 ```\n";
 
 const PAGINATION_GUIDE: &str = "# Pagination\n\n\
-Marker- and offset-paginated list operations expose an extra\n\
-`iter.Seq2[*T, error]` method suffixed `Paginate`, alongside the plain\n\
-single-page method. Range over it to walk every page transparently:\n\n\
+Marker- and offset-paginated list operations return an\n\
+`iter.Seq2[*T, error]` — the list method *is* the paginator. Range over it\n\
+to walk every page transparently:\n\n\
 ```go\n\
-for item, err := range client.Files.GetFolderItemsPaginate(ctx, folderID, nil) {\n\
+for item, err := range client.Folders.ListItems(ctx, folderID, nil) {\n\
 \tif err != nil {\n\t\treturn err\n\t}\n\t// use item\n}\n\
 ```\n\n\
 The iterator threads the cursor for you and stops when the last page is\n\

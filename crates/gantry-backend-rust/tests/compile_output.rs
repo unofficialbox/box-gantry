@@ -71,14 +71,26 @@ fn generation_is_deterministic() {
         .unwrap();
     assert!(files.content.contains("pub async fn "), "{}", files.path);
     assert!(files.content.contains("self.session.fetch(req).await?"));
-    // Paginated operations get an async paginator + a `_paginate` constructor
-    // (FR-7.3), threading the cursor through the options.
+    // Option A (FR-7.3): the public list method *is* the async paginator; the
+    // single-page fetch it drives is the private `<method>_page`. No `_paginate`.
     let folders = once
         .iter()
         .find(|f| f.path == "src/managers/folders.rs")
         .unwrap();
     assert!(folders.content.contains("Paginator {"), "{}", folders.path);
-    assert!(folders.content.contains("_paginate("));
+    assert!(
+        folders.content.contains("pub fn list_items(")
+            && folders.content.contains(") -> FoldersListItemsPaginator {"),
+        "{}",
+        folders.path
+    );
+    assert!(
+        folders.content.contains("async fn list_items_page(")
+            && !folders.content.contains("pub async fn list_items_page("),
+        "{}",
+        folders.path
+    );
+    assert!(!folders.content.contains("_paginate("), "{}", folders.path);
     assert!(folders.content.contains("pub async fn next(&mut self)"));
     // Reference docs (FR-7.7): an index, one page per manager, and the three
     // cross-cutting guides — describing the real Rust surface.
