@@ -684,10 +684,11 @@ fn the_real_spec_lowers_to_apex_classes() {
     let files = real_spec_files();
 
     // Every struct/union/enum decl becomes one class; aliases (2 in the
-    // real spec) do not. After structural dedupe (D-127) the spec lowers to
-    // 900 decls − 2 aliases = 898 classes. Pinned so the count only moves
-    // deliberately with the spec (VR-6 lineage).
-    assert_eq!(files.len(), 898, "expected one class per non-alias decl");
+    // real spec) do not. After structural dedupe (D-127), the version merge
+    // (D-190), and stripping the box-version header enums (D-191) the spec
+    // lowers to 877 decls − 2 aliases = 875 classes. Pinned so the count only
+    // moves deliberately with the spec (VR-6 lineage).
+    assert_eq!(files.len(), 875, "expected one class per non-alias decl");
 
     // Every class name obeys the platform identifier limit (TR-Apex.1) and
     // is globally unique (flat namespace), and every file carries the
@@ -793,7 +794,8 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     // suite = 4 (D-146): the 220 structs that carry a generated wire static
     // (`normalizeKeys`/`denormalizeKeys`/`deserialize`) exercised with populated
     // inputs, chunked ≤ 60 structs per class so no method overruns Apex's
-    // compiled-size limit. 999 + 87 + 1 + 4 = 1091 classes total.
+    // compiled-size limit. The version merge (D-190) drops 21 model classes and
+    // the box-version strip (D-191) drops 2 more. 976 + 87 + 1 + 4 = 1068 total.
     let classes: Vec<&str> = files
         .iter()
         .filter(|f| f.path.ends_with(".cls"))
@@ -801,7 +803,7 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         .collect();
     assert_eq!(
         classes.len(),
-        999 + 87 + 1 + 4,
+        976 + 87 + 1 + 4,
         "models + managers + client + stubs + runtime + @isTest suite + BoxBuildInfo + wire-hook suite"
     );
     // The generated test suite ships with the deployable tree.
@@ -894,9 +896,9 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         425,
         "endpoint + manager + top-index + guide docs"
     );
-    // 5 base scaffolding + 4 Remote Site Settings + 1091 classes + 1091 metas
+    // 5 base scaffolding + 4 Remote Site Settings + 1068 classes + 1068 metas
     // + 425 docs.
-    assert_eq!(files.len(), 5 + 4 + (999 + 87 + 1 + 4) * 2 + 425);
+    assert_eq!(files.len(), 5 + 4 + (976 + 87 + 1 + 4) * 2 + 425);
 
     // Deterministic and path-sorted.
     let sorted: Vec<&String> = {
@@ -946,7 +948,7 @@ fn the_generated_test_suite_exercises_the_managers_through_a_mock() {
     assert_contains(files_test, "BoxCalloutMock mock = new BoxCalloutMock();");
     assert_contains(files_test, "BoxFiles svc = new BoxFiles(mock);");
     assert_contains(files_test, "Test.startTest();");
-    assert_contains(files_test, "svc.getById(");
+    assert_contains(files_test, "svc.get(");
     assert_contains(files_test, "Test.stopTest();");
     // A binary (Blob) response is fed as a Blob, an array response as `[]`.
     assert_contains(files_test, "mock.bodyBlob = Blob.valueOf('x');");
@@ -992,8 +994,8 @@ fn each_endpoint_has_a_markdown_doc_with_a_runnable_snippet() {
     // types it touches, and a copy-pasteable example calling the real method.
     let get_file = files
         .iter()
-        .find(|f| f.path == "docs/files/getById.md")
-        .expect("docs/files/getById.md");
+        .find(|f| f.path == "docs/files/get.md")
+        .expect("docs/files/get.md");
     let body = &get_file.content;
     assert_contains(body, "`GET /files/{file_id}`");
     assert_contains(body, "## Imports & setup");
@@ -1002,19 +1004,19 @@ fn each_endpoint_has_a_markdown_doc_with_a_runnable_snippet() {
     assert_contains(body, "Box client = new Box(myBoxClient);");
     assert_contains(
         body,
-        "FileFull result = client.files.getById(fileId, null, null, null, null);",
+        "FileFull result = client.files.get(fileId, null, null, null, null);",
     );
     // A non-paged endpoint has no pagination section.
     assert!(!body.contains("## Pagination"));
 
     // A paged endpoint documents the cursor loop (no page classes — the
-    // envelope is the page, D-131). Folders' `getItems` is marker-paged.
+    // envelope is the page, D-131). Folders' `listItems` is marker-paged.
     let get_items = files
         .iter()
-        .find(|f| f.path == "docs/folders/getItems.md")
-        .expect("docs/folders/getItems.md");
+        .find(|f| f.path == "docs/folders/listItems.md")
+        .expect("docs/folders/listItems.md");
     let paged = &get_items.content;
     assert_contains(paged, "## Pagination");
     assert_contains(paged, "while (String.isNotBlank(page.next_marker)) {");
-    assert_contains(paged, "page = client.folders.getItems(");
+    assert_contains(paged, "page = client.folders.listItems(");
 }

@@ -47,21 +47,16 @@ pub(crate) struct ManagerPlan {
     pub(crate) field: String,
 }
 
-/// The method name for an operation: `snake` base + variation + a `_v<version>`
-/// suffix for a non-base API version (so base and versioned surfaces never
-/// collide, FR-7.5), camelCased and keyword-guarded. Free-standing so the docs
-/// generator names methods exactly as the manager printer does.
-pub(crate) fn method_name(op: &ir::Operation, base_version: Option<&ir::ApiVersion>) -> String {
+/// The method name for an operation: `snake` base + variation, camelCased and
+/// keyword-guarded. The API version no longer suffixes the name (D-191): the
+/// `box-version` header is set automatically per endpoint, and versioned
+/// operations live in their own managers so nothing collides. Free-standing so
+/// the docs generator names methods exactly as the manager printer does.
+pub(crate) fn method_name(op: &ir::Operation) -> String {
     let mut name = snake(op.name.as_str());
     if let Some(variation) = &op.variation {
         name.push('_');
         name.push_str(&snake(variation.as_str()));
-    }
-    if op.api_version.as_ref() != base_version
-        && let Some(version) = &op.api_version
-    {
-        name.push_str("_v");
-        name.push_str(&version.0.replace(['.', '-'], "_"));
     }
     keyword_safe(&camel(&name))
 }
@@ -69,15 +64,11 @@ pub(crate) fn method_name(op: &ir::Operation, base_version: Option<&ir::ApiVersi
 /// The deduped `(op index, method name)` list for a manager's operations — the
 /// single source of truth the manager printer and docs both use, so a method
 /// heading in the docs matches the emitted method name exactly.
-pub(crate) fn deduped_methods(
-    program: &ir::Program,
-    ops: &[usize],
-    base_version: Option<&ir::ApiVersion>,
-) -> Vec<(usize, String)> {
+pub(crate) fn deduped_methods(program: &ir::Program, ops: &[usize]) -> Vec<(usize, String)> {
     let mut used: Vec<String> = Vec::new();
     ops.iter()
         .map(|&i| {
-            let name = dedupe(&mut used, method_name(&program.operations[i], base_version));
+            let name = dedupe(&mut used, method_name(&program.operations[i]));
             (i, name)
         })
         .collect()
@@ -93,15 +84,17 @@ enum OptLayer {
 }
 
 /// Everything needed to synthesize one paged operation's paginator class and
-/// its `<method>Paginate` constructor (FR-7.3).
+/// the public `<method>` that returns it (FR-7.3, Option A).
 struct PaginationPlan {
-    /// The top-level paginator class, e.g. `FilesGetFolderItemsPaginator`.
+    /// The top-level paginator class, e.g. `FoldersListItemsPaginator`.
     class: String,
-    /// The owning manager class, e.g. `FilesManager`.
+    /// The owning manager class, e.g. `FoldersManager`.
     manager_class: String,
-    /// The `<method>Paginate` constructor name.
+    /// The public method that returns the paginator, e.g. `listItems` — the
+    /// paged operation's sole public entry point (Option A).
     paginate: String,
-    /// The plain method the paginator drives, e.g. `getFolderItems`.
+    /// The package-private single-page fetch the paginator drives, e.g.
+    /// `listItemsPage`.
     method: String,
     /// The nested options type, e.g. `FilesManager.GetFolderItemsOptions`.
     options_ty: String,
@@ -251,7 +244,7 @@ impl ManagerPrinter<'_> {
         // Method names dedup per manager, so distinct ops that normalize to the
         // same name stay distinct — and the options class reuses the name. The
         // docs generator reuses this exact list (`deduped_methods`).
-        let methods = deduped_methods(self.program, &plan.ops, self.base_version);
+        let methods = deduped_methods(self.program, &plan.ops);
 
         let mut out = header(build);
         let _ = writeln!(out, "package {MANAGERS_PKG};\n");
@@ -267,24 +260,33 @@ impl ManagerPrinter<'_> {
         let mut paginators = Vec::new();
         for (i, name) in &methods {
             let op = &self.program.operations[*i];
-            out.push_str(&self.operation(op, name));
-            out.push('\n');
-            // A paged operation also gets a `<method>Paginate` constructor plus a
-            // top-level paginator class (FR-7.3) — right after the plain method,
-            // which the paginator drives (URL/param/body logic is never dupli-
-            // cated). A cursor shape we don't synthesize skips only the paginator
-            // (the plain method still ships, VR-6), the same rule Rust/TS follow.
-            if let Some(pplan) = self
+            // Option A (FR-7.3): a paged operation whose cursor shape we can
+            // synthesize exposes the auto-paging `Iterable` *as* the public
+            // `<method>` — there is no separate single-page public method. The
+            // single-page fetch it drives ships as the package-private
+            // `<method>Page` (same package as the paginator, so reachable). A
+            // cursor shape we don't synthesize gets no paginator, so the plain
+            // single-page method ships as the public `<method>` (VR-6) — the
+            // same fallback Rust/TS follow.
+            match self
                 .paged
                 .get(i)
                 .and_then(|paged| self.pagination_plan(op, plan, name, paged))
             {
-                out.push_str(&self.paginate_method(op, name, &pplan));
-                out.push('\n');
-                paginators.push(GeneratedFile {
-                    path: java_path(MANAGERS_PKG, &pplan.class),
-                    content: self.paginator_file(&pplan, build),
-                });
+                Some(pplan) => {
+                    out.push_str(&self.operation(op, &pplan.method, name, false));
+                    out.push('\n');
+                    out.push_str(&self.paginate_method(op, name, &pplan));
+                    out.push('\n');
+                    paginators.push(GeneratedFile {
+                        path: java_path(MANAGERS_PKG, &pplan.class),
+                        content: self.paginator_file(&pplan, build),
+                    });
+                }
+                None => {
+                    out.push_str(&self.operation(op, name, name, true));
+                    out.push('\n');
+                }
             }
         }
         // Nested options classes, after the methods that reference them.
@@ -300,7 +302,20 @@ impl ManagerPrinter<'_> {
     }
 
     /// One operation → a blocking method routing through the runtime contract.
-    fn operation(&self, op: &ir::Operation, method: &str) -> String {
+    /// One operation → a blocking single-page method. `method` is the emitted
+    /// method name; `options_name` is the base for its `<Options>` type (they
+    /// differ only for a paged op, whose single-page fetch is renamed
+    /// `<method>Page` yet still shares the public method's options class). When
+    /// `public_method` is false the method is package-private — the Option-A
+    /// paged shape, where the public `<method>` is the paginator and this
+    /// single-page fetch is only driven by the paginator (same package).
+    fn operation(
+        &self,
+        op: &ir::Operation,
+        method: &str,
+        options_name: &str,
+        public_method: bool,
+    ) -> String {
         let required: Vec<&ir::Param> = op
             .params
             .iter()
@@ -330,7 +345,7 @@ impl ManagerPrinter<'_> {
             ));
         }
         if !optional.is_empty() {
-            sig.push(format!("{}Options options", pascal(method)));
+            sig.push(format!("{}Options options", pascal(options_name)));
         }
 
         let mut out = String::new();
@@ -342,7 +357,8 @@ impl ManagerPrinter<'_> {
         );
         let _ = writeln!(
             out,
-            "    public {} {method}({}) {{",
+            "    {}{} {method}({}) {{",
+            if public_method { "public " } else { "" },
             self.return_type(op),
             sig.join(", ")
         );
@@ -354,10 +370,26 @@ impl ManagerPrinter<'_> {
         );
         self.apply_params(&mut out, &required, false);
         self.apply_params(&mut out, &optional, true);
+        self.version_header(&mut out, op);
         self.request_body(&mut out, op);
         self.fetch_and_decode(&mut out, op);
         out.push_str("    }\n");
         out
+    }
+
+    /// Set the `box-version` header for a non-base operation (D-191). The header
+    /// is a required constant equal to the operation's API version, so the
+    /// engine sends it automatically rather than exposing it as a parameter.
+    fn version_header(&self, out: &mut String, op: &ir::Operation) {
+        if op.api_version.as_ref() != self.base_version
+            && let Some(version) = &op.api_version
+        {
+            let _ = writeln!(
+                out,
+                "        _req = {RUNTIME}.withHeader(_req, \"box-version\", {:?});",
+                version.0
+            );
+        }
     }
 
     /// Build the request URL into a `StringBuilder _url` from the base-URL class
@@ -747,8 +779,10 @@ impl ManagerPrinter<'_> {
         Some(PaginationPlan {
             class: format!("{prefix}{}Paginator", pascal(method)),
             manager_class: manager.class.clone(),
-            paginate: format!("{method}Paginate"),
-            method: method.to_string(),
+            // Option A: the public `<method>` *is* the paginator entry point; the
+            // single-page fetch it drives is the package-private `<method>Page`.
+            paginate: method.to_string(),
+            method: format!("{method}Page"),
             options_ty: format!("{}.{}Options", manager.class, pascal(method)),
             envelope: self.java_type(unwrap_optionality(response_ty)),
             element: self.java_type(&paged.element),
@@ -762,9 +796,10 @@ impl ManagerPrinter<'_> {
         })
     }
 
-    /// The `<method>Paginate` constructor on the manager: same required args as
-    /// the plain method (path params, then the body), then the options, handing
-    /// them to the paginator over the shared session.
+    /// The public `<method>` on the manager (Option A): same required args as
+    /// the single-page fetch (path params, then the body), then the options,
+    /// returning the paginator over the shared session — the paged operation's
+    /// sole public entry point.
     fn paginate_method(&self, op: &ir::Operation, method: &str, plan: &PaginationPlan) -> String {
         let mut sig: Vec<String> = op
             .params
@@ -814,8 +849,8 @@ impl ManagerPrinter<'_> {
     }
 
     /// The top-level paginator class: a re-iterable `Iterable` whose iterator
-    /// drains a page buffer, then fetches the next page through the plain method
-    /// and advances the cursor. Each `iterator()` is an independent pass over a
+    /// drains a page buffer, then fetches the next page through the package-
+    /// private single-page method and advances the cursor. Each `iterator()` is an independent pass over a
     /// private copy of the request options, so the caller's options object is
     /// never mutated — the idiomatic Java analogue of Rust's `Paginator::next`
     /// (which owns a cloned options) and TS's `async *` generator (a spread copy).
@@ -857,7 +892,7 @@ impl ManagerPrinter<'_> {
         }
         let _ = writeln!(out, "    private final {options_ty} options;\n");
 
-        // Constructor (package-private — callers use `<method>Paginate`).
+        // Constructor (package-private — callers use the public `<method>`).
         let mut params = vec![format!("{SESSION} session")];
         params.extend(stored.iter().map(|(ident, ty)| format!("{ty} {ident}")));
         params.push(format!("{options_ty} options"));
@@ -1670,7 +1705,7 @@ mod tests {
     }
 
     #[test]
-    fn paged_operation_gets_an_iterable_paginator_and_a_paginate_constructor() {
+    fn paged_operation_exposes_the_paginator_as_the_public_method() {
         let files = generated(&paged_program(
             Entries::Plain,
             Type::Optional(Box::new(Type::String)),
@@ -1711,23 +1746,38 @@ mod tests {
             pag.contains("if (_next != null && !_next.isEmpty()) {"),
             "{pag}"
         );
-        // It drives the plain method (URL/param/body logic is never duplicated).
+        // It drives the package-private single-page method (URL/param/body logic
+        // is never duplicated); the fetch it calls is `<method>Page`.
         assert!(
-            pag.contains("dev.unofficialbox.model.schemas.Items _page = _manager.getItems(_opts);"),
+            pag.contains(
+                "dev.unofficialbox.model.schemas.Items _page = _manager.getItemsPage(_opts);"
+            ),
             "{pag}"
         );
-        // The manager exposes a `<method>Paginate` constructor returning it.
+        // Option A: the public `getItems` *is* the paginator entry point — no
+        // `Paginate` suffix — and the single-page fetch it drives ships as the
+        // package-private `getItemsPage` (no `public` modifier).
         let mgr = file_ending(&files, "managers/ItemsManager.java");
         assert!(
-            mgr.contains(
-                "public ItemsGetItemsPaginator getItemsPaginate(GetItemsOptions options) {"
-            ),
+            mgr.contains("public ItemsGetItemsPaginator getItems(GetItemsOptions options) {"),
             "{mgr}"
         );
         assert!(
             mgr.contains("return new ItemsGetItemsPaginator(session, options);"),
             "{mgr}"
         );
+        assert!(
+            mgr.contains(
+                "    dev.unofficialbox.model.schemas.Items getItemsPage(GetItemsOptions options) {"
+            ),
+            "{mgr}"
+        );
+        // The single-page fetch is not public, and the `Paginate` suffix is gone.
+        assert!(
+            !mgr.contains("public dev.unofficialbox.model.schemas.Items getItems("),
+            "{mgr}"
+        );
+        assert!(!mgr.contains("getItemsPaginate"), "{mgr}");
     }
 
     #[test]

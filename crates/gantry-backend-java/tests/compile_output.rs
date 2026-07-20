@@ -266,9 +266,10 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
 
     // A smoke driver: build the real `Client` from a real auth factory, so the
     // manager surface type-checks against the runtime (the Rust/TS swap pattern).
-    // It also drives a paginator through the public `for (var … : …Paginate(…))`
-    // idiom (FR-7.3), so the whole paged path — Client field → paginate method →
-    // `Iterable<Element>` → element type — type-checks against the real runtime.
+    // It also drives a paginator through the public `for (var … : list…(…))`
+    // idiom (FR-7.3, Option A), so the whole paged path — Client field → the
+    // auto-paging list method → `Iterable<Element>` → element type — type-checks
+    // against the real runtime.
     let smoke = dir.join("Smoke.java");
     std::fs::write(
         &smoke,
@@ -278,8 +279,8 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
          \x20   }\n\
          \x20   public static int countAgents() {\n\
          \x20       int _n = 0;\n\
-         \x20       for (var agent : build().aiStudio.getAiAgentsPaginate(\n\
-         \x20               new dev.unofficialbox.managers.AiStudioManager.GetAiAgentsOptions())) {\n\
+         \x20       for (var agent : build().aiStudio.listAiAgents(\n\
+         \x20               new dev.unofficialbox.managers.AiStudioManager.ListAiAgentsOptions())) {\n\
          \x20           if (agent != null) {\n\
          \x20               _n++;\n\
          \x20           }\n\
@@ -406,11 +407,11 @@ fn reference_docs_describe_the_java_surface() {
         files_page.contains("Runtime.BoxApiException"),
         "{files_page}"
     );
-    // Some manager page points a paged operation at its `…Paginate` variant.
+    // A manager page documents a paged operation as an auto-paging Iterable.
     assert!(
         files.iter().any(|f| f.path.starts_with("docs/managers/")
-            && f.content.contains("Paginate(...)`, returning an")),
-        "expected a paged operation to link its paginator in the docs"
+            && f.content.contains("returns an auto-paging `Iterable`")),
+        "expected a paged operation to document its paginator in the docs"
     );
 
     // The guides are Java-flavored with real call sites.
@@ -422,7 +423,7 @@ fn reference_docs_describe_the_java_surface() {
     assert!(auth.contains("Runtime.JwtConfig.fromBoxConfig("), "{auth}");
     let pagination = doc("docs/pagination.md");
     assert!(
-        pagination.contains("for (var item : client.files.getFolderItemsPaginate(folderId, null))"),
+        pagination.contains("for (var item : client.folders.listItems(folderId, null))"),
         "{pagination}"
     );
     let errors = doc("docs/errors.md");

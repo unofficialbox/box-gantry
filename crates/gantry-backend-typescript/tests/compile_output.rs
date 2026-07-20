@@ -103,16 +103,26 @@ fn generation_is_deterministic() {
         managers.contains("await this.session.fetch(req)"),
         "managers must fetch through the runtime session"
     );
-    // Paginated operations also emit an async-generator paginator
-    // (`async *<method>Paginate(): AsyncIterableIterator<T>`), driven with
-    // `for await ... of` (FR-7.3). The real spec has paginated list endpoints.
+    // Option A (FR-7.3): a paged operation's public method *is* the async-
+    // generator paginator (`async *<method>(): AsyncIterableIterator<T>`, driven
+    // with `for await ... of`); the single-page fetch it drives ships as the
+    // `private async <method>Page(...)` helper. No `Paginate` suffix. The real
+    // spec has paginated list endpoints.
     assert!(
         managers.contains("async *"),
         "no async-generator paginators emitted"
     );
     assert!(
-        managers.contains("Paginate(") && managers.contains("): AsyncIterableIterator<"),
+        managers.contains("): AsyncIterableIterator<"),
         "paginators must be async iterables"
+    );
+    assert!(
+        managers.contains("private async ") && managers.contains("Page("),
+        "the single-page fetch must be a private <method>Page helper"
+    );
+    assert!(
+        !managers.contains("Paginate("),
+        "Option A drops the Paginate suffix"
     );
     assert!(
         managers.contains("for (const item of items) {"),

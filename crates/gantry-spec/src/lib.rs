@@ -17,6 +17,7 @@
 mod error;
 mod ingest;
 mod lower;
+mod merge;
 mod raw;
 
 pub use error::IngestError;

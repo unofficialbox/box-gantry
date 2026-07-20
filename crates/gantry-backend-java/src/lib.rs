@@ -166,29 +166,25 @@ fn emits_chunked_upload(analysis: &gantry_sema::Analysis<'_>) -> bool {
         "schemas.UploadPart",
         "schemas.UploadedPart",
         "schemas.Files",
-        "schemas.PostFilesUploadSessionsBody",
-        "schemas.PostFilesIdUploadSessionsBody",
-        "schemas.PostFilesUploadSessionsIdCommitBody",
+        "schemas.FileUploadSessionsCreateRequest",
+        "schemas.FileIdUploadSessionsCreateRequest",
+        "schemas.FileUploadSessionCommitRequest",
     ];
     if !REQUIRED_TYPES.iter().all(|r| fqns.contains(*r)) {
         return false;
     }
     // The four `ChunkedUploadsManager` methods the orchestrator calls, named the
     // way the manager printer names them (`managers::method_name`).
-    let base_version = program
-        .operations
-        .first()
-        .and_then(|op| op.api_version.as_ref());
     let methods: std::collections::HashSet<String> = program
         .operations
         .iter()
-        .map(|op| managers::method_name(op, base_version))
+        .map(managers::method_name)
         .collect();
     const REQUIRED_METHODS: [&str; 4] = [
-        "createFilesUploadSessions",
-        "createFilesByIdUploadSessions",
-        "updateFilesUploadSessionsById",
-        "commitFilesUploadSessionsById",
+        "createFileUploadSessions",
+        "createFileByIdUploadSessions",
+        "updateFileUploadSession",
+        "commitFileUploadSession",
     ];
     REQUIRED_METHODS.iter().all(|m| methods.contains(*m))
 }
@@ -745,9 +741,9 @@ package dev.unofficialbox;
 
 import module java.base;
 import dev.unofficialbox.model.schemas.Files;
-import dev.unofficialbox.model.schemas.PostFilesIdUploadSessionsBody;
-import dev.unofficialbox.model.schemas.PostFilesUploadSessionsBody;
-import dev.unofficialbox.model.schemas.PostFilesUploadSessionsIdCommitBody;
+import dev.unofficialbox.model.schemas.FileIdUploadSessionsCreateRequest;
+import dev.unofficialbox.model.schemas.FileUploadSessionsCreateRequest;
+import dev.unofficialbox.model.schemas.FileUploadSessionCommitRequest;
 import dev.unofficialbox.model.schemas.UploadPart;
 import dev.unofficialbox.model.schemas.UploadSession;
 import dev.unofficialbox.model.schemas.UploadedPart;
@@ -776,15 +772,15 @@ public final class BoxChunkedUpload {
 
     /** Upload {@code content} as a new file named {@code fileName} into {@code folderId}. */
     public Files upload(byte[] content, String fileName, String folderId) {
-        UploadSession session = client.chunkedUploads.createFilesUploadSessions(
-                new PostFilesUploadSessionsBody(folderId, (long) content.length, fileName));
+        UploadSession session = client.chunkedUploads.createFileUploadSessions(
+                new FileUploadSessionsCreateRequest(folderId, (long) content.length, fileName));
         return finish(session, content);
     }
 
     /** Upload {@code content} as a new version of {@code fileId}. */
     public Files uploadVersion(byte[] content, String fileName, String fileId) {
-        UploadSession session = client.chunkedUploads.createFilesByIdUploadSessions(
-                fileId, new PostFilesIdUploadSessionsBody((long) content.length, Optional.of(fileName)));
+        UploadSession session = client.chunkedUploads.createFileByIdUploadSessions(
+                fileId, new FileIdUploadSessionsCreateRequest((long) content.length, Optional.of(fileName)));
         return finish(session, content);
     }
 
@@ -828,15 +824,15 @@ public final class BoxChunkedUpload {
             throw new dev.unofficialbox.runtime.Runtime.BoxApiException("chunked upload interrupted: " + e);
         }
         String digest = "sha=" + sha1(content, 0, content.length);
-        return client.chunkedUploads.commitFilesUploadSessionsById(
-                id, digest, new PostFilesUploadSessionsIdCommitBody(parts), null);
+        return client.chunkedUploads.commitFileUploadSession(
+                id, digest, new FileUploadSessionCommitRequest(parts), null);
     }
 
     private UploadPart uploadPart(String id, byte[] content, int start, int len) {
         byte[] part = Arrays.copyOfRange(content, start, start + len);
         String digest = "sha=" + sha1(part, 0, part.length);
         String range = "bytes " + start + "-" + (start + len - 1) + "/" + content.length;
-        UploadedPart uploaded = client.chunkedUploads.updateFilesUploadSessionsById(id, digest, range, part);
+        UploadedPart uploaded = client.chunkedUploads.updateFileUploadSession(id, digest, range, part);
         return uploaded.part().orElseThrow(() -> fail("part upload returned no part"));
     }
 

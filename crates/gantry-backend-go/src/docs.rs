@@ -19,23 +19,13 @@ use crate::models::GeneratedFile;
 /// Generate `docs/` — an index, one page per manager, and the guides.
 pub fn generate_docs(analysis: &Analysis<'_>, paged: &[PagedOperation]) -> Vec<GeneratedFile> {
     let program = analysis.program;
-    let base_version = program
-        .operations
-        .first()
-        .and_then(|op| op.api_version.clone());
     let paged_by_op: HashMap<usize, &PagedOperation> =
         paged.iter().map(|p| (p.operation, p)).collect();
 
     let mut files = Vec::new();
     files.push(index_page(analysis));
     for (manager, op_indices) in &analysis.managers {
-        files.push(manager_page(
-            program,
-            base_version.as_ref(),
-            &paged_by_op,
-            manager,
-            op_indices,
-        ));
+        files.push(manager_page(program, &paged_by_op, manager, op_indices));
     }
     files.push(guide("auth", AUTH_GUIDE));
     files.push(guide("pagination", PAGINATION_GUIDE));
@@ -67,7 +57,6 @@ fn index_page(analysis: &Analysis<'_>) -> GeneratedFile {
 
 fn manager_page(
     program: &ir::Program,
-    base_version: Option<&ir::ApiVersion>,
     paged: &HashMap<usize, &PagedOperation>,
     manager: &str,
     op_indices: &[usize],
@@ -80,7 +69,7 @@ fn manager_page(
     );
     for &index in op_indices {
         let op = &program.operations[index];
-        let method = method_name(op, base_version);
+        let method = method_name(op);
         let _ = writeln!(body, "## {method}\n");
         if op.deprecated {
             body.push_str("> **Deprecated.**\n\n");
@@ -124,8 +113,8 @@ fn manager_page(
         if paged.contains_key(&index) {
             let _ = writeln!(
                 body,
-                "Paginated — also available as `{method}Paginate(...)` returning \
-                 `iter.Seq2[*T, error]`. See the [pagination guide](../pagination.md).\n"
+                "Paginated — `{method}(...)` returns `iter.Seq2[*T, error]`, \
+                 threading the cursor for you. See the [pagination guide](../pagination.md).\n"
             );
         }
     }
@@ -285,11 +274,11 @@ c := client.NewClient(src)\n\
 ```\n";
 
 const PAGINATION_GUIDE: &str = "# Pagination\n\n\
-Marker- and offset-paginated list operations expose an extra\n\
-`iter.Seq2[*T, error]` method suffixed `Paginate`, alongside the plain\n\
-single-page method. Range over it to walk every page transparently:\n\n\
+Marker- and offset-paginated list operations return an\n\
+`iter.Seq2[*T, error]` — the list method *is* the paginator. Range over it\n\
+to walk every page transparently:\n\n\
 ```go\n\
-for item, err := range client.Files.GetFolderItemsPaginate(ctx, folderID, nil) {\n\
+for item, err := range client.Folders.ListItems(ctx, folderID, nil) {\n\
 \tif err != nil {\n\t\treturn err\n\t}\n\t// use item\n}\n\
 ```\n\n\
 The iterator threads the cursor for you and stops when the last page is\n\

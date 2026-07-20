@@ -3824,3 +3824,122 @@ the new package path), the behavioral `HttpServer` run, the chunked-upload
 **Result.** The Java SDK is fully namespaced under `dev.unofficialbox` — code,
 groupId, and domain all aligned — and co-installable with Box's official
 `com.box.sdk`.
+
+## D-189 — Method + pagination surface naming (the cascade, and pagination Option A)
+
+**Context.** The generated method surface carried spec-shaped noise: redundant
+`ById` on every id-taking operation, plural path resources in singular
+operations (`createFoldersMetadataById`), `get`-prefixed collection reads, opaque
+`PostBody`/`Request2` body-type names, and — for paged operations — *two* public
+methods (`listItems` **and** `listItemsPaginate`), forcing the caller to know
+which to call. All of it derivable structure, not human choices.
+
+**The decision.** Drive the whole surface from the typed operation, not the
+string name. Keep the `Manager` suffix; drop `ById` unless it disambiguates
+(`method_name`'s terse→pretty→full dedup, `lower.rs`); singularize path resources
+except trailing action verbs (`short_op_tokens`); use each language's collection
+idiom via a `list` verb when the 2xx response is a collection
+(`returns_collection`); name request bodies after the operation
+(`<Resource><Verb>Request`, `body_seed_for`), killing `PostBody`/`Request2`;
+reduce legacy metadata endpoints to their action verb (`fileClassifications.get`).
+
+**Pagination — Option A.** A paged operation exposes exactly **one** public
+method, and it *is* the auto-paging iterator (FR-7.3). There is no `Paginate`
+twin and no separate public single-page method; the single-page fetch it drives
+ships non-public in each language's idiom: Rust `list_items()` → paginator +
+private `list_items_page()`; TypeScript `async *listItems()` + `private
+listItemsPage()`; Go `ListItems() iter.Seq2` + unexported `listItemsPage()`; Java
+`listItems()` returns the `Iterable` + package-private `listItemsPage()`. Apex is
+unchanged — it documents a manual cursor loop and never had a twin. VR-6 holds: a
+cursor shape we don't synthesize still ships the public single-page method.
+
+**Verification.** Every backend's compile gate (rustc/tsc/`go build`/`javac
+-Werror`) and behavioral suite pass on the renamed surface; the R§1 conformance
+recognizers in `gantry-verify` were re-keyed off the new markers (Go
+`) iter.Seq2[*`, Rust `pub async fn next(`, TS `private async` + `async *`).
+
+**Result.** A method surface that reads like hand-written code: one obvious
+method per operation, collection reads that page themselves, and body types named
+for what they do.
+
+## D-190 — Merge versioned schema namespaces into one `schemas`
+
+**Context.** Multi-version ingestion (D-147) gave each versioned document its own
+schema module (`schemas::v2025_0`) so nothing collided with the base spec. Loud
+and correct — but it leaked into the public surface as two namespaces for what is
+almost always one type: `models.schemas_v2025_0.UserMini` beside
+`models.schemas.UserMini`. Developers would have to know which version a type
+lives in to name it. Bad DevX for a cosmetic split — on the real spec, of 15
+base↔2025 name collisions, 6 are byte-identical, 7 differ only in a
+discriminator enum's *name* (`GroupType` vs `GroupBaseType`, same `"group"`
+value), 1 differs only in enum ordering, and just **one** (`SharedLinkPermissions`)
+is a genuine shape difference.
+
+**The decision.** Collapse every schema declaration into a single `schemas`
+namespace. When a name appears in more than one version, emit **one merged
+superset type** (a new post-lowering pass, `merge.rs`): the union of all fields,
+where a field is required only if present-and-required in *every* version and
+optional otherwise — so a version that omits it round-trips it as absent. Enums
+union their values; unions their variants. Field types are reconciled by
+**structural (bisimulation) equivalence ignoring declaration names**, so the
+naming-artifact enums (`GroupType` ≡ `GroupBaseType`) count as agreement and the
+merged struct keeps the base's reference. A genuine conflict — the same wire field
+with non-equivalent types, or a name bound to different declaration kinds — is a
+loud `SchemaVersionConflict` (NF-1), never a silent pick. Alternatives rejected:
+version-suffixing (reintroduces the noise the naming cascade removed), a thin
+per-conflict sub-namespace, and method overloading (a method-level feature that
+can't name a *type* collision, and absent in Go/Rust/structural-TS anyway — it
+would break the manifest-driven five-backend contract). The single genuine
+conflict takes the looser union with all-optional fields, per the user's call.
+
+**The change.** `merge_versioned_schemas` groups decls by name in
+first-occurrence order (base first), merges each group, rewrites every positional
+`DeclId` reference (in decls *and* operations) through one old→new map, and
+retargets every module to `[schemas]`. On the real spec it collapses 21
+same-named decls (16 structs + 5 enums) into one superset each: 900 → 879 decls.
+
+**Verification.** All five backends' compile/behavioral gates pass on the merged
+IR; the pinned decl/class/file counts moved by exactly the 21 collapsed decls
+(gantry-spec, Apex). New lowering tests cover the superset merge (a field only
+some versions declare becomes optional) and the loud-conflict path.
+
+**Result.** One `schemas` namespace. `models.schemas.UserMini` is the only
+`UserMini`, and a type shared across API versions is a single superset that
+accepts every version's payload.
+
+## D-191 — `box-version` as an auto-set header (drop the version method suffix + the header parameter)
+
+**Context.** Box's versioned endpoints require a `box-version` header — a
+required parameter whose schema is a single-value enum equal to the operation's
+API version (`["2025.0"]`). The engine surfaced it two ways, both noise: a
+`_v2025_0` / `V20250` suffix on every versioned method name (`createV20250`), and
+a `boxVersion` parameter the caller had to pass on every call — a parameter that
+can only ever hold one value. The operation already carries its `api_version`, so
+both are redundant plumbing.
+
+**The decision.** The version is set automatically per endpoint, never surfaced.
+Lowering strips the `box-version` header parameter (and never synthesizes its
+inline version enum); each backend emits the header as a constant for a non-base
+operation (`req = withHeader(req, "box-version", "2025.0")`), and `method_name`
+drops the version suffix. So `client.archives.create(body)` — no version in the
+name, no version argument — and the SDK sends `box-version: 2025.0` for you.
+Safe because versioned operations live in their own managers (archives, docgen,
+hubs, notes…), so dropping the disambiguating suffix collides with nothing; a
+hypothetical future same-manager collision falls back to the numeric-suffix
+dedup every backend already has.
+
+**The fix that fell out.** The version marker also leaked into request-body type
+names (`V20250CreateRequest`) because two token sites — the id-less body-seed
+pre-pass and `lower_request_body` — read the raw operationId while only the
+method-name path stripped the `_v<version>` suffix. Factoring the strip into a
+shared `base_operation_id` and applying it at all three sites makes the bodies
+`ArchiveCreateRequest` as intended.
+
+**Verification.** Every backend generates exactly 12 `box-version` headers and no
+`V2025`/`V2026`/`_v2025` marker anywhere in its surface; all five compile and
+behavioral gates pass. Rust needed the request binding promoted to `let mut req`
+for a header-only operation. The pinned decl/class counts dropped by the 2
+stripped version enums.
+
+**Result.** The API version is invisible in the surface and automatic on the
+wire — the last piece of the naming overhaul before the first release.

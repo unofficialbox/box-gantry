@@ -49,16 +49,19 @@ fn the_full_real_spec_set_ingests() {
     // pinned so growth and free-form holes only change deliberately (NF-1,
     // VR-6 lineage).
     let lowering = gantry_spec::lower(&set).expect("the vendored Box specs must lower");
-    // After structural dedupe (D-127) identical inline shapes collapse:
-    // 1332 → 900 decls (492 synthesized, down from 924).
-    assert_eq!(lowering.program.decls.len(), 900);
+    // After structural dedupe (D-127) identical inline shapes collapse, the
+    // version merge (D-190) collapses 21 same-named cross-version schemas (16
+    // structs + 5 enums) into one superset each, and stripping the auto-set
+    // `box-version` header (D-191) drops its 2 inline version enums:
+    // 900 → 879 → 877 decls (490 synthesized).
+    assert_eq!(lowering.program.decls.len(), 877);
     let stats = &lowering.stats;
     assert_eq!(
         (stats.structs, stats.unions, stats.discriminated_unions),
-        (608, 42, 23)
+        (592, 42, 23)
     );
-    assert_eq!((stats.enums, stats.aliases), (248, 2));
-    assert_eq!(stats.synthesized, 492);
+    assert_eq!((stats.enums, stats.aliases), (241, 2));
+    assert_eq!(stats.synthesized, 490);
     assert_eq!(stats.json_value_sites, 26);
 
     // Operations: every one lowered, with classified success shapes.

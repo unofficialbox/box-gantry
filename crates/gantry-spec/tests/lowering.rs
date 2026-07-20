@@ -344,7 +344,11 @@ fn nested_inline_names_use_immediate_context_not_the_full_ancestry() {
 }
 
 #[test]
-fn versioned_documents_get_their_own_module() {
+fn versioned_schemas_merge_into_one_namespace() {
+    // D-190: a schema name shared across versions collapses into a single
+    // `schemas` namespace as one superset type — there is no `schemas::v2025_0`
+    // module, and a field only some versions declare becomes optional so both
+    // versions' payloads round-trip.
     let dir = std::env::temp_dir().join(format!(
         "gantry-lowering-versioned-{}-{:?}",
         std::process::id(),
@@ -352,13 +356,26 @@ fn versioned_documents_get_their_own_module() {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let mut files: Vec<PathBuf> = Vec::new();
-    for version in ["2024.0", "2025.0"] {
+    // Base (2024.0) requires just `id`; 2025.0 also requires `name`.
+    let widgets = [
+        (
+            "2024.0",
+            serde_json::json!({ "id": { "type": "string" } }),
+            vec!["id"],
+        ),
+        (
+            "2025.0",
+            serde_json::json!({ "id": { "type": "string" }, "name": { "type": "string" } }),
+            vec!["id", "name"],
+        ),
+    ];
+    for (version, properties, required) in widgets {
         let spec = serde_json::json!({
             "openapi": "3.0.2",
             "info": { "title": "Box Platform API", "version": version },
             "paths": {},
             "components": { "schemas": {
-                "Widget": { "type": "object", "properties": { "id": { "type": "string" } } }
+                "Widget": { "type": "object", "properties": properties, "required": required }
             } }
         });
         let file = dir.join(format!("{version}.json"));
@@ -366,20 +383,81 @@ fn versioned_documents_get_their_own_module() {
         files.push(file);
     }
     let lowering = gantry_spec::lower(&SpecSet::load(&files).unwrap()).unwrap();
-    let modules: Vec<String> = lowering
+
+    // Exactly one `Widget`, in the single `schemas` module — no version segment.
+    let widgets: Vec<&ir::Decl> = lowering
         .program
         .decls
         .iter()
-        .map(|d| {
-            d.module
-                .0
-                .iter()
-                .map(ir::Identifier::as_str)
-                .collect::<Vec<_>>()
-                .join("::")
-        })
+        .filter(|d| d.name.as_str() == "Widget")
         .collect();
-    assert_eq!(modules, ["schemas", "schemas::v2025_0"]);
+    assert_eq!(widgets.len(), 1, "the two Widgets merge into one");
+    assert_eq!(widgets[0].module.0.len(), 1, "no version module segment");
+    assert_eq!(widgets[0].module.0[0].as_str(), "schemas");
+    assert!(
+        lowering
+            .program
+            .decls
+            .iter()
+            .all(|d| d.module.0.len() == 1 && d.module.0[0].as_str() == "schemas"),
+        "every schema lands in the single `schemas` namespace"
+    );
+
+    // `id` (required in both) stays required; `name` (only 2025.0) is optional.
+    let ir::DeclKind::Struct(widget) = &widgets[0].kind else {
+        panic!("Widget is a struct")
+    };
+    let field = |wire: &str| widget.fields.iter().find(|f| f.wire_name == wire).unwrap();
+    assert!(
+        !matches!(field("id").ty, ir::Type::Optional(_)),
+        "id is required in every version"
+    );
+    assert!(
+        matches!(field("name").ty, ir::Type::Optional(_)),
+        "name, only in 2025.0, becomes optional in the superset"
+    );
+}
+
+#[test]
+fn incompatible_versioned_schemas_are_a_loud_error() {
+    // D-190 / NF-1: when a shared field carries genuinely different types across
+    // versions the superset cannot be formed, so the merge fails loudly rather
+    // than silently picking one version's shape.
+    let dir = std::env::temp_dir().join(format!(
+        "gantry-lowering-conflict-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut files: Vec<PathBuf> = Vec::new();
+    let widgets = [
+        (
+            "2024.0",
+            serde_json::json!({ "count": { "type": "string" } }),
+        ),
+        (
+            "2025.0",
+            serde_json::json!({ "count": { "type": "integer", "format": "int64" } }),
+        ),
+    ];
+    for (version, properties) in widgets {
+        let spec = serde_json::json!({
+            "openapi": "3.0.2",
+            "info": { "title": "Box Platform API", "version": version },
+            "paths": {},
+            "components": { "schemas": {
+                "Widget": { "type": "object", "properties": properties }
+            } }
+        });
+        let file = dir.join(format!("{version}.json"));
+        std::fs::write(&file, serde_json::to_string(&spec).unwrap()).unwrap();
+        files.push(file);
+    }
+    let err = gantry_spec::lower(&SpecSet::load(&files).unwrap()).unwrap_err();
+    assert!(
+        matches!(err, IngestError::SchemaVersionConflict { .. }),
+        "expected a loud version-merge conflict, got {err:?}"
+    );
 }
 
 /// Wrap `paths` (and optional shared parameters) in a minimal document.
@@ -451,30 +529,25 @@ fn method_names_are_shortened_and_collisions_fall_back() {
             .map(|o| o.name.as_str().to_string())
             .collect()
     };
-    // files: GET by id → `get_by_id`; POST .../copy → `copy_by_id` (the
-    // curated action verb `copy` leads, the HTTP verb drops, D-126).
+    // files: GET by id → `get` (the redundant trailing `ById` drops when it
+    // isn't needed to disambiguate, D-189); POST .../copy → `copy` (the curated
+    // action verb `copy` leads, the HTTP verb drops, D-126).
     let files_ops = names_for("files");
-    assert!(
-        files_ops.contains(&"get_by_id".to_string()),
-        "{files_ops:?}"
-    );
-    assert!(
-        files_ops.contains(&"copy_by_id".to_string()),
-        "{files_ops:?}"
-    );
-    // metadata_taxonomies: the one-id and two-id GETs both want `get_by_id`;
-    // the collision keeps them distinct (which one keeps the short name
-    // depends on spec order, so assert distinctness, not a specific pair).
+    assert!(files_ops.contains(&"get".to_string()), "{files_ops:?}");
+    assert!(files_ops.contains(&"copy".to_string()), "{files_ops:?}");
+    // metadata_taxonomies: the one-id and two-id GETs both want the terse `get`;
+    // the collision keeps them distinct — one stays `get`, the other falls back
+    // to the `…ById` form (which one depends on spec order).
     let tax = names_for("metadata_taxonomies");
     assert_eq!(tax.len(), 2, "{tax:?}");
-    assert!(tax.contains(&"get_by_id".to_string()), "{tax:?}");
+    assert!(tax.contains(&"get".to_string()), "{tax:?}");
     assert!(
         tax[0] != tax[1],
         "the collision must stay distinct: {tax:?}"
     );
     assert!(
-        tax.iter().all(|n| n.starts_with("get_by_id")),
-        "both target-by-id names share the prefix: {tax:?}"
+        tax.iter().all(|n| n.starts_with("get")),
+        "both target-by-id names share the `get` prefix: {tax:?}"
     );
 }
 

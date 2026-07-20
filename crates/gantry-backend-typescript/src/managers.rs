@@ -60,20 +60,11 @@ pub(crate) fn plan_managers<'a>(
 /// The deduped snake_case method bases for a manager's operations, in order —
 /// the single source of truth shared by the manager printer (which camelCases
 /// them at emission and derives the options-interface names) and the docs.
-pub(crate) fn method_bases(
-    program: &ir::Program,
-    base_version: Option<&ir::ApiVersion>,
-    op_indices: &[usize],
-) -> Vec<String> {
+pub(crate) fn method_bases(program: &ir::Program, op_indices: &[usize]) -> Vec<String> {
     let mut used = Vec::new();
     op_indices
         .iter()
-        .map(|&i| {
-            dedupe(
-                &mut used,
-                operation_base(&program.operations[i], base_version),
-            )
-        })
+        .map(|&i| dedupe(&mut used, operation_base(&program.operations[i])))
         .collect()
 }
 
@@ -233,7 +224,7 @@ impl Printer<'_> {
         // One deduped method base per operation (distinct source ops can
         // normalize to the same name), reused for the method and its options
         // interface so the surface can't collide. Shared with the docs.
-        let bases = method_bases(self.program, self.base_version.as_ref(), indices);
+        let bases = method_bases(self.program, indices);
 
         // Options interfaces are module-level (TypeScript forbids nesting an
         // interface in a class), emitted before the class so methods name them.
@@ -251,12 +242,21 @@ impl Printer<'_> {
         );
         for (pos, &index) in indices.iter().enumerate() {
             let op = self.program.operations[index].clone();
-            self.operation(&op, name, &bases[pos]);
-            // A paged operation also gets an async-generator paginator (the
-            // plain method still ships too). Some cursor shapes aren't
-            // synthesized — those keep only the plain method (VR-6 fallback).
-            if let Some(paged) = self.paged.get(&index).cloned() {
-                self.paginator(&op, name, &bases[pos], &paged);
+            let base = &bases[pos];
+            let method = camel(base);
+            // Option A (FR-7.3): emit the async-generator paginator as the public
+            // `<method>`; it returns whether the cursor shape was synthesizable.
+            let paginated = self
+                .paged
+                .get(&index)
+                .cloned()
+                .is_some_and(|paged| self.paginator(&op, name, base, &paged));
+            // The single-page fetch: the private `<method>Page` a paginator
+            // drives, else the public `<method>` (VR-6 fallback).
+            if paginated {
+                self.operation(&op, name, base, &format!("{method}Page"), false);
+            } else {
+                self.operation(&op, name, base, &method, true);
             }
         }
         self.body.push_str("}\n");
@@ -293,7 +293,20 @@ impl Printer<'_> {
         self.body.push_str("}\n\n");
     }
 
-    fn operation(&mut self, op: &ir::Operation, name: &ManagerName, base: &str) {
+    /// One operation → a single-page async method. `method` is the emitted name;
+    /// `base` still keys the shared `Options` interface (they differ only for a
+    /// paged op, whose single-page fetch is renamed `<method>Page` yet shares the
+    /// public method's options). When `public_method` is false the method is
+    /// `private` — the Option-A paged shape, where the public `<method>` is the
+    /// async-generator paginator and this fetch is only driven by it.
+    fn operation(
+        &mut self,
+        op: &ir::Operation,
+        name: &ManagerName,
+        base: &str,
+        method: &str,
+        public_method: bool,
+    ) {
         let mut required: Vec<&ir::Param> = Vec::new();
         let mut optional: Vec<&ir::Param> = Vec::new();
         for param in &op.params {
@@ -326,8 +339,8 @@ impl Printer<'_> {
         self.body.push('\n');
         let _ = writeln!(
             self.body,
-            "  async {method}({params}): {ret} {{",
-            method = camel(base),
+            "  {vis}async {method}({params}): {ret} {{",
+            vis = if public_method { "" } else { "private " },
             params = params.join(", "),
             ret = self.return_type(op),
         );
@@ -343,41 +356,58 @@ impl Printer<'_> {
             self.body.push_str("    const options = opts ?? {};\n");
             self.apply_params(&optional, Some("options"));
         }
+        self.version_header(op);
         self.request_body(op);
         self.fetch_and_decode(op);
         self.body.push_str("  }\n");
     }
 
-    /// Emit an async-generator paginator for a paged operation, right after its
-    /// plain method: `for await (const item of mgr.methodPaginate(...))`. It
-    /// calls the plain method, yields each entry, and threads the cursor into a
-    /// private copy of the options (the caller's `opts` is never mutated). Some
-    /// cursor shapes aren't synthesized (the request marker must be a string,
-    /// the request offset an int); those keep only the plain method — a
-    /// documented fallback (VR-6), never wrong code.
+    /// Set the `box-version` header for a non-base operation (D-191). The header
+    /// is a required constant equal to the operation's API version, so the engine
+    /// sends it automatically rather than exposing it as a parameter.
+    fn version_header(&mut self, op: &ir::Operation) {
+        if op.api_version.as_ref() != self.base_version.as_ref()
+            && let Some(version) = &op.api_version
+        {
+            let _ = writeln!(
+                self.body,
+                "    req = runtime.withHeader(req, \"box-version\", {:?});",
+                version.0
+            );
+        }
+    }
+
+    /// Emit an async-generator paginator for a paged operation as the public
+    /// `<method>` (Option A): `for await (const item of mgr.method(...))`. It
+    /// drives the private single-page `<method>Page`, yields each entry, and
+    /// threads the cursor into a private copy of the options (the caller's `opts`
+    /// is never mutated). Returns whether a paginator was emitted — some cursor
+    /// shapes aren't synthesized (the request marker must be a string, the
+    /// request offset an int); those keep only the public single-page method
+    /// instead (VR-6 fallback), never wrong code.
     fn paginator(
         &mut self,
         op: &ir::Operation,
         name: &ManagerName,
         base: &str,
         paged: &PagedOperation,
-    ) {
+    ) -> bool {
         // The response envelope (a struct) carries `entries` + the cursor field.
         let ir::ResponseShape::Json(response_ty) = &op.response else {
-            return;
+            return false;
         };
         let Some(decl_id) = decl_of(response_ty) else {
-            return;
+            return false;
         };
         let ir::DeclKind::Struct(envelope) = &self.program.decl(decl_id).kind else {
-            return;
+            return false;
         };
         let Some(cursor_field) = envelope
             .fields
             .iter()
             .find(|f| f.wire_name == paged.cursor_wire)
         else {
-            return;
+            return false;
         };
         // The cursor query parameter (detection guaranteed it is optional).
         let Some(cursor_param) = op
@@ -385,7 +415,7 @@ impl Printer<'_> {
             .iter()
             .find(|p| p.location == ir::ParamLocation::Query && p.wire_name == paged.param_wire)
         else {
-            return;
+            return false;
         };
 
         let option_param = member_access("options", &cursor_param.wire_name);
@@ -394,7 +424,7 @@ impl Printer<'_> {
         let advance = match paged.style {
             PageStyle::Marker => {
                 if !matches!(unwrap_optionality(&cursor_param.ty), ir::Type::String) {
-                    return;
+                    return false;
                 }
                 let cursor = member_access("page", &paged.cursor_wire);
                 match unwrap_optionality(&cursor_field.ty) {
@@ -424,12 +454,12 @@ impl Printer<'_> {
                     | ir::Type::Map(_)
                     | ir::Type::Decl(_)
                     | ir::Type::Optional(_)
-                    | ir::Type::Nullable(_) => return,
+                    | ir::Type::Nullable(_) => return false,
                 }
             }
             PageStyle::Offset => {
                 if !matches!(unwrap_optionality(&cursor_param.ty), ir::Type::Int64) {
-                    return;
+                    return false;
                 }
                 format!(
                     "      if (items.length === 0) {{\n\
@@ -474,10 +504,10 @@ impl Printer<'_> {
         let _ = write!(
             self.body,
             "\n  /** Iterate every `{element}` across pages, threading the {style} cursor. */\n\
-             \x20 async *{method}Paginate({params}): AsyncIterableIterator<{element}> {{\n\
+             \x20 async *{method}({params}): AsyncIterableIterator<{element}> {{\n\
              \x20   const options: {opt_ty} = {{ ...opts }};\n\
              \x20   for (;;) {{\n\
-             \x20     const page = await this.{method}({call_args});\n\
+             \x20     const page = await this.{method}Page({call_args});\n\
              \x20     const items = {entries} ?? [];\n\
              \x20     for (const item of items) {{\n\
              \x20       yield item;\n\
@@ -488,6 +518,7 @@ impl Printer<'_> {
             params = params.join(", "),
             call_args = call_args.join(", "),
         );
+        true
     }
 
     /// Build the URL from the D-106 base class + structured path segments.
@@ -823,18 +854,15 @@ impl Printer<'_> {
 /// The base method name for an operation (snake_case, camelCased at emission).
 /// Versioned/variation operations get suffixed so base and versioned surfaces
 /// never collide (FR-7.5).
-fn operation_base(op: &ir::Operation, base_version: Option<&ir::ApiVersion>) -> String {
+fn operation_base(op: &ir::Operation) -> String {
     let mut name = snake(op.name.as_str());
     if let Some(variation) = &op.variation {
         name.push('_');
         name.push_str(&snake(variation.as_str()));
     }
-    if op.api_version.as_ref() != base_version
-        && let Some(version) = &op.api_version
-    {
-        name.push_str("_v");
-        name.push_str(&version.0.replace(['.', '-'], "_"));
-    }
+    // The API version no longer suffixes the name (D-191): the `box-version`
+    // header is set automatically per endpoint, and versioned operations live
+    // in their own managers so nothing collides.
     name
 }
 

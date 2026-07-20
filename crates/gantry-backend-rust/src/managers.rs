@@ -187,12 +187,7 @@ impl Printer<'_> {
         let mut used = Vec::new();
         let methods: Vec<String> = indices
             .iter()
-            .map(|&i| {
-                dedupe(
-                    &mut used,
-                    method_name(&self.program.operations[i], self.base_version.as_ref()),
-                )
-            })
+            .map(|&i| dedupe(&mut used, method_name(&self.program.operations[i])))
             .collect();
 
         // A pagination plan per operation (None when not paged or the cursor
@@ -235,9 +230,17 @@ impl Printer<'_> {
         );
         for (pos, &index) in indices.iter().enumerate() {
             let op = self.program.operations[index].clone();
-            self.operation(&op, &methods[pos]);
-            if let Some(plan) = &plans[pos] {
-                self.paginate_method(&op, &methods[pos], plan);
+            match &plans[pos] {
+                // Option A (FR-7.3): the public `<method>` returns the
+                // auto-paging paginator; the single-page fetch it drives ships as
+                // the private `<method>_page` (same module, so reachable).
+                Some(plan) => {
+                    self.operation(&op, &plan.method, &methods[pos], false);
+                    self.paginate_method(&op, &methods[pos], plan);
+                }
+                // No paginator synthesized: the plain single-page `<method>`
+                // ships as the public entry point (VR-6).
+                None => self.operation(&op, &methods[pos], &methods[pos], true),
             }
         }
         self.body.push_str("}\n");
@@ -365,7 +368,10 @@ impl Printer<'_> {
             manager_ty: name.struct_name.clone(),
             element: self.rust_type(&paged.element),
             options_ty: options_type(op.manager.as_str(), method),
-            method: method.to_string(),
+            // Option A: the public `<method>` returns the paginator; the
+            // single-page fetch it drives is the private `<method>_page`.
+            paginate: method.to_string(),
+            method: format!("{method}_page"),
             stored,
             forward,
             advance,
@@ -379,6 +385,7 @@ impl Printer<'_> {
             manager_ty,
             element,
             options_ty,
+            paginate,
             method,
             stored,
             forward,
@@ -387,7 +394,7 @@ impl Printer<'_> {
         // Struct.
         let _ = writeln!(
             self.body,
-            "/// Async paginator over [`{manager_ty}::{method}`], yielding one \
+            "/// Async paginator over [`{manager_ty}::{paginate}`], yielding one \
              `{element}`\n/// per item across pages (FR-7.3).\n\
              pub struct {struct_name} {{\n\
              \x20   manager: {manager_ty},"
@@ -471,7 +478,8 @@ impl Printer<'_> {
         self.body.push_str("        }\n    }\n}\n\n");
     }
 
-    /// Emit the `<method>_paginate` constructor inside the manager `impl`.
+    /// Emit the public `<method>` (Option A) inside the manager `impl` — the
+    /// paged operation's sole public entry point, returning the paginator.
     fn paginate_method(&mut self, op: &ir::Operation, method: &str, plan: &PaginationPlan) {
         let mut params: Vec<String> = vec!["&self".to_string()];
         for param in op
@@ -501,14 +509,14 @@ impl Printer<'_> {
         );
         // Constructor signature — inline, or one param per line past 100 cols.
         let sig = format!(
-            "    pub fn {method}_paginate({}) -> {} {{",
+            "    pub fn {method}({}) -> {} {{",
             params.join(", "),
             plan.struct_name,
         );
         if sig.len() <= 100 {
             let _ = writeln!(self.body, "{sig}");
         } else {
-            let _ = writeln!(self.body, "    pub fn {method}_paginate(");
+            let _ = writeln!(self.body, "    pub fn {method}(");
             for param in &params {
                 let line = format!("        {param},");
                 if line.len() <= 100 {
@@ -573,7 +581,19 @@ impl Printer<'_> {
         self.body.push_str("}\n\n");
     }
 
-    fn operation(&mut self, op: &ir::Operation, method: &str) {
+    /// One operation → a single-page async method. `method` is the emitted name;
+    /// `options_name` is the base for its `Options` type (they differ only for a
+    /// paged op, whose single-page fetch is renamed `<method>_page` yet shares
+    /// the public method's options struct). When `public_method` is false the
+    /// method is module-private — the Option-A paged shape, where the public
+    /// `<method>` is the paginator and this fetch is only driven by it.
+    fn operation(
+        &mut self,
+        op: &ir::Operation,
+        method: &str,
+        options_name: &str,
+        public_method: bool,
+    ) {
         let mut required: Vec<&ir::Param> = Vec::new();
         let mut optional: Vec<&ir::Param> = Vec::new();
         for param in &op.params {
@@ -584,7 +604,7 @@ impl Printer<'_> {
             }
         }
 
-        let options_ty = options_type(op.manager.as_str(), method);
+        let options_ty = options_type(op.manager.as_str(), options_name);
         // Signature.
         let mut params: Vec<String> = vec!["&self".to_string()];
         for param in &required {
@@ -606,14 +626,15 @@ impl Printer<'_> {
         let ret = self.return_type(op);
 
         self.body.push('\n');
+        let vis = if public_method { "pub " } else { "" };
         let sig = format!(
-            "    pub async fn {method}({}) -> {ret} {{",
+            "    {vis}async fn {method}({}) -> {ret} {{",
             params.join(", ")
         );
         if sig.len() <= 100 {
             let _ = writeln!(self.body, "{sig}");
         } else {
-            let _ = writeln!(self.body, "    pub async fn {method}(");
+            let _ = writeln!(self.body, "    {vis}async fn {method}(");
             for param in &params {
                 let line = format!("        {param},");
                 if line.len() <= 100 {
@@ -636,7 +657,9 @@ impl Printer<'_> {
             .params
             .iter()
             .any(|p| p.location != ir::ParamLocation::Path)
-            || op.request.is_some();
+            || op.request.is_some()
+            // A versioned op reassigns `req` to set the `box-version` header.
+            || self.is_versioned(op);
         let req_binding = if modifies { "let mut req" } else { "let req" };
         let _ = writeln!(
             self.body,
@@ -649,6 +672,7 @@ impl Printer<'_> {
                 .push_str("        let opts = opts.unwrap_or_default();\n");
             self.apply_params(&optional, true);
         }
+        self.version_header(op);
         self.request_body(op);
         self.fetch_and_decode(op);
         self.body.push_str("    }\n");
@@ -741,6 +765,27 @@ impl Printer<'_> {
                 let value = self.string_value(&field_ident(param.name.as_str()), &param.ty);
                 self.emit_with_call("        ", call, &wire, &value);
             }
+        }
+    }
+
+    /// Whether the operation targets a non-base API version (so it carries the
+    /// `box-version` header).
+    fn is_versioned(&self, op: &ir::Operation) -> bool {
+        op.api_version.is_some() && op.api_version.as_ref() != self.base_version.as_ref()
+    }
+
+    /// Set the `box-version` header for a non-base operation (D-191). The header
+    /// is a required constant equal to the operation's API version, so the engine
+    /// sends it automatically rather than exposing it as a parameter.
+    fn version_header(&mut self, op: &ir::Operation) {
+        if self.is_versioned(op)
+            && let Some(version) = &op.api_version
+        {
+            let _ = writeln!(
+                self.body,
+                "        req = runtime::with_header(req, \"box-version\", {:?});",
+                version.0
+            );
         }
     }
 
@@ -1043,18 +1088,15 @@ impl Printer<'_> {
 /// The Rust method name for an operation (snake_case). Versioned/variation
 /// operations get suffixed so base and versioned surfaces never collide
 /// (FR-7.5).
-pub(crate) fn method_name(op: &ir::Operation, base_version: Option<&ir::ApiVersion>) -> String {
+pub(crate) fn method_name(op: &ir::Operation) -> String {
     let mut name = snake(op.name.as_str());
     if let Some(variation) = &op.variation {
         name.push('_');
         name.push_str(&snake(variation.as_str()));
     }
-    if op.api_version.as_ref() != base_version
-        && let Some(version) = &op.api_version
-    {
-        name.push_str("_v");
-        name.push_str(&version.0.replace(['.', '-'], "_"));
-    }
+    // The API version no longer suffixes the name (D-191): the `box-version`
+    // header is set automatically per endpoint, and versioned operations live
+    // in their own managers so nothing collides.
     // Keyword-safe (raw identifier where needed).
     field_ident(&name)
 }
@@ -1129,6 +1171,10 @@ struct PaginationPlan {
     manager_ty: String,
     element: String,
     options_ty: String,
+    /// The public method that returns the paginator, e.g. `list_items` — the
+    /// paged operation's sole public entry point (Option A).
+    paginate: String,
+    /// The private single-page fetch the paginator drives, e.g. `list_items_page`.
     method: String,
     /// `(field, owned type)` for the stored required params, then the body.
     stored: Vec<(String, String)>,

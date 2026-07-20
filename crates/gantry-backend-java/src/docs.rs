@@ -3,7 +3,7 @@
 //! Per-manager Markdown plus the auth / pagination / errors cross-cutting
 //! guides, generated from the same IR the code is — so the docs describe the
 //! real Java surface (camelCased method names, record types, blocking methods
-//! that throw `BoxApiException`, the `for (var … : …Paginate(…))` idiom) and
+//! that throw `BoxApiException`, the auto-paging `for (var … : list…(…))` idiom) and
 //! can't drift from it. The Java analogue of the Rust (D-155) and TypeScript
 //! (D-163) docs slices. Deterministic, like all output (FR-6.2).
 
@@ -22,10 +22,6 @@ use crate::models::type_names;
 /// Generate `docs/` — an index, one page per manager, and the guides.
 pub fn generate_docs(analysis: &Analysis<'_>) -> Vec<GeneratedFile> {
     let program = analysis.program;
-    let base_version = program
-        .operations
-        .first()
-        .and_then(|op| op.api_version.clone());
     let paged: HashMap<usize, ()> = detect_pagination(analysis)
         .into_iter()
         .map(|p| (p.operation, ()))
@@ -41,13 +37,7 @@ pub fn generate_docs(analysis: &Analysis<'_>) -> Vec<GeneratedFile> {
     let mut files = Vec::new();
     files.push(index_page(&plans, has_chunked));
     for plan in &plans {
-        files.push(manager_page(
-            program,
-            base_version.as_ref(),
-            &paged,
-            &names,
-            plan,
-        ));
+        files.push(manager_page(program, &paged, &names, plan));
     }
     files.push(guide("auth", AUTH_GUIDE));
     files.push(guide("pagination", PAGINATION_GUIDE));
@@ -92,7 +82,6 @@ fn index_page(plans: &[ManagerPlan], has_chunked: bool) -> GeneratedFile {
 /// line, parameter table, request/response types, and a pagination note.
 fn manager_page(
     program: &ir::Program,
-    base_version: Option<&ir::ApiVersion>,
     paged: &HashMap<usize, ()>,
     names: &BTreeMap<ir::DeclId, String>,
     plan: &ManagerPlan,
@@ -105,7 +94,7 @@ fn manager_page(
         class = plan.class,
         field = plan.field,
     );
-    for (index, method) in deduped_methods(program, &plan.ops, base_version) {
+    for (index, method) in deduped_methods(program, &plan.ops) {
         let op = &program.operations[index];
         let _ = writeln!(body, "## {method}\n");
         if op.deprecated {
@@ -149,9 +138,9 @@ fn manager_page(
         if paged.contains_key(&index) {
             let _ = writeln!(
                 body,
-                "Paginated — also available as `{method}Paginate(...)`, returning an\n\
-                 `Iterable` you loop with `for (var item : …)`. See the\n\
-                 [pagination guide](../pagination.md).\n"
+                "Paginated — `{method}(...)` returns an auto-paging `Iterable` you\n\
+                 loop with `for (var item : …)`, threading the cursor for you. See\n\
+                 the [pagination guide](../pagination.md).\n"
             );
         }
     }
@@ -340,11 +329,11 @@ Both return the uploaded `Files` object. A failure throws\n\
 [errors guide](errors.md)); the first part to fail cancels the rest.\n";
 
 const PAGINATION_GUIDE: &str = "# Pagination\n\n\
-Marker- and offset-paginated list operations expose an extra `…Paginate`\n\
-method alongside the plain single-page method. It returns an `Iterable` that\n\
-threads the cursor for you, so you loop it with an enhanced `for`:\n\n\
+Marker- and offset-paginated list operations return an `Iterable` that threads\n\
+the cursor for you — the list method *is* the paginator, so you loop it directly\n\
+with an enhanced `for`:\n\n\
 ```java\n\
-for (var item : client.files.getFolderItemsPaginate(folderId, null)) {\n\
+for (var item : client.folders.listItems(folderId, null)) {\n\
     // use item\n\
 }\n\
 ```\n\n\

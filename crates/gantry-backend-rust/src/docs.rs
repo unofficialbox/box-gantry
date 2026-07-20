@@ -19,23 +19,13 @@ use crate::managers::method_name;
 /// Generate `docs/` — an index, one page per manager, and the guides.
 pub fn generate_docs(analysis: &Analysis<'_>, paged: &[PagedOperation]) -> Vec<GeneratedFile> {
     let program = analysis.program;
-    let base_version = program
-        .operations
-        .first()
-        .and_then(|op| op.api_version.clone());
     let paged_by_op: HashMap<usize, &PagedOperation> =
         paged.iter().map(|p| (p.operation, p)).collect();
 
     let mut files = Vec::new();
     files.push(index_page(analysis));
     for (manager, op_indices) in &analysis.managers {
-        files.push(manager_page(
-            program,
-            base_version.as_ref(),
-            &paged_by_op,
-            manager,
-            op_indices,
-        ));
+        files.push(manager_page(program, &paged_by_op, manager, op_indices));
     }
     files.push(guide("auth", AUTH_GUIDE));
     files.push(guide("pagination", PAGINATION_GUIDE));
@@ -67,7 +57,6 @@ fn index_page(analysis: &Analysis<'_>) -> GeneratedFile {
 
 fn manager_page(
     program: &ir::Program,
-    base_version: Option<&ir::ApiVersion>,
     paged: &HashMap<usize, &PagedOperation>,
     manager: &str,
     op_indices: &[usize],
@@ -80,7 +69,7 @@ fn manager_page(
     );
     for &index in op_indices {
         let op = &program.operations[index];
-        let method = method_name(op, base_version);
+        let method = method_name(op);
         let _ = writeln!(body, "## {method}\n");
         if op.deprecated {
             body.push_str("> **Deprecated.**\n\n");
@@ -124,8 +113,8 @@ fn manager_page(
         if paged.contains_key(&index) {
             let _ = writeln!(
                 body,
-                "Paginated — also available as `{method}_paginate(...)`, returning a \
-                 paginator you drive with `.next().await`. See the \
+                "Paginated — `{method}(...)` returns a paginator you drive with \
+                 `.next().await`, threading the cursor for you. See the \
                  [pagination guide](../pagination.md).\n"
             );
         }
@@ -296,12 +285,11 @@ let client = Client::new(auth);\n\
 ```\n";
 
 const PAGINATION_GUIDE: &str = "# Pagination\n\n\
-Marker- and offset-paginated list operations expose an extra `_paginate`\n\
-constructor alongside the plain single-page method. It returns a paginator\n\
-you drive with `.next().await`, which yields one element at a time and\n\
-threads the cursor for you:\n\n\
+Marker- and offset-paginated list operations return a paginator — the list\n\
+method *is* the paginator. You drive it with `.next().await`, which yields one\n\
+element at a time and threads the cursor for you:\n\n\
 ```rust\n\
-let mut pages = client.files.get_folder_items_paginate(folder_id, None);\n\
+let mut pages = client.folders.list_items(folder_id, None);\n\
 while let Some(item) = pages.next().await {\n\
     let item = item?;\n\
     // use item\n\
