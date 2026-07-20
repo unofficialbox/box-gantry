@@ -25,7 +25,7 @@ const ARTIFACT_ID: &str = "box-open-sdk";
 const VERSION: &str = "0.1.0";
 /// The project's GitHub home. Each language ships from its own repository; the
 /// `dev.unofficialbox` groupId is verified against the DNS domain, not this URL.
-const PROJECT_URL: &str = "https://github.com/unofficialbox/box-open-sdk-java";
+const PROJECT_URL: &str = "https://github.com/unofficialbox/box-open-java-sdk";
 
 /// Emit the Maven packaging files (`pom.xml`, `README.md`).
 pub fn generate_ship(build: &BuildInfo) -> Vec<GeneratedFile> {
