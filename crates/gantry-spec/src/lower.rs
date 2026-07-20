@@ -100,11 +100,15 @@ pub fn lower(set: &SpecSet) -> Result<Lowering, IngestError> {
         .into_iter()
         .map(|slot| slot.expect("every predeclared schema is filled by lower_document"))
         .collect();
+    // Collapse the per-version schema modules into one `schemas` namespace,
+    // merging same-named types across versions into one superset type (D-190).
+    let program = crate::merge::merge_versioned_schemas(ir::Program { decls, operations })?;
     // The kind breakdown is computed from the *final* decls, not counted
     // during lowering: structural dedupe (D-127) discards inline copies after
     // they are built, so a build-time counter would over-report. (`aliases`
-    // are never synthesized, so they are counted at their source.)
-    for decl in &decls {
+    // are never synthesized, so they are counted at their source.) The version
+    // merge runs first, so a merged superset counts once.
+    for decl in &program.decls {
         match &decl.kind {
             ir::DeclKind::Struct(_) => stats.structs += 1,
             ir::DeclKind::Enum(_) => stats.enums += 1,
@@ -117,10 +121,7 @@ pub fn lower(set: &SpecSet) -> Result<Lowering, IngestError> {
             ir::DeclKind::Alias(_) => {}
         }
     }
-    Ok(Lowering {
-        program: ir::Program { decls, operations },
-        stats,
-    })
+    Ok(Lowering { program, stats })
 }
 
 /// `schemas` for the base document, `schemas::vNrM` for versioned ones.

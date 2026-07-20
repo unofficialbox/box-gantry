@@ -90,4 +90,14 @@ pub enum IngestError {
         location: String,
         detail: String,
     },
+
+    /// Two versions of a schema share a name but cannot be merged into one
+    /// superset type (D-190): the same wire field carries genuinely different
+    /// (non-equivalent) types across versions, or the name is bound to
+    /// different declaration kinds. Loud rather than silently picking one
+    /// version's shape (NF-1).
+    #[error(
+        "schema {name:?}: incompatible definitions across API versions cannot be merged: {detail}"
+    )]
+    SchemaVersionConflict { name: String, detail: String },
 }
