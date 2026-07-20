@@ -13,6 +13,7 @@ gantry-sema.workspace = true
 gantry-synth.workspace = true
 
 [dev-dependencies]
+gantry-verify.workspace = true
 gantry-spec.workspace = true
 serde_json.workspace = true
 

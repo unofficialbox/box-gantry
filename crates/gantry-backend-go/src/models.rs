@@ -7,7 +7,7 @@ use gantry_ir as ir;
 use gantry_ir::naming::{constant, pascal};
 use gantry_sema::Analysis;
 
-use crate::{MODULE, SERIALIZATION_IMPORT};
+use crate::{MODULE, RETRACTIONS, SERIALIZATION_IMPORT};
 
 /// One generated file, path relative to the SDK root.
 #[derive(Debug)]
@@ -33,7 +33,7 @@ pub fn generate_models(analysis: &Analysis<'_>, build: &crate::BuildInfo) -> Vec
 
     let mut files = vec![GeneratedFile {
         path: "go.mod".to_string(),
-        content: format!("module {MODULE}\n\ngo 1.23\n"),
+        content: format!("module {MODULE}\n\ngo 1.23\n{RETRACTIONS}"),
     }];
     for (module, indices) in &modules {
         files.push(render_module(program, module, indices, build));

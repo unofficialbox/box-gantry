@@ -133,17 +133,21 @@ fn generation_is_deterministic() {
         managers.contains("for (const item of items) {"),
         "paginator must yield each entry"
     );
-    // The runtime-contract stubs (FR-5.3): managers type-check against these.
+    // The vendored runtime (D-192), not the contract stub: the managers
+    // type-check against the real implementation they ship with. `BoxApiError`
+    // lives in its own `errors` module upstream, so assert per file rather than
+    // expecting one flattened `runtime.ts`.
     let runtime = once.iter().find(|f| f.path == "src/runtime.ts").unwrap();
     assert!(
         runtime
             .content
-            .contains("export class BoxApiError extends Error")
-    );
-    assert!(
-        runtime
-            .content
             .contains("async fetch(request: Request, signal?: AbortSignal): Promise<Response>")
+    );
+    let errors = once.iter().find(|f| f.path == "src/errors.ts").unwrap();
+    assert!(
+        errors
+            .content
+            .contains("export class BoxApiError extends Error")
     );
 
     let models: String = once
@@ -568,5 +572,27 @@ fn run_ok(command: &mut Command, what: &str) {
         "{what} failed:\n{}\n{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// D-192: the shipped tree must carry the real runtime, never the
+/// compile-only contract stub. Every other gate here proves the output
+/// *compiles* — which the stub does, while panicking on every call. This is
+/// the one that proves it *works*.
+#[test]
+fn no_generated_file_ships_the_runtime_stub() {
+    let files = generate();
+    let findings = gantry_verify::shipping::stub_findings(
+        files.iter().map(|f| (f.path.as_str(), f.content.as_str())),
+    );
+    assert!(
+        findings.is_empty(),
+        "generated SDK ships runtime stubs instead of the vendored runtime: {findings:#?}"
+    );
+    // The runtime is actually present, so an empty result can't mean
+    // "nothing was emitted".
+    assert!(
+        files.iter().any(|f| f.path == "src/runtime.ts"),
+        "expected the vendored runtime at src/runtime.ts"
     );
 }

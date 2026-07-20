@@ -486,7 +486,28 @@ fn generate_java(specs: &[PathBuf]) -> Result<Vec<(String, String)>, ExitCode> {
     }
 }
 
+/// Names the files the last generation wrote, so the next one can prune them.
+const MANIFEST: &str = ".gantry-manifest";
+
 fn write_pairs(root: &Path, files: &[(String, String)]) -> std::io::Result<()> {
+    // Prune before writing. Regenerating into a populated directory otherwise
+    // leaves files the new run no longer emits, and a stale artifact is not
+    // inert: renaming Rust's `src/runtime.rs` to `src/runtime/mod.rs` left both
+    // behind, which is an ambiguous-module error (E0761) — the tree stopped
+    // compiling with no indication why.
+    //
+    // Only paths this tool recorded writing are removed, so a `.git` directory,
+    // a hand-added `.gitignore`, or anything else in the output directory is
+    // never touched.
+    let emitted: std::collections::BTreeSet<&str> =
+        files.iter().map(|(path, _)| path.as_str()).collect();
+    if let Ok(previous) = std::fs::read_to_string(root.join(MANIFEST)) {
+        for stale in previous.lines().filter(|p| !emitted.contains(p)) {
+            // Best-effort: a file the user already deleted is not an error.
+            let _ = std::fs::remove_file(root.join(stale));
+        }
+    }
+
     for (path, content) in files {
         let path = root.join(path);
         if let Some(parent) = path.parent() {
@@ -494,6 +515,9 @@ fn write_pairs(root: &Path, files: &[(String, String)]) -> std::io::Result<()> {
         }
         std::fs::write(path, content)?;
     }
+
+    let manifest: Vec<&str> = emitted.into_iter().collect();
+    std::fs::write(root.join(MANIFEST), manifest.join("\n") + "\n")?;
     Ok(())
 }
 

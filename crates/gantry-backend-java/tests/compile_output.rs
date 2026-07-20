@@ -777,3 +777,27 @@ public final class ChunkedSmoke {
     }
 }
 "#;
+
+/// D-192: the shipped tree must carry the real runtime, never the
+/// compile-only contract stub. Every other gate here proves the output
+/// *compiles* — which the stub does, while panicking on every call. This is
+/// the one that proves it *works*.
+#[test]
+fn no_generated_file_ships_the_runtime_stub() {
+    let files = generate();
+    let findings = gantry_verify::shipping::stub_findings(
+        files.iter().map(|f| (f.path.as_str(), f.content.as_str())),
+    );
+    assert!(
+        findings.is_empty(),
+        "generated SDK ships runtime stubs instead of the vendored runtime: {findings:#?}"
+    );
+    // The runtime is actually present, so an empty result can't mean
+    // "nothing was emitted".
+    assert!(
+        files
+            .iter()
+            .any(|f| f.path == "src/main/java/dev/unofficialbox/runtime/Runtime.java"),
+        "expected the vendored runtime at src/main/java/dev/unofficialbox/runtime/Runtime.java"
+    );
+}
