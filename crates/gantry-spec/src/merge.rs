@@ -253,10 +253,20 @@ fn merge_unions(
             return Err(conflict(name, "unions disagree on the discriminator field"));
         }
         for variant in &other.variants {
-            match variants
-                .iter()
-                .find(|v| v.discriminator_value == variant.discriminator_value)
-            {
+            // Discriminated variants key on their value. A structural union
+            // carries none (`lower_union` clears them all), so `None` is not a
+            // key — match those on shape, or every variant would conflate with
+            // the first one and quietly drop the rest (NF-1: never a silent pick).
+            let existing = match &variant.discriminator_value {
+                Some(value) => variants
+                    .iter()
+                    .find(|v| v.discriminator_value.as_ref() == Some(value)),
+                None => variants.iter().find(|v| {
+                    v.discriminator_value.is_none()
+                        && types_equivalent(&v.ty, &variant.ty, decls, &mut HashSet::new())
+                }),
+            };
+            match existing {
                 Some(existing) => {
                     if !types_equivalent(&existing.ty, &variant.ty, decls, &mut HashSet::new()) {
                         return Err(conflict(
@@ -429,5 +439,70 @@ fn remap_type(ty: &mut ir::Type, map: &[ir::DeclId]) {
         | ir::Type::DateTime
         | ir::Type::Binary
         | ir::Type::JsonValue => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ident(name: &str) -> ir::Identifier {
+        ir::Identifier::new(name).expect("test identifier")
+    }
+
+    /// A structural (non-discriminated) union: `lower_union` clears every
+    /// variant's discriminator value, so `None` is not a key to match on.
+    fn structural_union(variants: &[ir::Type]) -> ir::DeclKind {
+        ir::DeclKind::Union(ir::UnionDecl {
+            discriminator: None,
+            variants: variants
+                .iter()
+                .map(|ty| ir::UnionVariant {
+                    discriminator_value: None,
+                    ty: ty.clone(),
+                })
+                .collect(),
+            extensibility: ir::Extensibility::Open,
+        })
+    }
+
+    fn union_decl(variants: &[ir::Type]) -> ir::Decl {
+        ir::Decl {
+            name: ident("Target"),
+            module: ir::ModulePath(vec![ident("schemas")]),
+            api_version: None,
+            kind: structural_union(variants),
+        }
+    }
+
+    fn merged_variants(base: &[ir::Type], other: &[ir::Type]) -> Vec<ir::Type> {
+        let decls = vec![union_decl(base), union_decl(other)];
+        let ir::DeclKind::Union(base_union) = &decls[0].kind else {
+            unreachable!("constructed as a union")
+        };
+        let merged =
+            merge_unions("Target", &decls, base_union, &[1]).expect("the versions must merge");
+        merged.variants.into_iter().map(|v| v.ty).collect()
+    }
+
+    #[test]
+    fn structural_union_variants_merge_by_shape_not_by_absent_discriminator() {
+        // Every variant is `None`-keyed, so keying on the discriminator would
+        // conflate them all with the first and silently drop the rest.
+        let merged = merged_variants(
+            &[ir::Type::String, ir::Type::Int64],
+            &[ir::Type::Int64, ir::Type::Bool],
+        );
+        assert_eq!(
+            merged,
+            [ir::Type::String, ir::Type::Int64, ir::Type::Bool],
+            "the shared variant dedupes and the new one is kept"
+        );
+    }
+
+    #[test]
+    fn a_structural_union_that_only_repeats_variants_gains_none() {
+        let merged = merged_variants(&[ir::Type::String, ir::Type::Bool], &[ir::Type::Bool]);
+        assert_eq!(merged, [ir::Type::String, ir::Type::Bool]);
     }
 }
