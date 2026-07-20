@@ -3943,3 +3943,59 @@ stripped version enums.
 
 **Result.** The API version is invisible in the surface and automatic on the
 wire — the last piece of the naming overhaul before the first release.
+
+## D-192 — Vendor the real runtime into every shipped SDK
+
+**Context.** `gantry-contract` renders a *compile-only stub* of the runtime
+surface so a generated SDK type-checks without the hand-written runtime
+(FR-5.3). Every method body raises. TR-Go.7 and its per-language siblings
+require the real runtime to be **shipped with** the generated SDK, and
+`ship.rs` / `lib.rs` both described a "release pipeline" that vendors it — but
+no such pipeline existed. `gantry generate` emitted the stub and stopped.
+
+The result reached production: `box-open-go-sdk@v0.1.0` was tagged and
+published carrying 16 stub bodies. It builds, `go vet`s clean, and panics on
+the first call. Every gate was green because every gate checked that the output
+*compiled* — which the stub does. Nothing checked that it *worked*.
+
+**The decision.** Backends vendor the real runtime at build time via
+`include_str!`, the approach the Apex backend already used (`runtime.rs`, D-142)
+and the only one of the five that shipped correctly.
+
+| Target | Vendored | Into |
+|---|---|---|
+| Go | `runtime.go`, `auth.go`, `pkcs8.go` (no `*_test.go`) | `gantryruntime/` |
+| Rust | `lib.rs`, `auth.rs`, `jwt.rs` | `src/runtime/{mod,auth,jwt}.rs` |
+| TypeScript | `runtime/auth/errors/tokens/jwt.ts`, `node-crypto.d.ts` | `src/` |
+| Java | `Runtime.java` | same package path |
+| Apex | 12 `.cls` (unchanged) | `force-app/.../classes/` |
+
+Three per-language adaptations. **Go** excludes `*_test.go`: the runtime's own
+tests import it through its development module path
+(`boxgantry.invalid/boxsdk`), which does not resolve inside the shipped module
+and would break `go test ./...` for consumers. **Rust** strips each file's
+`#[cfg(test)]` module (their dev-dependencies are not the SDK's) and rewrites
+`crate::` → `super::` in the submodules, which become children of `runtime`;
+its `[dependencies]` are lifted from the runtime's own manifest rather than
+duplicated, so a bump cannot desync. **Every** vendored file gains the
+do-not-edit header (FR-6.3) naming its upstream — they are copies, so an edit
+made in the SDK repository is lost at the next regeneration.
+
+**Verification.** A new `gantry_verify::shipping::stub_findings` scans generated
+output for the stub's own marker strings, wired into all five backends as
+`no_generated_file_ships_the_runtime_stub`. It fails on the exact artifact that
+shipped, and reports every offending file so a partial vendoring surfaces at
+once. Each language's tree was then compiled with its real toolchain and
+confirmed to contain genuine HTTP machinery (`reqwest`, `net/http`,
+`HttpClient`, `fetch`) rather than raising bodies.
+
+**Result.** All five SDKs ship functional runtimes. Go `v0.1.0` cannot be
+withdrawn — module versions are immutable once the proxy serves them — so the
+generated `go.mod` carries a `retract v0.1.0` directive (also generator-owned:
+a hand-edit would be erased by the next regeneration, silently un-retracting
+it). Two adjacent defects surfaced and were fixed: the generated npm package
+declared no `typescript` devDependency despite its build script invoking `tsc`,
+and regenerating into a populated directory left stale files — renaming Rust's
+`src/runtime.rs` to `src/runtime/mod.rs` left both, an ambiguous-module error
+(E0761). The CLI now records what it wrote in `.gantry-manifest` and prunes
+exactly those paths, never touching files it did not create.

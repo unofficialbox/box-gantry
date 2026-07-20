@@ -14,6 +14,7 @@ gantry-sema.workspace = true
 gantry-synth.workspace = true
 
 [dev-dependencies]
+gantry-verify.workspace = true
 gantry-spec.workspace = true
 
 [lints]

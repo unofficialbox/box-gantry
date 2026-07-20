@@ -61,7 +61,8 @@ fn generation_is_deterministic() {
     // The managers/client/runtime layer (M5 slice 3).
     assert!(once.iter().any(|f| f.path == "src/managers/mod.rs"));
     assert!(once.iter().any(|f| f.path == "src/client.rs"));
-    assert!(once.iter().any(|f| f.path == "src/runtime.rs"));
+    // The runtime is vendored as a module tree, not the single-file stub (D-192).
+    assert!(once.iter().any(|f| f.path == "src/runtime/mod.rs"));
     assert!(once.iter().any(|f| f.path == "src/internal.rs"));
     // Methods are async and route through the runtime contract, never direct
     // HTTP (FR-5.2).
@@ -232,28 +233,6 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
     std::fs::create_dir_all(&dir).unwrap();
     write_all(&dir, &generate());
 
-    // Point `crate::runtime` at the real crate instead of the compile-time
-    // stub: a one-line re-export makes every `runtime::…` path the managers
-    // call resolve to the hand-written runtime's types and functions.
-    let runtime_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../runtimes/rust/gantryruntime")
-        .canonicalize()
-        .unwrap();
-    std::fs::write(
-        dir.join("src/runtime.rs"),
-        "// Test shim: re-export the real runtime in place of the stub.\n\
-         pub use gantryruntime::*;\n",
-    )
-    .unwrap();
-
-    // Add the path dependency on the real runtime crate.
-    let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
-    let manifest = format!(
-        "{manifest}gantryruntime = {{ path = {:?} }}\n",
-        runtime_dir.to_str().unwrap()
-    );
-    std::fs::write(dir.join("Cargo.toml"), manifest).unwrap();
-
     // A smoke example proving the public API composes: construct the client
     // from an auth flow (which forces the whole manager tree to typecheck
     // against the real runtime).
@@ -295,7 +274,6 @@ fn the_generated_sdk_packages_for_publish() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     write_all(&dir, &generate());
-    vendor_runtime(&dir);
 
     let mut cmd = Command::new("cargo");
     cmd.args(["publish", "--dry-run", "--allow-dirty"])
@@ -343,69 +321,24 @@ fn pinned_toolchain() -> Option<String> {
         .filter(|c| !c.is_empty())
 }
 
-/// Vendor the hand-written runtime crate into the generated SDK as a `runtime`
-/// module (replacing the compile stub) and add its dependencies — the
-/// self-contained assembly the release pipeline performs. Each runtime file's
-/// trailing `#[cfg(test)]` module is dropped (the SDK ships no runtime unit
-/// tests), and the submodules' `crate::` self-references become `super::` (they
-/// are now children of the `runtime` module).
-fn vendor_runtime(dir: &Path) {
-    let runtime_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../runtimes/rust/gantryruntime")
-        .canonicalize()
-        .unwrap();
-    let src = runtime_dir.join("src");
-    std::fs::remove_file(dir.join("src/runtime.rs")).unwrap();
-    std::fs::create_dir_all(dir.join("src/runtime")).unwrap();
-
-    // The crate root (`lib.rs`) → the module root (`runtime/mod.rs`); its
-    // `crate::` references are doc-only and non-breaking, so it is copied
-    // test-stripped but otherwise verbatim.
-    let lib = strip_tests(&std::fs::read_to_string(src.join("lib.rs")).unwrap());
-    std::fs::write(dir.join("src/runtime/mod.rs"), lib).unwrap();
-    // The submodules are children of `runtime`, so `crate::` (the runtime crate
-    // root) becomes `super::`.
-    for name in ["auth", "jwt"] {
-        let source = std::fs::read_to_string(src.join(format!("{name}.rs"))).unwrap();
-        let vendored = strip_tests(&source).replace("crate::", "super::");
-        std::fs::write(dir.join(format!("src/runtime/{name}.rs")), vendored).unwrap();
-    }
-
-    // Append the runtime's dependency set, skipping any already in the SDK
-    // manifest (serde_json), so the self-contained crate carries the full stack.
-    let mut manifest = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
-    for dep in runtime_dep_lines(&std::fs::read_to_string(runtime_dir.join("Cargo.toml")).unwrap())
-    {
-        let key = dep.split(['=', ' ']).next().unwrap_or("");
-        if !manifest.contains(&format!("\n{key} =")) {
-            manifest.push_str(&dep);
-            manifest.push('\n');
-        }
-    }
-    std::fs::write(dir.join("Cargo.toml"), manifest).unwrap();
-}
-
-/// Drop a source file's trailing `#[cfg(test)]` module (the final item in each
-/// runtime file).
-fn strip_tests(source: &str) -> String {
-    match source.find("#[cfg(test)]") {
-        Some(pos) => format!("{}\n", source[..pos].trim_end()),
-        None => source.to_string(),
-    }
-}
-
-/// The runtime crate's `[dependencies]` lines, one per dependency (up to the
-/// next section header).
-fn runtime_dep_lines(manifest: &str) -> Vec<String> {
-    let start = manifest
-        .find("[dependencies]")
-        .expect("runtime [dependencies]");
-    let block = &manifest[start + "[dependencies]".len()..];
-    let end = block.find("\n[").map_or(block.len(), |i| i);
-    block[..end]
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(str::to_string)
-        .collect()
+/// D-192: the shipped tree must carry the real runtime, never the
+/// compile-only contract stub. Every other gate here proves the output
+/// *compiles* — which the stub does, while panicking on every call. This is
+/// the one that proves it *works*.
+#[test]
+fn no_generated_file_ships_the_runtime_stub() {
+    let files = generate();
+    let findings = gantry_verify::shipping::stub_findings(
+        files.iter().map(|f| (f.path.as_str(), f.content.as_str())),
+    );
+    assert!(
+        findings.is_empty(),
+        "generated SDK ships runtime stubs instead of the vendored runtime: {findings:#?}"
+    );
+    // The runtime is actually present, so an empty result can't mean
+    // "nothing was emitted".
+    assert!(
+        files.iter().any(|f| f.path == "src/runtime/mod.rs"),
+        "expected the vendored runtime at src/runtime/mod.rs"
+    );
 }

@@ -1020,3 +1020,34 @@ fn each_endpoint_has_a_markdown_doc_with_a_runnable_snippet() {
     assert_contains(paged, "while (String.isNotBlank(page.next_marker)) {");
     assert_contains(paged, "page = client.folders.listItems(");
 }
+
+/// D-192: the shipped tree must carry the real runtime, never the
+/// compile-only contract stub. Every other gate here proves the output
+/// *compiles* — which the stub does, while panicking on every call. This is
+/// the one that proves it *works*.
+#[test]
+fn no_generated_file_ships_the_runtime_stub() {
+    // Apex has no stub to begin with (its backend vendors the real classes at
+    // build time), so this gate is a guard against that regressing.
+    let program = Box::leak(Box::new(ir::Program {
+        decls: vec![struct_decl("S", vec![field("a", ir::Type::String)])],
+        operations: Vec::new(),
+    }));
+    let analysis = gantry_sema::analyze(program).expect("fixture must analyze");
+    let files = generate(&analysis, &apex(), &BuildInfo::new("testfp"));
+    let findings = gantry_verify::shipping::stub_findings(
+        files.iter().map(|f| (f.path.as_str(), f.content.as_str())),
+    );
+    assert!(
+        findings.is_empty(),
+        "generated SDK ships runtime stubs instead of the vendored runtime: {findings:#?}"
+    );
+    // The runtime is actually present, so an empty result can't mean
+    // "nothing was emitted".
+    assert!(
+        files
+            .iter()
+            .any(|f| f.path == "force-app/main/default/classes/BoxHttpClient.cls"),
+        "expected the vendored runtime at force-app/main/default/classes/BoxHttpClient.cls"
+    );
+}
