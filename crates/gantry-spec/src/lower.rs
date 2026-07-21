@@ -1475,6 +1475,9 @@ fn curated_method_name(base_id: &str) -> Option<&'static str> {
         "post_files_content" => Some("uploadFile"),
         "post_files_id_content" => Some("uploadFileVersion"),
         "put_users_id_folders_0" => Some("transferFolders"),
+        // "Query files/folders by metadata" — `execute_read` is Box's endpoint
+        // plumbing, not user intent.
+        "post_metadata_queries_execute_read" => Some("queryByMetadata"),
         _ => None,
     }
 }
