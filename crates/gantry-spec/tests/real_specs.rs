@@ -127,6 +127,7 @@ fn method_names_are_curated_not_collision_suffixed() {
     assert!(named("uploads", "uploadFile"), "upload-new-file name");
     assert!(named("uploads", "uploadFileVersion"), "upload-version name");
     assert!(named("transfer", "transferFolders"), "transfer name");
+    assert!(named("search", "queryByMetadata"), "metadata-query name");
     assert!(
         !lowering
             .program

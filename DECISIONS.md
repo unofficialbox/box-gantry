@@ -4052,10 +4052,13 @@ endpoints, to the intent Box documents in their summaries:
 | `post_files_content` | `uploadFile` |
 | `post_files_id_content` | `uploadFileVersion` |
 | `put_users_id_folders_0` | `transferFolders` |
+| `post_metadata_queries_execute_read` | `queryByMetadata` |
 
-The override still flows through the per-`(manager, variation)` dedup guard, so
-it can't silently reintroduce a collision. Everything else keeps the mechanical
+The last is not a collision but pure plumbing in the name — the endpoint is
+"Query files/folders by metadata"; `execute_read` is Box's internal verb. The
+override still flows through the per-`(manager, variation)` dedup guard, so it
+can't silently reintroduce a collision. Everything else keeps the mechanical
 derivation — this is a curated exception list, not a new naming mode. `oauth2`
 (`/oauth2/revoke` → `revokeOauth2`) is left alone: the `2` is the protocol name,
-not a disambiguator. A `real_specs` test pins the three curated names and asserts
+not a disambiguator. A `real_specs` test pins the curated names and asserts
 no operation name ends in a bare collision digit (bar `oauth2`).
