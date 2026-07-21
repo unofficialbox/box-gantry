@@ -195,6 +195,15 @@ fn the_generated_model_layer_compiles_under_javac() {
          \x20   public static dev.unofficialbox.Client build(dev.unofficialbox.runtime.Runtime.Auth auth) {\n\
          \x20       return new dev.unofficialbox.Client(auth);\n\
          \x20   }\n\
+         \x20   // Exercise a record builder (D-195), proving it is callable API —\n\
+         \x20   // fluent setters (the required `name`/`parent`, an optional left unset)\n\
+         \x20   // and a nested builder — not just a declaration that compiles.\n\
+         \x20   public static dev.unofficialbox.model.schemas.FolderCreateRequest folder() {\n\
+         \x20       return dev.unofficialbox.model.schemas.FolderCreateRequest.builder()\n\
+         \x20           .name(\"Invoices\")\n\
+         \x20           .parent(dev.unofficialbox.model.schemas.AttributesParent.builder().id(\"0\").build())\n\
+         \x20           .build();\n\
+         \x20   }\n\
          }\n",
     )
     .unwrap();

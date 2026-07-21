@@ -4062,3 +4062,32 @@ derivation — this is a curated exception list, not a new naming mode. `oauth2`
 (`/oauth2/revoke` → `revokeOauth2`) is left alone: the `2` is the protocol name,
 not a disambiguator. A `real_specs` test pins the curated names and asserts
 no operation name ends in a bare collision digit (bar `oauth2`).
+
+## D-195 — Fluent builders on the Java record models
+
+**Context.** Java model structs lower to `record`s (D-172) with the canonical
+all-args constructor and `Optional<T>` for optional fields. That makes any
+multi-field body a wall of positional arguments — the metadata query is eight,
+six of them `Optional.empty()`:
+
+```java
+new MetadataQuery("enterprise_0.invoiceData", Optional.empty(), Optional.empty(),
+    folder.id(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty())
+```
+
+You cannot tell `from` from `ancestorFolderId` without counting to the fourth
+argument. Every serious Java SDK ships builders for exactly this reason.
+
+**The decision.** Each generated record gains a nested `Builder` and a static
+`builder()`. A setter per component returns `this`; an `Optional<T>` component's
+setter takes the raw `T` and wraps it (`Optional.ofNullable`), so unset optional
+fields default to empty. `build()` calls the canonical constructor. The record
+and its constructor are unchanged — the builder is additive, so explicit `null`
+tri-state construction stays available for the caller who needs it.
+
+```java
+MetadataQuery.builder().from("enterprise_0.invoiceData").ancestorFolderId(folder.id()).build()
+```
+
+The javac gate's smoke driver now *calls* a builder (fluent setters + a nested
+builder), so they are proven callable API, not merely declarations that compile.
