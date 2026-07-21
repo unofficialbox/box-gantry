@@ -113,6 +113,19 @@ fn every_manager_has_reference_docs() {
             doc.content.contains("Access via `client.NewClient()."),
             "{doc_path} is malformed"
         );
+        // Every method section carries a synthesized call snippet (FR-7.7): one
+        // `**Example**` per `## <method>` heading, each a runnable-shape `go`
+        // fence that calls through the client.
+        let methods = doc.content.matches("\n## ").count();
+        let examples = doc.content.matches("**Example**").count();
+        assert_eq!(
+            methods, examples,
+            "{doc_path}: {methods} methods but {examples} example snippets"
+        );
+        assert!(
+            doc.content.contains("```go\n") && doc.content.contains("client."),
+            "{doc_path} example snippet is missing"
+        );
     }
     // The index and the three cross-cutting guides exist (FR-7.7).
     for required in [

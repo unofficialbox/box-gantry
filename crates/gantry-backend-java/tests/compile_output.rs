@@ -418,6 +418,26 @@ fn reference_docs_describe_the_java_surface() {
             && f.content.contains("returns an auto-paging `Iterable`")),
         "expected a paged operation to document its paginator in the docs"
     );
+    // Every method section carries a synthesized call snippet (FR-7.7): one
+    // `**Example**` per `## <method>` heading, each a `java` fence through the
+    // client.
+    for page in files
+        .iter()
+        .filter(|f| f.path.starts_with("docs/managers/") && f.path.ends_with(".md"))
+    {
+        let methods = page.content.matches("\n## ").count();
+        let examples = page.content.matches("**Example**").count();
+        assert_eq!(
+            methods, examples,
+            "{}: {methods} methods but {examples} example snippets",
+            page.path
+        );
+        assert!(
+            page.content.contains("```java\n") && page.content.contains("client."),
+            "{} example snippet is missing",
+            page.path
+        );
+    }
 
     // The guides are Java-flavored with real call sites.
     let auth = doc("docs/auth.md");

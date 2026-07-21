@@ -101,6 +101,26 @@ fn generation_is_deterministic() {
             .any(|f| f.path.starts_with("docs/managers/") && f.path.ends_with(".md")),
         "expected per-manager doc pages"
     );
+    // Every method section carries a synthesized call snippet (FR-7.7): one
+    // `**Example**` per `## <method>` heading, each a `rust` fence through the
+    // client.
+    for page in once
+        .iter()
+        .filter(|f| f.path.starts_with("docs/managers/") && f.path.ends_with(".md"))
+    {
+        let methods = page.content.matches("\n## ").count();
+        let examples = page.content.matches("**Example**").count();
+        assert_eq!(
+            methods, examples,
+            "{}: {methods} methods but {examples} example snippets",
+            page.path
+        );
+        assert!(
+            page.content.contains("```rust\n") && page.content.contains("client."),
+            "{} example snippet is missing",
+            page.path
+        );
+    }
     for guide in ["docs/auth.md", "docs/pagination.md", "docs/errors.md"] {
         assert!(once.iter().any(|f| f.path == guide), "missing {guide}");
     }

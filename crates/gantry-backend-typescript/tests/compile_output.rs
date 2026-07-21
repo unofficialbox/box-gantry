@@ -216,6 +216,26 @@ fn generation_is_deterministic() {
         manager_docs, manager_modules,
         "one reference page per manager"
     );
+    // Every method section carries a synthesized call snippet (FR-7.7): one
+    // `**Example**` per `## <method>` heading, each a `ts` fence through the
+    // client.
+    for page in once
+        .iter()
+        .filter(|f| f.path.starts_with("docs/managers/") && f.path.ends_with(".md"))
+    {
+        let methods = page.content.matches("\n## ").count();
+        let examples = page.content.matches("**Example**").count();
+        assert_eq!(
+            methods, examples,
+            "{}: {methods} methods but {examples} example snippets",
+            page.path
+        );
+        assert!(
+            page.content.contains("```ts\n") && page.content.contains("client."),
+            "{} example snippet is missing",
+            page.path
+        );
+    }
     // The auth guide names all four Box flows (the conformance recognizer reads
     // these), and a manager page describes real methods (an `## ` heading and an
     // HTTP line generated from the IR).
