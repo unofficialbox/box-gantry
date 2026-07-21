@@ -154,6 +154,7 @@ pub fn generate(
                       export * as models from './models/index.js';\n\
                       export * as managers from './managers/index.js';\n\
                       export * as runtime from './runtime.js';\n\
+                      export * as auth from './auth.js';\n\
                       export * as buildinfo from './buildinfo.js';\n"
                 .to_string(),
         },
@@ -307,10 +308,10 @@ npm install @unofficialbox/box-open-sdk
 ## Quickstart
 
 ```ts
-import { Client, runtime } from '@unofficialbox/box-open-sdk';
+import { Client, auth } from '@unofficialbox/box-open-sdk';
 
 // Developer token for a quick start; CCG, OAuth, and JWT are also supported.
-const client = new Client(runtime.developerToken('DEVELOPER_TOKEN'));
+const client = new Client(auth.developerToken('DEVELOPER_TOKEN'));
 
 // Every API area is a typed manager on the client.
 const me = await client.users.getMe();

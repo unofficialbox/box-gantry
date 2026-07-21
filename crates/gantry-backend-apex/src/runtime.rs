@@ -14,6 +14,8 @@ use crate::{CLASSES_DIR, GeneratedFile};
 /// The runtime's hand-written class names — reserved so no generated model,
 /// manager, or client class can collide with them in the flat namespace.
 pub(crate) const RUNTIME_CLASS_NAMES: &[&str] = &[
+    "BoxAuth",
+    "BoxAuthTest",
     "BoxTokenProvider",
     "BoxDeveloperTokenProvider",
     "BoxCachingTokenProvider",
@@ -31,6 +33,14 @@ pub(crate) const RUNTIME_CLASS_NAMES: &[&str] = &[
 /// The embedded runtime classes, as generated files under `classes/`.
 pub(crate) fn runtime_classes() -> Vec<GeneratedFile> {
     const SOURCES: &[(&str, &str)] = &[
+        (
+            "BoxAuth",
+            include_str!("../../../runtimes/apex/main/default/classes/BoxAuth.cls"),
+        ),
+        (
+            "BoxAuthTest",
+            include_str!("../../../runtimes/apex/main/default/classes/BoxAuthTest.cls"),
+        ),
         (
             "BoxTokenProvider",
             include_str!("../../../runtimes/apex/main/default/classes/BoxTokenProvider.cls"),

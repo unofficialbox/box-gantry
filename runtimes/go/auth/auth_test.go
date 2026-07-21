@@ -1,4 +1,4 @@
-package gantryruntime
+package auth
 
 import (
 	"context"

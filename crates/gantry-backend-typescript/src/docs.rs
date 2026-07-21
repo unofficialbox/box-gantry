@@ -252,20 +252,20 @@ fn request_media(media: ir::RequestMedia) -> &'static str {
 const AUTH_GUIDE: &str = "# Authentication\n\n\
 Build a `Client` from one of the four Box auth flows. Each flow is an `Auth`\n\
 the runtime uses to fetch a bearer token; the network layer refreshes on a\n\
-`401` and retries once. The flow builders live in the runtime package and are\n\
-passed straight to `new Client(...)`.\n\n\
+`401` and retries once. The flow builders live in the `auth` namespace (JWT on\n\
+the Node-only `./jwt` subpath) and are passed straight to `new Client(...)`.\n\n\
 ## Developer Token\n\n\
 A fixed token from the Developer Console, for quick local testing:\n\n\
 ```ts\n\
-import { developerToken } from 'box-gantry-runtime';\n\
-const client = new Client(developerToken('DEVELOPER_TOKEN'));\n\
+import { auth } from '@unofficialbox/box-open-sdk';\n\
+const client = new Client(auth.developerToken('DEVELOPER_TOKEN'));\n\
 ```\n\n\
 ## Client Credentials Grant (server auth, no key)\n\n\
 Set exactly one subject — `enterpriseId` for the service account, or `userId`\n\
 to act as a managed user:\n\n\
 ```ts\n\
-import { clientCredentials } from 'box-gantry-runtime';\n\
-const client = new Client(clientCredentials({\n\
+import { auth } from '@unofficialbox/box-open-sdk';\n\
+const client = new Client(auth.clientCredentials({\n\
   clientId: 'CLIENT_ID',\n\
   clientSecret: 'CLIENT_SECRET',\n\
   enterpriseId: 'ENTERPRISE_ID',\n\
@@ -276,7 +276,7 @@ Parses (and if needed decrypts) the RSA key up front, so a bad key fails\n\
 loudly at construction. It reaches `node:crypto`, so it is a Node-only leaf\n\
 imported from the runtime's `./jwt` entry point and returns a promise:\n\n\
 ```ts\n\
-import { jwtAuth } from 'box-gantry-runtime/jwt';\n\
+import { jwtAuth } from '@unofficialbox/box-open-sdk/jwt';\n\
 const auth = await jwtAuth({\n\
   clientId: 'CLIENT_ID',\n\
   clientSecret: 'CLIENT_SECRET',\n\
@@ -290,10 +290,10 @@ const client = new Client(auth);\n\
 Redirect the user to the authorize URL, exchange the returned code, then reuse\n\
 the rotated refresh token on later runs (persist it via `onRefresh`):\n\n\
 ```ts\n\
-import { oauth } from 'box-gantry-runtime';\n\
+import { auth } from '@unofficialbox/box-open-sdk';\n\
 // later runs: resume from the stored refresh token.\n\
-const auth = oauth({ clientId: 'CLIENT_ID', clientSecret: 'CLIENT_SECRET' }, storedRefreshToken);\n\
-const client = new Client(auth);\n\
+const source = auth.oauth({ clientId: 'CLIENT_ID', clientSecret: 'CLIENT_SECRET' }, storedRefreshToken);\n\
+const client = new Client(source);\n\
 ```\n";
 
 const PAGINATION_GUIDE: &str = "# Pagination\n\n\
@@ -318,11 +318,11 @@ backoff + jitter, `401` refresh, `Retry-After`). It carries the HTTP `status`\n\
 when the failure came with a response, and the underlying `cause` for\n\
 transport or decode failures:\n\n\
 ```ts\n\
-import { BoxApiError } from 'box-gantry-runtime';\n\
+import { runtime } from '@unofficialbox/box-open-sdk';\n\
 try {\n\
   await client.files.getFileById(fileId);\n\
 } catch (err) {\n\
-  if (err instanceof BoxApiError) {\n\
+  if (err instanceof runtime.BoxApiError) {\n\
     // err.status (number | undefined), err.cause\n\
   }\n\
 }\n\

@@ -273,28 +273,30 @@ fn request_media(media: ir::RequestMedia) -> &'static str {
 }
 
 const AUTH_GUIDE: &str = "# Authentication\n\n\
-Construct a `dev.unofficialbox.Client` from one of the four Box auth flows. Each is a\n\
-`dev.unofficialbox.runtime.Runtime.Auth` that caches its access token until shortly\n\
-before it expires; the network layer refreshes on a `401` and retries once.\n\n\
+Construct a `dev.unofficialbox.Client` from one of the four Box auth flows, built\n\
+via `dev.unofficialbox.auth.Auth`. Each returns a\n\
+`dev.unofficialbox.runtime.Runtime.Auth` token source that caches its access token\n\
+until shortly before it expires; the network layer refreshes on a `401` and\n\
+retries once. (Config types below stay on `Runtime`, e.g. `Runtime.CcgConfig`.)\n\n\
 ## Developer Token\n\n\
 ```java\n\
-Client client = new Client(Runtime.developerToken(\"DEVELOPER_TOKEN\"));\n\
+Client client = new Client(Auth.developerToken(\"DEVELOPER_TOKEN\"));\n\
 ```\n\n\
 ## Client Credentials Grant (server auth, no key)\n\n\
 ```java\n\
-Client client = new Client(Runtime.clientCredentials(\n\
+Client client = new Client(Auth.clientCredentials(\n\
         Runtime.CcgConfig.enterprise(\"CLIENT_ID\", \"CLIENT_SECRET\", \"ENTERPRISE_ID\")));\n\
 // or Runtime.CcgConfig.user(\"CLIENT_ID\", \"CLIENT_SECRET\", \"USER_ID\")\n\
 ```\n\n\
 ## JWT (server auth with a signing key)\n\n\
 ```java\n\
 // From an app's box_config.json (bad key: fails loudly at construction):\n\
-Client client = new Client(Runtime.jwt(Runtime.JwtConfig.fromBoxConfig(boxConfigJson)));\n\
+Client client = new Client(Auth.jwt(Runtime.JwtConfig.fromBoxConfig(boxConfigJson)));\n\
 // or build it explicitly:\n\
 Runtime.JwtConfig config = Runtime.JwtConfig.enterprise(\n\
         \"CLIENT_ID\", \"CLIENT_SECRET\", \"PUBLIC_KEY_ID\",\n\
         privateKeyPem, keyPassphrase, \"ENTERPRISE_ID\");\n\
-Client client = new Client(Runtime.jwt(config));\n\
+Client client = new Client(Auth.jwt(config));\n\
 ```\n\n\
 ## OAuth 2.0 (authorization code)\n\n\
 Redirect the user to the consent URL, exchange the returned code, then reuse the\n\
@@ -304,7 +306,7 @@ Runtime.OAuthConfig oauth = new Runtime.OAuthConfig(\"CLIENT_ID\", \"CLIENT_SECR
 // first run: redirect to oauth.authorizeUrl(redirectUri, state), then\n\
 // Auth auth = oauth.exchangeCode(code, redirectUri);\n\
 // later runs: rebuild from the stored refresh token.\n\
-Client client = new Client(Runtime.oauth(oauth, storedRefreshToken));\n\
+Client client = new Client(Auth.oauth(oauth, storedRefreshToken));\n\
 ```\n";
 
 const CHUNKED_UPLOAD_GUIDE: &str = "# Chunked upload\n\n\

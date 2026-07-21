@@ -858,10 +858,10 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
 
     // Every class has exactly one matching -meta.xml sidecar (source
     // format), so the tree deploys as-is. After dedupe (D-127): 898 model
-    // classes + 85 managers + the Box client + 3 contract stubs + 12
+    // classes + 85 managers + the Box client + 3 contract stubs + 14
     // hand-written runtime classes (the caching base, CCG + JWT providers, the
-    // chunked-upload helper, and their tests — D-134/D-135/D-136 — plus the
-    // HTTP client's own HttpCalloutMock test) = 999
+    // chunked-upload helper, the `BoxAuth` facade + its test — D-134/D-135/D-136/
+    // D-193 — plus the HTTP client's own HttpCalloutMock test) = 1001
     // (pagination adds no classes — the base method's envelope is the page,
     // D-131). Plus the generated `@isTest` suite for the 75% coverage gate: 85
     // per-manager tests + the mock client + the unions test = 87, the
@@ -870,7 +870,7 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     // (`normalizeKeys`/`denormalizeKeys`/`deserialize`) exercised with populated
     // inputs, chunked ≤ 60 structs per class so no method overruns Apex's
     // compiled-size limit. The version merge (D-190) drops 21 model classes and
-    // the box-version strip (D-191) drops 2 more. 976 + 87 + 1 + 4 = 1068 total.
+    // the box-version strip (D-191) drops 2 more. 978 + 87 + 1 + 4 = 1070 total.
     let classes: Vec<&str> = files
         .iter()
         .filter(|f| f.path.ends_with(".cls"))
@@ -878,7 +878,7 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         .collect();
     assert_eq!(
         classes.len(),
-        976 + 87 + 1 + 4,
+        978 + 87 + 1 + 4,
         "models + managers + client + stubs + runtime + @isTest suite + BoxBuildInfo + wire-hook suite"
     );
     // The generated test suite ships with the deployable tree.
@@ -974,7 +974,7 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     // 6 base scaffolding (sfdx-project, scratch-def, .forceignore, package.xml,
     // README, assets/banner.svg) + 4 Remote Site Settings + 1068 classes + 1068
     // metas + 425 docs.
-    assert_eq!(files.len(), 6 + 4 + (976 + 87 + 1 + 4) * 2 + 425);
+    assert_eq!(files.len(), 6 + 4 + (978 + 87 + 1 + 4) * 2 + 425);
 
     // Deterministic and path-sorted.
     let sorted: Vec<&String> = {

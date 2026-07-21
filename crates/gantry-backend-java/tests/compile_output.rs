@@ -422,7 +422,7 @@ fn reference_docs_describe_the_java_surface() {
     // The guides are Java-flavored with real call sites.
     let auth = doc("docs/auth.md");
     assert!(
-        auth.contains("new Client(Runtime.developerToken(\"DEVELOPER_TOKEN\"))"),
+        auth.contains("new Client(Auth.developerToken(\"DEVELOPER_TOKEN\"))"),
         "{auth}"
     );
     assert!(auth.contains("Runtime.JwtConfig.fromBoxConfig("), "{auth}");

@@ -1,8 +1,8 @@
-// Package-level auth: the four Box auth flows, each a TokenSource passed
+// Package-level auth: the four Box auth flows, each a gantryruntime.TokenSource passed
 // to New. DeveloperToken is a fixed token; ClientCredentials (CCG), JWT,
 // and OAuth exchange credentials at Box's token endpoint and cache the
 // resulting access token until shortly before it expires (TR-Go.7).
-package gantryruntime
+package auth
 
 import (
 	"context"
@@ -23,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"boxgantry.invalid/boxsdk/gantryruntime"
 )
 
 // defaultTokenURL is Box's OAuth 2.0 token endpoint, shared by every
@@ -38,9 +40,9 @@ const refreshMargin = 60 * time.Second
 
 // DeveloperToken is the simplest auth flow: a fixed access token from the
 // Box developer console. The other three flows (CCG, JWT, OAuth 2.0
-// authorization code) implement the same TokenSource interface and can be
+// authorization code) implement the same gantryruntime.TokenSource interface and can be
 // passed to New in its place.
-func DeveloperToken(token string) TokenSource { return developerToken(token) }
+func DeveloperToken(token string) gantryruntime.TokenSource { return developerToken(token) }
 
 type developerToken string
 
@@ -98,15 +100,15 @@ func postTokenForm(ctx context.Context, httpc *http.Client, tokenURL string, for
 		return tokenResponse{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return tokenResponse{}, fmt.Errorf("gantryruntime: token endpoint returned %d: %s",
+		return tokenResponse{}, fmt.Errorf("auth: token endpoint returned %d: %s",
 			resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	var tr tokenResponse
 	if err := json.Unmarshal(body, &tr); err != nil {
-		return tokenResponse{}, fmt.Errorf("gantryruntime: decoding token response: %w", err)
+		return tokenResponse{}, fmt.Errorf("auth: decoding token response: %w", err)
 	}
 	if tr.AccessToken == "" {
-		return tokenResponse{}, errors.New("gantryruntime: token endpoint returned no access_token")
+		return tokenResponse{}, errors.New("auth: token endpoint returned no access_token")
 	}
 	return tr, nil
 }
@@ -137,8 +139,8 @@ type CCGConfig struct {
 	HTTPClient   *http.Client // optional
 }
 
-// ClientCredentials builds a CCG TokenSource.
-func ClientCredentials(cfg CCGConfig) TokenSource {
+// ClientCredentials builds a CCG gantryruntime.TokenSource.
+func ClientCredentials(cfg CCGConfig) gantryruntime.TokenSource {
 	httpc := authHTTPClient(cfg.HTTPClient)
 	tokenURL := orDefault(cfg.TokenURL, defaultTokenURL)
 	subjectType, subjectID := "enterprise", cfg.EnterpriseID
@@ -164,7 +166,7 @@ func ClientCredentials(cfg CCGConfig) TokenSource {
 
 // OAuthConfig configures the OAuth 2.0 authorization-code flow (a user
 // grants a Box app access). Use AuthorizeURL to build the redirect,
-// ExchangeCode to turn the returned code into a TokenSource, or OAuth to
+// ExchangeCode to turn the returned code into a gantryruntime.TokenSource, or OAuth to
 // resume from a stored refresh token.
 type OAuthConfig struct {
 	ClientID     string
@@ -185,9 +187,9 @@ func (cfg OAuthConfig) AuthorizeURL(redirectURI, state string) string {
 	return authorizeURL + "?" + q.Encode()
 }
 
-// ExchangeCode exchanges an authorization code for a TokenSource that
+// ExchangeCode exchanges an authorization code for a gantryruntime.TokenSource that
 // refreshes itself thereafter.
-func (cfg OAuthConfig) ExchangeCode(ctx context.Context, code, redirectURI string) (TokenSource, error) {
+func (cfg OAuthConfig) ExchangeCode(ctx context.Context, code, redirectURI string) (gantryruntime.TokenSource, error) {
 	httpc := authHTTPClient(cfg.HTTPClient)
 	tokenURL := orDefault(cfg.TokenURL, defaultTokenURL)
 	tr, err := postTokenForm(ctx, httpc, tokenURL, url.Values{
@@ -201,7 +203,7 @@ func (cfg OAuthConfig) ExchangeCode(ctx context.Context, code, redirectURI strin
 		return nil, err
 	}
 	if tr.RefreshToken == "" {
-		return nil, errors.New("gantryruntime: authorization-code exchange returned no refresh_token")
+		return nil, errors.New("auth: authorization-code exchange returned no refresh_token")
 	}
 	s := newOAuthSource(cfg, httpc, tokenURL, tr.RefreshToken)
 	s.token, s.expiry = tr.AccessToken, time.Now().Add(tr.ttl())
@@ -210,7 +212,7 @@ func (cfg OAuthConfig) ExchangeCode(ctx context.Context, code, redirectURI strin
 
 // OAuth resumes the authorization-code flow from a previously stored
 // refresh token, exchanging it for access tokens as needed.
-func OAuth(cfg OAuthConfig, refreshToken string) TokenSource {
+func OAuth(cfg OAuthConfig, refreshToken string) gantryruntime.TokenSource {
 	return newOAuthSource(cfg, authHTTPClient(cfg.HTTPClient), orDefault(cfg.TokenURL, defaultTokenURL), refreshToken)
 }
 
@@ -274,10 +276,10 @@ type JWTConfig struct {
 	HTTPClient    *http.Client // optional
 }
 
-// JWTAuth builds a JWT-assertion TokenSource, parsing (and if needed
+// JWTAuth builds a JWT-assertion gantryruntime.TokenSource, parsing (and if needed
 // decrypting) the RSA private key up front so a bad key fails loudly at
 // construction rather than on the first request.
-func JWTAuth(cfg JWTConfig) (TokenSource, error) {
+func JWTAuth(cfg JWTConfig) (gantryruntime.TokenSource, error) {
 	key, err := parseRSAPrivateKey(cfg.PrivateKeyPEM, cfg.Passphrase)
 	if err != nil {
 		return nil, err
@@ -315,27 +317,27 @@ func JWTAuth(cfg JWTConfig) (TokenSource, error) {
 func parseRSAPrivateKey(pemBytes []byte, passphrase string) (*rsa.PrivateKey, error) {
 	block, _ := pem.Decode(pemBytes)
 	if block == nil {
-		return nil, errors.New("gantryruntime: no PEM block in the private key")
+		return nil, errors.New("auth: no PEM block in the private key")
 	}
 	der := block.Bytes
 	switch {
 	case block.Type == "ENCRYPTED PRIVATE KEY":
 		// Modern encrypted PKCS#8 (PBES2) — Box's box_config.json format.
 		if passphrase == "" {
-			return nil, errors.New("gantryruntime: private key is encrypted but no passphrase was given")
+			return nil, errors.New("auth: private key is encrypted but no passphrase was given")
 		}
 		decrypted, err := decryptPKCS8(der, []byte(passphrase))
 		if err != nil {
-			return nil, fmt.Errorf("gantryruntime: decrypting private key: %w", err)
+			return nil, fmt.Errorf("auth: decrypting private key: %w", err)
 		}
 		der = decrypted
 	case x509.IsEncryptedPEMBlock(block): //nolint:staticcheck // legacy encrypted PEM is an older Box key format
 		if passphrase == "" {
-			return nil, errors.New("gantryruntime: private key is encrypted but no passphrase was given")
+			return nil, errors.New("auth: private key is encrypted but no passphrase was given")
 		}
 		decrypted, err := x509.DecryptPEMBlock(block, []byte(passphrase)) //nolint:staticcheck // paired with the deprecated IsEncryptedPEMBlock above
 		if err != nil {
-			return nil, fmt.Errorf("gantryruntime: decrypting private key: %w", err)
+			return nil, fmt.Errorf("auth: decrypting private key: %w", err)
 		}
 		der = decrypted
 	}
@@ -344,11 +346,11 @@ func parseRSAPrivateKey(pemBytes []byte, passphrase string) (*rsa.PrivateKey, er
 	}
 	parsed, err := x509.ParsePKCS8PrivateKey(der)
 	if err != nil {
-		return nil, fmt.Errorf("gantryruntime: parsing private key: %w", err)
+		return nil, fmt.Errorf("auth: parsing private key: %w", err)
 	}
 	key, ok := parsed.(*rsa.PrivateKey)
 	if !ok {
-		return nil, errors.New("gantryruntime: private key is not RSA")
+		return nil, errors.New("auth: private key is not RSA")
 	}
 	return key, nil
 }
@@ -382,7 +384,7 @@ func signAssertion(cfg JWTConfig, key *rsa.PrivateKey, subjectType, subjectID, a
 	digest := sha256.Sum256([]byte(signingInput))
 	sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
 	if err != nil {
-		return "", fmt.Errorf("gantryruntime: signing assertion: %w", err)
+		return "", fmt.Errorf("auth: signing assertion: %w", err)
 	}
 	return signingInput + "." + b64(sig), nil
 }

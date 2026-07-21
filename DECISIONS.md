@@ -3999,3 +3999,32 @@ and regenerating into a populated directory left stale files — renaming Rust's
 `src/runtime.rs` to `src/runtime/mod.rs` left both, an ambiguous-module error
 (E0761). The CLI now records what it wrote in `.gantry-manifest` and prunes
 exactly those paths, never touching files it did not create.
+
+## D-193 — Extract the auth surface into an `auth` package/namespace
+
+**Context.** Every SDK exposed the four Box auth flows (developer token, CCG,
+OAuth, JWT) through the *transport* runtime's name — `gantryruntime.DeveloperToken`
+(Go), `runtime::Auth` (Rust), `runtime.developerToken` (TS),
+`Runtime.developerToken` (Java), `new BoxDeveloperTokenProvider(...)` (Apex).
+That name describes HTTP/retry plumbing, not auth, so the first thing a user
+touches is mislabelled.
+
+**The decision.** Give the token providers a dedicated, descriptive home per
+language; the transport runtime keeps everything else. The token-source *type*
+stays in the runtime (the client is constructed with it) — only the user-facing
+builders move.
+
+| Target | New entry point | Mechanism |
+|---|---|---|
+| Go | `auth.DeveloperToken(…)` | `auth.go`/`pkcs8.go` become a sibling `auth` package importing `gantryruntime` for `TokenSource`; the dev module path is rewritten to the shipped one when vendored |
+| Rust | `box_open_sdk::auth::Auth::developer_token(…)` | a thin `pub mod auth` re-exporting `Auth` + configs from `runtime` |
+| TypeScript | `auth.developerToken(…)` | `export * as auth from './auth.js'` in the barrel |
+| Java | `dev.unofficialbox.auth.Auth.developerToken(…)` | a hand-written `Auth` facade delegating to `Runtime`'s static factories; config types stay nested on `Runtime` |
+| Apex | `BoxAuth.developerToken(…)` | a `BoxAuth` facade class (flat namespace has no packages) over the existing `Box*TokenProvider`s, with `BoxAuthTest` for the 75% gate |
+
+The auth builders return the runtime's token-source type unchanged, so the
+generated client constructor is untouched; only the vendoring, the READMEs, and
+the auth guides move to the new name. Each was compiled with its real toolchain
+(the vendored `auth` package/facade builds against the transport runtime) before
+shipping. Supersedes the Go row of D-192's vendoring table (`auth.go`/`pkcs8.go`
+now land under `auth/`, not `gantryruntime/`).
