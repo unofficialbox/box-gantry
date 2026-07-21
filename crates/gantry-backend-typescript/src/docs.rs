@@ -125,6 +125,11 @@ fn manager_page(
             "**Returns:** {}\n",
             describe_response(program, &op.response)
         );
+        let _ = writeln!(
+            body,
+            "**Example**\n\n{}",
+            call_snippet(program, field, op, &method, paged.contains_key(&index))
+        );
         if paged.contains_key(&index) {
             let _ = writeln!(
                 body,
@@ -137,6 +142,88 @@ fn manager_page(
     GeneratedFile {
         path: format!("docs/managers/{module}.md"),
         content: body,
+    }
+}
+
+/// A call snippet for one operation: the manager method with placeholder
+/// arguments in the printer's order (required params, then the body). Optional
+/// parameters ride in a trailing `opts?` object and are omitted. `await` for a
+/// value; `for await … of` drives the async-iterable paginators. Shape-correct
+/// fragment — argument count/order match the real signature — so the docs show
+/// *how to call* every method (FR-7.7).
+fn call_snippet(
+    program: &ir::Program,
+    field: &str,
+    op: &ir::Operation,
+    method: &str,
+    paged: bool,
+) -> String {
+    let mut args: Vec<String> = Vec::new();
+    for param in &op.params {
+        if !matches!(param.ty, ir::Type::Optional(_)) {
+            args.push(ts_placeholder(program, &param.ty, &param.wire_name));
+        }
+    }
+    if let Some(req) = &op.request {
+        args.push(ts_body_literal(program, unwrap(&req.ty)));
+    }
+    let call = format!("client.{field}.{method}({})", args.join(", "));
+
+    let mut out = String::from("```ts\n");
+    if paged {
+        let _ = writeln!(
+            out,
+            "for await (const item of {call}) {{\n  // use item\n}}"
+        );
+    } else if matches!(op.response, ir::ResponseShape::None) {
+        let _ = writeln!(out, "await {call};");
+    } else {
+        let _ = writeln!(out, "const result = await {call};");
+    }
+    out.push_str("```\n");
+    out
+}
+
+/// A placeholder value for a required argument, by type. Strings show the
+/// parameter name (upper-cased); enums/dates are wire strings; numbers/booleans
+/// their literals.
+fn ts_placeholder(program: &ir::Program, ty: &ir::Type, wire_name: &str) -> String {
+    let _ = program;
+    match unwrap(ty) {
+        ir::Type::Int64 | ir::Type::Float64 => "0".to_string(),
+        ir::Type::Bool => "false".to_string(),
+        ir::Type::List(_) => "[]".to_string(),
+        ir::Type::Map(_) | ir::Type::JsonValue => "{}".to_string(),
+        ir::Type::String => format!("\"{}\"", wire_name.to_uppercase()),
+        // Enums are string-literal unions, dates are ISO strings on the wire —
+        // a placeholder string is the honest, valid value.
+        ir::Type::Decl(_)
+        | ir::Type::Date
+        | ir::Type::DateTime
+        | ir::Type::Binary
+        | ir::Type::Optional(_)
+        | ir::Type::Nullable(_) => "\"...\"".to_string(),
+    }
+}
+
+/// A placeholder literal for a request body: an object body is `{ /* … */ }`, a
+/// list body `[]`, a map/JSON body `{}`.
+fn ts_body_literal(program: &ir::Program, ty: &ir::Type) -> String {
+    let _ = program;
+    match ty {
+        ir::Type::List(_) => "[]".to_string(),
+        ir::Type::Bool
+        | ir::Type::Int64
+        | ir::Type::Float64
+        | ir::Type::String
+        | ir::Type::Date
+        | ir::Type::DateTime
+        | ir::Type::Binary
+        | ir::Type::JsonValue
+        | ir::Type::Map(_)
+        | ir::Type::Decl(_)
+        | ir::Type::Optional(_)
+        | ir::Type::Nullable(_) => "{ /* … */ }".to_string(),
     }
 }
 
