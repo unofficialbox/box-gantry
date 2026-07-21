@@ -741,6 +741,81 @@ fn generation_is_deterministic() {
     }
 }
 
+/// The hand-written `BoxChunkedUpload` helper (TR-Apex.6) is the one runtime
+/// class that reaches *into* the generated surface by name — it calls
+/// `BoxChunkedUploads` manager methods and constructs generated request-body
+/// types. A rename on the generated side (as the D-189/190/191 naming overhaul
+/// did) silently desyncs the vendored helper: it compiles nowhere but a real
+/// Apex org, so the toolchain-less gate here waves it through and the break only
+/// surfaces at `sf package version create`. Pin the coupling: every method the
+/// helper calls must exist on the manager, and every `…Request` body it builds
+/// must be a generated class.
+#[test]
+fn chunked_upload_helper_matches_generated_surface() {
+    // Identifiers that immediately follow `marker` in `text` (a run of
+    // `[A-Za-z0-9_]`), e.g. the method name after `chunkedUploads.`.
+    fn idents_after(text: &str, marker: &str) -> Vec<String> {
+        text.match_indices(marker)
+            .map(|(i, _)| {
+                text[i + marker.len()..]
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect::<String>()
+            })
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+
+    let files = real_spec_generate();
+    let content = |path: &str| {
+        files
+            .iter()
+            .find(|f| f.path == path)
+            .unwrap_or_else(|| panic!("missing {path}"))
+            .content
+            .as_str()
+    };
+    let helper = content("force-app/main/default/classes/BoxChunkedUpload.cls");
+    let manager = content("force-app/main/default/classes/BoxChunkedUploads.cls");
+
+    // Every `this.client.chunkedUploads.<method>(` must be a method the manager
+    // declares (matched as ` <method>(` — the space rules out substring hits).
+    for method in idents_after(helper, "this.client.chunkedUploads.") {
+        assert!(
+            manager.contains(&format!(" {method}(")),
+            "BoxChunkedUpload calls chunkedUploads.{method}(...), \
+             but BoxChunkedUploads declares no such method (naming drift)"
+        );
+    }
+
+    // Every generated request body the helper constructs must exist as a class.
+    for ty in idents_after(helper, "new ") {
+        if ty.ends_with("Request") {
+            let path = format!("force-app/main/default/classes/{ty}.cls");
+            assert!(
+                files.iter().any(|f| f.path == path),
+                "BoxChunkedUpload builds {ty}, but {path} is not generated (naming drift)"
+            );
+        }
+    }
+}
+
+/// The full `generate()` output over the real spec set.
+fn real_spec_generate() -> Vec<GeneratedFile> {
+    let lowering = gantry_spec::lower(
+        &SpecSet::load(&[
+            fixture("openapi.json"),
+            fixture("openapi-v2025.0.json"),
+            fixture("openapi-v2026.0.json"),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    let program = Box::leak(Box::new(lowering.program));
+    let analysis = gantry_sema::analyze(program).unwrap();
+    generate(&analysis, &apex(), &BuildInfo::new("testfp"))
+}
+
 #[test]
 fn the_generated_tree_is_a_deployable_sfdx_project() {
     let lowering = gantry_spec::lower(
