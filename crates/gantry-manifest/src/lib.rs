@@ -18,7 +18,7 @@
 /// carries no in-file version to align.
 ///
 /// A single-place bump here re-versions the whole fleet at once.
-pub const SDK_VERSION: &str = "0.1.1";
+pub const SDK_VERSION: &str = "0.1.2";
 
 /// The capability axes of one target language (FR-4.1).
 ///
