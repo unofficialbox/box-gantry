@@ -172,7 +172,9 @@ fn generation_is_deterministic() {
     // The compile gate proves the derive is satisfiable fleet-wide; this pins
     // that it's emitted (open enums/unions carry it so structs can).
     assert!(
-        models.contains("#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]"),
+        models.contains(
+            "#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]"
+        ),
         "model structs should derive Default (D-196)"
     );
     let cargo = once.iter().find(|f| f.path == "Cargo.toml").unwrap();
