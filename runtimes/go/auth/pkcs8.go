@@ -7,7 +7,7 @@
 // small PBES2 (PBKDF2 + AES-CBC) path lives here — pure standard library, no
 // third-party dependency, matching how the Rust/TS/Java runtimes handle the
 // same key with their platforms' crypto.
-package gantryruntime
+package auth
 
 import (
 	"crypto/aes"

@@ -241,7 +241,7 @@ fn readme() -> String {
          \n\
          ```java\n\
          dev.unofficialbox.Client client = new dev.unofficialbox.Client(\n\
-         \x20       dev.unofficialbox.runtime.Runtime.developerToken(\"DEVELOPER_TOKEN\"));\n\
+         \x20       dev.unofficialbox.auth.Auth.developerToken(\"DEVELOPER_TOKEN\"));\n\
          ```\n\
          \n\
          ## Parallel chunked upload (opt-in)\n\

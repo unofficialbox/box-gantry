@@ -282,7 +282,7 @@ box-open-sdk = "{minor}"
 
 ```rust,ignore
 use box_open_sdk::client::Client;
-use box_open_sdk::runtime::Auth;
+use box_open_sdk::auth::Auth;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {{
@@ -344,6 +344,12 @@ fn lib_rs(manifest: &gantry_manifest::CapabilityManifest, build: &BuildInfo) -> 
          pub mod managers;\n\
          pub mod models;\n\
          pub mod runtime;\n\
+         /// The four Box auth flows. Build an [`auth::Auth`] and pass it to\n\
+         /// [`client::Client::new`]. Split from the transport runtime so the\n\
+         /// auth surface has a descriptive path (D-193).\n\
+         pub mod auth {{\n\
+         \x20   pub use crate::runtime::{{Auth, CcgConfig, JwtConfig, OAuthConfig, RefreshTokenStore}};\n\
+         }}\n\
          mod serde_helpers;\n\
          \n\
          // Generated round-trip / behavioral tests (FR-7.8, VR-4).\n\

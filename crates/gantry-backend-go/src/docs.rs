@@ -236,16 +236,16 @@ const AUTH_GUIDE: &str = "# Authentication\n\n\
 Every request is authorized through the runtime's token source: the\n\
 generated code calls `AccessToken(ctx)` and attaches the bearer token,\n\
 and the network layer refreshes on a `401` and retries once. Pass one of\n\
-the four Box auth flows to `client.NewClient` at construction; each is a\n\
-`gantryruntime.TokenSource` that caches its access token until shortly\n\
-before it expires.\n\n\
+the four Box auth flows — from the `auth` package — to `client.NewClient`\n\
+at construction; each is a `gantryruntime.TokenSource` that caches its\n\
+access token until shortly before it expires.\n\n\
 ## Developer Token\n\n\
 ```go\n\
-c := client.NewClient(gantryruntime.DeveloperToken(\"DEVELOPER_TOKEN\"))\n\
+c := client.NewClient(auth.DeveloperToken(\"DEVELOPER_TOKEN\"))\n\
 ```\n\n\
 ## Client Credentials Grant (server auth, no key)\n\n\
 ```go\n\
-c := client.NewClient(gantryruntime.ClientCredentials(gantryruntime.CCGConfig{\n\
+c := client.NewClient(auth.ClientCredentials(auth.CCGConfig{\n\
 \tClientID:     \"CLIENT_ID\",\n\
 \tClientSecret: \"CLIENT_SECRET\",\n\
 \tEnterpriseID: \"ENTERPRISE_ID\", // or set UserID to act as a managed user\n\
@@ -253,7 +253,7 @@ c := client.NewClient(gantryruntime.ClientCredentials(gantryruntime.CCGConfig{\n
 ```\n\n\
 ## JWT (server auth with a signing key)\n\n\
 ```go\n\
-src, err := gantryruntime.JWTAuth(gantryruntime.JWTConfig{\n\
+src, err := auth.JWTAuth(auth.JWTConfig{\n\
 \tClientID:      \"CLIENT_ID\",\n\
 \tClientSecret:  \"CLIENT_SECRET\",\n\
 \tPublicKeyID:   \"PUBLIC_KEY_ID\",\n\
@@ -267,9 +267,9 @@ c := client.NewClient(src)\n\
 Redirect the user to `cfg.AuthorizeURL(redirectURI, state)`, exchange the\n\
 returned code, then reuse the stored refresh token on later runs:\n\n\
 ```go\n\
-cfg := gantryruntime.OAuthConfig{ClientID: \"CLIENT_ID\", ClientSecret: \"CLIENT_SECRET\"}\n\
+cfg := auth.OAuthConfig{ClientID: \"CLIENT_ID\", ClientSecret: \"CLIENT_SECRET\"}\n\
 src, err := cfg.ExchangeCode(ctx, code, redirectURI)\n\
-// later: src := gantryruntime.OAuth(cfg, storedRefreshToken)\n\
+// later: src := auth.OAuth(cfg, storedRefreshToken)\n\
 c := client.NewClient(src)\n\
 ```\n";
 
