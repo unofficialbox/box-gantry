@@ -54,11 +54,11 @@ public with sharing class BoxChunkedUpload {
         if (String.isBlank(folderId)) {
             throw new BoxApiException('A destination folder id is required.');
         }
-        PostFilesUploadSessionsBody request = new PostFilesUploadSessionsBody();
+        FileUploadSessionsCreateRequest request = new FileUploadSessionsCreateRequest();
         request.file_name = fileName;
         request.file_size = content.size();
         request.folder_id = folderId;
-        return run(this.client.chunkedUploads.createFilesUploadSessions(request), content);
+        return run(this.client.chunkedUploads.createFileUploadSessions(request), content);
     }
 
     /** Upload `content` as a new version of the existing file `fileId`. */
@@ -67,11 +67,11 @@ public with sharing class BoxChunkedUpload {
         if (String.isBlank(fileId)) {
             throw new BoxApiException('A target file id is required.');
         }
-        PostFilesIdUploadSessionsBody request = new PostFilesIdUploadSessionsBody();
+        FileIdUploadSessionsCreateRequest request = new FileIdUploadSessionsCreateRequest();
         request.file_name = fileName;
         request.file_size = content.size();
         return run(
-            this.client.chunkedUploads.createFilesByIdUploadSessions(fileId, request),
+            this.client.chunkedUploads.createFileByIdUploadSessions(fileId, request),
             content
         );
     }
@@ -100,7 +100,7 @@ public with sharing class BoxChunkedUpload {
             return attempt(session, content);
         } catch (Exception failure) {
             try {
-                this.client.chunkedUploads.deleteFilesUploadSessionsById(session.id);
+                this.client.chunkedUploads.deleteFileUploadSession(session.id);
             } catch (Exception ignored) {
                 // best-effort cleanup — keep the original failure
             }
@@ -145,7 +145,7 @@ public with sharing class BoxChunkedUpload {
             }
             String digest = 'sha=' + EncodingUtil.base64Encode(Crypto.generateDigest('SHA1', partBlob));
             String contentRange = 'bytes ' + offset + '-' + (offset + len - 1) + '/' + total;
-            UploadedPart uploaded = this.client.chunkedUploads.updateFilesUploadSessionsById(
+            UploadedPart uploaded = this.client.chunkedUploads.updateFileUploadSession(
                 session.id,
                 digest,
                 contentRange,
@@ -158,9 +158,9 @@ public with sharing class BoxChunkedUpload {
         String wholeDigest = 'sha=' + EncodingUtil.base64Encode(Crypto.generateDigest('SHA1', content));
         // `commit` is an Apex reserved word (the DML statement), so the local
         // that holds the commit body is named `commitBody`.
-        PostFilesUploadSessionsIdCommitBody commitBody = new PostFilesUploadSessionsIdCommitBody();
+        FileUploadSessionCommitRequest commitBody = new FileUploadSessionCommitRequest();
         commitBody.parts = parts;
-        return this.client.chunkedUploads.commitFilesUploadSessionsById(
+        return this.client.chunkedUploads.commitFileUploadSession(
             session.id,
             wholeDigest,
             null,
