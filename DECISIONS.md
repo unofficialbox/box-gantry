@@ -4028,3 +4028,34 @@ the auth guides move to the new name. Each was compiled with its real toolchain
 (the vendored `auth` package/facade builds against the transport runtime) before
 shipping. Supersedes the Go row of D-192's vendoring table (`auth.go`/`pkcs8.go`
 now land under `auth/`, not `gantryruntime/`).
+
+## D-194 — Curate method names for a few operationId-derived collisions
+
+**Context.** Method names derive from the `operationId` tokens (`post`→`create`,
+then the resource path, D-126), with an interior `{id}` dropped as parent-path
+context and a numeric suffix as the last-resort collision breaker. Three real
+endpoints derive badly from that:
+
+- `POST /files/content` ("Upload file") and `POST /files/{file_id}/content`
+  ("Upload file version") both reduce to `createFileContent` — the version
+  endpoint's interior `{file_id}` drops — so whichever is lowered first takes the
+  clean name and the other lands on the meaningless **`createFileContent2`**.
+- `PUT /users/{id}/folders/0` ("Transfer owned folders") leaks Box's literal
+  root-folder id `0` into **`updateUserFolder0`**.
+
+**The decision.** A small curated map (`curated_method_name`, keyed by the
+version-stripped `operationId`) overrides the derived name for exactly these
+endpoints, to the intent Box documents in their summaries:
+
+| operationId | curated name |
+|---|---|
+| `post_files_content` | `uploadFile` |
+| `post_files_id_content` | `uploadFileVersion` |
+| `put_users_id_folders_0` | `transferFolders` |
+
+The override still flows through the per-`(manager, variation)` dedup guard, so
+it can't silently reintroduce a collision. Everything else keeps the mechanical
+derivation — this is a curated exception list, not a new naming mode. `oauth2`
+(`/oauth2/revoke` → `revokeOauth2`) is left alone: the `2` is the protocol name,
+not a disambiguator. A `real_specs` test pins the three curated names and asserts
+no operation name ends in a bare collision digit (bar `oauth2`).

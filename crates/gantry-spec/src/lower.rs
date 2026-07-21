@@ -751,19 +751,29 @@ impl<'a> DocLowerer<'a> {
         };
         let taken = self.method_names.entry(scope).or_default();
         let method_ident = {
-            // Terse first (no redundant trailing `ById`); fall back to the
-            // `…ById` form, then the keep-all-ids form, then a numeric suffix —
-            // so `ById` reappears only when a sibling would otherwise collide.
-            let terse = clean_name(&relabel(method_name(&short_tokens, false, true)));
-            let pretty = clean_name(&relabel(method_name(&short_tokens, false, false)));
-            let full = clean_name(&relabel(method_name(&short_tokens, true, false)));
-            let mut chosen = terse.clone();
-            if taken.contains(&chosen.to_ascii_lowercase()) {
-                chosen = pretty.clone();
-            }
-            if taken.contains(&chosen.to_ascii_lowercase()) {
-                chosen = full.clone();
-            }
+            // A curated name for the few endpoints whose operationId tokens
+            // derive an awkward or colliding method (D-194). Otherwise: terse
+            // first (no redundant trailing `ById`); fall back to the `…ById`
+            // form, then the keep-all-ids form — so `ById` reappears only when a
+            // sibling would otherwise collide.
+            let mut chosen = match curated_method_name(base_id) {
+                Some(curated) => clean_name(curated),
+                None => {
+                    let terse = clean_name(&relabel(method_name(&short_tokens, false, true)));
+                    let pretty = clean_name(&relabel(method_name(&short_tokens, false, false)));
+                    let full = clean_name(&relabel(method_name(&short_tokens, true, false)));
+                    let mut c = terse;
+                    if taken.contains(&c.to_ascii_lowercase()) {
+                        c = pretty;
+                    }
+                    if taken.contains(&c.to_ascii_lowercase()) {
+                        c = full;
+                    }
+                    c
+                }
+            };
+            // A numeric suffix is the last-resort disambiguator. Sema rejects a
+            // true duplicate loudly, so this always converges on a fresh name.
             let base = chosen.clone();
             let mut suffix = 2;
             while taken.contains(&chosen.to_ascii_lowercase()) {
@@ -1447,6 +1457,28 @@ const ACTION_VERBS: &[&str] = &[
 /// `keep_all_ids` renders *every* id as `by_id` instead of dropping interior
 /// ones — the collision fallback for multi-`{id}` paths (`…_id_id` →
 /// `GetByIdById`), so one- and two-id endpoints stay distinct.
+/// A curated method name for endpoints whose operationId tokens derive an
+/// awkward or colliding name (D-194). Keyed by the version-stripped
+/// operationId, so it applies across every spec version.
+///
+/// - The two `/files/content` uploads both reduce to `createFileContent` (the
+///   version endpoint's interior `{file_id}` drops as parent-path context), so
+///   one loses the dedup race to a meaningless `CreateFileContent2`. Box's
+///   summaries name them "Upload file" / "Upload file version".
+/// - `PUT /users/{id}/folders/0` ("Transfer owned folders") leaks Box's literal
+///   root-folder id `0` into `updateUserFolder0`.
+///
+/// Returns a camelCase seed; each backend cases it (`UploadFile`,
+/// `upload_file`, …). Curated names still flow through the dedup guard below.
+fn curated_method_name(base_id: &str) -> Option<&'static str> {
+    match base_id {
+        "post_files_content" => Some("uploadFile"),
+        "post_files_id_content" => Some("uploadFileVersion"),
+        "put_users_id_folders_0" => Some("transferFolders"),
+        _ => None,
+    }
+}
+
 fn method_name(short_tokens: &[String], keep_all_ids: bool, drop_trailing_id: bool) -> String {
     const HTTP_VERBS: &[&str] = &["get", "post", "put", "patch", "delete", "options", "head"];
 

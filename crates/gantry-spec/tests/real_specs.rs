@@ -102,6 +102,56 @@ fn the_full_real_spec_set_ingests() {
     assert_eq!(indexed, 336);
 }
 
+/// Method names never fall through to a meaningless numeric collision suffix,
+/// and the curated endpoints (D-194) carry their intended names.
+#[test]
+fn method_names_are_curated_not_collision_suffixed() {
+    let set = SpecSet::load(&[
+        fixture("openapi.json"),
+        fixture("openapi-v2025.0.json"),
+        fixture("openapi-v2026.0.json"),
+    ])
+    .unwrap();
+    let lowering = gantry_spec::lower(&set).unwrap();
+
+    let named = |manager: &str, name: &str| {
+        lowering
+            .program
+            .operations
+            .iter()
+            .any(|op| op.manager.as_str() == manager && op.name.as_str() == name)
+    };
+    // The two /files/content uploads used to collide on `createFileContent`
+    // (one losing to `createFileContent2`); the transfer endpoint leaked Box's
+    // literal root-folder `0`.
+    assert!(named("uploads", "uploadFile"), "upload-new-file name");
+    assert!(named("uploads", "uploadFileVersion"), "upload-version name");
+    assert!(named("transfer", "transferFolders"), "transfer name");
+    assert!(
+        !lowering
+            .program
+            .operations
+            .iter()
+            .any(|op| op.name.as_str().eq_ignore_ascii_case("createFileContent2")),
+        "the createFileContent collision must be gone"
+    );
+
+    // No method name ends in a bare numeric collision suffix. `oauth2` is a
+    // legitimate protocol name (`/oauth2/revoke`), not a `_2` disambiguator, so
+    // the guard targets the `<name>2`/`<name>0` shape a real name never takes.
+    for op in &lowering.program.operations {
+        let name = op.name.as_str();
+        let ends_digit = name.ends_with(|c: char| c.is_ascii_digit());
+        let is_oauth = name.to_ascii_lowercase().contains("oauth2");
+        assert!(
+            !ends_digit || is_oauth,
+            "operation {}/{} has a collision-suffixed name",
+            op.manager.as_str(),
+            name
+        );
+    }
+}
+
 #[test]
 fn the_spec_fingerprint_is_deterministic_and_order_sensitive() {
     let load = |files: &[PathBuf]| SpecSet::load(files).unwrap().fingerprint();
