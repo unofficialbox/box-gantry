@@ -186,7 +186,7 @@ fn pom_xml(build: &BuildInfo) -> String {
          \x20         <plugin>\n\
          \x20           <groupId>org.sonatype.central</groupId>\n\
          \x20           <artifactId>central-publishing-maven-plugin</artifactId>\n\
-         \x20           <version>0.7.0</version>\n\
+         \x20           <version>0.11.0</version>\n\
          \x20           <extensions>true</extensions>\n\
          \x20           <configuration>\n\
          \x20             <publishingServerId>central</publishingServerId>\n\
