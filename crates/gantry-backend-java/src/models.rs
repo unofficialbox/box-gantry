@@ -437,7 +437,71 @@ impl Printer<'_> {
         let fields = struct_components(s);
         let header = self.struct_header(name, &fields, &implements);
         let body = self.struct_codec(name, &fields);
-        format!("{header} {{\n{body}}}\n")
+        let builder = self.struct_builder(name, &fields);
+        format!("{header} {{\n{body}{builder}}}\n")
+    }
+
+    /// A fluent builder for the record (D-195): a setter per component and a
+    /// `build()`. An `Optional<T>` component's setter takes the raw `T` and
+    /// wraps it, so unset optional fields default to `Optional.empty()`. This is
+    /// what makes multi-field bodies readable —
+    /// `MetadataQuery.builder().from(…).ancestorFolderId(…).build()` — which the
+    /// canonical positional record constructor is not.
+    fn struct_builder(&mut self, name: &str, fields: &[(String, &ir::Field)]) -> String {
+        let mut out = String::new();
+        out.push_str("\n    /** A fluent builder; unset optional fields default to empty. */\n");
+        out.push_str(
+            "    public static Builder builder() {\n        return new Builder();\n    }\n\n",
+        );
+        out.push_str("    public static final class Builder {\n");
+        for (ident, field) in fields {
+            let ty = self.component_type(&field.ty);
+            if optional_inner(&ty).is_some() {
+                let _ = writeln!(
+                    out,
+                    "        private {ty} {ident} = java.util.Optional.empty();"
+                );
+            } else {
+                let _ = writeln!(out, "        private {ty} {ident};");
+            }
+        }
+        if !fields.is_empty() {
+            out.push('\n');
+        }
+        for (ident, field) in fields {
+            let ty = self.component_type(&field.ty);
+            match optional_inner(&ty) {
+                Some(inner) => {
+                    let _ = writeln!(out, "        public Builder {ident}({inner} {ident}) {{");
+                    let _ = writeln!(
+                        out,
+                        "            this.{ident} = java.util.Optional.ofNullable({ident});"
+                    );
+                    out.push_str("            return this;\n        }\n");
+                }
+                None => {
+                    let _ = writeln!(out, "        public Builder {ident}({ty} {ident}) {{");
+                    let _ = writeln!(out, "            this.{ident} = {ident};");
+                    out.push_str("            return this;\n        }\n");
+                }
+            }
+        }
+        if !fields.is_empty() {
+            out.push('\n');
+        }
+        let _ = writeln!(out, "        public {name} build() {{");
+        if fields.is_empty() {
+            let _ = writeln!(out, "            return new {name}();");
+        } else {
+            let _ = writeln!(out, "            return new {name}(");
+            for (i, (ident, _)) in fields.iter().enumerate() {
+                let tail = if i + 1 == fields.len() { "" } else { "," };
+                let _ = writeln!(out, "                {ident}{tail}");
+            }
+            out.push_str("            );\n");
+        }
+        out.push_str("        }\n    }\n");
+        out
     }
 
     /// The `public record Name(components)implements` declaration line(s), up to
@@ -1145,6 +1209,13 @@ fn constant_ident(value: &str) -> String {
 
 /// Sanitize an arbitrary name into a valid Java identifier body (no keyword
 /// handling): non-alphanumerics → `_`, digit-leading → prefixed.
+/// If `ty` is `Optional<INNER>`, returns `INNER` — the raw type a builder setter
+/// accepts (wrapping it back into an `Optional`). The outermost `>` is the last
+/// char, so a nested generic (`Optional<List<String>>`) unwraps correctly.
+fn optional_inner(ty: &str) -> Option<&str> {
+    ty.strip_prefix("Optional<")?.strip_suffix('>')
+}
+
 fn sanitize_ident(name: &str) -> String {
     let mut out: String = name
         .chars()
