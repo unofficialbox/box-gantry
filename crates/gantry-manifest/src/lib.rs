@@ -20,6 +20,77 @@
 /// A single-place bump here re-versions the whole fleet at once.
 pub const SDK_VERSION: &str = "0.1.2";
 
+/// The README header banner (NF-8), emitted as `assets/banner.svg` by every
+/// backend and referenced at the top of the generated README.
+///
+/// One SVG in the Unofficial Box community design language — deep-navy stage
+/// with a dotted-grid texture, the `B/` mark, a monospace eyebrow, the coral
+/// wordmark period, and an offset-shadow language badge. Only the language
+/// label varies, so the five SDKs read as one fleet. System fonts only
+/// (Helvetica/Arial, `ui-monospace`, Georgia) — no web-font dependency, matching
+/// the dependency-light rule — and self-contained navy, so it renders on both
+/// GitHub light and dark. Deterministic: same language in → same bytes out.
+///
+/// `language` is both the badge text and the alt/aria label (e.g. `"Go"`,
+/// `"TypeScript"`).
+pub fn banner_svg(language: &str) -> String {
+    // The badge is a fixed-width pill with centered text; size it from the label
+    // (generous padding) so the text clears the pill even under a fallback font.
+    let badge_w = 72 + language.chars().count() as u32 * 24;
+    let badge_x = 1144 - badge_w - 8;
+    let badge_half = badge_w / 2;
+    // No literal `{`/`}` anywhere in SVG, so nothing to escape but the args.
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1200 300\" role=\"img\" \
+         aria-label=\"Box Open SDK for {language}\">\
+         <defs><pattern id=\"d\" width=\"26\" height=\"26\" patternUnits=\"userSpaceOnUse\">\
+         <circle cx=\"1.5\" cy=\"1.5\" r=\"1.5\" fill=\"#16233a\"/></pattern></defs>\
+         <rect width=\"1200\" height=\"300\" fill=\"#0b172a\"/>\
+         <rect width=\"1200\" height=\"300\" fill=\"url(#d)\"/>\
+         <rect width=\"1200\" height=\"5\" fill=\"#0866d9\"/>\
+         <text x=\"56\" y=\"70\" font-family=\"'Helvetica Neue',Helvetica,Arial,sans-serif\" \
+         font-weight=\"800\" font-size=\"32\"><tspan fill=\"#fffefa\">B</tspan>\
+         <tspan fill=\"#5c9df2\">/</tspan></text>\
+         <text x=\"58\" y=\"134\" font-family=\"ui-monospace,SFMono-Regular,Menlo,monospace\" \
+         font-weight=\"600\" font-size=\"15\" letter-spacing=\"2\" fill=\"#5c9df2\">\
+         COMMUNITY-BUILT · OPEN SOURCE</text>\
+         <text x=\"54\" y=\"208\" font-family=\"'Helvetica Neue',Helvetica,Arial,sans-serif\" \
+         font-weight=\"800\" font-size=\"66\" letter-spacing=\"-1\">\
+         <tspan fill=\"#fffefa\">BOX OPEN SDK</tspan><tspan fill=\"#ff6658\">.</tspan></text>\
+         <text x=\"56\" y=\"252\" font-family=\"Georgia,'Times New Roman',serif\" font-size=\"19\" \
+         fill=\"#9fb0c6\">Every Box endpoint, typed — generated. dependency-light, punk rock 🤘</text>\
+         <g transform=\"translate({badge_x},110)\">\
+         <rect x=\"8\" y=\"8\" width=\"{badge_w}\" height=\"72\" rx=\"10\" fill=\"#ff6658\"/>\
+         <rect x=\"0\" y=\"0\" width=\"{badge_w}\" height=\"72\" rx=\"10\" fill=\"#e9f3ff\"/>\
+         <text x=\"{badge_half}\" y=\"50\" text-anchor=\"middle\" \
+         font-family=\"'Helvetica Neue',Helvetica,Arial,sans-serif\" font-weight=\"800\" \
+         font-size=\"34\" fill=\"#0b172a\">{language}</text></g></svg>\n"
+    )
+}
+
+#[cfg(test)]
+mod banner_tests {
+    use super::banner_svg;
+
+    #[test]
+    fn banner_is_deterministic_and_language_specific() {
+        assert_eq!(banner_svg("Go"), banner_svg("Go"));
+        assert_ne!(banner_svg("Go"), banner_svg("Rust"));
+    }
+
+    #[test]
+    fn banner_carries_the_label_and_brand_marks() {
+        let svg = banner_svg("TypeScript");
+        assert!(svg.starts_with("<svg"));
+        assert!(svg.contains("aria-label=\"Box Open SDK for TypeScript\""));
+        // The language is the badge text.
+        assert!(svg.contains(">TypeScript</text>"));
+        // Brand cues: navy stage, coral accent, the community eyebrow.
+        assert!(svg.contains("#0b172a") && svg.contains("#ff6658"));
+        assert!(svg.contains("COMMUNITY-BUILT · OPEN SOURCE"));
+    }
+}
+
 /// The capability axes of one target language (FR-4.1).
 ///
 /// Every field is total — there is no "unknown" — so adding an axis forces
