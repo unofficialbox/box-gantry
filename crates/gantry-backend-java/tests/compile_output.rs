@@ -81,8 +81,7 @@ fn generation_is_deterministic() {
             );
         } else if file.path == "assets/banner.svg" {
             assert!(
-                file.content.starts_with("<svg")
-                    && file.content.contains("Box Open SDK for Java"),
+                file.content.starts_with("<svg") && file.content.contains("Box Open SDK for Java"),
                 "assets/banner.svg is not the expected community banner"
             );
         } else {
