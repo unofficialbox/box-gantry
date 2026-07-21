@@ -4091,3 +4091,28 @@ MetadataQuery.builder().from("enterprise_0.invoiceData").ancestorFolderId(folder
 
 The javac gate's smoke driver now *calls* a builder (fluent setters + a nested
 builder), so they are proven callable API, not merely declarations that compile.
+
+## D-196 — `Default` on the Rust model layer
+
+**Context.** Rust request bodies have no ergonomic constructor: a struct literal
+must name **every** field, including `field: None` for each optional. The
+metadata query is eight fields; the folder-create four. Idiomatic Rust reaches
+for `Type { field: x, ..Default::default() }`, but the models didn't derive
+`Default`.
+
+**The decision.** Derive `Default` across the model layer so
+`..Default::default()` works. Three field-type families blocked a blanket derive
+and are handled at their source:
+
+- **Structs** — derive `Default`.
+- **Open enums** (newtype `struct X(pub String)`, D-012) — derive `Default`
+  (the empty string, a valid unknown value).
+- **Structural unions** (newtype over `serde_json::Value`) — derive `Default`
+  (`Value::Null`).
+- **Open discriminated unions** (a real `enum` with an `Unknown(Value)` member)
+  — a hand-written `Default` returning `Unknown(Default::default())`, since a
+  `#[default]` derive can't target a non-unit variant.
+
+Closed enums and closed unions stay non-`Default` (they have no empty member); no
+struct in the real spec requires one, and the compile gate would fail loudly if
+that ever changed. Additive — explicit construction is unchanged.
