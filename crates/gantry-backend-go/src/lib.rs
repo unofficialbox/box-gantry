@@ -108,6 +108,8 @@ pub fn generate(
         path: "README.md".to_string(),
         content: readme(),
     });
+    // Deterministic output is sorted by path (FR-6.2), as the other backends do.
+    files.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(files)
 }
 
