@@ -132,6 +132,9 @@ fn project_scaffolding(build: &BuildInfo) -> Vec<GeneratedFile> {
         file(".forceignore", forceignore()),
         file("manifest/package.xml", package_xml()),
         file("README.md", project_readme(build)),
+        // The license itself, not just a declaration of it. Repo-root, outside
+        // `force-app`, so it never deploys as metadata.
+        file("LICENSE", gantry_manifest::LICENSE.to_string()),
         // The shared community-design banner the README renders at its top (NF-8).
         // Repo-root asset, outside `force-app`, so it never deploys as metadata.
         file("assets/banner.svg", gantry_manifest::banner_svg("Apex")),
@@ -258,7 +261,7 @@ fn project_readme(build: &BuildInfo) -> String {
 
 # Box SDK for Salesforce Apex
 
-A **community, unofficial** Box API client for Salesforce Apex, as a deploy-ready
+An **open source, community-built** Box API client for Salesforce Apex, as a deploy-ready
 SFDX project. Every class lives in `force-app/main/default/classes/`; per-endpoint
 reference docs are in [`docs/`](docs/README.md). Provenance (engine version + spec
 fingerprint) is recorded in `BoxBuildInfo` and below.

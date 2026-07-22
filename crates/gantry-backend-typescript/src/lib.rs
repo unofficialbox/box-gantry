@@ -90,6 +90,12 @@ pub fn generate(
             path: "README.md".to_string(),
             content: readme(),
         },
+        // The license itself, not just `package.json`'s declaration of it —
+        // npm expects the file to ship inside the tarball.
+        GeneratedFile {
+            path: "LICENSE".to_string(),
+            content: gantry_manifest::LICENSE.to_string(),
+        },
         // The shared community-design banner the README renders at its top (NF-8).
         GeneratedFile {
             path: "assets/banner.svg".to_string(),
@@ -290,7 +296,7 @@ fn readme() -> String {
 
 [![npm](https://img.shields.io/npm/v/@unofficialbox/box-open-sdk.svg)](https://www.npmjs.com/package/@unofficialbox/box-open-sdk)
 
-A **community, unofficial** Box API client for TypeScript — fully typed models
+An **open source, community-built** Box API client for TypeScript — fully typed models
 for the whole Box surface, one manager per API area behind a single `Client`,
 and a `fetch`-based runtime with retry, backoff, and token refresh. Ships as a
 **dual ESM/CJS** package with bundled `.d.ts` declarations; no runtime

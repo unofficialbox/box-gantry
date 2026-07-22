@@ -971,10 +971,10 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         425,
         "endpoint + manager + top-index + guide docs"
     );
-    // 6 base scaffolding (sfdx-project, scratch-def, .forceignore, package.xml,
-    // README, assets/banner.svg) + 4 Remote Site Settings + 1068 classes + 1068
-    // metas + 425 docs.
-    assert_eq!(files.len(), 6 + 4 + (978 + 87 + 1 + 4) * 2 + 425);
+    // 7 base scaffolding (sfdx-project, scratch-def, .forceignore, package.xml,
+    // README, LICENSE, assets/banner.svg) + 4 Remote Site Settings + 1068
+    // classes + 1068 metas + 425 docs.
+    assert_eq!(files.len(), 7 + 4 + (978 + 87 + 1 + 4) * 2 + 425);
 
     // Deterministic and path-sorted.
     let sorted: Vec<&String> = {
