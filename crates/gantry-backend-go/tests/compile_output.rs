@@ -251,6 +251,20 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
     std::fs::create_dir_all(dir.join("cmd/smoke")).unwrap();
     std::fs::write(dir.join("cmd/smoke/main.go"), smoke).unwrap();
 
+    // The README Quickstart must itself compile against the real SDK (FR-7.7):
+    // extract its ```go block and build it, so the landing-page example can
+    // never drift from the generated surface (the class of bug that shipped a
+    // `user.ID` typo). `go build ./...` below compiles it with everything else.
+    let readme = std::fs::read_to_string(dir.join("README.md")).unwrap();
+    let example = {
+        let open = "```go\n";
+        let start = readme.find(open).expect("README has a go example") + open.len();
+        let len = readme[start..].find("\n```").expect("the go block closes");
+        &readme[start..start + len]
+    };
+    std::fs::create_dir_all(dir.join("cmd/readme")).unwrap();
+    std::fs::write(dir.join("cmd/readme/main.go"), example).unwrap();
+
     let build = Command::new("go")
         .args(["build", "./..."])
         .current_dir(&dir)
