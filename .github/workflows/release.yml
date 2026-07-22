@@ -33,13 +33,12 @@
 #     crates.io   crate settings → Trusted Publishing
 #     npm         package settings → Trusted Publisher
 #
-#   Secrets. Each publish whose secret is absent skips with a notice rather than
-#   failing, so the fleet can be tagged and released before every credential is
-#   in place:
-#     FLEET_APP_ID             GitHub App (org-owned) installed on the five
-#     FLEET_APP_PRIVATE_KEY    box-open-*-sdk repos with Contents: read & write.
-#                              Required — the default GITHUB_TOKEN is scoped to
-#                              this repository alone and cannot push to them.
+#   Secrets:
+#     FLEET_APP_ID             GitHub App owned by the unofficialbox account and
+#     FLEET_APP_PRIVATE_KEY    installed on the five box-open-*-sdk repos with
+#                              Contents: read & write. Required — the default
+#                              GITHUB_TOKEN is scoped to this repository alone
+#                              and cannot push to them.
 #     MAVEN_GPG_PRIVATE_KEY    ASCII-armoured private key for signing.
 #     MAVEN_GPG_PASSPHRASE     its passphrase.
 #     CENTRAL_TOKEN_USERNAME   Central Portal token, user half.
@@ -55,6 +54,24 @@ on:
     inputs:
       dry_run:
         description: 'Run every guard and change nothing'
+        type: boolean
+        default: true
+      # Per-registry switches, because the OIDC targets have no secret to probe.
+      # The Maven step can tell it is unconfigured by looking for its token and
+      # skip; crates.io and npm cannot, so an unconfigured trusted publisher
+      # would fail the job mid-release — after an earlier registry had already
+      # published a version that can never be taken back. Turning a target off
+      # is the deliberate, visible way to say "not this one, not yet".
+      publish_crates:
+        description: 'Publish to crates.io'
+        type: boolean
+        default: true
+      publish_npm:
+        description: 'Publish to npm'
+        type: boolean
+        default: true
+      publish_maven:
+        description: 'Publish to Maven Central'
         type: boolean
         default: true
 
@@ -138,27 +155,28 @@ jobs:
           fi
 
       # ---------------------------------------------------------------------
-      # Registry publishing. Each step skips cleanly when its secret is absent,
-      # matching the toolchain gates: a partial credential set still produces a
-      # tagged, released fleet.
+      # Registry publishing. Maven skips cleanly when its secret is absent; the
+      # OIDC targets are switched off by input instead, since they have nothing
+      # to probe. Either way a partial credential set still produces a tagged,
+      # released fleet — the registries can catch up afterwards.
       # ---------------------------------------------------------------------
       # Exchanges the job's OIDC identity for a crates.io token valid ~30 minutes.
       # Nothing is stored; the crate's Trusted Publishing settings decide whether
       # this repository and workflow are allowed to publish it.
       - name: Authenticate to crates.io (OIDC)
-        if: ${{ inputs.dry_run == false }}
+        if: ${{ inputs.dry_run == false && inputs.publish_crates }}
         id: crates_auth
         uses: rust-lang/crates-io-auth-action@v1
 
       - name: Publish to crates.io
-        if: ${{ inputs.dry_run == false }}
+        if: ${{ inputs.dry_run == false && inputs.publish_crates }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates_auth.outputs.token }}
         working-directory: fleet/box-open-rust-sdk
         run: cargo publish
 
       - name: Set up Node
-        if: ${{ inputs.dry_run == false }}
+        if: ${{ inputs.dry_run == false && inputs.publish_npm }}
         uses: actions/setup-node@v4
         with:
           # The generated package builds with TypeScript 7, which needs Node 22+.
@@ -169,7 +187,7 @@ jobs:
       # there is no token and no ~/.npmrc to write. Needs npm >= 11.5.1, which is
       # newer than the runner's bundled npm.
       - name: Publish to npm (OIDC)
-        if: ${{ inputs.dry_run == false }}
+        if: ${{ inputs.dry_run == false && inputs.publish_npm }}
         working-directory: fleet/box-open-ts-sdk
         run: |
           npm install --global npm@latest
@@ -180,7 +198,7 @@ jobs:
       # JDK 26 because the pom targets `--release 26`; Maven obeys JAVA_HOME,
       # which is the single most common way this step fails locally.
       - name: Set up JDK 26
-        if: ${{ inputs.dry_run == false }}
+        if: ${{ inputs.dry_run == false && inputs.publish_maven }}
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -194,7 +212,7 @@ jobs:
       # autoPublish is true (ship.rs), so a validated upload releases to Central
       # without the Portal click there is nobody here to make.
       - name: Publish to Maven Central
-        if: ${{ inputs.dry_run == false }}
+        if: ${{ inputs.dry_run == false && inputs.publish_maven }}
         env:
           CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
           CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
@@ -214,7 +232,15 @@ jobs:
             if [ "${{ inputs.dry_run }}" = "true" ]; then
               echo "Dry run — guards passed, nothing published."
             else
-              echo "Tagged, released, and published. Go needs no registry step:"
-              echo "its tag is its release."
+              echo "Tagged and released. Go needs no registry step: its tag is"
+              echo "its release. Registry publishes this run:"
+              echo ""
+              echo "| Registry | Ran |"
+              echo "|---|---|"
+              echo "| crates.io | ${{ inputs.publish_crates }} |"
+              echo "| npm | ${{ inputs.publish_npm }} |"
+              echo "| Maven Central | ${{ inputs.publish_maven }} |"
+              echo ""
+              echo "A registry left out still needs publishing at this version."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
