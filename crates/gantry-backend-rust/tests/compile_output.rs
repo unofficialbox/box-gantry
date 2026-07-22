@@ -167,6 +167,16 @@ fn generation_is_deterministic() {
         models.contains("chrono::DateTime<chrono::Utc>"),
         "date-time fields should be chrono-typed"
     );
+    // Model structs derive `Default` (D-196), so a body can be built with
+    // `Type { field: x, ..Default::default() }` instead of naming every field.
+    // The compile gate proves the derive is satisfiable fleet-wide; this pins
+    // that it's emitted (open enums/unions carry it so structs can).
+    assert!(
+        models.contains(
+            "#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]"
+        ),
+        "model structs should derive Default (D-196)"
+    );
     let cargo = once.iter().find(|f| f.path == "Cargo.toml").unwrap();
     assert!(cargo.content.contains(
         "chrono = { version = \"0.4\", default-features = false, features = [\"serde\", \"alloc\"] }"

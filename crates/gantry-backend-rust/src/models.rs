@@ -180,8 +180,9 @@ impl Printer<'_> {
     }
 
     fn struct_decl(&mut self, name: &str, s: &ir::StructDecl) {
-        self.body
-            .push_str("#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]\n");
+        self.body.push_str(
+            "#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]\n",
+        );
         if s.fields.is_empty() {
             let _ = writeln!(self.body, "pub struct {name} {{}}\n");
             return;
@@ -215,7 +216,7 @@ impl Printer<'_> {
         match e.extensibility {
             ir::Extensibility::Open => {
                 self.body.push_str(
-                    "#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]\n",
+                    "#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]\n",
                 );
                 self.body.push_str("#[serde(transparent)]\n");
                 let _ = writeln!(self.body, "pub struct {name}(pub String);\n");
@@ -289,8 +290,9 @@ impl Printer<'_> {
 
     /// The structural fallback: a transparent newtype over `serde_json::Value`.
     fn structural_union(&mut self, name: &str) {
-        self.body
-            .push_str("#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]\n");
+        self.body.push_str(
+            "#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]\n",
+        );
         self.body.push_str("#[serde(transparent)]\n");
         let _ = writeln!(self.body, "pub struct {name}(pub serde_json::Value);\n");
     }
@@ -317,6 +319,20 @@ impl Printer<'_> {
             self.body.push_str("    Unknown(serde_json::Value),\n");
         }
         self.body.push_str("}\n\n");
+
+        // `Default` for an open union is its `Unknown` (an unset/unrecognized
+        // value), so a struct carrying a required union field can still derive
+        // `Default` (D-196). A `#[default]` derive can't target a non-unit
+        // variant, so the impl is hand-written. Closed unions have no empty
+        // member and so stay non-`Default`.
+        if open {
+            let _ = writeln!(
+                self.body,
+                "impl Default for {name} {{\n    \
+                 fn default() -> Self {{\n        \
+                 Self::Unknown(Default::default())\n    }}\n}}\n"
+            );
+        }
 
         // Serialize: delegate to the active variant; its own discriminator
         // field is the tag, so nothing is injected.
