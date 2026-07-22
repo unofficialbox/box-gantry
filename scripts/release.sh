@@ -195,9 +195,20 @@ Regenerated from box-gantry at SDK_VERSION $VERSION."
   fi
 
   git -C "$dir" push --quiet origin main --tags
-  gh release create "$TAG" --repo "unofficialbox/$name" \
-    --title "$TAG" --notes-file "$NOTES_FILE" >/dev/null
-  printf '  %-22s pushed + released %s\n' "$name" "$TAG"
+
+  # Re-runnable. A release can fail *after* the fleet is tagged and pushed —
+  # 0.2.1 got this far and then died on the crates.io publish — and the retry
+  # has to be able to walk back through the git work it already did to reach
+  # the registry step that failed. Everything above is naturally idempotent
+  # (no changes to commit, tag already present, push a no-op); creating a
+  # release that exists is the one call that is not.
+  if gh release view "$TAG" --repo "unofficialbox/$name" >/dev/null 2>&1; then
+    printf '  %-22s already at %s\n' "$name" "$TAG"
+  else
+    gh release create "$TAG" --repo "unofficialbox/$name" \
+      --title "$TAG" --notes-file "$NOTES_FILE" >/dev/null
+    printf '  %-22s pushed + released %s\n' "$name" "$TAG"
+  fi
 done
 
 say "Fleet released at $TAG"
