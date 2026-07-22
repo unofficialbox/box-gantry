@@ -1,0 +1,246 @@
+# Cut a fleet release: regenerate the five SDKs into their published repos,
+# tag and release them, then publish to the language registries.
+#
+# Manual (workflow_dispatch) and deliberately so. A release is a one-way door —
+# crates.io, npm, and Maven Central will not let a published version be
+# replaced — so it is never triggered by a push.
+#
+# The version is read from `gantry_manifest::SDK_VERSION` (D-187), never passed
+# as an input: the tag and the stamped package manifests then cannot disagree.
+# Bump the constant, merge it, and run this.
+#
+# `scripts/release.sh` carries the guard that matters. If regenerating changes
+# any repo whose version tag already exists, it aborts the whole run before
+# anything is pushed — the 0.1.2 release shipped new content under an
+# already-published version, and no registry lets you take that back.
+#
+# Credentials are short-lived wherever the target supports it. crates.io and npm
+# both do OIDC trusted publishing, so neither needs a stored API token: the job
+# proves its identity with the `id-token` permission below and exchanges that for
+# a token valid in minutes. Pushing to the five SDK repos is git access, not
+# registry access, so OIDC does not apply — a GitHub App mints an installation
+# token good for an hour instead of a PAT that can push for a year.
+#
+# That leaves Maven Central as the only target on static credentials: Sonatype's
+# Portal supports user tokens alone, and the GPG signing key could not be OIDC
+# either way.
+#
+# Set up:
+#
+#   Trusted publishing, configured registry-side before the first run. Both name
+#   the repository and workflow that *publishes* — `unofficialbox/box-gantry`
+#   and `release.yml` — not the SDK repositories:
+#     crates.io   crate settings → Trusted Publishing
+#     npm         package settings → Trusted Publisher
+#
+#   Secrets:
+#     FLEET_APP_ID             GitHub App owned by the unofficialbox account and
+#     FLEET_APP_PRIVATE_KEY    installed on the five box-open-*-sdk repos with
+#                              Contents: read & write. Required — the default
+#                              GITHUB_TOKEN is scoped to this repository alone
+#                              and cannot push to them.
+#     MAVEN_GPG_PRIVATE_KEY    ASCII-armoured private key for signing.
+#     MAVEN_GPG_PASSPHRASE     its passphrase.
+#     CENTRAL_TOKEN_USERNAME   Central Portal token, user half.
+#     CENTRAL_TOKEN_PASSWORD   Central Portal token, password half.
+#
+# Apex is not published here: promoting a 2GP package needs an authenticated
+# Dev Hub and has its own workflow (apex-package.yml). It is still regenerated,
+# tagged, and released alongside the rest.
+name: Release the fleet
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run every guard and change nothing'
+        type: boolean
+        default: true
+      # Per-registry switches, because the OIDC targets have no secret to probe.
+      # The Maven step can tell it is unconfigured by looking for its token and
+      # skip; crates.io and npm cannot, so an unconfigured trusted publisher
+      # would fail the job mid-release — after an earlier registry had already
+      # published a version that can never be taken back. Turning a target off
+      # is the deliberate, visible way to say "not this one, not yet".
+      publish_crates:
+        description: 'Publish to crates.io'
+        type: boolean
+        default: true
+      publish_npm:
+        description: 'Publish to npm'
+        type: boolean
+        default: true
+      publish_maven:
+        description: 'Publish to Maven Central'
+        type: boolean
+        default: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      # The OIDC identity crates.io and npm exchange for a short-lived publish
+      # token. Without it, trusted publishing cannot authenticate at all.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # The gate from AGENTS.md, unchanged. A release must not be the first
+      # place a formatting or clippy failure is noticed.
+      - name: Gate — fmt, clippy, tests
+        run: |
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+
+      - name: Read SDK_VERSION
+        id: version
+        run: |
+          version="$(sed -n 's/^pub const SDK_VERSION: &str = "\(.*\)";$/\1/p' \
+            crates/gantry-manifest/src/lib.rs)"
+          [ -n "$version" ] || { echo "::error::cannot read SDK_VERSION"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "::notice::Releasing $version"
+
+      - name: Guard — the fleet App must be configured
+        env:
+          FLEET_APP_ID: ${{ secrets.FLEET_APP_ID }}
+        run: |
+          if [ -z "$FLEET_APP_ID" ]; then
+            echo "::error::FLEET_APP_ID is not set; cannot reach the SDK repos."
+            exit 1
+          fi
+
+      # An installation token, good for an hour and scoped to these five repos —
+      # rather than a PAT that can push to them until someone remembers to
+      # rotate it.
+      - name: Mint a fleet push token
+        id: fleet_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.FLEET_APP_ID }}
+          private-key: ${{ secrets.FLEET_APP_PRIVATE_KEY }}
+          owner: unofficialbox
+          repositories: >-
+            box-open-go-sdk,box-open-rust-sdk,box-open-ts-sdk,box-open-java-sdk,box-open-apex-sdk
+
+      - name: Check out the five SDK repos
+        env:
+          GH_TOKEN: ${{ steps.fleet_token.outputs.token }}
+        run: |
+          mkdir -p fleet
+          for repo in box-open-go-sdk box-open-rust-sdk box-open-ts-sdk \
+                      box-open-java-sdk box-open-apex-sdk; do
+            git clone --quiet \
+              "https://x-access-token:$GH_TOKEN@github.com/unofficialbox/$repo.git" \
+              "fleet/$repo"
+          done
+          git config --global user.name  'box-gantry release bot'
+          git config --global user.email 'noreply@unofficialbox.dev'
+
+      # Generates into each repo, runs the version-drift guard, then (unless
+      # this is a dry run) commits, tags, pushes, and cuts the GitHub releases.
+      - name: Release the fleet
+        env:
+          FLEET_ROOT: ${{ github.workspace }}/fleet
+          GH_TOKEN: ${{ steps.fleet_token.outputs.token }}
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ./scripts/release.sh --dry-run
+          else
+            ./scripts/release.sh
+          fi
+
+      # ---------------------------------------------------------------------
+      # Registry publishing. Maven skips cleanly when its secret is absent; the
+      # OIDC targets are switched off by input instead, since they have nothing
+      # to probe. Either way a partial credential set still produces a tagged,
+      # released fleet — the registries can catch up afterwards.
+      # ---------------------------------------------------------------------
+      # Exchanges the job's OIDC identity for a crates.io token valid ~30 minutes.
+      # Nothing is stored; the crate's Trusted Publishing settings decide whether
+      # this repository and workflow are allowed to publish it.
+      - name: Authenticate to crates.io (OIDC)
+        if: ${{ inputs.dry_run == false && inputs.publish_crates }}
+        id: crates_auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Publish to crates.io
+        if: ${{ inputs.dry_run == false && inputs.publish_crates }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates_auth.outputs.token }}
+        working-directory: fleet/box-open-rust-sdk
+        run: cargo publish
+
+      - name: Set up Node
+        if: ${{ inputs.dry_run == false && inputs.publish_npm }}
+        uses: actions/setup-node@v4
+        with:
+          # The generated package builds with TypeScript 7, which needs Node 22+.
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      # npm trusted publishing: `npm publish` finds the OIDC identity itself, so
+      # there is no token and no ~/.npmrc to write. Needs npm >= 11.5.1, which is
+      # newer than the runner's bundled npm.
+      - name: Publish to npm (OIDC)
+        if: ${{ inputs.dry_run == false && inputs.publish_npm }}
+        working-directory: fleet/box-open-ts-sdk
+        run: |
+          npm install --global npm@latest
+          npm install
+          npm run build
+          npm publish --access public
+
+      # JDK 26 because the pom targets `--release 26`; Maven obeys JAVA_HOME,
+      # which is the single most common way this step fails locally.
+      - name: Set up JDK 26
+        if: ${{ inputs.dry_run == false && inputs.publish_maven }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '26'
+          server-id: central
+          server-username: CENTRAL_TOKEN_USERNAME
+          server-password: CENTRAL_TOKEN_PASSWORD
+          gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
+
+      # autoPublish is true (ship.rs), so a validated upload releases to Central
+      # without the Portal click there is nobody here to make.
+      - name: Publish to Maven Central
+        if: ${{ inputs.dry_run == false && inputs.publish_maven }}
+        env:
+          CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
+          CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+        working-directory: fleet/box-open-java-sdk
+        run: |
+          if [ -z "$CENTRAL_TOKEN_USERNAME" ] || [ -z "$MAVEN_GPG_PASSPHRASE" ]; then
+            echo "::notice::Central or GPG secrets unset; skipping Maven Central."
+            exit 0
+          fi
+          mvn -B -P release clean deploy
+
+      - name: Summary
+        run: |
+          {
+            echo "### Fleet release ${{ steps.version.outputs.version }}"
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              echo "Dry run — guards passed, nothing published."
+            else
+              echo "Tagged and released. Go needs no registry step: its tag is"
+              echo "its release. Registry publishes this run:"
+              echo ""
+              echo "| Registry | Ran |"
+              echo "|---|---|"
+              echo "| crates.io | ${{ inputs.publish_crates }} |"
+              echo "| npm | ${{ inputs.publish_npm }} |"
+              echo "| Maven Central | ${{ inputs.publish_maven }} |"
+              echo ""
+              echo "A registry left out still needs publishing at this version."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
