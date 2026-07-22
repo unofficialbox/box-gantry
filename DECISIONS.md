@@ -4116,3 +4116,44 @@ and are handled at their source:
 Closed enums and closed unions stay non-`Default` (they have no empty member); no
 struct in the real spec requires one, and the compile gate would fail loudly if
 that ever changed. Additive — explicit construction is unchanged.
+
+## D-197 — Release the fleet from a guarded script, not by hand
+
+**Context.** Cutting a release meant regenerating five SDKs, syncing each into
+its published repo, committing, tagging, pushing, cutting five GitHub releases,
+and publishing to four registries — all by hand. The 0.1.2 release proved the
+cost: new content was pushed to the repos while `SDK_VERSION` stayed at an
+already-published `0.1.2`. Registries are immutable, so that content had nowhere
+to go; the whole cycle had to be redone as 0.2.0. The mistake is invisible at
+the moment it is made — every individual step succeeds.
+
+**The decision.** `scripts/release.sh` orchestrates the release, and
+`.github/workflows/release.yml` runs it with registry credentials.
+
+The sync problem was already solved and did not need rebuilding. `gantry
+generate --out <repo>` prunes through `.gantry-manifest`: it deletes exactly the
+files a previous generation wrote and no longer emits, and never touches what it
+did not write (`.git`, `.gitignore`, `package-lock.json`, the Apex `.sf/`
+config). So the script generates straight into each working repo. There is no
+exclude list, and therefore no exclude list to get wrong.
+
+What is new is the guard. Before anything is pushed, every repo is regenerated
+and checked: **if the output changed while that repo's version tag already
+exists, the run aborts and names the drifted files.** That is exactly the 0.1.2
+failure, caught before it can reach a registry (NF-1 — loud, never silent).
+Prechecks and guards run across all five repos before the first push, so a
+failure in the fifth cannot leave the first four half-released.
+
+The version is read from `gantry_manifest::SDK_VERSION` (D-187) rather than
+passed as an argument, so a tag can never disagree with the version stamped into
+the package manifests.
+
+Git and registry side effects stay out of the engine. box-gantry is a
+deterministic generator; shelling out to `git push` and `cargo publish` from the
+CLI would put network side effects behind `FR-8.2`'s "no business logic in the
+CLI" line. The orchestration is shell and CI, where it belongs.
+
+Apex is regenerated, tagged, and released with the rest but not published:
+promoting a 2GP package needs an authenticated Dev Hub and already has its own
+workflow. Each registry step skips with a notice when its secret is absent, so
+the fleet can be tagged and released before every credential is in place.
