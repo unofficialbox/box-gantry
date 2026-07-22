@@ -4157,3 +4157,14 @@ Apex is regenerated, tagged, and released with the rest but not published:
 promoting a 2GP package needs an authenticated Dev Hub and already has its own
 workflow. Each registry step skips with a notice when its secret is absent, so
 the fleet can be tagged and released before every credential is in place.
+
+**Credentials are short-lived wherever the target allows it.** crates.io and npm
+both support OIDC trusted publishing, so neither stores an API token: the job
+proves its identity with `id-token: write` and exchanges that for a token valid
+in minutes, with the registry deciding whether this repository and workflow may
+publish. Pushing to the five SDK repos is git access rather than registry
+access, so OIDC does not apply there; a GitHub App mints an hour-long
+installation token scoped to those repos instead of a PAT that can push to them
+until someone rotates it. Maven Central is the one holdout — Sonatype's Portal
+authenticates with static user tokens only, and the GPG signing key could not be
+OIDC either way.
