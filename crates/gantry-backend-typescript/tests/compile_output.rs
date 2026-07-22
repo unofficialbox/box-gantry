@@ -339,7 +339,26 @@ fn the_real_spec_models_type_check() {
     let dir = std::env::temp_dir().join(format!("gantry-ts-models-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    write_all(&dir, &generate());
+    let files = generate();
+    write_all(&dir, &files);
+
+    // The README Quickstart must type-check against the real SDK (FR-7.7):
+    // extract its ```ts block into `src/example.ts` (relativising the package
+    // import so it resolves) — `tsconfig` globs `src/**/*.ts`, so the `tsc
+    // --noEmit` below checks it with everything else, and the landing-page
+    // example can never drift from the generated types.
+    let readme = &files
+        .iter()
+        .find(|f| f.path == "README.md")
+        .unwrap()
+        .content;
+    let example = {
+        let open = "```ts\n";
+        let start = readme.find(open).expect("README has a ts example") + open.len();
+        let len = readme[start..].find("\n```").expect("the ts block closes");
+        readme[start..start + len].replace("'@unofficialbox/box-open-sdk'", "'./index.js'")
+    };
+    std::fs::write(dir.join("src/example.ts"), example).unwrap();
 
     let check = Command::new("tsc")
         .args(["--noEmit", "-p", "tsconfig.json"])

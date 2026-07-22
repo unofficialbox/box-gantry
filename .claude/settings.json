@@ -6,7 +6,13 @@
       "Bash(cargo check *)",
       "Bash(cargo build *)",
       "Bash(cargo test *)",
-      "Bash(cargo run -p gantry-cli -- *)"
+      "Bash(cargo run -p gantry-cli -- *)",
+      "mcp__github__pull_request_read",
+      "mcp__github__actions_list",
+      "mcp__claude-in-chrome__tabs_context_mcp",
+      "mcp__github__get_job_logs",
+      "mcp__github__list_pull_requests",
+      "Bash(git fetch *)"
     ]
   }
 }

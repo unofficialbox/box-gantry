@@ -209,6 +209,24 @@ fn the_generated_model_layer_compiles_under_javac() {
     .unwrap();
     sources.push(smoke);
 
+    // The README Quickstart is a full `public class` example (FR-7.7): extract
+    // its first ```java block and compile it too, so the landing-page example —
+    // builders, accessors, the `auth`/manager surface — can never drift from the
+    // generated API. (`BoxChunkedUpload` is excluded above; the example doesn't
+    // use it, so it compiles preview-free.)
+    let readme = std::fs::read_to_string(dir.join("README.md")).unwrap();
+    let example = {
+        let open = "```java\n";
+        let start = readme.find(open).expect("README has a java example") + open.len();
+        let len = readme[start..]
+            .find("\n```")
+            .expect("the java block closes");
+        &readme[start..start + len]
+    };
+    let quickstart = dir.join("Quickstart.java");
+    std::fs::write(&quickstart, example).unwrap();
+    sources.push(quickstart);
+
     // Pass the (900+) sources via an argfile so the command never overflows the
     // OS argument limit.
     let argfile = dir.join("sources.txt");

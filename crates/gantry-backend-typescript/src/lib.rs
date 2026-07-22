@@ -307,20 +307,56 @@ npm install @unofficialbox/box-open-sdk
 
 ## Quickstart
 
+Authenticate, look up the current user, create a folder, upload a file, extract
+its fields with Box AI, tag it with metadata, and query for it — end to end:
+
 ```ts
 import { Client, auth } from '@unofficialbox/box-open-sdk';
 
-// Developer token for a quick start; CCG, OAuth, and JWT are also supported.
-const client = new Client(auth.developerToken('DEVELOPER_TOKEN'));
+// Client Credentials Grant (server-to-server); developer token, OAuth, and JWT
+// also live in the `auth` namespace.
+const client = new Client(auth.clientCredentials({
+  clientId: 'CLIENT_ID',
+  clientSecret: 'CLIENT_SECRET',
+  enterpriseId: 'ENTERPRISE_ID',
+}));
 
-// Every API area is a typed manager on the client.
+// The current user.
 const me = await client.users.getMe();
-console.log(me);
+console.log(`authenticated as ${me.id}`);
 
-// List endpoints are async iterators — paging is automatic.
-for await (const user of client.users.list()) {
-  console.log(user.id);
-}
+// Create a folder at the account root ("0").
+const folder = await client.folders.create({
+  name: 'Invoices',
+  parent: { id: '0' },
+});
+
+// Upload a file into it.
+const uploaded = await client.uploads.uploadFile({
+  attributes: { name: 'invoice.pdf', parent: { id: folder.id } },
+  file: new Blob(['<file bytes>']),
+});
+const fileId = uploaded.entries![0].id;
+
+// Extract fields from the file with Box AI.
+const answer = await client.ai.extract({
+  prompt: 'Extract the invoice number and total amount.',
+  items: [{ id: fileId, type: 'file' }],
+});
+console.log(answer);
+
+// Attach that metadata to the file (an enterprise template).
+await client.fileMetadata.createFileMetadata(fileId, 'enterprise', 'invoiceData', {
+  invoiceNumber: 'INV-0042',
+  total: 1250,
+});
+
+// Query for files carrying that metadata.
+const results = await client.search.queryByMetadata({
+  from: 'enterprise_0.invoiceData',
+  ancestor_folder_id: folder.id,
+});
+console.log(results);
 ```
 
 ## Authentication

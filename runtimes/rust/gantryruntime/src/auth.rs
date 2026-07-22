@@ -392,7 +392,9 @@ impl OAuthSource {
 
 /// The Client Credentials Grant config: server-to-server auth with no signing
 /// key. Set exactly one subject — `enterprise_id` for the service account, or
-/// `user_id` to act as a managed user.
+/// `user_id` to act as a managed user. Derives `Default` so the optional
+/// `user_id`/`token_url` can be elided with `..Default::default()`.
+#[derive(Clone, Default)]
 pub struct CcgConfig {
     pub client_id: String,
     pub client_secret: String,
