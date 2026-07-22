@@ -146,16 +146,21 @@ jobs:
           repositories: >-
             box-open-go-sdk,box-open-rust-sdk,box-open-ts-sdk,box-open-java-sdk,box-open-apex-sdk
 
+      # Cloned outside the engine's checkout, not under it. Nested inside,
+      # cargo reads the generated crate as a member of box-gantry's workspace
+      # ("current package believes it's in a workspace when it's not") and
+      # refuses to publish it.
       - name: Check out the five SDK repos
         env:
           GH_TOKEN: ${{ steps.fleet_token.outputs.token }}
+          FLEET_ROOT: ${{ runner.temp }}/fleet
         run: |
-          mkdir -p fleet
+          mkdir -p "$FLEET_ROOT"
           for repo in box-open-go-sdk box-open-rust-sdk box-open-ts-sdk \
                       box-open-java-sdk box-open-apex-sdk; do
             git clone --quiet \
               "https://x-access-token:$GH_TOKEN@github.com/unofficialbox/$repo.git" \
-              "fleet/$repo"
+              "$FLEET_ROOT/$repo"
           done
           git config --global user.name  'box-gantry release bot'
           git config --global user.email 'noreply@unofficialbox.dev'
@@ -164,7 +169,7 @@ jobs:
       # this is a dry run) commits, tags, pushes, and cuts the GitHub releases.
       - name: Release the fleet
         env:
-          FLEET_ROOT: ${{ github.workspace }}/fleet
+          FLEET_ROOT: ${{ runner.temp }}/fleet
           GH_TOKEN: ${{ steps.fleet_token.outputs.token }}
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then
@@ -191,7 +196,7 @@ jobs:
         if: ${{ inputs.dry_run == false && inputs.publish_crates }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates_auth.outputs.token }}
-        working-directory: fleet/box-open-rust-sdk
+        working-directory: ${{ runner.temp }}/fleet/box-open-rust-sdk
         run: cargo publish
 
       - name: Set up Node
@@ -207,7 +212,7 @@ jobs:
       # newer than the runner's bundled npm.
       - name: Publish to npm (OIDC)
         if: ${{ inputs.dry_run == false && inputs.publish_npm }}
-        working-directory: fleet/box-open-ts-sdk
+        working-directory: ${{ runner.temp }}/fleet/box-open-ts-sdk
         run: |
           npm install --global npm@latest
           npm install
@@ -236,7 +241,7 @@ jobs:
           CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
           CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
-        working-directory: fleet/box-open-java-sdk
+        working-directory: ${{ runner.temp }}/fleet/box-open-java-sdk
         run: |
           if [ -z "$CENTRAL_TOKEN_USERNAME" ] || [ -z "$MAVEN_GPG_PASSPHRASE" ]; then
             echo "::notice::Central or GPG secrets unset; skipping Maven Central."
