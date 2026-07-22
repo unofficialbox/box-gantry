@@ -79,6 +79,17 @@ fn generation_is_deterministic() {
                 "{} lacks the doc header",
                 file.path
             );
+        } else if file.path == "LICENSE" {
+            // Deliberately bare: a generated-code header prepended to the
+            // license would corrupt the grant text and defeat the automated
+            // license detectors this file exists to satisfy.
+            assert!(
+                file.content.starts_with("MIT License")
+                    && file
+                        .content
+                        .contains("Copyright (c) 2026 Kyle @ Unofficial Box"),
+                "LICENSE is not the shared MIT text"
+            );
         } else if file.path == "assets/banner.svg" {
             assert!(
                 file.content.starts_with("<svg") && file.content.contains("Box Open SDK for Java"),

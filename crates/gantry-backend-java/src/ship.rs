@@ -38,6 +38,11 @@ pub fn generate_ship(build: &BuildInfo) -> Vec<GeneratedFile> {
             path: "README.md".to_string(),
             content: readme(),
         },
+        // The license itself, not just the pom's `<licenses>` declaration.
+        GeneratedFile {
+            path: "LICENSE".to_string(),
+            content: gantry_manifest::LICENSE.to_string(),
+        },
         // The shared community-design banner the README renders at its top (NF-8).
         GeneratedFile {
             path: "assets/banner.svg".to_string(),
@@ -221,7 +226,10 @@ fn readme() -> String {
 
 # @ARTIFACT@ (Java)
 
-A **community, unofficial** Box API client for Java — one resource manager per
+[![Maven Central](https://img.shields.io/maven-central/v/@GROUP@/@ARTIFACT@.svg)](https://central.sonatype.com/artifact/@GROUP@/@ARTIFACT@)
+[![javadoc](https://javadoc.io/badge2/@GROUP@/@ARTIFACT@/javadoc.svg)](https://javadoc.io/doc/@GROUP@/@ARTIFACT@)
+
+An **open source, community-built** Box API client for Java — one resource manager per
 API area behind a single `dev.unofficialbox.Client`, over a dependency-free
 `java.net.http` runtime with retry, backoff, and token refresh.
 

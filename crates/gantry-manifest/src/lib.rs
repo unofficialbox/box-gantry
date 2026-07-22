@@ -20,6 +20,40 @@
 /// A single-place bump here re-versions the whole fleet at once.
 pub const SDK_VERSION: &str = "0.2.0";
 
+/// The MIT license text, emitted as `LICENSE` by every backend.
+///
+/// Every generated package manifest already *declares* MIT — `Cargo.toml`'s
+/// `license`, `package.json`'s `"license"`, the pom's `<licenses>`. None of them
+/// ship the license itself, and a declaration without the file is not a license
+/// grant: pkg.go.dev read the Go module as "License: None detected — not
+/// redistributable", and crates.io and npm both expect the file in the package.
+///
+/// Held here rather than in each backend so the five SDKs cannot drift to
+/// different terms, and so the year and holder have one place to change.
+pub const LICENSE: &str = "\
+MIT License
+
+Copyright (c) 2026 Kyle @ Unofficial Box
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the \"Software\"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+";
+
 /// The README header banner (NF-8), emitted as `assets/banner.svg` by every
 /// backend and referenced at the top of the generated README.
 ///
