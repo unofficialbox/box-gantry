@@ -71,7 +71,7 @@ fn pom_xml(build: &BuildInfo) -> String {
          \x20 <packaging>jar</packaging>\n\
          \n\
          \x20 <name>{ARTIFACT_ID}</name>\n\
-         \x20 <description>Generated Box API client for Java (community, unofficial).</description>\n\
+         \x20 <description>Box API client for Java (open source, community, punk rock) — generated, dependency-light, typed models and async managers.</description>\n\
          \x20 <url>{PROJECT_URL}</url>\n\
          \n\
          \x20 <licenses>\n\
@@ -195,9 +195,10 @@ fn pom_xml(build: &BuildInfo) -> String {
          \x20           <extensions>true</extensions>\n\
          \x20           <configuration>\n\
          \x20             <publishingServerId>central</publishingServerId>\n\
-         \x20             <!-- false: the deployment is validated and staged, then\n\
-         \x20                  released by hand from the Portal. Set true to auto-release. -->\n\
-         \x20             <autoPublish>false</autoPublish>\n\
+         \x20             <!-- true: a validated deployment releases to Central on\n\
+         \x20                  upload. Set false to stage it and release by hand\n\
+         \x20                  from the Portal instead. -->\n\
+         \x20             <autoPublish>true</autoPublish>\n\
          \x20           </configuration>\n\
          \x20         </plugin>\n\
          \x20       </plugins>\n\

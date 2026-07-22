@@ -196,7 +196,7 @@ fn package_json() -> String {
     const TEMPLATE: &str = "{\n\
      \x20 \"name\": \"@unofficialbox/box-open-sdk\",\n\
      \x20 \"version\": \"@VERSION@\",\n\
-     \x20 \"description\": \"Community, unofficial Box API client for TypeScript — typed models, async managers, and a fetch runtime with retry, backoff, and token refresh.\",\n\
+     \x20 \"description\": \"Box API client for TypeScript (open source, community, punk rock) — typed models, async managers, and a fetch runtime with retry, backoff, and token refresh.\",\n\
      \x20 \"keywords\": [\"box\", \"box-api\", \"sdk\", \"api-client\", \"typescript\", \"unofficial\"],\n\
      \x20 \"license\": \"MIT\",\n\
      \x20 \"repository\": { \"type\": \"git\", \"url\": \"git+https://github.com/unofficialbox/box-open-ts-sdk.git\" },\n\

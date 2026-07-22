@@ -194,7 +194,7 @@ fn cargo_toml() -> String {
      name = \"box-open-sdk\"\n\
      version = \"{version}\"\n\
      edition = \"2021\"\n\
-     description = \"Community, unofficial Box API client for Rust — typed models, async managers, and a reqwest runtime with retry, backoff, and token refresh.\"\n\
+     description = \"Box API client for Rust (open source, community, punk rock) — typed models, async managers, and a reqwest runtime with retry, backoff, and token refresh.\"\n\
      license = \"MIT\"\n\
      repository = \"https://github.com/unofficialbox/box-open-rust-sdk\"\n\
      homepage = \"https://github.com/unofficialbox/box-open-rust-sdk\"\n\
