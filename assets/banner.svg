@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" role="img" aria-label="box-gantry — one Rust engine, five Box SDKs">
+  <title>box-gantry</title>
+
+  <defs>
+    <pattern id="dots" width="26" height="26" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="2" fill="#16233a"/>
+    </pattern>
+    <linearGradient id="boxTop" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8fbcf7"/>
+      <stop offset="1" stop-color="#6aa4f2"/>
+    </linearGradient>
+    <linearGradient id="boxLeft" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2f7de0"/>
+      <stop offset="1" stop-color="#1f5fb8"/>
+    </linearGradient>
+    <linearGradient id="boxRight" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0b52ab"/>
+      <stop offset="1" stop-color="#083b7d"/>
+    </linearGradient>
+  </defs>
+
+  <!-- backdrop -->
+  <rect width="1200" height="300" fill="#0b172a"/>
+  <rect width="1200" height="300" fill="url(#dots)"/>
+  <rect width="1200" height="6" fill="#0866d9"/>
+
+  <!-- ================= gantry crane icon ================= -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- ground rail -->
+    <line x1="66" y1="250" x2="366" y2="250" stroke="#3f5678" stroke-width="4"/>
+    <line x1="66" y1="257" x2="366" y2="257" stroke="#22304a" stroke-width="3"/>
+
+    <!-- top girder: triangulated truss -->
+    <line x1="88" y1="66" x2="352" y2="66" stroke="#5c9df2" stroke-width="4"/>
+    <line x1="88" y1="90" x2="352" y2="90" stroke="#5c9df2" stroke-width="4"/>
+    <line x1="88" y1="66" x2="88" y2="90" stroke="#5c9df2" stroke-width="4"/>
+    <line x1="352" y1="66" x2="352" y2="90" stroke="#5c9df2" stroke-width="4"/>
+    <polyline points="88,90 118,66 148,90 178,66 208,90 238,66 268,90 298,66 328,90 352,66"
+              stroke="#37639c" stroke-width="2.5"/>
+
+    <!-- left leg (lattice) -->
+    <line x1="108" y1="90" x2="108" y2="248" stroke="#5c9df2" stroke-width="3.5"/>
+    <line x1="130" y1="90" x2="130" y2="248" stroke="#5c9df2" stroke-width="3.5"/>
+    <polyline points="108,110 130,140 108,170 130,200 108,230"
+              stroke="#37639c" stroke-width="2.5"/>
+    <!-- right leg (lattice) -->
+    <line x1="310" y1="90" x2="310" y2="248" stroke="#5c9df2" stroke-width="3.5"/>
+    <line x1="332" y1="90" x2="332" y2="248" stroke="#5c9df2" stroke-width="3.5"/>
+    <polyline points="332,110 310,140 332,170 310,200 332,230"
+              stroke="#37639c" stroke-width="2.5"/>
+
+    <!-- wheels on the rail -->
+    <circle cx="119" cy="250" r="7" fill="#0b172a" stroke="#5c9df2" stroke-width="3"/>
+    <circle cx="321" cy="250" r="7" fill="#0b172a" stroke="#5c9df2" stroke-width="3"/>
+
+    <!-- trolley + hoist cable -->
+    <rect x="238" y="90" width="36" height="15" rx="2.5" fill="#0b172a" stroke="#8fbcf7" stroke-width="2.5"/>
+    <line x1="256" y1="105" x2="256" y2="150" stroke="#9fb0c6" stroke-width="2.5"/>
+    <circle cx="256" cy="151" r="3.5" fill="#9fb0c6"/>
+  </g>
+
+  <!-- the hoisted Box (isometric cube) -->
+  <g stroke="#cfe0fb" stroke-width="1.5" stroke-linejoin="round">
+    <polygon points="256,152 292,171 256,190 220,171" fill="url(#boxTop)"/>
+    <polygon points="220,171 256,190 256,238 220,219" fill="url(#boxLeft)"/>
+    <polygon points="256,190 292,171 292,219 256,238" fill="url(#boxRight)"/>
+  </g>
+
+  <!-- ================= wordmark ================= -->
+  <text x="430" y="112" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+        font-size="20" letter-spacing="4" fill="#5c9df2" font-weight="600">SDK GENERATOR &#183; ONE RUST ENGINE</text>
+
+  <text x="428" y="196" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif"
+        font-size="96" font-weight="800" letter-spacing="-2">
+    <tspan fill="#fffefa">box-gantry</tspan><tspan fill="#ff6658">.</tspan>
+  </text>
+
+  <text x="431" y="238" font-family="Georgia, 'Times New Roman', serif"
+        font-size="25" font-style="italic" fill="#9fb0c6">OpenAPI in &#8212; Go &#183; Apex &#183; Rust &#183; TypeScript &#183; Java out.</text>
+</svg>

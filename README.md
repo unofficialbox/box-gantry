@@ -1,10 +1,21 @@
+![box-gantry — one Rust engine, five Box SDKs](assets/banner.svg)
+
 # box-gantry
+
+[![CI](https://github.com/unofficialbox/box-gantry/actions/workflows/ci.yml/badge.svg)](https://github.com/unofficialbox/box-gantry/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-0866d9.svg)](./LICENSE)
+![Engine: Rust](https://img.shields.io/badge/engine-Rust-000?logo=rust&logoColor=white)
+![Targets](https://img.shields.io/badge/SDKs-Go%20%C2%B7%20Apex%20%C2%B7%20Rust%20%C2%B7%20TypeScript%20%C2%B7%20Java-0866d9)
 
 A net-new SDK generator, written in Rust, that consumes the Box OpenAPI
 specification and generates Box SDKs — **Go** (v1), **Salesforce Apex**
 (v2), **Rust** (v3), **TypeScript** (v4), and **Java 26** (v5). No dependencies
 on existing SDKs or existing developers; box-codegen is consultable prior art
 only.
+
+> **Not affiliated with, authorized, or endorsed by Box, Inc.** "Box" is a
+> trademark of Box, Inc. This is an independent generator that produces
+> community-built clients from the public OpenAPI specification.
 
 ## Quickstart
 
