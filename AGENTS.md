@@ -40,16 +40,18 @@ cargo run -p gantry-cli -- generate --target rust --out /tmp/sdk \
 
 ## Where things live
 
-- **`ARCHITECTURE.md`** — the pipeline (ingest → IR → semantics → manifest +
-  runtime contract → backend lowering + printer) and directory map. Read first.
-- **`NEW_ENGINE_REQUIREMENTS.md`** — the normative requirements (`FR`/`NF`/`TR`/
-  `VR`/`G-` identifiers).
-- **`DECISIONS.md`** — design decisions as dated `D-###` entries; code comments
-  cite them. Add one when you make a non-obvious choice.
+The pipeline is **ingest → typed IR → semantics → capability manifest + runtime
+contract → backend lowering + printer**; the `crates/` layout mirrors it
+(`gantry-spec`, `gantry-ir`, `gantry-sema`, `gantry-synth`, `gantry-manifest`,
+`gantry-contract`, `gantry-backend-<lang>`, `gantry-verify`, `gantry-cli`). Each
+SDK ships with a hand-written runtime under `runtimes/<lang>/`.
+
+- **`README.md`** — what box-gantry is, a stage-by-stage "How it works", and the
+  CLI usage. Read first.
 - **`CONTRIBUTING.md`** — setup, the gate suite, and the PR workflow.
 
 ## Pull requests
 
-Branch off `main`, keep the change focused, keep the gates green, add or adjust
-tests (a new generated shape needs a compile gate; a behavioral change needs a
-round-trip test), and cite any relevant `D-###` / requirement IDs.
+Branch off `main`, keep the change focused, keep the gates green, and add or
+adjust tests (a new generated shape needs a compile gate; a behavioral change
+needs a round-trip test).

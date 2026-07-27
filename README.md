@@ -87,13 +87,36 @@ cargo run -p gantry-cli -- verify --target go \
   fixtures/specs/openapi-v2026.0.json
 ```
 
-## Documents
+## How it works
 
-Start here:
+box-gantry is a small Rust pipeline. One spec set flows through fixed stages,
+each handing the next a *more verified* value — a backend never sees anything
+but a checked program:
 
-| Doc | Role |
-|---|---|
-| [`ARCHITECTURE.md`](./ARCHITECTURE.md) | Components, the pipeline, directory breakdown |
-| [`NEW_ENGINE_REQUIREMENTS.md`](./NEW_ENGINE_REQUIREMENTS.md) | Normative requirements and acceptance criteria |
-| [`DECISIONS.md`](./DECISIONS.md) | Decision records (`D-###`) |
-| [`CONTRIBUTING.md`](./CONTRIBUTING.md) | How to build, test, and contribute |
+1. **Ingest** (`gantry-spec`) — parse the OpenAPI documents, apply the naming
+   rules and Box-specific quirks, and lower to a typed intermediate
+   representation (`gantry-ir`).
+2. **Analyze** (`gantry-sema`) — one pass binds every reference, checks the
+   types are well-formed, and indexes operations by API area.
+3. **Synthesize** (`gantry-synth`) — detect language-agnostic features
+   (pagination, chunked upload) once, structurally, so every backend reuses a
+   single definition.
+4. **Lower + print** (`gantry-backend-<lang>`) — turn the analyzed program into
+   a complete SDK tree, guided by a per-language **capability manifest**
+   (`gantry-manifest`) and a machine-checked **runtime contract**
+   (`gantry-contract`) — never by branching on the language name.
+5. **Verify** (`gantry-verify`, driven by `gantry-cli`) — compile the output
+   with the target's real toolchain, run a capability checklist, and diff two
+   spec sets to recommend the version bump.
+
+Each SDK ships with a small hand-written runtime (`runtimes/<lang>/`) that the
+generated code compiles against. Two rules hold everywhere: **no semantics in
+strings** — optionality, references, and operation kinds are structured data,
+never parsed out of a name — and **loud, never silent** — an unclassifiable
+shape is an error that names the file and JSON path, not a silent fallback.
+
+## Contributing
+
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the development setup, the gate
+suite to run before a PR, and the pull-request workflow. box-gantry is MIT
+licensed ([`LICENSE`](./LICENSE)).
