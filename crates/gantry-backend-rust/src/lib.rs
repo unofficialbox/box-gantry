@@ -190,8 +190,8 @@ fn emits_chunked_upload(analysis: &gantry_sema::Analysis<'_>) -> bool {
         "schemas::UploadPart",
         "schemas::UploadedPart",
         "schemas::Files",
-        "schemas::FileUploadSessionsCreateRequest",
-        "schemas::FileIdUploadSessionsCreateRequest",
+        "schemas::FileUploadSessionCreateRequest",
+        "schemas::FileVersionUploadSessionCreateRequest",
         "schemas::FileUploadSessionCommitRequest",
     ];
     if !REQUIRED_TYPES.iter().all(|r| fqns.contains(*r)) {
@@ -606,7 +606,7 @@ impl ChunkedUpload<'_> {
         let session = self
             .client
             .chunked_uploads
-            .create_file_upload_session(schemas::FileUploadSessionsCreateRequest {
+            .create_file_upload_session(schemas::FileUploadSessionCreateRequest {
                 folder_id: folder_id.to_string(),
                 file_size: content.len() as i64,
                 file_name: file_name.to_string(),
@@ -627,7 +627,7 @@ impl ChunkedUpload<'_> {
             .chunked_uploads
             .create_file_version_upload_session(
                 file_id.to_string(),
-                schemas::FileIdUploadSessionsCreateRequest {
+                schemas::FileVersionUploadSessionCreateRequest {
                     file_size: content.len() as i64,
                     file_name: Some(file_name.to_string()),
                 },

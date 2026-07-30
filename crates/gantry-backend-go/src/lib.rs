@@ -167,8 +167,8 @@ fn emits_chunked_upload(analysis: &gantry_sema::Analysis<'_>) -> bool {
         "schemas.UploadPart",
         "schemas.UploadedPart",
         "schemas.Files",
-        "schemas.FileUploadSessionsCreateRequest",
-        "schemas.FileIdUploadSessionsCreateRequest",
+        "schemas.FileUploadSessionCreateRequest",
+        "schemas.FileVersionUploadSessionCreateRequest",
         "schemas.FileUploadSessionCommitRequest",
     ];
     if !REQUIRED_TYPES.iter().all(|r| fqns.contains(*r)) {
@@ -228,7 +228,7 @@ func (c *Client) NewChunkedUpload() *ChunkedUpload {
 
 // Upload uploads content as a new file named fileName into folderID.
 func (u *ChunkedUpload) Upload(ctx context.Context, content []byte, fileName, folderID string) (*schemas.Files, error) {
-	session, err := u.client.ChunkedUploads.CreateFileUploadSession(ctx, &schemas.FileUploadSessionsCreateRequest{
+	session, err := u.client.ChunkedUploads.CreateFileUploadSession(ctx, &schemas.FileUploadSessionCreateRequest{
 		FolderId: folderID,
 		FileSize: int64(len(content)),
 		FileName: fileName,
@@ -241,7 +241,7 @@ func (u *ChunkedUpload) Upload(ctx context.Context, content []byte, fileName, fo
 
 // UploadVersion uploads content as a new version of the existing file fileID.
 func (u *ChunkedUpload) UploadVersion(ctx context.Context, content []byte, fileName, fileID string) (*schemas.Files, error) {
-	session, err := u.client.ChunkedUploads.CreateFileVersionUploadSession(ctx, fileID, &schemas.FileIdUploadSessionsCreateRequest{
+	session, err := u.client.ChunkedUploads.CreateFileVersionUploadSession(ctx, fileID, &schemas.FileVersionUploadSessionCreateRequest{
 		FileSize: int64(len(content)),
 		FileName: &fileName,
 	})

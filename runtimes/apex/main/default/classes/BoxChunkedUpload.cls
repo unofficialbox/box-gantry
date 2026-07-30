@@ -54,7 +54,7 @@ public with sharing class BoxChunkedUpload {
         if (String.isBlank(folderId)) {
             throw new BoxApiException('A destination folder id is required.');
         }
-        FileUploadSessionsCreateRequest request = new FileUploadSessionsCreateRequest();
+        FileUploadSessionCreateRequest request = new FileUploadSessionCreateRequest();
         request.file_name = fileName;
         request.file_size = content.size();
         request.folder_id = folderId;
@@ -67,7 +67,7 @@ public with sharing class BoxChunkedUpload {
         if (String.isBlank(fileId)) {
             throw new BoxApiException('A target file id is required.');
         }
-        FileIdUploadSessionsCreateRequest request = new FileIdUploadSessionsCreateRequest();
+        FileVersionUploadSessionCreateRequest request = new FileVersionUploadSessionCreateRequest();
         request.file_name = fileName;
         request.file_size = content.size();
         return run(

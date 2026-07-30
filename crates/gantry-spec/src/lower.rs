@@ -206,8 +206,12 @@ impl<'a> DocLowerer<'a> {
                     base_operation_id(op.operation_id.as_deref().unwrap_or(""), &doc.api_version);
                 let tokens = short_op_tokens(base_id, tag);
                 if !tokens.iter().any(|t| t.eq_ignore_ascii_case("id")) {
-                    self.idless_body_seeds
-                        .insert(body_seed_for(tag, method, &tokens, false));
+                    // Curation wins here too, so the collision set reflects the
+                    // seeds bodies actually take (D-194).
+                    let seed = curated_body_seed(base_id)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| body_seed_for(tag, method, &tokens, false));
+                    self.idless_body_seeds.insert(seed);
                 }
             }
         }
@@ -1011,26 +1015,33 @@ impl<'a> DocLowerer<'a> {
         };
         // Name request bodies after their operation, not a generic `PostBody`
         // (D-189). The base is the operation's *distinctive* path tokens
-        // (`FileUploadSessionsCreateRequest`, `FileUploadSessionCommitRequest`),
-        // falling back to the singular manager subject when the operation has no
-        // distinctive path (`FolderCreateRequest`). A trailing curated action
-        // (`commit`) is the verb; otherwise the HTTP verb supplies it.
+        // (`FileUploadSessionCommitRequest`), falling back to the singular manager
+        // subject when the operation has no distinctive path (`FolderCreateRequest`).
+        // A trailing curated action (`commit`) is the verb; otherwise the HTTP verb
+        // supplies it.
         let base_id = base_operation_id(
             op.operation_id.as_deref().unwrap_or(""),
             &self.doc.api_version,
         );
         let all = short_op_tokens(base_id, box_tag);
-        let has_id = all.iter().any(|t| t.eq_ignore_ascii_case("id"));
-        let terse_seed = body_seed_for(box_tag, method, &all, false);
-        // An id-addressed body keeps its `{id}` selector only when an id-less
-        // sibling claims the same terse name (`FileContentCreateRequest` +
-        // `FileIdContentCreateRequest`); otherwise it takes the clean terse name
-        // (`FileUpdateRequest`, no redundant `Id`). The id-less seeds are gathered
-        // in a pre-pass (`gather_idless_body_seeds`), so this is order-independent.
-        let body_seed = if has_id && self.idless_body_seeds.contains(&terse_seed) {
-            body_seed_for(box_tag, method, &all, true)
-        } else {
-            terse_seed
+        // A curated seed for the few bodies whose path tokens derive an awkward or
+        // colliding name (D-194). Otherwise: an id-addressed body keeps its `{id}`
+        // selector only when an id-less sibling claims the same terse name
+        // (`FileContentCreateRequest` + `FileIdContentCreateRequest`); otherwise it
+        // takes the clean terse name (`FileUpdateRequest`, no redundant `Id`). The
+        // id-less seeds are gathered in a pre-pass (`gather_idless_body_seeds`), so
+        // this is order-independent.
+        let body_seed = match curated_body_seed(base_id) {
+            Some(seed) => seed.to_string(),
+            None => {
+                let has_id = all.iter().any(|t| t.eq_ignore_ascii_case("id"));
+                let terse_seed = body_seed_for(box_tag, method, &all, false);
+                if has_id && self.idless_body_seeds.contains(&terse_seed) {
+                    body_seed_for(box_tag, method, &all, true)
+                } else {
+                    terse_seed
+                }
+            }
         };
         let mut ty = match &media.schema {
             Some(schema) => self.lower_type(
@@ -1486,6 +1497,27 @@ fn curated_method_name(base_id: &str) -> Option<&'static str> {
         // "Query files/folders by metadata" — `execute_read` is Box's endpoint
         // plumbing, not user intent.
         "post_metadata_queries_execute_read" => Some("queryByMetadata"),
+        _ => None,
+    }
+}
+
+/// A curated request-body type name for endpoints whose path tokens derive an
+/// awkward or colliding seed (D-194). Keyed by the version-stripped operationId,
+/// as [`curated_method_name`] is, so it applies across every spec version.
+///
+/// The two upload-session creators otherwise seed the plural, position-flavored
+/// `FileUploadSessionsCreateRequest` / `FileIdUploadSessionsCreateRequest` — the
+/// second keeps its `{id}` selector only because the first claims the terse name.
+/// The singular `FileUploadSessionCreateRequest` / `FileVersionUploadSessionCreateRequest`
+/// read the way the chunked-upload orchestrators construct them and line up with
+/// the sibling `FileUploadSessionCommitRequest` and the curated method names.
+///
+/// Returns a PascalCase seed; each backend cases it per language. A curated seed
+/// bypasses the terse/`keep_id` collision dance in `lower_request_body`.
+fn curated_body_seed(base_id: &str) -> Option<&'static str> {
+    match base_id {
+        "post_files_upload_sessions" => Some("FileUploadSessionCreateRequest"),
+        "post_files_id_upload_sessions" => Some("FileVersionUploadSessionCreateRequest"),
         _ => None,
     }
 }
