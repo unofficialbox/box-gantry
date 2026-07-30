@@ -58,7 +58,7 @@ public with sharing class BoxChunkedUpload {
         request.file_name = fileName;
         request.file_size = content.size();
         request.folder_id = folderId;
-        return run(this.client.chunkedUploads.createFileUploadSessions(request), content);
+        return run(this.client.chunkedUploads.createFileUploadSession(request), content);
     }
 
     /** Upload `content` as a new version of the existing file `fileId`. */
@@ -71,7 +71,7 @@ public with sharing class BoxChunkedUpload {
         request.file_name = fileName;
         request.file_size = content.size();
         return run(
-            this.client.chunkedUploads.createFileByIdUploadSessions(fileId, request),
+            this.client.chunkedUploads.createFileVersionUploadSession(fileId, request),
             content
         );
     }

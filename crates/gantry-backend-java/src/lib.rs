@@ -205,8 +205,8 @@ fn emits_chunked_upload(analysis: &gantry_sema::Analysis<'_>) -> bool {
         .map(managers::method_name)
         .collect();
     const REQUIRED_METHODS: [&str; 4] = [
-        "createFileUploadSessions",
-        "createFileByIdUploadSessions",
+        "createFileUploadSession",
+        "createFileVersionUploadSession",
         "updateFileUploadSession",
         "commitFileUploadSession",
     ];
@@ -796,14 +796,14 @@ public final class BoxChunkedUpload {
 
     /** Upload {@code content} as a new file named {@code fileName} into {@code folderId}. */
     public Files upload(byte[] content, String fileName, String folderId) {
-        UploadSession session = client.chunkedUploads.createFileUploadSessions(
+        UploadSession session = client.chunkedUploads.createFileUploadSession(
                 new FileUploadSessionsCreateRequest(folderId, (long) content.length, fileName));
         return finish(session, content);
     }
 
     /** Upload {@code content} as a new version of {@code fileId}. */
     public Files uploadVersion(byte[] content, String fileName, String fileId) {
-        UploadSession session = client.chunkedUploads.createFileByIdUploadSessions(
+        UploadSession session = client.chunkedUploads.createFileVersionUploadSession(
                 fileId, new FileIdUploadSessionsCreateRequest((long) content.length, Optional.of(fileName)));
         return finish(session, content);
     }

@@ -1467,6 +1467,12 @@ const ACTION_VERBS: &[&str] = &[
 ///   summaries name them "Upload file" / "Upload file version".
 /// - `PUT /users/{id}/folders/0` ("Transfer owned folders") leaks Box's literal
 ///   root-folder id `0` into `updateUserFolder0`.
+/// - The two upload-session creators disambiguate structurally to the plural,
+///   position-flavored `createFileUploadSessions` / `createFileByIdUploadSessions`
+///   — accurate but awkward. Box's summaries name them "Create upload session" /
+///   "Create upload session for existing file"; the singular
+///   `createFileUploadSession` / `createFileVersionUploadSession` read the way the
+///   chunked-upload orchestrators call them.
 ///
 /// Returns a camelCase seed; each backend cases it (`UploadFile`,
 /// `upload_file`, …). Curated names still flow through the dedup guard below.
@@ -1475,6 +1481,8 @@ fn curated_method_name(base_id: &str) -> Option<&'static str> {
         "post_files_content" => Some("uploadFile"),
         "post_files_id_content" => Some("uploadFileVersion"),
         "put_users_id_folders_0" => Some("transferFolders"),
+        "post_files_upload_sessions" => Some("createFileUploadSession"),
+        "post_files_id_upload_sessions" => Some("createFileVersionUploadSession"),
         // "Query files/folders by metadata" — `execute_read` is Box's endpoint
         // plumbing, not user intent.
         "post_metadata_queries_execute_read" => Some("queryByMetadata"),
