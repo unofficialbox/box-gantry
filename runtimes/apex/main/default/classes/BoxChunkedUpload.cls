@@ -54,11 +54,11 @@ public with sharing class BoxChunkedUpload {
         if (String.isBlank(folderId)) {
             throw new BoxApiException('A destination folder id is required.');
         }
-        FileUploadSessionsCreateRequest request = new FileUploadSessionsCreateRequest();
+        FileUploadSessionCreateRequest request = new FileUploadSessionCreateRequest();
         request.file_name = fileName;
         request.file_size = content.size();
         request.folder_id = folderId;
-        return run(this.client.chunkedUploads.createFileUploadSessions(request), content);
+        return run(this.client.chunkedUploads.createFileUploadSession(request), content);
     }
 
     /** Upload `content` as a new version of the existing file `fileId`. */
@@ -67,11 +67,11 @@ public with sharing class BoxChunkedUpload {
         if (String.isBlank(fileId)) {
             throw new BoxApiException('A target file id is required.');
         }
-        FileIdUploadSessionsCreateRequest request = new FileIdUploadSessionsCreateRequest();
+        FileVersionUploadSessionCreateRequest request = new FileVersionUploadSessionCreateRequest();
         request.file_name = fileName;
         request.file_size = content.size();
         return run(
-            this.client.chunkedUploads.createFileByIdUploadSessions(fileId, request),
+            this.client.chunkedUploads.createFileVersionUploadSession(fileId, request),
             content
         );
     }

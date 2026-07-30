@@ -616,15 +616,20 @@ impl Printer<'_> {
                      \x20   req = runtime.withJsonBody(req, payload);\n",
                 );
             }
-            // Uploads are not yet fully streamed (mirrors Go/Rust): the file
-            // part is an empty placeholder until the runtime slice wires real
-            // body streaming. Multipart still sends the serialized attributes.
+            // An octet-stream body sends the caller's `Blob` bytes: the method
+            // is `async`, so it buffers them and hands the runtime a `Stream`
+            // (the runtime buffers every body for retry replay anyway, matching
+            // Go's `WithStreamBody(req, body, …)`). This is the wire the chunked
+            // upload part PUT rides on.
             ir::RequestMedia::OctetStream => {
                 self.body.push_str(
-                    "    void body;\n\
-                     \x20   req = runtime.withStreamBody(req, runtime.Stream.empty(), 'application/octet-stream');\n",
+                    "    const fileBytes = new Uint8Array(await body.arrayBuffer());\n\
+                     \x20   req = runtime.withStreamBody(req, new runtime.Stream(fileBytes), 'application/octet-stream');\n",
                 );
             }
+            // Multipart's file part is still an empty placeholder (D-149): the
+            // single-shot upload endpoints don't yet stream the file body.
+            // Multipart still sends the serialized attributes.
             ir::RequestMedia::Multipart => {
                 self.body.push_str(
                     "    const attributes = new TextEncoder().encode(JSON.stringify(body));\n\

@@ -815,16 +815,25 @@ impl Printer<'_> {
                      \x20       req = runtime::with_json_body(req, &payload);\n",
                 );
             }
-            // Uploads are not yet fully streamed (D-149): the octet/multipart
-            // file part is an empty placeholder — the same posture as the Go
-            // backend's `nil` file — until the runtime slice wires real body
-            // streaming. Multipart still sends the serialized attributes.
+            // An octet-stream body sends the caller's `Vec<u8>` bytes: the
+            // runtime buffers every body for retry replay anyway, so it hands
+            // them straight to a `Stream`, matching Go's
+            // `WithStreamBody(req, body, …)`. This is the wire the chunked
+            // upload part PUT rides on.
             ir::RequestMedia::OctetStream => {
+                // Pre-wrapped to rustfmt's 100-col layout (the generated crate is
+                // `cargo fmt --check`-clean by construction, TR-Rust.4).
                 self.body.push_str(
-                    "        let _ = &body;\n\
-                     \x20       req = runtime::with_stream_body(req, runtime::Stream::empty(), \"application/octet-stream\");\n",
+                    "        req = runtime::with_stream_body(\n\
+                     \x20           req,\n\
+                     \x20           runtime::Stream::from_bytes(body),\n\
+                     \x20           \"application/octet-stream\",\n\
+                     \x20       );\n",
                 );
             }
+            // Multipart's file part is still an empty placeholder (D-149): the
+            // single-shot upload endpoints don't yet stream the file body.
+            // Multipart still sends the serialized attributes.
             ir::RequestMedia::Multipart => {
                 self.body.push_str(
                     "        let attributes = serde_json::to_vec(&body)?;\n\
