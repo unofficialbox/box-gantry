@@ -570,13 +570,20 @@ use crate::client::Client;
 use crate::models::schemas;
 use crate::runtime::Error;
 use base64::Engine as _;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+/// Parts in flight at once (`join_ordered` bounds each batch), capping peak
+/// buffer memory while keeping several requests moving together.
+const MAX_CONCURRENT: usize = 4;
 
 /// An orchestrator for Box chunked (multipart) uploads over a [`Client`]: it
-/// creates an upload session, uploads the content's parts, and commits — for a
-/// new file ([`ChunkedUpload::upload`]) or a new version of an existing file
-/// ([`ChunkedUpload::upload_version`]). Box requires chunked upload for files at
-/// or above its minimum session size; smaller files use the single-shot upload
-/// endpoints.
+/// creates an upload session, uploads the content's parts with bounded
+/// concurrency, and commits — for a new file ([`ChunkedUpload::upload`]) or a
+/// new version of an existing file ([`ChunkedUpload::upload_version`]). Box
+/// requires chunked upload for files at or above its minimum session size;
+/// smaller files use the single-shot upload endpoints.
 pub struct ChunkedUpload<'a> {
     client: &'a Client,
 }
@@ -647,15 +654,22 @@ impl ChunkedUpload<'_> {
         };
         let total = content.len();
 
-        let mut parts = Vec::new();
-        let mut start = 0;
-        while start < total {
-            let end = (start + part_size).min(total);
-            parts.push(
-                self.upload_part(&id, &content[start..end], start, end, total)
-                    .await?,
-            );
-            start = end;
+        // Upload in batches of MAX_CONCURRENT parts at a time, each batch driven
+        // concurrently (the requests are in flight together) but committed in
+        // order — Box's commit lists parts in offset order.
+        let offsets: Vec<usize> = (0..total).step_by(part_size).collect();
+        let mut parts = Vec::with_capacity(offsets.len());
+        for batch in offsets.chunks(MAX_CONCURRENT) {
+            let uploads = batch
+                .iter()
+                .map(|&start| {
+                    let end = (start + part_size).min(total);
+                    self.upload_part(&id, &content[start..end], start, end, total)
+                })
+                .collect();
+            for result in join_ordered(uploads).await {
+                parts.push(result?);
+            }
         }
 
         let digest = format!(
@@ -694,6 +708,66 @@ impl ChunkedUpload<'_> {
         uploaded
             .part
             .ok_or_else(|| Error::new("gantry: upload part returned no part"))
+    }
+}
+
+/// Await every future concurrently on the current task, returning results in
+/// input order. No `tokio::spawn`, so it needs neither a runtime feature nor a
+/// `Send`/`'static` bound — enough for I/O-bound part uploads, whose requests
+/// are in flight together and driven by the reactor, without pulling in a
+/// `futures`/`tokio` `rt` dependency the SDK avoids.
+async fn join_ordered<F>(futures: Vec<F>) -> Vec<F::Output>
+where
+    F: Future,
+    F::Output: Unpin,
+{
+    JoinOrdered {
+        slots: futures
+            .into_iter()
+            .map(|f| (Some(Box::pin(f)), None))
+            .collect(),
+    }
+    .await
+}
+
+/// The [`Future`] backing [`join_ordered`]: it polls each not-yet-ready future
+/// on every wake and finishes once all have produced a value.
+struct JoinOrdered<F: Future> {
+    #[allow(clippy::type_complexity)]
+    slots: Vec<(Option<Pin<Box<F>>>, Option<F::Output>)>,
+}
+
+impl<F> Future for JoinOrdered<F>
+where
+    F: Future,
+    F::Output: Unpin,
+{
+    type Output = Vec<F::Output>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let slots = &mut self.get_mut().slots;
+        let mut pending = false;
+        for (future, output) in slots.iter_mut() {
+            if let Some(f) = future {
+                match f.as_mut().poll(cx) {
+                    Poll::Ready(value) => {
+                        *output = Some(value);
+                        *future = None;
+                    }
+                    Poll::Pending => pending = true,
+                }
+            }
+        }
+        if pending {
+            Poll::Pending
+        } else {
+            Poll::Ready(
+                slots
+                    .iter_mut()
+                    .map(|(_, out)| out.take().unwrap())
+                    .collect(),
+            )
+        }
     }
 }
 
