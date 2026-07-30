@@ -54,23 +54,13 @@ cargo run -p gantry-cli -- generate --target rust --out /tmp/sdk \
   fixtures/specs/openapi-v2026.0.json
 ```
 
-## Architecture
+## How it works
 
-Read [`ARCHITECTURE.md`](./ARCHITECTURE.md) first — it explains the pipeline
-(ingest → typed IR → semantics → per-language manifest + runtime contract →
-backend lowering + printer) and where each concern lives. Every backend consumes
-the same IR; language-specific behavior is driven by a capability manifest, never
-by branching on the language name.
-
-## Design decisions
-
-Non-obvious engineering decisions are recorded in
-[`DECISIONS.md`](./DECISIONS.md) as dated `D-###` entries, and the requirements
-they satisfy live in
-[`NEW_ENGINE_REQUIREMENTS.md`](./NEW_ENGINE_REQUIREMENTS.md) (`FR-`/`NF-`/`TR-`/
-`VR-` identifiers). Code comments cite these IDs. When you make a decision that
-future readers would otherwise have to reverse-engineer, add a `D-###` entry;
-when you touch behavior a requirement governs, cite it.
+The pipeline is: ingest → typed IR → semantics → per-language manifest + runtime
+contract → backend lowering + printer. Every backend consumes the same IR;
+language-specific behavior is driven by a **capability manifest**, never by
+branching on the language name. The [README](./README.md#how-it-works) has a
+stage-by-stage overview; the crate layout under `crates/` mirrors it.
 
 ## Pull request workflow
 
@@ -78,8 +68,7 @@ when you touch behavior a requirement governs, cite it.
 2. Make your change; keep it focused and keep the gates green.
 3. Add or update tests — new generated shapes need a compile gate, and behavioral
    changes need a round-trip or behavioral test.
-4. Open the PR against `main`. Describe *what* and *why*; reference any `D-###` /
-   requirement IDs.
+4. Open the PR against `main`. Describe *what* and *why*.
 5. Address review feedback, keep CI green, and a maintainer will merge.
 
 ## Code style

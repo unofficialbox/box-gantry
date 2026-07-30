@@ -12,4 +12,3 @@ Quick reminders:
   and `cargo test --workspace` before finishing a change — that's the CI gate.
 - Keep generated output deterministic and dependency-light; put language behavior
   in the capability manifest, not in `if language == …` branches.
-- Record non-obvious decisions as `D-###` entries in `DECISIONS.md`.
