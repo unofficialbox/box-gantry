@@ -268,6 +268,11 @@ func (u *ChunkedUpload) finish(ctx context.Context, session *schemas.UploadSessi
 	}
 	parts := make([]schemas.UploadPart, len(offsets))
 
+	// Cancel the still-queued and in-flight part uploads as soon as one fails,
+	// so a failure early in a large upload doesn't push every remaining part.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	sem := make(chan struct{}, u.maxConcurrent)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -288,6 +293,7 @@ func (u *ChunkedUpload) finish(ctx context.Context, session *schemas.UploadSessi
 			if err != nil {
 				if firstErr == nil {
 					firstErr = err
+					cancel()
 				}
 				return
 			}

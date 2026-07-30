@@ -307,16 +307,27 @@ export class ChunkedUpload {
 
     // A bounded worker pool: each of maxConcurrent workers claims the next
     // offset (the `next++` read is atomic between awaits on a single thread).
+    // Once any part fails, `failed` stops the others from starting new parts,
+    // so a failure early in a large upload doesn't push every remaining part.
     let next = 0;
+    let failed = false;
     const worker = async (): Promise<void> => {
       for (;;) {
+        if (failed) {
+          return;
+        }
         const i = next++;
         if (i >= offsets.length) {
           return;
         }
         const start = offsets[i];
         const end = Math.min(start + partSize, total);
-        parts[i] = await this.uploadPart(id, content, start, end, total);
+        try {
+          parts[i] = await this.uploadPart(id, content, start, end, total);
+        } catch (err) {
+          failed = true;
+          throw err;
+        }
       }
     };
     const workerCount = Math.min(this.maxConcurrent, offsets.length);

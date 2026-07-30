@@ -1634,3 +1634,33 @@ fn effective_nullable(raw: &RawSchema) -> bool {
             .iter()
             .any(|part| is_annotation_only(part) && part.nullable)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{curated_body_seed, curated_method_name};
+
+    /// The chunked-upload orchestrators (every backend) call these exact method
+    /// names and construct these exact request-body types; each backend's emit
+    /// gate keys off the same literals (D-194). If a curated value drifts, the
+    /// gate silently returns `false` and the orchestrator vanishes rather than
+    /// failing loudly — so pin the pairs here.
+    #[test]
+    fn curated_upload_session_names_are_stable() {
+        assert_eq!(
+            curated_method_name("post_files_upload_sessions"),
+            Some("createFileUploadSession")
+        );
+        assert_eq!(
+            curated_method_name("post_files_id_upload_sessions"),
+            Some("createFileVersionUploadSession")
+        );
+        assert_eq!(
+            curated_body_seed("post_files_upload_sessions"),
+            Some("FileUploadSessionCreateRequest")
+        );
+        assert_eq!(
+            curated_body_seed("post_files_id_upload_sessions"),
+            Some("FileVersionUploadSessionCreateRequest")
+        );
+    }
+}
