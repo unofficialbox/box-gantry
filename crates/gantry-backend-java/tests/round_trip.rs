@@ -176,12 +176,42 @@ fn write_all(dir: &Path, files: &[gantry_backend_java::GeneratedFile]) -> Vec<Pa
     sources
 }
 
+/// True only when both `javac` and the `java` runtime target Java 26+ (D-180):
+/// this gate targets Java 26 and both *compiles* with `javac` and *executes*
+/// with `java`, so a missing, unreadable, or pre-26 tool cannot run it and must
+/// skip — not fail — per the toolchain contract. `java` and `javac` are separate
+/// binaries, so both are probed. CI installs JDK 26, where both report 26 and
+/// the gate runs for real.
+fn jdk_targets_26() -> bool {
+    tool_major_version("javac").is_some_and(|major| major >= 26)
+        && tool_major_version("java").is_some_and(|major| major >= 26)
+}
+
+/// The major version reported by `<tool> -version`, or `None` when the tool is
+/// absent, unreadable, or unparseable. Both tools print `-version` to stdout on
+/// modern JDKs and stderr on very old ones, in two shapes: `openjdk version "26"
+/// …` (`java`, major is the first quoted token) and `javac 26.0.1` (`javac`, no
+/// quotes, major is the second whitespace token). Prefer the quoted token; fall
+/// back to the bare one.
+fn tool_major_version(tool: &str) -> Option<u32> {
+    let out = Command::new(tool).arg("-version").output().ok()?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let text = if stdout.trim().is_empty() {
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    } else {
+        stdout.into_owned()
+    };
+    text.split('"')
+        .nth(1)
+        .or_else(|| text.split_whitespace().nth(1))
+        .and_then(|v| v.split(['.', '-', '_']).next())
+        .and_then(|major| major.parse::<u32>().ok())
+}
+
 #[test]
 fn the_generated_codec_round_trips_under_java() {
-    if Command::new("javac").arg("-version").output().is_err()
-        || Command::new("java").arg("-version").output().is_err()
-    {
-        eprintln!("SKIPPED: JDK not available; CI installs one and runs this gate");
+    if !jdk_targets_26() {
+        eprintln!("SKIPPED: JDK 26+ not available; CI installs one and runs this gate");
         return;
     }
 

@@ -392,13 +392,21 @@ fn package_json() -> String {
     // literal `{ }` (the `exports` map, `engines`, `scripts`), all of which
     // would need doubling under `format!`. One `replace` keeps the JSON readable
     // and leaves no hardcoded version behind.
+    //
+    // `repository.url` is box-gantry, not box-open-ts-sdk — deliberately. npm
+    // trusted publishing signs a provenance statement naming the repo that ran
+    // the release workflow (box-gantry) and then rejects the publish unless
+    // `repository.url` matches it (E422). It is also the honest pointer: this
+    // package is generated, so a fix belongs in the engine, never in the SDK repo
+    // (an edit there is lost at the next regeneration; see `vendored`). `homepage`
+    // stays on box-open-ts-sdk, where a TypeScript consumer reads and installs.
     const TEMPLATE: &str = "{\n\
      \x20 \"name\": \"@unofficialbox/box-open-sdk\",\n\
      \x20 \"version\": \"@VERSION@\",\n\
      \x20 \"description\": \"Box API client for TypeScript (open source, community, punk rock) — typed models, async managers, and a fetch runtime with retry, backoff, and token refresh.\",\n\
      \x20 \"keywords\": [\"box\", \"box-api\", \"sdk\", \"api-client\", \"typescript\", \"unofficial\"],\n\
      \x20 \"license\": \"MIT\",\n\
-     \x20 \"repository\": { \"type\": \"git\", \"url\": \"git+https://github.com/unofficialbox/box-open-ts-sdk.git\" },\n\
+     \x20 \"repository\": { \"type\": \"git\", \"url\": \"git+https://github.com/unofficialbox/box-gantry.git\" },\n\
      \x20 \"homepage\": \"https://github.com/unofficialbox/box-open-ts-sdk\",\n\
      \x20 \"type\": \"module\",\n\
      \x20 \"sideEffects\": false,\n\

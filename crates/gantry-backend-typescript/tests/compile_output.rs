@@ -78,6 +78,20 @@ fn generation_is_deterministic() {
             "package.json missing {needle}"
         );
     }
+    // `repository.url` names box-gantry, not the SDK repo: npm trusted publishing
+    // signs a provenance statement for the repo that runs the release workflow and
+    // rejects the publish (E422) unless `repository.url` matches. `homepage` still
+    // points a TypeScript consumer at box-open-ts-sdk. Do not "fix" these to agree.
+    assert!(
+        pkg.content
+            .contains("\"url\": \"git+https://github.com/unofficialbox/box-gantry.git\""),
+        "repository.url must be box-gantry to satisfy npm provenance"
+    );
+    assert!(
+        pkg.content
+            .contains("\"homepage\": \"https://github.com/unofficialbox/box-open-ts-sdk\""),
+        "homepage should point a TypeScript consumer at box-open-ts-sdk"
+    );
     assert!(once.iter().any(|f| f.path == "tsconfig.build.json"));
     assert!(once.iter().any(|f| f.path == "tsconfig.cjs.json"));
     assert!(once.iter().any(|f| f.path == "scripts/postbuild.mjs"));

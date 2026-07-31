@@ -19,9 +19,36 @@ fn runtime_src() -> PathBuf {
     )
 }
 
-fn jdk_available() -> bool {
-    Command::new("javac").arg("-version").output().is_ok()
-        && Command::new("java").arg("-version").output().is_ok()
+/// True only when both `javac` and the `java` runtime target Java 26+ (D-180):
+/// the runtime and generated SDK target Java 26 and these gates *compile* with
+/// `javac` and *execute* with `java`, so a missing, unreadable, or pre-26 tool
+/// cannot run them and must skip — not fail — per the toolchain contract. `java`
+/// and `javac` are separate binaries, so both are probed. CI installs JDK 26,
+/// where both report 26 and the gates run for real.
+fn jdk_targets_26() -> bool {
+    tool_major_version("javac").is_some_and(|major| major >= 26)
+        && tool_major_version("java").is_some_and(|major| major >= 26)
+}
+
+/// The major version reported by `<tool> -version`, or `None` when the tool is
+/// absent, unreadable, or unparseable. Both tools print `-version` to stdout on
+/// modern JDKs and stderr on very old ones, in two shapes: `openjdk version "26"
+/// …` (`java`, major is the first quoted token) and `javac 26.0.1` (`javac`, no
+/// quotes, major is the second whitespace token). Prefer the quoted token; fall
+/// back to the bare one.
+fn tool_major_version(tool: &str) -> Option<u32> {
+    let out = Command::new(tool).arg("-version").output().ok()?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let text = if stdout.trim().is_empty() {
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    } else {
+        stdout.into_owned()
+    };
+    text.split('"')
+        .nth(1)
+        .or_else(|| text.split_whitespace().nth(1))
+        .and_then(|v| v.split(['.', '-', '_']).next())
+        .and_then(|major| major.parse::<u32>().ok())
 }
 
 /// The runtime compiles warning-clean under `javac --release 26 -Xlint:all
@@ -29,8 +56,8 @@ fn jdk_available() -> bool {
 /// HTTP/3 (D-180), a Java 26 API, so 26 is the floor.
 #[test]
 fn the_runtime_compiles_standalone() {
-    if Command::new("javac").arg("-version").output().is_err() {
-        eprintln!("SKIPPED: javac not available; CI installs a JDK and runs this gate");
+    if !jdk_targets_26() {
+        eprintln!("SKIPPED: JDK 26+ not available; CI installs one and runs this gate");
         return;
     }
     let dir = std::env::temp_dir().join(format!("gantry-java-rt-std-{}", std::process::id()));
@@ -200,8 +227,8 @@ public final class RuntimeSmoke {
 /// (in-process) HTTP server.
 #[test]
 fn the_runtime_retries_and_authenticates() {
-    if !jdk_available() {
-        eprintln!("SKIPPED: JDK not available; CI installs one and runs this gate");
+    if !jdk_targets_26() {
+        eprintln!("SKIPPED: JDK 26+ not available; CI installs one and runs this gate");
         return;
     }
     let dir = std::env::temp_dir().join(format!("gantry-java-rt-{}", std::process::id()));
@@ -306,8 +333,8 @@ void main() throws Exception {
 /// is Java 26 (D-180); the compact form needs ≥ 25.
 #[test]
 fn the_live_smoke_compiles_and_runs_when_credentialed() {
-    if !jdk_available() {
-        eprintln!("SKIPPED: JDK not available; CI installs one and runs this gate");
+    if !jdk_targets_26() {
+        eprintln!("SKIPPED: JDK 26+ not available; CI installs one and runs this gate");
         return;
     }
     let dir = std::env::temp_dir().join(format!("gantry-java-live-{}", std::process::id()));
