@@ -223,9 +223,9 @@ fn emits_chunked_upload(analysis: &gantry_sema::Analysis<'_>) -> bool {
         "schemas.UploadPart",
         "schemas.UploadedPart",
         "schemas.Files",
-        "schemas.FileUploadSessionCreateRequest",
-        "schemas.FileVersionUploadSessionCreateRequest",
-        "schemas.FileUploadSessionCommitRequest",
+        "schemas.CreateFileUploadSessionRequest",
+        "schemas.CreateFileVersionUploadSessionRequest",
+        "schemas.CommitFileUploadSessionRequest",
     ];
     if !REQUIRED_TYPES.iter().all(|r| fqns.contains(*r)) {
         return false;
