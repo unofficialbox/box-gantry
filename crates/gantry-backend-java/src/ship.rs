@@ -226,8 +226,10 @@ fn readme() -> String {
 
 # @ARTIFACT@ (Java)
 
+[![release](https://img.shields.io/github/v/release/@REPO@?sort=semver)](@PROJECT_URL@/releases/latest)
 [![Maven Central](https://img.shields.io/maven-central/v/@GROUP@/@ARTIFACT@.svg)](https://central.sonatype.com/artifact/@GROUP@/@ARTIFACT@)
 [![javadoc](https://javadoc.io/badge2/@GROUP@/@ARTIFACT@/javadoc.svg)](https://javadoc.io/doc/@GROUP@/@ARTIFACT@)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 An **open source, community-built** Box API client for Java — one resource manager per
 API area behind a single `dev.unofficialbox.Client`, over a dependency-free
@@ -340,8 +342,16 @@ Everything else compiles and runs without the flag.
 The [`docs/`](./docs) tree carries the per-manager reference — a call snippet for
 every method — and the authentication, pagination, and errors guides.
 "##;
+    // `@REPO@` is the `owner/name` GitHub slug the release badge needs — the
+    // project URL without its `https://github.com/` host (`PROJECT_URL` is the
+    // source of truth for where this SDK ships).
+    let repo = PROJECT_URL
+        .strip_prefix("https://github.com/")
+        .unwrap_or(PROJECT_URL);
     TEMPLATE
         .replace("@ARTIFACT@", ARTIFACT_ID)
         .replace("@GROUP@", GROUP_ID)
         .replace("@VERSION@", VERSION)
+        .replace("@PROJECT_URL@", PROJECT_URL)
+        .replace("@REPO@", repo)
 }
