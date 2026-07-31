@@ -472,7 +472,7 @@ func main() {
 
 	// Attach that metadata to the file (an enterprise template).
 	if _, err := c.FileMetadata.CreateFileMetadata(ctx, fileID,
-		schemas.GetFileIdMetadataIdIdScopeEnterprise, "invoiceData",
+		schemas.GetFileIdMetadataIdScopeEnterprise, "invoiceData",
 		map[string]any{"invoiceNumber": "INV-0042", "total": 1250}); err != nil {
 		log.Fatal(err)
 	}
