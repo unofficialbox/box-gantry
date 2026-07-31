@@ -30,5 +30,9 @@ runtimes/typescript/gantryruntime/dist-livesmoke/
 # macOS
 .DS_Store
 
+# Internal naming-conciseness audit — a working reference kept in the tree but
+# not version-controlled (like the other dropped planning docs, PR #101).
+NAMING_AUDIT.md
+
 # Claude Code personal (per-user) settings — the shared .claude/settings.json is committed
 .claude/settings.local.json

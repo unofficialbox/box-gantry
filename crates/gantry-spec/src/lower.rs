@@ -202,15 +202,18 @@ impl<'a> DocLowerer<'a> {
                 let Some(tag) = op.box_tag.as_deref() else {
                     continue;
                 };
-                let base_id =
-                    base_operation_id(op.operation_id.as_deref().unwrap_or(""), &doc.api_version);
+                let raw_id = op.operation_id.as_deref().unwrap_or("");
+                let base_id = base_operation_id(raw_id, &doc.api_version);
                 let tokens = short_op_tokens(base_id, tag);
                 if !tokens.iter().any(|t| t.eq_ignore_ascii_case("id")) {
                     // Curation wins here too, so the collision set reflects the
-                    // seeds bodies actually take (D-194).
+                    // seeds bodies actually take (D-194). The `#variation` fold
+                    // must match `lower_request_body`, or an id-less sibling's
+                    // recorded seed would drift from the one it takes.
+                    let variation = variation_seed_tokens(raw_id, &doc.api_version);
                     let seed = curated_body_seed(base_id)
                         .map(str::to_string)
-                        .unwrap_or_else(|| body_seed_for(tag, method, &tokens, false));
+                        .unwrap_or_else(|| body_seed_for(tag, method, &tokens, false, &variation));
                     self.idless_body_seeds.insert(seed);
                 }
             }
@@ -791,7 +794,21 @@ impl<'a> DocLowerer<'a> {
         let manager = identifier(doc, &location, box_tag)?;
         // Seed for synthesized declarations belonging to this operation.
         let owner = {
-            let mut owner = pascal(&short_tokens.join("_"));
+            // Collapse consecutive duplicate tokens before seeding a type name:
+            // a two-`{id}` path (`.../taxonomies/{id}/{id}`) encodes both
+            // selectors as `id`, so the raw seed reads `…IdId…`. The doubled
+            // selector carries no meaning in a *type* name (method-name
+            // disambiguation keeps its own full token list), so drop the repeat.
+            let mut seed_tokens: Vec<&str> = Vec::with_capacity(short_tokens.len());
+            for token in &short_tokens {
+                if seed_tokens
+                    .last()
+                    .is_none_or(|prev| !prev.eq_ignore_ascii_case(token))
+                {
+                    seed_tokens.push(token);
+                }
+            }
+            let mut owner = pascal(&seed_tokens.join("_"));
             if let Some(v) = &variation {
                 owner.push_str(&pascal(v.as_str()));
             }
@@ -1024,6 +1041,17 @@ impl<'a> DocLowerer<'a> {
             &self.doc.api_version,
         );
         let all = short_op_tokens(base_id, box_tag);
+        // A `#variation` fragment (D-104) splits one operationId into distinct
+        // operations that share a base but differ in body shape
+        // (`put_files_id#add_shared_link` vs `#update_shared_link`). Left alone,
+        // both seed `FileUpdateRequest` and the structural dedupe falls back to a
+        // meaningless numeric suffix (`FileUpdateRequest2`). Fold the variation
+        // into the subject — as `owner` already does — so each body takes a
+        // distinct, meaningful name (`FileAddSharedLinkUpdateRequest`).
+        let variation = variation_seed_tokens(
+            op.operation_id.as_deref().unwrap_or(""),
+            &self.doc.api_version,
+        );
         // A curated seed for the few bodies whose path tokens derive an awkward or
         // colliding name (D-194). Otherwise: an id-addressed body keeps its `{id}`
         // selector only when an id-less sibling claims the same terse name
@@ -1035,9 +1063,9 @@ impl<'a> DocLowerer<'a> {
             Some(seed) => seed.to_string(),
             None => {
                 let has_id = all.iter().any(|t| t.eq_ignore_ascii_case("id"));
-                let terse_seed = body_seed_for(box_tag, method, &all, false);
+                let terse_seed = body_seed_for(box_tag, method, &all, false, &variation);
                 if has_id && self.idless_body_seeds.contains(&terse_seed) {
-                    body_seed_for(box_tag, method, &all, true)
+                    body_seed_for(box_tag, method, &all, true, &variation)
                 } else {
                     terse_seed
                 }
@@ -1383,8 +1411,17 @@ fn short_op_tokens(base_id: &str, box_tag: &str) -> Vec<String> {
 /// tokens + a verb, falling back to the singular manager subject when there is
 /// no distinctive path (`FolderCreateRequest`). `keep_id` retains the `{id}`
 /// selector (`FileIdContentCreateRequest`), used only to disambiguate an
-/// id-addressed body from an id-less sibling of the same name.
-fn body_seed_for(box_tag: &str, method: &str, op_tokens: &[String], keep_id: bool) -> String {
+/// id-addressed body from an id-less sibling of the same name. `variation`
+/// carries the `#variation` fragment's words (D-104), folded into the subject so
+/// operations sharing a base seed take distinct names rather than a structural
+/// dedupe suffix (`FileAddSharedLinkUpdateRequest`, not `FileUpdateRequest2`).
+fn body_seed_for(
+    box_tag: &str,
+    method: &str,
+    op_tokens: &[String],
+    keep_id: bool,
+    variation: &[String],
+) -> String {
     let verb = match method {
         "post" => "Create",
         "put" | "patch" => "Update",
@@ -1397,12 +1434,22 @@ fn body_seed_for(box_tag: &str, method: &str, op_tokens: &[String], keep_id: boo
         .filter(|t| !matches!(*t, "get" | "post" | "put" | "patch" | "delete"))
         .filter(|t| keep_id || !t.eq_ignore_ascii_case("id"))
         .collect();
+    // Append the `#variation` words to the resolved subject (after any tag
+    // fallback, before the verb): `put_files_id#add_shared_link` →
+    // `FileAddSharedLinkUpdateRequest`, keeping the subject the empty-token tag
+    // fallback recovered rather than letting the variation stand in for it.
+    let subject = |words: &[&str]| -> String {
+        let mut all: Vec<&str> = words.to_vec();
+        all.extend(variation.iter().map(String::as_str));
+        pascal(&all.join("_"))
+    };
     if tokens.is_empty() {
         let mut tag_tokens: Vec<String> = box_tag.split('_').map(str::to_string).collect();
         if let Some(last) = tag_tokens.last_mut() {
             *last = singularize(last);
         }
-        format!("{}{verb}Request", pascal(&tag_tokens.join("_")))
+        let tag_refs: Vec<&str> = tag_tokens.iter().map(String::as_str).collect();
+        format!("{}{verb}Request", subject(&tag_refs))
     } else if ACTION_VERBS.contains(tokens.last().unwrap()) {
         // A trailing curated action (`commit`, `copy`) is the semantic verb. If
         // no resource tokens precede it the subject was the manager tag (stripped
@@ -1413,17 +1460,31 @@ fn body_seed_for(box_tag: &str, method: &str, op_tokens: &[String], keep_id: boo
             if let Some(last) = tag_tokens.last_mut() {
                 *last = singularize(last);
             }
-            format!(
-                "{}{}Request",
-                pascal(&tag_tokens.join("_")),
-                pascal(tokens[0])
-            )
+            tag_tokens.push(tokens[0].to_string());
+            let tag_refs: Vec<&str> = tag_tokens.iter().map(String::as_str).collect();
+            format!("{}Request", subject(&tag_refs))
         } else {
-            format!("{}Request", pascal(&tokens.join("_")))
+            format!("{}Request", subject(&tokens))
         }
     } else {
-        format!("{}{verb}Request", pascal(&tokens.join("_")))
+        format!("{}{verb}Request", subject(&tokens))
     }
+}
+
+/// The `#variation` fragment (D-104) of an operationId as word tokens, or empty
+/// when there is none. Folded into a request-body seed so the distinct
+/// operations one base operationId splits into take distinct body names instead
+/// of a meaningless structural-dedupe suffix. The fragment's own `_v<version>`
+/// suffix is stripped first — it is version plumbing, never part of a name.
+fn variation_seed_tokens(operation_id: &str, api_version: &str) -> Vec<String> {
+    let Some((_, variation)) = operation_id.split_once('#') else {
+        return Vec::new();
+    };
+    clean_name(strip_version_suffix(variation, api_version))
+        .split('_')
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Singularize a resource token that addresses one instance. Box resource names
@@ -1667,7 +1728,7 @@ fn effective_nullable(raw: &RawSchema) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{curated_body_seed, curated_method_name};
+    use super::{body_seed_for, curated_body_seed, curated_method_name, variation_seed_tokens};
 
     /// The chunked-upload orchestrators (every backend) call these exact method
     /// names and construct these exact request-body types; each backend's emit
@@ -1692,5 +1753,59 @@ mod tests {
             curated_body_seed("post_files_id_upload_sessions"),
             Some("FileVersionUploadSessionCreateRequest")
         );
+    }
+
+    /// A `#variation` fragment splits one operationId into distinct operations
+    /// that share a base seed. The variation must distinguish their bodies *by
+    /// name* — folded into the subject — rather than letting the structural
+    /// dedupe fall back to a meaningless `…2` suffix.
+    #[test]
+    fn variation_folds_into_the_body_seed() {
+        let put_files_id = ["put".into(), "file".into(), "id".into()];
+        // Base (no variation) keeps the terse subject name.
+        assert_eq!(
+            body_seed_for("files", "put", &put_files_id, false, &[]),
+            "FileUpdateRequest"
+        );
+        // The shared-link variations that would otherwise collide take distinct,
+        // meaningful names instead of `FileUpdateRequest2` / `…3`.
+        assert_eq!(
+            body_seed_for(
+                "files",
+                "put",
+                &put_files_id,
+                false,
+                &["add".into(), "shared".into(), "link".into()]
+            ),
+            "FileAddSharedLinkUpdateRequest"
+        );
+    }
+
+    /// When the path reduces to just the HTTP verb (the legacy metadata-template
+    /// endpoints), the subject comes from the manager-tag fallback; the variation
+    /// appends to that subject rather than standing in for it — never a
+    /// subjectless `AddUpdateRequest`.
+    #[test]
+    fn variation_keeps_the_tag_subject_when_the_path_reduces_to_a_verb() {
+        let put_only = ["put".into()];
+        assert_eq!(
+            body_seed_for("classifications", "put", &put_only, false, &["add".into()]),
+            "ClassificationAddUpdateRequest"
+        );
+    }
+
+    /// The variation fragment is version-plumbing-free: a `_v<version>` marker on
+    /// the fragment is stripped, and a plain operationId yields no tokens.
+    #[test]
+    fn variation_seed_tokens_strip_version_and_default_empty() {
+        assert_eq!(
+            variation_seed_tokens("put_files_id#add_shared_link", "2024.0"),
+            ["add", "shared", "link"]
+        );
+        assert_eq!(
+            variation_seed_tokens("put_files_id#add_shared_link_v2025.0", "2025.0"),
+            ["add", "shared", "link"]
+        );
+        assert!(variation_seed_tokens("put_files_id", "2024.0").is_empty());
     }
 }

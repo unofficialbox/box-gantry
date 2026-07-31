@@ -426,7 +426,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .file_metadata
         .create_file_metadata(
             file_id.clone(),
-            schemas::GetFileIdMetadataIdIdScope(schemas::GetFileIdMetadataIdIdScope::ENTERPRISE.into()),
+            schemas::GetFileIdMetadataIdScope(schemas::GetFileIdMetadataIdScope::ENTERPRISE.into()),
             "invoiceData".into(),
             std::collections::HashMap::from([
                 ("invoiceNumber".to_string(), serde_json::json!("INV-0042")),

@@ -305,7 +305,7 @@ public final class Quickstart {
         // Attach that metadata to the file (an enterprise template).
         client.fileMetadata.createFileMetadata(
             fileId,
-            GetFileIdMetadataIdIdScope.ENTERPRISE,
+            GetFileIdMetadataIdScope.ENTERPRISE,
             "invoiceData",
             Map.of("invoiceNumber", "INV-0042", "total", 1250));
 
