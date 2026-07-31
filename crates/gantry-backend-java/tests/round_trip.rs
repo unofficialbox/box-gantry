@@ -176,12 +176,33 @@ fn write_all(dir: &Path, files: &[gantry_backend_java::GeneratedFile]) -> Vec<Pa
     sources
 }
 
+/// True only when `javac` can compile `--release 26` (D-180): this gate targets
+/// Java 26, so a missing, unreadable, or pre-26 JDK cannot run it and must skip —
+/// not fail — per the toolchain contract. CI installs JDK 26, where this is true
+/// and the gate runs for real.
+fn jdk_targets_26() -> bool {
+    let Ok(out) = Command::new("javac").arg("-version").output() else {
+        return false;
+    };
+    // `javac -version` prints "javac <major>[.<minor>...]" — stdout on modern
+    // JDKs, stderr on very old ones; check both. Parse the leading major.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let text = if stdout.trim().is_empty() {
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    } else {
+        stdout.into_owned()
+    };
+    text.split_whitespace()
+        .nth(1)
+        .and_then(|v| v.split('.').next())
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major >= 26)
+}
+
 #[test]
 fn the_generated_codec_round_trips_under_java() {
-    if Command::new("javac").arg("-version").output().is_err()
-        || Command::new("java").arg("-version").output().is_err()
-    {
-        eprintln!("SKIPPED: JDK not available; CI installs one and runs this gate");
+    if !jdk_targets_26() {
+        eprintln!("SKIPPED: JDK 26+ not available; CI installs one and runs this gate");
         return;
     }
 

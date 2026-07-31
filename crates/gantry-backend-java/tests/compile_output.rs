@@ -43,6 +43,32 @@ fn write_all(dir: &Path, files: &[gantry_backend_java::GeneratedFile]) -> Vec<Pa
     sources
 }
 
+/// The Java gates target `--release 26` (the ship floor, D-180). A JDK older
+/// than 26 — common on developer machines and stock CI runners — can spawn
+/// `javac` but cannot compile that target, so it would *fail* the gate instead
+/// of skipping it, breaking the "absent toolchain skips cleanly" contract these
+/// tests promise. Treat a `javac` that is missing, unreadable, or older than 26
+/// the same as absent. CI installs JDK 26, where this returns true and the gate
+/// runs for real.
+fn jdk_targets_26() -> bool {
+    let Ok(out) = Command::new("javac").arg("-version").output() else {
+        return false;
+    };
+    // `javac -version` prints "javac <major>[.<minor>...]" — to stdout on modern
+    // JDKs, stderr on very old ones; check both. Parse the leading major.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let text = if stdout.trim().is_empty() {
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    } else {
+        stdout.into_owned()
+    };
+    text.split_whitespace()
+        .nth(1)
+        .and_then(|v| v.split('.').next())
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major >= 26)
+}
+
 #[test]
 fn generation_is_deterministic() {
     let once = generate();
@@ -182,8 +208,8 @@ fn generation_is_deterministic() {
 /// "Java-26-mandatory" step). CI runs it under the Corretto 26 toolchain.
 #[test]
 fn the_generated_model_layer_compiles_under_javac() {
-    if Command::new("javac").arg("-version").output().is_err() {
-        eprintln!("SKIPPED: javac not available; CI installs a JDK and runs this gate");
+    if !jdk_targets_26() {
+        eprintln!("SKIPPED: JDK 26+ not available; CI installs one and runs this gate");
         return;
     }
     let dir = std::env::temp_dir().join(format!("gantry-java-{}", std::process::id()));
@@ -283,8 +309,8 @@ fn the_generated_model_layer_compiles_under_javac() {
 /// manager/client tree type-checks against the runtime.
 #[test]
 fn the_generated_sdk_compiles_against_the_real_runtime() {
-    if Command::new("javac").arg("-version").output().is_err() {
-        eprintln!("SKIPPED: javac not available; CI installs a JDK and runs this gate");
+    if !jdk_targets_26() {
+        eprintln!("SKIPPED: JDK 26+ not available; CI installs one and runs this gate");
         return;
     }
     let dir = std::env::temp_dir().join(format!("gantry-java-swap-{}", std::process::id()));
@@ -506,10 +532,8 @@ fn reference_docs_describe_the_java_surface() {
 /// check; this gate compiles the whole SDK plus the test class and runs it.
 #[test]
 fn the_generated_behavioral_tests_pass_under_java() {
-    if Command::new("javac").arg("-version").output().is_err()
-        || Command::new("java").arg("-version").output().is_err()
-    {
-        eprintln!("SKIPPED: JDK not available; CI installs one and runs this gate");
+    if !jdk_targets_26() {
+        eprintln!("SKIPPED: JDK 26+ not available; CI installs one and runs this gate");
         return;
     }
     let files = generate();
@@ -580,8 +604,8 @@ fn the_generated_behavioral_tests_pass_under_java() {
 /// when Maven is absent (like the `javac` gate); CI installs it.
 #[test]
 fn the_generated_sdk_packages_for_publish() {
-    if Command::new("mvn").arg("-version").output().is_err() {
-        eprintln!("SKIPPED: mvn not available; CI installs Maven and runs this gate");
+    if Command::new("mvn").arg("-version").output().is_err() || !jdk_targets_26() {
+        eprintln!("SKIPPED: Maven or JDK 26 not available; CI installs both and runs this gate");
         return;
     }
     let dir = std::env::temp_dir().join(format!("gantry-java-pkg-{}", std::process::id()));
@@ -649,10 +673,8 @@ fn the_generated_sdk_packages_for_publish() {
 /// `--enable-preview`.
 #[test]
 fn the_chunked_upload_runs_parts_in_parallel() {
-    if Command::new("javac").arg("-version").output().is_err()
-        || Command::new("java").arg("-version").output().is_err()
-    {
-        eprintln!("SKIPPED: JDK not available; CI installs one and runs this gate");
+    if !jdk_targets_26() {
+        eprintln!("SKIPPED: JDK 26+ not available; CI installs one and runs this gate");
         return;
     }
     let files = generate();
