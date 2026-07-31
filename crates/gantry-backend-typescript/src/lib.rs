@@ -495,7 +495,9 @@ fn readme() -> String {
 
 # @unofficialbox/box-open-sdk
 
+[![release](https://img.shields.io/github/v/release/unofficialbox/box-open-ts-sdk?sort=semver)](https://github.com/unofficialbox/box-open-ts-sdk/releases/latest)
 [![npm](https://img.shields.io/npm/v/@unofficialbox/box-open-sdk.svg)](https://www.npmjs.com/package/@unofficialbox/box-open-sdk)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 An **open source, community-built** Box API client for TypeScript — fully typed models
 for the whole Box surface, one manager per API area behind a single `Client`,

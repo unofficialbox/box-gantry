@@ -261,6 +261,9 @@ fn project_readme(build: &BuildInfo) -> String {
 
 # Box SDK for Salesforce Apex
 
+[![release](https://img.shields.io/github/v/release/unofficialbox/box-open-apex-sdk?sort=semver)](https://github.com/unofficialbox/box-open-apex-sdk/releases/latest)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 An **open source, community-built** Box API client for Salesforce Apex, as a deploy-ready
 SFDX project. Every class lives in `force-app/main/default/classes/`; per-endpoint
 reference docs are in [`docs/`](docs/README.md). Provenance (engine version + spec
