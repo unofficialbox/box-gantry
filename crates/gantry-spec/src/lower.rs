@@ -1422,7 +1422,19 @@ fn singularize(token: &str) -> String {
     if lower.len() > 3 && lower.ends_with("ies") {
         format!("{}y", cut(3)) // policies → policy, taxonomies → taxonomy
     } else if lower.ends_with("ches") || lower.ends_with("shes") || lower.ends_with("sses") {
-        cut(2) // batches → batch, statuses → status
+        cut(2) // batches → batch, classes → class, addresses → address
+    } else if lower.len() > 4
+        && lower.ends_with("uses")
+        && !matches!(
+            lower.as_bytes()[lower.len() - 5],
+            b'a' | b'e' | b'i' | b'o' | b'u'
+        )
+    {
+        // A singular already ending in `-us` pluralizes with `-es`
+        // (`status` → `statuses`, `bus` → `buses`). A consonant before `uses`
+        // marks that case; a vowel there means a `-use` word (`houses` →
+        // `house`), which the `-s` branch below strips correctly.
+        cut(2) // statuses → status, buses → bus, viruses → virus
     } else if lower.ends_with('s')
         && !lower.ends_with("ss")
         && !lower.ends_with("us")
