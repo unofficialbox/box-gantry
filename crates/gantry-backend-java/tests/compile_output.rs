@@ -43,30 +43,40 @@ fn write_all(dir: &Path, files: &[gantry_backend_java::GeneratedFile]) -> Vec<Pa
     sources
 }
 
-/// The Java gates target `--release 26` (the ship floor, D-180). A JDK older
-/// than 26 — common on developer machines and stock CI runners — can spawn
-/// `javac` but cannot compile that target, so it would *fail* the gate instead
-/// of skipping it, breaking the "absent toolchain skips cleanly" contract these
-/// tests promise. Treat a `javac` that is missing, unreadable, or older than 26
-/// the same as absent. CI installs JDK 26, where this returns true and the gate
-/// runs for real.
+/// The Java gates target `--release 26` (the ship floor, D-180) and both
+/// *compile* with `javac` and *execute* with `java`. A JDK older than 26 —
+/// common on developer machines and stock CI runners — can spawn the tools but
+/// cannot target 26, so it would *fail* the gate instead of skipping it,
+/// breaking the "absent toolchain skips cleanly" contract these tests promise.
+/// `java` and `javac` are separate binaries (a box can have one without the
+/// other, or resolve them to two different JDKs on `PATH`), and these gates run
+/// both — so probe both, treating a tool that is missing, unreadable, or older
+/// than 26 the same as absent. CI installs JDK 26, where both report 26 and the
+/// gate runs for real.
 fn jdk_targets_26() -> bool {
-    let Ok(out) = Command::new("javac").arg("-version").output() else {
-        return false;
-    };
-    // `javac -version` prints "javac <major>[.<minor>...]" — to stdout on modern
-    // JDKs, stderr on very old ones; check both. Parse the leading major.
+    tool_major_version("javac").is_some_and(|major| major >= 26)
+        && tool_major_version("java").is_some_and(|major| major >= 26)
+}
+
+/// The major version reported by `<tool> -version`, or `None` when the tool is
+/// absent, unreadable, or unparseable. Both tools print `-version` to stdout on
+/// modern JDKs and stderr on very old ones, in two shapes: `openjdk version "26"
+/// …` (`java`, major is the first quoted token) and `javac 26.0.1` (`javac`, no
+/// quotes, major is the second whitespace token). Prefer the quoted token; fall
+/// back to the bare one.
+fn tool_major_version(tool: &str) -> Option<u32> {
+    let out = Command::new(tool).arg("-version").output().ok()?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let text = if stdout.trim().is_empty() {
         String::from_utf8_lossy(&out.stderr).into_owned()
     } else {
         stdout.into_owned()
     };
-    text.split_whitespace()
+    text.split('"')
         .nth(1)
-        .and_then(|v| v.split('.').next())
+        .or_else(|| text.split_whitespace().nth(1))
+        .and_then(|v| v.split(['.', '-', '_']).next())
         .and_then(|major| major.parse::<u32>().ok())
-        .is_some_and(|major| major >= 26)
 }
 
 #[test]
