@@ -1305,6 +1305,19 @@ fn short_op_tokens(base_id: &str, box_tag: &str) -> Vec<String> {
         .map(str::to_string)
         .collect();
 
+    // Box's spec is internally inconsistent: the `collaboration_allowlist_*`
+    // tags and component schemas name the resource `allowlist`, but the matching
+    // operationIds and paths still say `whitelist`. Normalize the path
+    // vocabulary to the tag's so synthesized type names read the same
+    // `CollaborationAllowlist…` as their manager (never `…Whitelist…`) — and so
+    // the tag-echo strip below actually matches instead of being defeated by the
+    // mismatched word.
+    for t in &mut tokens {
+        if t.eq_ignore_ascii_case("whitelist") {
+            "allowlist".clone_into(t);
+        }
+    }
+
     let tag_tokens: Vec<&str> = box_tag.split('_').filter(|t| !t.is_empty()).collect();
     if !tag_tokens.is_empty()
         && tokens.len() > tag_tokens.len()
