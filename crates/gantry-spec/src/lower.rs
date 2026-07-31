@@ -1305,6 +1305,19 @@ fn short_op_tokens(base_id: &str, box_tag: &str) -> Vec<String> {
         .map(str::to_string)
         .collect();
 
+    // Box's spec is internally inconsistent: the `collaboration_allowlist_*`
+    // tags and component schemas name the resource `allowlist`, but the matching
+    // operationIds and paths still say `whitelist`. Normalize the path
+    // vocabulary to the tag's so synthesized type names read the same
+    // `CollaborationAllowlist…` as their manager (never `…Whitelist…`) — and so
+    // the tag-echo strip below actually matches instead of being defeated by the
+    // mismatched word.
+    for t in &mut tokens {
+        if t.eq_ignore_ascii_case("whitelist") {
+            "allowlist".clone_into(t);
+        }
+    }
+
     let tag_tokens: Vec<&str> = box_tag.split('_').filter(|t| !t.is_empty()).collect();
     if !tag_tokens.is_empty()
         && tokens.len() > tag_tokens.len()
@@ -1422,7 +1435,19 @@ fn singularize(token: &str) -> String {
     if lower.len() > 3 && lower.ends_with("ies") {
         format!("{}y", cut(3)) // policies → policy, taxonomies → taxonomy
     } else if lower.ends_with("ches") || lower.ends_with("shes") || lower.ends_with("sses") {
-        cut(2) // batches → batch, statuses → status
+        cut(2) // batches → batch, classes → class, addresses → address
+    } else if lower.len() > 4
+        && lower.ends_with("uses")
+        && !matches!(
+            lower.as_bytes()[lower.len() - 5],
+            b'a' | b'e' | b'i' | b'o' | b'u'
+        )
+    {
+        // A singular already ending in `-us` pluralizes with `-es`
+        // (`status` → `statuses`, `bus` → `buses`). A consonant before `uses`
+        // marks that case; a vowel there means a `-use` word (`houses` →
+        // `house`), which the `-s` branch below strips correctly.
+        cut(2) // statuses → status, buses → bus, viruses → virus
     } else if lower.ends_with('s')
         && !lower.ends_with("ss")
         && !lower.ends_with("us")
@@ -1512,12 +1537,17 @@ fn curated_method_name(base_id: &str) -> Option<&'static str> {
 /// read the way the chunked-upload orchestrators construct them and line up with
 /// the sibling `FileUploadSessionCommitRequest` and the curated method names.
 ///
+/// `PUT /users/{id}/folders/0` ("Transfer owned folders") otherwise leaks Box's
+/// literal root-folder id `0` into `UserFolder0UpdateRequest`; the curated
+/// `TransferFoldersRequest` matches its curated `transferFolders` method.
+///
 /// Returns a PascalCase seed; each backend cases it per language. A curated seed
 /// bypasses the terse/`keep_id` collision dance in `lower_request_body`.
 fn curated_body_seed(base_id: &str) -> Option<&'static str> {
     match base_id {
         "post_files_upload_sessions" => Some("FileUploadSessionCreateRequest"),
         "post_files_id_upload_sessions" => Some("FileVersionUploadSessionCreateRequest"),
+        "put_users_id_folders_0" => Some("TransferFoldersRequest"),
         _ => None,
     }
 }
