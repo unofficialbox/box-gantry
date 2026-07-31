@@ -1537,12 +1537,17 @@ fn curated_method_name(base_id: &str) -> Option<&'static str> {
 /// read the way the chunked-upload orchestrators construct them and line up with
 /// the sibling `FileUploadSessionCommitRequest` and the curated method names.
 ///
+/// `PUT /users/{id}/folders/0` ("Transfer owned folders") otherwise leaks Box's
+/// literal root-folder id `0` into `UserFolder0UpdateRequest`; the curated
+/// `TransferFoldersRequest` matches its curated `transferFolders` method.
+///
 /// Returns a PascalCase seed; each backend cases it per language. A curated seed
 /// bypasses the terse/`keep_id` collision dance in `lower_request_body`.
 fn curated_body_seed(base_id: &str) -> Option<&'static str> {
     match base_id {
         "post_files_upload_sessions" => Some("FileUploadSessionCreateRequest"),
         "post_files_id_upload_sessions" => Some("FileVersionUploadSessionCreateRequest"),
+        "put_users_id_folders_0" => Some("TransferFoldersRequest"),
         _ => None,
     }
 }
