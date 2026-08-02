@@ -302,7 +302,7 @@ UserFull me = client.users.getMe(null);
 System.debug('authenticated as ' + me.id);
 
 // Create a folder at the account root ('0').
-FolderCreateRequest folderReq = new FolderCreateRequest();
+CreateFolderRequest folderReq = new CreateFolderRequest();
 folderReq.name = 'Invoices';
 folderReq.parent = new AttributesParent();
 folderReq.parent.id = '0';
@@ -313,7 +313,7 @@ PostFileContentAttributes attrs = new PostFileContentAttributes();
 attrs.name = 'invoice.pdf';
 attrs.parent = new AttributesParent();
 attrs.parent.id = folder.id;
-FileContentCreateRequest uploadReq = new FileContentCreateRequest();
+CreateFileContentRequest uploadReq = new CreateFileContentRequest();
 uploadReq.attributes = attrs;
 uploadReq.file = Blob.valueOf('<file bytes>');
 Files uploaded = client.uploads.uploadFile(null, null, uploadReq);

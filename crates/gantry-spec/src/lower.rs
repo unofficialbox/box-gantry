@@ -1031,9 +1031,9 @@ impl<'a> DocLowerer<'a> {
             }
         };
         // Name request bodies after their operation, not a generic `PostBody`
-        // (D-189). The base is the operation's *distinctive* path tokens
-        // (`FileUploadSessionCommitRequest`), falling back to the singular manager
-        // subject when the operation has no distinctive path (`FolderCreateRequest`).
+        // (D-189). The verb leads, then the operation's *distinctive* path tokens
+        // (`CommitFileUploadSessionRequest`), falling back to the singular manager
+        // subject when the operation has no distinctive path (`CreateFolderRequest`).
         // A trailing curated action (`commit`) is the verb; otherwise the HTTP verb
         // supplies it.
         let base_id = base_operation_id(
@@ -1044,10 +1044,10 @@ impl<'a> DocLowerer<'a> {
         // A `#variation` fragment (D-104) splits one operationId into distinct
         // operations that share a base but differ in body shape
         // (`put_files_id#add_shared_link` vs `#update_shared_link`). Left alone,
-        // both seed `FileUpdateRequest` and the structural dedupe falls back to a
-        // meaningless numeric suffix (`FileUpdateRequest2`). Fold the variation
+        // both seed `UpdateFileRequest` and the structural dedupe falls back to a
+        // meaningless numeric suffix (`UpdateFileRequest2`). Fold the variation
         // into the subject — as `owner` already does — so each body takes a
-        // distinct, meaningful name (`FileAddSharedLinkUpdateRequest`).
+        // distinct, meaningful name (`UpdateFileAddSharedLinkRequest`).
         let variation = variation_seed_tokens(
             op.operation_id.as_deref().unwrap_or(""),
             &self.doc.api_version,
@@ -1055,8 +1055,8 @@ impl<'a> DocLowerer<'a> {
         // A curated seed for the few bodies whose path tokens derive an awkward or
         // colliding name (D-194). Otherwise: an id-addressed body keeps its `{id}`
         // selector only when an id-less sibling claims the same terse name
-        // (`FileContentCreateRequest` + `FileIdContentCreateRequest`); otherwise it
-        // takes the clean terse name (`FileUpdateRequest`, no redundant `Id`). The
+        // (`CreateFileContentRequest` + `CreateFileIdContentRequest`); otherwise it
+        // takes the clean terse name (`UpdateFileRequest`, no redundant `Id`). The
         // id-less seeds are gathered in a pre-pass (`gather_idless_body_seeds`), so
         // this is order-independent.
         let body_seed = match curated_body_seed(base_id) {
@@ -1407,14 +1407,18 @@ fn short_op_tokens(base_id: &str, box_tag: &str) -> Vec<String> {
     tokens
 }
 
-/// The request-body type name for an operation (D-189): its distinctive path
-/// tokens + a verb, falling back to the singular manager subject when there is
-/// no distinctive path (`FolderCreateRequest`). `keep_id` retains the `{id}`
-/// selector (`FileIdContentCreateRequest`), used only to disambiguate an
-/// id-addressed body from an id-less sibling of the same name. `variation`
-/// carries the `#variation` fragment's words (D-104), folded into the subject so
-/// operations sharing a base seed take distinct names rather than a structural
-/// dedupe suffix (`FileAddSharedLinkUpdateRequest`, not `FileUpdateRequest2`).
+/// The request-body type name for an operation (D-189): the verb leads, then the
+/// distinctive path tokens (`CreateFolderRequest`, `CreateFileIdContentRequest`),
+/// falling back to the singular manager subject when there is no distinctive
+/// path. The verb-first `{Verb}{Subject}Request` form reads as an imperative and
+/// keeps the payload types grouped by action; a trailing curated action
+/// (`copy`, `commit`) supplies the verb instead of the HTTP method
+/// (`CopyFileRequest`). `keep_id` retains the `{id}` selector
+/// (`CreateFileIdContentRequest`), used only to disambiguate an id-addressed body
+/// from an id-less sibling of the same name. `variation` carries the
+/// `#variation` fragment's words (D-104), folded into the subject so operations
+/// sharing a base seed take distinct names rather than a structural dedupe suffix
+/// (`UpdateFileAddSharedLinkRequest`, not `UpdateFileRequest2`).
 fn body_seed_for(
     box_tag: &str,
     method: &str,
@@ -1422,7 +1426,7 @@ fn body_seed_for(
     keep_id: bool,
     variation: &[String],
 ) -> String {
-    let verb = match method {
+    let http_verb = match method {
         "post" => "Create",
         "put" | "patch" => "Update",
         "delete" => "Delete",
@@ -1434,41 +1438,42 @@ fn body_seed_for(
         .filter(|t| !matches!(*t, "get" | "post" | "put" | "patch" | "delete"))
         .filter(|t| keep_id || !t.eq_ignore_ascii_case("id"))
         .collect();
-    // Append the `#variation` words to the resolved subject (after any tag
-    // fallback, before the verb): `put_files_id#add_shared_link` →
-    // `FileAddSharedLinkUpdateRequest`, keeping the subject the empty-token tag
-    // fallback recovered rather than letting the variation stand in for it.
-    let subject = |words: &[&str]| -> String {
+    // The subject: resource words plus the `#variation` words (D-104), PascalCase.
+    let subject_of = |words: &[&str]| -> String {
         let mut all: Vec<&str> = words.to_vec();
         all.extend(variation.iter().map(String::as_str));
         pascal(&all.join("_"))
     };
-    if tokens.is_empty() {
-        let mut tag_tokens: Vec<String> = box_tag.split('_').map(str::to_string).collect();
-        if let Some(last) = tag_tokens.last_mut() {
+    // The singular manager subject, used when the path reduced to nothing (or to
+    // just an action verb, whose object was the tag echo, stripped).
+    let tag_subject = || -> Vec<String> {
+        let mut t: Vec<String> = box_tag.split('_').map(str::to_string).collect();
+        if let Some(last) = t.last_mut() {
             *last = singularize(last);
         }
-        let tag_refs: Vec<&str> = tag_tokens.iter().map(String::as_str).collect();
-        format!("{}{verb}Request", subject(&tag_refs))
+        t
+    };
+    // The name leads with its verb (verb-noun): the HTTP verb
+    // (`Create`/`Update`/`Delete`), or a trailing curated action (`copy`,
+    // `commit`) that replaces it — `copy` under `files` → `CopyFileRequest`, not a
+    // bare `CopyRequest` that collides across managers.
+    let (verb, subject) = if tokens.is_empty() {
+        let tag = tag_subject();
+        let refs: Vec<&str> = tag.iter().map(String::as_str).collect();
+        (http_verb.to_string(), subject_of(&refs))
     } else if ACTION_VERBS.contains(tokens.last().unwrap()) {
-        // A trailing curated action (`commit`, `copy`) is the semantic verb. If
-        // no resource tokens precede it the subject was the manager tag (stripped
-        // as an echo), so prepend it: `copy` under `files` → `FileCopyRequest`,
-        // not a bare `CopyRequest` that collides across managers.
+        let action = pascal(tokens.last().unwrap());
         if tokens.len() == 1 {
-            let mut tag_tokens: Vec<String> = box_tag.split('_').map(str::to_string).collect();
-            if let Some(last) = tag_tokens.last_mut() {
-                *last = singularize(last);
-            }
-            tag_tokens.push(tokens[0].to_string());
-            let tag_refs: Vec<&str> = tag_tokens.iter().map(String::as_str).collect();
-            format!("{}Request", subject(&tag_refs))
+            let tag = tag_subject();
+            let refs: Vec<&str> = tag.iter().map(String::as_str).collect();
+            (action, subject_of(&refs))
         } else {
-            format!("{}Request", subject(&tokens))
+            (action, subject_of(&tokens[..tokens.len() - 1]))
         }
     } else {
-        format!("{}{verb}Request", subject(&tokens))
-    }
+        (http_verb.to_string(), subject_of(&tokens))
+    };
+    format!("{verb}{subject}Request")
 }
 
 /// The `#variation` fragment (D-104) of an operationId as word tokens, or empty
@@ -1592,22 +1597,25 @@ fn curated_method_name(base_id: &str) -> Option<&'static str> {
 /// as [`curated_method_name`] is, so it applies across every spec version.
 ///
 /// The two upload-session creators otherwise seed the plural, position-flavored
-/// `FileUploadSessionsCreateRequest` / `FileIdUploadSessionsCreateRequest` — the
+/// `CreateFileUploadSessionsRequest` / `CreateFileIdUploadSessionsRequest` — the
 /// second keeps its `{id}` selector only because the first claims the terse name.
-/// The singular `FileUploadSessionCreateRequest` / `FileVersionUploadSessionCreateRequest`
+/// The singular `CreateFileUploadSessionRequest` / `CreateFileVersionUploadSessionRequest`
 /// read the way the chunked-upload orchestrators construct them and line up with
-/// the sibling `FileUploadSessionCommitRequest` and the curated method names.
+/// the sibling `CommitFileUploadSessionRequest` and the curated method names.
+/// (The commit body reaches its verb-noun name on its own — a trailing `commit`
+/// action leads — so only the two creators need curation.)
 ///
 /// `PUT /users/{id}/folders/0` ("Transfer owned folders") otherwise leaks Box's
-/// literal root-folder id `0` into `UserFolder0UpdateRequest`; the curated
-/// `TransferFoldersRequest` matches its curated `transferFolders` method.
+/// literal root-folder id `0` into `UpdateUserFolder0Request`; the curated
+/// `TransferFoldersRequest` (already verb-noun) matches its `transferFolders`
+/// method.
 ///
 /// Returns a PascalCase seed; each backend cases it per language. A curated seed
 /// bypasses the terse/`keep_id` collision dance in `lower_request_body`.
 fn curated_body_seed(base_id: &str) -> Option<&'static str> {
     match base_id {
-        "post_files_upload_sessions" => Some("FileUploadSessionCreateRequest"),
-        "post_files_id_upload_sessions" => Some("FileVersionUploadSessionCreateRequest"),
+        "post_files_upload_sessions" => Some("CreateFileUploadSessionRequest"),
+        "post_files_id_upload_sessions" => Some("CreateFileVersionUploadSessionRequest"),
         "put_users_id_folders_0" => Some("TransferFoldersRequest"),
         _ => None,
     }
@@ -1747,11 +1755,44 @@ mod tests {
         );
         assert_eq!(
             curated_body_seed("post_files_upload_sessions"),
-            Some("FileUploadSessionCreateRequest")
+            Some("CreateFileUploadSessionRequest")
         );
         assert_eq!(
             curated_body_seed("post_files_id_upload_sessions"),
-            Some("FileVersionUploadSessionCreateRequest")
+            Some("CreateFileVersionUploadSessionRequest")
+        );
+        // The commit body is not curated — a trailing `commit` action leads, so
+        // `body_seed_for` reaches the gate's `CommitFileUploadSessionRequest` on
+        // its own. Pin that so a change to the action-verb rule can't silently
+        // drop the orchestrator.
+        let commit_tokens = [
+            "file".into(),
+            "upload".into(),
+            "session".into(),
+            "commit".into(),
+        ];
+        assert_eq!(
+            body_seed_for("chunked_uploads", "post", &commit_tokens, false, &[]),
+            "CommitFileUploadSessionRequest"
+        );
+    }
+
+    /// Request-body names are verb-noun (D-189): the HTTP verb leads
+    /// (`CreateFolderRequest`), and a trailing curated action replaces the HTTP
+    /// verb and leads itself, with the tag supplying the subject it echoed
+    /// (`copy` under `files` → `CopyFileRequest`, never a bare `CopyRequest`).
+    #[test]
+    fn body_seed_is_verb_first() {
+        let post_folders = ["post".into(), "folder".into()];
+        assert_eq!(
+            body_seed_for("folders", "post", &post_folders, false, &[]),
+            "CreateFolderRequest"
+        );
+
+        let post_files_copy = ["post".into(), "copy".into()];
+        assert_eq!(
+            body_seed_for("files", "post", &post_files_copy, false, &[]),
+            "CopyFileRequest"
         );
     }
 
@@ -1765,10 +1806,10 @@ mod tests {
         // Base (no variation) keeps the terse subject name.
         assert_eq!(
             body_seed_for("files", "put", &put_files_id, false, &[]),
-            "FileUpdateRequest"
+            "UpdateFileRequest"
         );
         // The shared-link variations that would otherwise collide take distinct,
-        // meaningful names instead of `FileUpdateRequest2` / `…3`.
+        // meaningful names instead of `UpdateFileRequest2` / `…3`.
         assert_eq!(
             body_seed_for(
                 "files",
@@ -1777,20 +1818,20 @@ mod tests {
                 false,
                 &["add".into(), "shared".into(), "link".into()]
             ),
-            "FileAddSharedLinkUpdateRequest"
+            "UpdateFileAddSharedLinkRequest"
         );
     }
 
     /// When the path reduces to just the HTTP verb (the legacy metadata-template
     /// endpoints), the subject comes from the manager-tag fallback; the variation
     /// appends to that subject rather than standing in for it — never a
-    /// subjectless `AddUpdateRequest`.
+    /// subjectless `UpdateAddRequest`.
     #[test]
     fn variation_keeps_the_tag_subject_when_the_path_reduces_to_a_verb() {
         let put_only = ["put".into()];
         assert_eq!(
             body_seed_for("classifications", "put", &put_only, false, &["add".into()]),
-            "ClassificationAddUpdateRequest"
+            "UpdateClassificationAddRequest"
         );
     }
 

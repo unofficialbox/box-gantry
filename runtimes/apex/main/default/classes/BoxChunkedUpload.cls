@@ -54,7 +54,7 @@ public with sharing class BoxChunkedUpload {
         if (String.isBlank(folderId)) {
             throw new BoxApiException('A destination folder id is required.');
         }
-        FileUploadSessionCreateRequest request = new FileUploadSessionCreateRequest();
+        CreateFileUploadSessionRequest request = new CreateFileUploadSessionRequest();
         request.file_name = fileName;
         request.file_size = content.size();
         request.folder_id = folderId;
@@ -67,7 +67,7 @@ public with sharing class BoxChunkedUpload {
         if (String.isBlank(fileId)) {
             throw new BoxApiException('A target file id is required.');
         }
-        FileVersionUploadSessionCreateRequest request = new FileVersionUploadSessionCreateRequest();
+        CreateFileVersionUploadSessionRequest request = new CreateFileVersionUploadSessionRequest();
         request.file_name = fileName;
         request.file_size = content.size();
         return run(
@@ -158,7 +158,7 @@ public with sharing class BoxChunkedUpload {
         String wholeDigest = 'sha=' + EncodingUtil.base64Encode(Crypto.generateDigest('SHA1', content));
         // `commit` is an Apex reserved word (the DML statement), so the local
         // that holds the commit body is named `commitBody`.
-        FileUploadSessionCommitRequest commitBody = new FileUploadSessionCommitRequest();
+        CommitFileUploadSessionRequest commitBody = new CommitFileUploadSessionRequest();
         commitBody.parts = parts;
         return this.client.chunkedUploads.commitFileUploadSession(
             session.id,

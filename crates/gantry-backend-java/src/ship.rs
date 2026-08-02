@@ -275,7 +275,7 @@ public final class Quickstart {
 
         // Create a folder at the account root ("0").
         var folder = client.folders.create(
-            FolderCreateRequest.builder()
+            CreateFolderRequest.builder()
                 .name("Invoices")
                 .parent(AttributesParent.builder().id("0").build())
                 .build(),
@@ -283,7 +283,7 @@ public final class Quickstart {
 
         // Upload a file into it.
         var uploaded = client.uploads.uploadFile(
-            FileContentCreateRequest.builder()
+            CreateFileContentRequest.builder()
                 .attributes(PostFileContentAttributes.builder()
                     .name("invoice.pdf")
                     .parent(AttributesParent.builder().id(folder.id()).build())
