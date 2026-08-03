@@ -61,15 +61,25 @@ pub(crate) fn method_name(op: &ir::Operation) -> String {
     keyword_safe(&camel(&name))
 }
 
-/// The deduped `(op index, method name)` list for a manager's operations — the
-/// single source of truth the manager printer and docs both use, so a method
-/// heading in the docs matches the emitted method name exactly.
-pub(crate) fn deduped_methods(program: &ir::Program, ops: &[usize]) -> Vec<(usize, String)> {
+/// The deduped `(op index, method name, reserved page method)` list for a
+/// manager's operations — the single source of truth the manager printer and
+/// docs both use, so a method heading in the docs matches the emitted method
+/// name exactly. A paginated operation's private `<method>Page` fetch name
+/// reserves a slot in the same pool right after its own, so neither name can
+/// collide with a later operation's either, public or private (#78).
+pub(crate) fn deduped_methods(
+    program: &ir::Program,
+    ops: &[usize],
+    paged: &HashMap<usize, PagedOperation>,
+) -> Vec<(usize, String, Option<String>)> {
     let mut used: Vec<String> = Vec::new();
     ops.iter()
         .map(|&i| {
             let name = dedupe(&mut used, method_name(&program.operations[i]));
-            (i, name)
+            let page_name = paged
+                .contains_key(&i)
+                .then(|| dedupe(&mut used, format!("{name}Page")));
+            (i, name, page_name)
         })
         .collect()
 }
@@ -159,10 +169,7 @@ fn manager_base(key: &str) -> String {
 /// the IR).
 pub fn generate_managers(analysis: &Analysis<'_>, build: &BuildInfo) -> Vec<GeneratedFile> {
     let program = analysis.program;
-    let base_version = program
-        .operations
-        .first()
-        .and_then(|op| op.api_version.as_ref());
+    let base_version = program.base_api_version();
     let printer = ManagerPrinter {
         program,
         base_version,
@@ -244,7 +251,7 @@ impl ManagerPrinter<'_> {
         // Method names dedup per manager, so distinct ops that normalize to the
         // same name stay distinct — and the options class reuses the name. The
         // docs generator reuses this exact list (`deduped_methods`).
-        let methods = deduped_methods(self.program, &plan.ops);
+        let methods = deduped_methods(self.program, &plan.ops, &self.paged);
 
         let mut out = header(build);
         let _ = writeln!(out, "package {MANAGERS_PKG};\n");
@@ -258,22 +265,26 @@ impl ManagerPrinter<'_> {
             plan.class
         );
         let mut paginators = Vec::new();
-        for (i, name) in &methods {
+        for (i, name, page_name) in &methods {
             let op = &self.program.operations[*i];
             // Option A (FR-7.3): a paged operation whose cursor shape we can
             // synthesize exposes the auto-paging `Iterable` *as* the public
             // `<method>` — there is no separate single-page public method. The
-            // single-page fetch it drives ships as the package-private
-            // `<method>Page` (same package as the paginator, so reachable). A
-            // cursor shape we don't synthesize gets no paginator, so the plain
-            // single-page method ships as the public `<method>` (VR-6) — the
-            // same fallback Rust/TS follow.
+            // single-page fetch it drives ships as the package-private, already
+            // reserved `page_name` (normally `<method>Page`, #78; same package
+            // as the paginator, so reachable). A cursor shape we don't
+            // synthesize gets no paginator, so the plain single-page method
+            // ships as the public `<method>` (VR-6) — the same fallback
+            // Rust/TS follow.
             match self
                 .paged
                 .get(i)
                 .and_then(|paged| self.pagination_plan(op, plan, name, paged))
             {
-                Some(pplan) => {
+                Some(mut pplan) => {
+                    pplan.method = page_name
+                        .clone()
+                        .expect("a synthesized plan implies a reserved page method");
                     out.push_str(&self.operation(op, &pplan.method, name, false));
                     out.push('\n');
                     out.push_str(&self.paginate_method(op, name, &pplan));
@@ -290,7 +301,7 @@ impl ManagerPrinter<'_> {
             }
         }
         // Nested options classes, after the methods that reference them.
-        for (i, name) in &methods {
+        for (i, name, _) in &methods {
             if let Some(options) = self.options_class(&self.program.operations[*i], name) {
                 out.push_str(&options);
                 out.push('\n');
@@ -780,7 +791,9 @@ impl ManagerPrinter<'_> {
             class: format!("{prefix}{}Paginator", pascal(method)),
             manager_class: manager.class.clone(),
             // Option A: the public `<method>` *is* the paginator entry point; the
-            // single-page fetch it drives is the package-private `<method>Page`.
+            // single-page fetch it drives is the package-private `<method>Page` —
+            // a tentative name the caller overwrites with the one already
+            // reserved in the manager's dedup pool (#78).
             paginate: method.to_string(),
             method: format!("{method}Page"),
             options_ty: format!("{}.{}Options", manager.class, pascal(method)),
@@ -1778,6 +1791,53 @@ mod tests {
             "{mgr}"
         );
         assert!(!mgr.contains("getItemsPaginate"), "{mgr}");
+    }
+
+    #[test]
+    fn paginator_reserves_its_private_fetch_name_against_collision() {
+        // A plain operation literally named `get_items_page` alongside the
+        // paginated `get_items` — the exact shape `dedupe` must keep from
+        // colliding: without reserving the paginator's private fetch name up
+        // front, both would emit as `getItemsPage` (#78).
+        let mut p = paged_program(Entries::Plain, Type::Optional(Box::new(Type::String)));
+        p.operations.push(Operation {
+            name: ident("get_items_page"),
+            variation: None,
+            manager: ident("items"),
+            api_version: None,
+            method: HttpMethod::Get,
+            base_url: BaseUrl::Api,
+            path: vec![
+                PathSegment::Literal("items".into()),
+                PathSegment::Literal("page".into()),
+            ],
+            params: vec![],
+            request: None,
+            response: ResponseShape::Json(Type::Decl(ir::DeclId(0))),
+            deprecated: false,
+        });
+        let files = generated(&p);
+        let out = file_ending(&files, "managers/ItemsManager.java");
+
+        // The paginator's private single-page fetch keeps the unsuffixed
+        // name — it was reserved first — and stays package-private.
+        assert!(
+            out.contains(
+                "    dev.unofficialbox.model.schemas.Items getItemsPage(GetItemsOptions options) {"
+            ),
+            "{out}"
+        );
+        assert!(!out.contains("public dev.unofficialbox.model.schemas.Items getItemsPage("));
+        // The unrelated `get_items_page` operation is pushed to `_2` instead
+        // of silently colliding with the paginator's private fetch, and
+        // keeps its own public visibility.
+        assert!(
+            out.contains("public dev.unofficialbox.model.schemas.Item getItemsPage_2() {"),
+            "{out}"
+        );
+        // Exactly one method definition per name — no duplicate members.
+        assert_eq!(out.matches(" getItemsPage(").count(), 1, "{out}");
+        assert_eq!(out.matches(" getItemsPage_2(").count(), 1, "{out}");
     }
 
     #[test]

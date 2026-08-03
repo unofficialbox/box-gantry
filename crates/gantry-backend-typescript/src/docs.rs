@@ -82,10 +82,10 @@ fn manager_page(
          Reach these methods through the `{field}` field on `Client`.\n\n",
     );
     // Deduped method bases (shared with the printer), camelCased per method.
-    let bases = method_bases(program, op_indices);
+    let bases = method_bases(program, op_indices, paged);
     for (pos, &index) in op_indices.iter().enumerate() {
         let op = &program.operations[index];
-        let method = camel(&bases[pos]);
+        let method = camel(&bases[pos].0);
         let _ = writeln!(body, "## {method}\n");
         if op.deprecated {
             body.push_str("> **Deprecated.**\n\n");

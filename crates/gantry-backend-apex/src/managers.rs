@@ -347,18 +347,14 @@ fn render_operation(
     }
     // The `box-version` header is a constant set automatically for a non-base
     // operation (D-191), not a caller-facing parameter.
-    if let Some(version) = &op.api_version {
-        let base = program
-            .operations
-            .first()
-            .and_then(|o| o.api_version.as_ref());
-        if Some(version) != base {
-            let _ = writeln!(
-                out,
-                "        request.headers.put('box-version', '{}');",
-                escape(&version.0)
-            );
-        }
+    if let Some(version) = &op.api_version
+        && Some(version) != program.base_api_version()
+    {
+        let _ = writeln!(
+            out,
+            "        request.headers.put('box-version', '{}');",
+            escape(&version.0)
+        );
     }
     if let Some(body) = &op.request {
         match body.media {

@@ -44,11 +44,7 @@ pub fn generate_managers(
     analysis: &Analysis<'_>,
     paged: &[PagedOperation],
 ) -> Result<Vec<GeneratedFile>, BackendError> {
-    let base_version = analysis
-        .program
-        .operations
-        .first()
-        .and_then(|op| op.api_version.clone());
+    let base_version = analysis.program.base_api_version().cloned();
     let paged_by_op: HashMap<usize, &PagedOperation> =
         paged.iter().map(|p| (p.operation, p)).collect();
     let mut files = Vec::new();
@@ -154,6 +150,15 @@ impl ManagerPrinter<'_> {
              func New{type_name}(session *gantryruntime.Client) *{type_name} {{\n\
              \treturn &{type_name}{{session: session}}\n}}\n"
         );
+        // Every operation's public method name is already unique per manager
+        // (operation identity guarantees it), but the private single-page
+        // fetch a paginator drives derives its name from the public one —
+        // reserve it in the same pool too, so it can't collide with another
+        // operation's public name (or another private fetch's) either (#78).
+        let mut used: Vec<String> = op_indices
+            .iter()
+            .map(|&i| self.method_name(&self.analysis.program.operations[i]))
+            .collect();
         for &index in op_indices {
             let op = self.analysis.program.operations[index].clone();
             let public = self.method_name(&op);
@@ -162,8 +167,9 @@ impl ManagerPrinter<'_> {
                 // (`iter.Seq2`); the single-page fetch it drives ships as the
                 // unexported `{method}Page` (same package, so reachable).
                 Some(paged) => {
-                    self.operation(&type_name, &op, &page_method(&public), &public)?;
-                    self.paginator(&type_name, &op, paged)?;
+                    let private = dedupe(&mut used, page_method(&public));
+                    self.operation(&type_name, &op, &private, &public)?;
+                    self.paginator(&type_name, &op, paged, &private)?;
                 }
                 // Not paged: the exported single-page `{Method}` is the entry point.
                 None => self.operation(&type_name, &op, &public, &public)?,
@@ -367,10 +373,10 @@ impl ManagerPrinter<'_> {
         manager_type: &str,
         op: &ir::Operation,
         paged: &PagedOperation,
+        page: &str,
     ) -> Result<(), BackendError> {
         let context = format!("paginate {}/{}", op.manager.as_str(), op.name.as_str());
         let method = self.method_name(op);
-        let page = page_method(&method);
         self.imports.insert("iter".to_string());
 
         // Rebuild the plain method's signature prefix (ctx, required
@@ -1041,6 +1047,19 @@ fn page_method(public: &str) -> String {
     }
 }
 
+/// Allocate a collision-free name in a scope: `base`, else `base_2`, … —
+/// deterministic given a stable iteration order (FR-6.2).
+fn dedupe(used: &mut Vec<String>, base: String) -> String {
+    let mut candidate = base.clone();
+    let mut n = 2;
+    while used.contains(&candidate) {
+        candidate = format!("{base}_{n}");
+        n += 1;
+    }
+    used.push(candidate.clone());
+    candidate
+}
+
 /// Go types that are already nilable: pointer-wrapping them is wrong
 /// (pointer-to-interface, TR-Go.1 unwrapping).
 fn nilable(go: &str) -> bool {
@@ -1097,5 +1116,160 @@ fn unwrap_optionality(ty: &ir::Type) -> &ir::Type {
         | ir::Type::List(_)
         | ir::Type::Map(_)
         | ir::Type::Decl(_) => ty,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gantry_ir::{
+        BaseUrl, Decl, DeclId, DeclKind, Field, HttpMethod, Identifier, ModulePath, Operation,
+        Param, ParamLocation, Program, ResponseShape, StructDecl, Type,
+    };
+
+    fn ident(s: &str) -> Identifier {
+        Identifier::new(s).unwrap()
+    }
+
+    /// A manager with a paginated `ListItems` alongside an unrelated
+    /// `ListItemsPage` operation — Go's exported/unexported case split keeps
+    /// these from ever colliding today (the private fetch is always
+    /// lowercase-led, the public method always uppercase-led), but #78 still
+    /// reserves the private name through `dedupe` as defense-in-depth against
+    /// that invariant ever changing.
+    fn program_with_page_name_lookalike() -> (Program, HashMap<usize, PagedOperation>) {
+        let mut p = Program::default();
+        p.add(Decl {
+            name: ident("Item"),
+            module: ModulePath(vec![ident("schemas")]),
+            api_version: None,
+            kind: DeclKind::Struct(StructDecl {
+                fields: vec![Field {
+                    name: ident("id"),
+                    wire_name: "id".into(),
+                    ty: Type::String,
+                }],
+            }),
+        });
+        p.add(Decl {
+            name: ident("ItemsPage"),
+            module: ModulePath(vec![ident("schemas")]),
+            api_version: None,
+            kind: DeclKind::Struct(StructDecl {
+                fields: vec![
+                    Field {
+                        name: ident("entries"),
+                        wire_name: "entries".into(),
+                        ty: Type::List(Box::new(Type::Decl(DeclId(0)))),
+                    },
+                    Field {
+                        name: ident("next_marker"),
+                        wire_name: "next_marker".into(),
+                        ty: Type::Optional(Box::new(Type::String)),
+                    },
+                ],
+            }),
+        });
+        p.operations.push(Operation {
+            name: ident("list_items"),
+            variation: None,
+            manager: ident("items"),
+            api_version: None,
+            method: HttpMethod::Get,
+            base_url: BaseUrl::Api,
+            path: vec![ir::PathSegment::Literal("items".into())],
+            params: vec![Param {
+                name: ident("marker"),
+                wire_name: "marker".into(),
+                location: ParamLocation::Query,
+                ty: Type::Optional(Box::new(Type::String)),
+            }],
+            request: None,
+            response: ResponseShape::Json(Type::Decl(DeclId(1))),
+            deprecated: false,
+        });
+        p.operations.push(Operation {
+            name: ident("list_items_page"),
+            variation: None,
+            manager: ident("items"),
+            api_version: None,
+            method: HttpMethod::Get,
+            base_url: BaseUrl::Api,
+            path: vec![
+                ir::PathSegment::Literal("items".into()),
+                ir::PathSegment::Literal("page".into()),
+            ],
+            params: vec![],
+            request: None,
+            response: ResponseShape::Json(Type::Decl(DeclId(0))),
+            deprecated: false,
+        });
+        let paged = HashMap::from([(
+            0,
+            PagedOperation {
+                operation: 0,
+                style: PageStyle::Marker,
+                param_wire: "marker".to_string(),
+                entries_wire: "entries".to_string(),
+                cursor_wire: "next_marker".to_string(),
+                element: Type::Decl(DeclId(0)),
+            },
+        )]);
+        (p, paged)
+    }
+
+    #[test]
+    fn paginator_private_fetch_is_reserved_and_wired_consistently() {
+        let (program, paged_owned) = program_with_page_name_lookalike();
+        let analysis = gantry_sema::analyze(&program).unwrap();
+        let paged: HashMap<usize, &PagedOperation> =
+            paged_owned.iter().map(|(k, v)| (*k, v)).collect();
+        let mut printer = ManagerPrinter {
+            analysis: &analysis,
+            base_version: None,
+            paged: &paged,
+            body: String::new(),
+            imports: BTreeSet::new(),
+        };
+        printer.manager("items", &[0, 1]).unwrap();
+        let out = printer.body;
+
+        // The public paginator and the unrelated `ListItemsPage` operation
+        // both ship as exported methods — distinct names, no collision.
+        assert!(out.contains("func (m *ItemsManager) ListItems("), "{out}");
+        assert!(
+            out.contains("func (m *ItemsManager) ListItemsPage("),
+            "{out}"
+        );
+        // The paginator's private single-page fetch is reserved as
+        // `listItemsPage` and is exactly what the paginator loop calls.
+        assert!(
+            out.contains("func (m *ItemsManager) listItemsPage("),
+            "{out}"
+        );
+        assert!(out.contains("m.listItemsPage("), "{out}");
+        // Case-sensitive Go keeps the private fetch and the unrelated public
+        // method distinct even though they'd match ignoring case.
+        assert_eq!(
+            out.matches("func (m *ItemsManager) listItemsPage(").count(),
+            1
+        );
+        assert_eq!(
+            out.matches("func (m *ItemsManager) ListItemsPage(").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn dedupe_bumps_a_page_name_that_would_collide() {
+        // Direct coverage of the #78 mechanism itself: if some future change
+        // ever let a private page candidate coincide with an already-used
+        // name, `dedupe` — not silent collision — is what decides the
+        // outcome.
+        let mut used = vec!["listItemsPage".to_string()];
+        assert_eq!(
+            dedupe(&mut used, "listItemsPage".to_string()),
+            "listItemsPage_2"
+        );
     }
 }

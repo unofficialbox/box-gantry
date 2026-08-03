@@ -57,14 +57,27 @@ pub(crate) fn plan_managers<'a>(
         .collect()
 }
 
-/// The deduped snake_case method bases for a manager's operations, in order —
-/// the single source of truth shared by the manager printer (which camelCases
-/// them at emission and derives the options-interface names) and the docs.
-pub(crate) fn method_bases(program: &ir::Program, op_indices: &[usize]) -> Vec<String> {
+/// The deduped snake_case method bases for a manager's operations, in order,
+/// paired with the private `<base>_page` fetch base a paginated operation
+/// reserves in the same pool — so that name can't collide with a later
+/// operation's either, public or private (#78). The single source of truth
+/// shared by the manager printer (which camelCases them at emission and
+/// derives the options-interface names) and the docs.
+pub(crate) fn method_bases(
+    program: &ir::Program,
+    op_indices: &[usize],
+    paged: &HashMap<usize, PagedOperation>,
+) -> Vec<(String, Option<String>)> {
     let mut used = Vec::new();
     op_indices
         .iter()
-        .map(|&i| dedupe(&mut used, operation_base(&program.operations[i])))
+        .map(|&i| {
+            let base = dedupe(&mut used, operation_base(&program.operations[i]));
+            let page_base = paged
+                .contains_key(&i)
+                .then(|| dedupe(&mut used, format!("{base}_page")));
+            (base, page_base)
+        })
         .collect()
 }
 
@@ -72,10 +85,7 @@ pub(crate) fn method_bases(program: &ir::Program, op_indices: &[usize]) -> Vec<S
 /// barrel, the `client` entry point, and the `internal` helpers.
 pub fn generate_managers(analysis: &Analysis<'_>, _build: &BuildInfo) -> Vec<GeneratedFile> {
     let program = analysis.program;
-    let base_version = program
-        .operations
-        .first()
-        .and_then(|op| op.api_version.clone());
+    let base_version = program.base_api_version().cloned();
     // Shared module-name registry, so manager type paths agree with the models.
     let modules = module_names(program);
     // Paginated operations, so a paged method also emits an async paginator.
@@ -223,14 +233,16 @@ impl Printer<'_> {
     fn manager(&mut self, key: &str, name: &ManagerName, indices: &[usize]) {
         // One deduped method base per operation (distinct source ops can
         // normalize to the same name), reused for the method and its options
-        // interface so the surface can't collide. Shared with the docs.
-        let bases = method_bases(self.program, indices);
+        // interface so the surface can't collide. Shared with the docs. A
+        // paged operation's reserved `<base>_page` fetch base travels
+        // alongside (#78).
+        let bases = method_bases(self.program, indices, self.paged);
 
         // Options interfaces are module-level (TypeScript forbids nesting an
         // interface in a class), emitted before the class so methods name them.
         for (pos, &index) in indices.iter().enumerate() {
             let op = self.program.operations[index].clone();
-            self.options_interface(&op, name, &bases[pos]);
+            self.options_interface(&op, name, &bases[pos].0);
         }
 
         let _ = writeln!(
@@ -242,19 +254,22 @@ impl Printer<'_> {
         );
         for (pos, &index) in indices.iter().enumerate() {
             let op = self.program.operations[index].clone();
-            let base = &bases[pos];
+            let (base, page_base) = &bases[pos];
             let method = camel(base);
+            let page_method = page_base.as_ref().map(|b| camel(b));
             // Option A (FR-7.3): emit the async-generator paginator as the public
             // `<method>`; it returns whether the cursor shape was synthesizable.
-            let paginated = self
-                .paged
-                .get(&index)
-                .cloned()
-                .is_some_and(|paged| self.paginator(&op, name, base, &paged));
-            // The single-page fetch: the private `<method>Page` a paginator
-            // drives, else the public `<method>` (VR-6 fallback).
+            let paginated = page_method.as_deref().is_some_and(|page_method| {
+                self.paged
+                    .get(&index)
+                    .cloned()
+                    .is_some_and(|paged| self.paginator(&op, name, base, page_method, &paged))
+            });
+            // The single-page fetch: the private, already-reserved page
+            // method a paginator drives, else the public `<method>` (VR-6
+            // fallback).
             if paginated {
-                self.operation(&op, name, base, &format!("{method}Page"), false);
+                self.operation(&op, name, base, page_method.as_deref().unwrap(), false);
             } else {
                 self.operation(&op, name, base, &method, true);
             }
@@ -379,17 +394,20 @@ impl Printer<'_> {
 
     /// Emit an async-generator paginator for a paged operation as the public
     /// `<method>` (Option A): `for await (const item of mgr.method(...))`. It
-    /// drives the private single-page `<method>Page`, yields each entry, and
-    /// threads the cursor into a private copy of the options (the caller's `opts`
-    /// is never mutated). Returns whether a paginator was emitted — some cursor
-    /// shapes aren't synthesized (the request marker must be a string, the
-    /// request offset an int); those keep only the public single-page method
-    /// instead (VR-6 fallback), never wrong code.
+    /// drives `page_method` — the private single-page fetch already reserved
+    /// for this operation in the manager's dedup pool (normally `<method>Page`,
+    /// #78) — yields each entry, and threads the cursor into a private copy of
+    /// the options (the caller's `opts` is never mutated). Returns whether a
+    /// paginator was emitted — some cursor shapes aren't synthesized (the
+    /// request marker must be a string, the request offset an int); those keep
+    /// only the public single-page method instead (VR-6 fallback), never wrong
+    /// code.
     fn paginator(
         &mut self,
         op: &ir::Operation,
         name: &ManagerName,
         base: &str,
+        page_method: &str,
         paged: &PagedOperation,
     ) -> bool {
         // The response envelope (a struct) carries `entries` + the cursor field.
@@ -507,7 +525,7 @@ impl Printer<'_> {
              \x20 async *{method}({params}): AsyncIterableIterator<{element}> {{\n\
              \x20   const options: {opt_ty} = {{ ...opts }};\n\
              \x20   for (;;) {{\n\
-             \x20     const page = await this.{method}Page({call_args});\n\
+             \x20     const page = await this.{page_method}({call_args});\n\
              \x20     const items = {entries} ?? [];\n\
              \x20     for (const item of items) {{\n\
              \x20       yield item;\n\
@@ -1243,6 +1261,126 @@ mod tests {
                 "return JSON.parse(new TextDecoder().decode(data)) as models.schemas.File;"
             )
         );
+    }
+
+    /// A manager with a paginated `listItems` alongside a plain operation
+    /// literally named `list_items_page` — the exact shape `dedupe` must keep
+    /// from colliding: without reserving the paginator's private fetch name
+    /// up front, both would emit as `listItemsPage` (#78).
+    fn program_with_page_name_collision() -> Program {
+        let mut p = Program::default();
+        p.add(Decl {
+            name: ident("Item"),
+            module: ModulePath(vec![ident("schemas")]),
+            api_version: None,
+            kind: DeclKind::Struct(StructDecl {
+                fields: vec![Field {
+                    name: ident("id"),
+                    wire_name: "id".into(),
+                    ty: Type::String,
+                }],
+            }),
+        });
+        p.add(Decl {
+            name: ident("ItemsPage"),
+            module: ModulePath(vec![ident("schemas")]),
+            api_version: None,
+            kind: DeclKind::Struct(StructDecl {
+                fields: vec![
+                    Field {
+                        name: ident("entries"),
+                        wire_name: "entries".into(),
+                        ty: Type::List(Box::new(Type::Decl(DeclId(0)))),
+                    },
+                    Field {
+                        name: ident("next_marker"),
+                        wire_name: "next_marker".into(),
+                        ty: Type::Optional(Box::new(Type::String)),
+                    },
+                ],
+            }),
+        });
+        p.operations.push(Operation {
+            name: ident("list_items"),
+            variation: None,
+            manager: ident("items"),
+            api_version: None,
+            method: HttpMethod::Get,
+            base_url: BaseUrl::Api,
+            path: vec![ir::PathSegment::Literal("items".into())],
+            params: vec![Param {
+                name: ident("marker"),
+                wire_name: "marker".into(),
+                location: ParamLocation::Query,
+                ty: Type::Optional(Box::new(Type::String)),
+            }],
+            request: None,
+            response: ResponseShape::Json(Type::Decl(DeclId(1))),
+            deprecated: false,
+        });
+        p.operations.push(Operation {
+            name: ident("list_items_page"),
+            variation: None,
+            manager: ident("items"),
+            api_version: None,
+            method: HttpMethod::Get,
+            base_url: BaseUrl::Api,
+            path: vec![
+                ir::PathSegment::Literal("items".into()),
+                ir::PathSegment::Literal("page".into()),
+            ],
+            params: vec![],
+            request: None,
+            response: ResponseShape::Json(Type::Decl(DeclId(0))),
+            deprecated: false,
+        });
+        p
+    }
+
+    #[test]
+    fn paginator_reserves_its_private_fetch_name_against_collision() {
+        let p = program_with_page_name_collision();
+        let modules = module_names(&p);
+        let analysis = gantry_sema::analyze(&p).unwrap();
+        let paged: HashMap<usize, PagedOperation> = detect_pagination(&analysis)
+            .into_iter()
+            .map(|x| (x.operation, x))
+            .collect();
+        assert_eq!(
+            paged.len(),
+            1,
+            "expected only `list_items` to be detected as paged"
+        );
+        let mut printer = Printer {
+            program: &p,
+            base_version: None,
+            modules: &modules,
+            paged: &paged,
+            body: String::new(),
+            uses_path_escape: false,
+            uses_join: false,
+            uses_form_encode: false,
+        };
+        let name = ManagerName {
+            module: "items".to_string(),
+            class: "ItemsManager".to_string(),
+            field: "items".to_string(),
+        };
+        printer.manager("items", &name, &[0, 1]);
+        let out = printer.body;
+
+        // The paginator's private single-page fetch keeps the unsuffixed
+        // name — it was reserved first — and stays `private`.
+        assert!(out.contains("private async listItemsPage("), "{out}");
+        assert!(!out.contains("  async listItemsPage("), "{out}");
+        // The unrelated `list_items_page` operation is pushed to `_2` instead
+        // of silently colliding with the paginator's private fetch, and
+        // keeps its own public visibility.
+        assert!(out.contains("  async listItemsPage2("), "{out}");
+        assert!(!out.contains("private async listItemsPage2("), "{out}");
+        // Exactly one method definition per name — no duplicate members.
+        assert_eq!(out.matches("async listItemsPage(").count(), 1, "{out}");
+        assert_eq!(out.matches("async listItemsPage2(").count(), 1, "{out}");
     }
 
     #[test]
