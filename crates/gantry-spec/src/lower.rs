@@ -242,6 +242,24 @@ impl<'a> DocLowerer<'a> {
         // to the base-document convention (`UserMini`). Colliding results
         // are caught by sema's duplicate-name check, loudly.
         let normalized = gantry_ir::naming::pascal(&clean_name(name));
+        // The bare names `Request`/`Response` are reserved for the hand-written
+        // runtime HTTP envelope types (`runtime::Request` / `runtime::Response`).
+        // A synthesized or component declaration that claims one would shadow the
+        // runtime type in the generated namespace — a silent collision the caller
+        // never intends. A body seed always leads with a verb (`CreateFileRequest`)
+        // and a response seed with its owner, so this only trips on a degenerate
+        // empty subject/owner or a component schema literally named
+        // `Request`/`Response`; fail loudly (naming the file and JSON path) rather
+        // than emit a colliding SDK.
+        if matches!(normalized.as_str(), "Request" | "Response") {
+            return Err(self.unsupported(
+                location,
+                &format!(
+                    "declaration name {normalized:?} is reserved for the runtime HTTP \
+                     envelope; this shape needs a distinct name"
+                ),
+            ));
+        }
         Ok(ir::Decl {
             name: identifier(self.doc, location, &normalized)?,
             module: self.module.clone(),

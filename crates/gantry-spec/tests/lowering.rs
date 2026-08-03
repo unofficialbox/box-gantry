@@ -780,3 +780,38 @@ fn mismatched_version_marker_fails_loudly() {
     .unwrap_err();
     assert!(err.to_string().contains("version marker"), "{err}");
 }
+
+#[test]
+fn component_named_request_is_rejected() {
+    // The bare names `Request`/`Response` are reserved for the runtime HTTP
+    // envelope; a component schema that claims one would shadow it. Fail loudly
+    // rather than emit a colliding SDK.
+    let err = lower_schemas(serde_json::json!({
+        "Request": { "type": "object", "properties": { "id": { "type": "string" } } }
+    }))
+    .unwrap_err();
+    let message = err.to_string();
+    assert!(
+        message.contains("spec.json")
+            && message.contains("components.schemas.Request")
+            && message.contains("\"Request\"")
+            && message.contains("reserved"),
+        "{err}"
+    );
+}
+
+#[test]
+fn component_named_response_is_rejected() {
+    let err = lower_schemas(serde_json::json!({
+        "Response": { "type": "object", "properties": { "id": { "type": "string" } } }
+    }))
+    .unwrap_err();
+    let message = err.to_string();
+    assert!(
+        message.contains("spec.json")
+            && message.contains("components.schemas.Response")
+            && message.contains("\"Response\"")
+            && message.contains("reserved"),
+        "{err}"
+    );
+}
