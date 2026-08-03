@@ -58,11 +58,13 @@ pub(crate) fn plan_managers<'a>(
 }
 
 /// The deduped snake_case method bases for a manager's operations, in order,
-/// paired with the private `<base>_page` fetch base a paginated operation
-/// reserves in the same pool — so that name can't collide with a later
-/// operation's either, public or private (#78). The single source of truth
-/// shared by the manager printer (which camelCases them at emission and
-/// derives the options-interface names) and the docs.
+/// paired with the private `<base>_page` fetch base an operation whose cursor
+/// shape actually synthesizes (see [`cursor_is_synthesizable`] — a `paged`
+/// hit alone isn't enough, #78 review) reserves in the same pool — so that
+/// name can't collide with a later operation's either, public or private
+/// (#78). The single source of truth shared by the manager printer (which
+/// camelCases them at emission and derives the options-interface names) and
+/// the docs.
 pub(crate) fn method_bases(
     program: &ir::Program,
     op_indices: &[usize],
@@ -74,8 +76,9 @@ pub(crate) fn method_bases(
         .map(|&i| {
             let base = dedupe(&mut used, operation_base(&program.operations[i]));
             let page_base = paged
-                .contains_key(&i)
-                .then(|| dedupe(&mut used, format!("{base}_page")));
+                .get(&i)
+                .filter(|p| cursor_is_synthesizable(program, &program.operations[i], p))
+                .map(|_| dedupe(&mut used, format!("{base}_page")));
             (base, page_base)
         })
         .collect()
@@ -410,6 +413,12 @@ impl Printer<'_> {
         page_method: &str,
         paged: &PagedOperation,
     ) -> bool {
+        // Gate on the same check `method_bases` runs before reserving the
+        // private fetch name (#78 review) — a single source of truth, so a
+        // shape this rejects can never phantom-reserve a name it also skips.
+        if !cursor_is_synthesizable(self.program, op, paged) {
+            return false;
+        }
         // The response envelope (a struct) carries `entries` + the cursor field.
         let ir::ResponseShape::Json(response_ty) = &op.response else {
             return false;
@@ -963,6 +972,54 @@ fn dedupe(used: &mut Vec<String>, base: String) -> String {
     candidate
 }
 
+/// Whether a `detect_pagination` hit's cursor shape is one this backend
+/// actually synthesizes. `detect_pagination` matches wire names and the
+/// request parameter's optionality only — not its scalar type — so a `paged`
+/// entry can still fail here. The single gate `paginator` opens on (checked
+/// first, before any emission) and what `method_bases` must check before
+/// reserving the private fetch name: a plan that never materializes must not
+/// still consume a dedup slot and needlessly rename an unrelated operation
+/// (#78 review).
+fn cursor_is_synthesizable(
+    program: &ir::Program,
+    op: &ir::Operation,
+    paged: &PagedOperation,
+) -> bool {
+    let ir::ResponseShape::Json(response_ty) = &op.response else {
+        return false;
+    };
+    let Some(decl_id) = decl_of(response_ty) else {
+        return false;
+    };
+    let ir::DeclKind::Struct(envelope) = &program.decl(decl_id).kind else {
+        return false;
+    };
+    let Some(cursor_field) = envelope
+        .fields
+        .iter()
+        .find(|f| f.wire_name == paged.cursor_wire)
+    else {
+        return false;
+    };
+    let Some(cursor_param) = op
+        .params
+        .iter()
+        .find(|p| p.location == ir::ParamLocation::Query && p.wire_name == paged.param_wire)
+    else {
+        return false;
+    };
+    match paged.style {
+        PageStyle::Marker => {
+            matches!(unwrap_optionality(&cursor_param.ty), ir::Type::String)
+                && matches!(
+                    unwrap_optionality(&cursor_field.ty),
+                    ir::Type::String | ir::Type::Int64
+                )
+        }
+        PageStyle::Offset => matches!(unwrap_optionality(&cursor_param.ty), ir::Type::Int64),
+    }
+}
+
 fn unwrap_optionality(ty: &ir::Type) -> &ir::Type {
     match ty {
         ir::Type::Optional(inner) | ir::Type::Nullable(inner) => unwrap_optionality(inner),
@@ -1381,6 +1438,56 @@ mod tests {
         // Exactly one method definition per name — no duplicate members.
         assert_eq!(out.matches("async listItemsPage(").count(), 1, "{out}");
         assert_eq!(out.matches("async listItemsPage2(").count(), 1, "{out}");
+    }
+
+    #[test]
+    fn unsynthesizable_pagination_does_not_phantom_reserve_the_page_name() {
+        // A cursor shape `paginator` can't synthesize must not still reserve
+        // the private fetch name it would have used — `detect_pagination`
+        // matches wire shape and optionality only, not the scalar type, so
+        // it still classifies `list_items` as paged here even though the
+        // `marker` param is `boolean`, not `string`. A name nothing is ever
+        // emitted under must not consume a dedup slot and needlessly rename
+        // the unrelated `list_items_page` operation (#78 review).
+        let mut p = program_with_page_name_collision();
+        p.operations[0].params[0].ty = Type::Optional(Box::new(Type::Bool));
+        let modules = module_names(&p);
+        let analysis = gantry_sema::analyze(&p).unwrap();
+        let paged: HashMap<usize, PagedOperation> = detect_pagination(&analysis)
+            .into_iter()
+            .map(|x| (x.operation, x))
+            .collect();
+        assert_eq!(
+            paged.len(),
+            1,
+            "detect_pagination should still classify list_items as paged"
+        );
+        let mut printer = Printer {
+            program: &p,
+            base_version: None,
+            modules: &modules,
+            paged: &paged,
+            body: String::new(),
+            uses_path_escape: false,
+            uses_join: false,
+            uses_form_encode: false,
+        };
+        let name = ManagerName {
+            module: "items".to_string(),
+            class: "ItemsManager".to_string(),
+            field: "items".to_string(),
+        };
+        printer.manager("items", &name, &[0, 1]);
+        let out = printer.body;
+
+        // No paginator is synthesized — the plain method ships instead (VR-6).
+        assert!(!out.contains("AsyncIterableIterator"), "{out}");
+        assert!(out.contains("  async listItems("), "{out}");
+        // The unrelated `list_items_page` operation keeps its natural,
+        // unsuffixed name: nothing was ever emitted under `listItemsPage`,
+        // so nothing should have reserved it.
+        assert!(out.contains("  async listItemsPage("), "{out}");
+        assert!(!out.contains("listItemsPage2"), "{out}");
     }
 
     #[test]

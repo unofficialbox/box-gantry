@@ -181,47 +181,32 @@ impl Printer<'_> {
         // One deduped method name per operation (distinct source ops can
         // normalize to the same `snake` name), reused for the method, its doc,
         // and its options struct so the surface can't collide (D-149 review).
-        // A paged operation also reserves its private `<method>_page` fetch
-        // name in the same pool, so that name can't collide with a later
-        // operation's either — public or private (#78).
+        // A paged operation whose cursor shape actually synthesizes also
+        // reserves its private `<method>_page` fetch name in the same pool,
+        // right after computing its plan, so that name can't collide with a
+        // later operation's either — public or private (#78). Reserving it
+        // any earlier — e.g. as soon as the operation is merely a
+        // `detect_pagination` hit — would be premature: that detection
+        // matches wire shape only, not the cursor's scalar type, so it can
+        // still miss here (`pagination_plan` returns `None`), and a name
+        // nothing is ever emitted under must not consume a dedup slot.
         let mut used = Vec::new();
         let mut methods: Vec<String> = Vec::with_capacity(indices.len());
-        let mut page_methods: Vec<Option<String>> = Vec::with_capacity(indices.len());
+        let mut plans: Vec<Option<PaginationPlan>> = Vec::with_capacity(indices.len());
         for &index in indices {
-            let method = dedupe(&mut used, method_name(&self.program.operations[index]));
-            let page_method = self
+            let op = &self.program.operations[index];
+            let method = dedupe(&mut used, method_name(op));
+            let plan = self
                 .paged
-                .contains_key(&index)
-                .then(|| dedupe(&mut used, format!("{method}_page")));
+                .get(&index)
+                .and_then(|paged| self.pagination_plan(op, name, &method, paged))
+                .map(|mut plan| {
+                    plan.method = dedupe(&mut used, plan.method);
+                    plan
+                });
             methods.push(method);
-            page_methods.push(page_method);
+            plans.push(plan);
         }
-
-        // A pagination plan per operation (None when not paged or the cursor
-        // shape is unsupported — the plain method still ships).
-        let plans: Vec<Option<PaginationPlan>> = indices
-            .iter()
-            .enumerate()
-            .map(|(pos, &index)| {
-                self.paged
-                    .get(&index)
-                    .and_then(|paged| {
-                        self.pagination_plan(
-                            &self.program.operations[index],
-                            name,
-                            &methods[pos],
-                            paged,
-                        )
-                    })
-                    .map(|mut plan| {
-                        // Reserved above, alongside the public method name (#78).
-                        plan.method = page_methods[pos]
-                            .clone()
-                            .expect("a synthesized plan implies a reserved page method");
-                        plan
-                    })
-            })
-            .collect();
 
         // Options structs and paginators are module-level items (Rust forbids
         // `struct` inside `impl`), emitted before the manager so the methods can
@@ -1571,6 +1556,54 @@ mod tests {
         // Exactly one fn per name — no duplicate method definitions.
         assert_eq!(out.matches("fn list_items_page(").count(), 1, "{out}");
         assert_eq!(out.matches("fn list_items_page_2(").count(), 1, "{out}");
+    }
+
+    /// Same shape as [`program_with_page_name_collision`], but the cursor
+    /// query param is `bool`, not `string` — `detect_pagination`-style wire
+    /// matching (which this test bypasses by constructing `paged` directly)
+    /// only checks the wire names and optionality, not the scalar type, so
+    /// an operation can land in `paged` and still fail `pagination_plan`'s
+    /// own type check.
+    fn program_with_unsynthesizable_cursor_and_page_name_lookalike()
+    -> (Program, HashMap<usize, PagedOperation>) {
+        let (mut p, mut paged) = program_with_page_name_collision();
+        p.operations[0].params[0].ty = Type::Optional(Box::new(Type::Bool));
+        paged.get_mut(&0).unwrap().param_wire = "marker".to_string();
+        (p, paged)
+    }
+
+    #[test]
+    fn unsynthesizable_pagination_does_not_phantom_reserve_the_page_name() {
+        // A cursor shape `pagination_plan` can't synthesize must not still
+        // reserve the private fetch name it would have used — a name
+        // nothing is ever emitted under must not consume a dedup slot and
+        // needlessly rename an unrelated operation (#78 review).
+        let (p, paged) = program_with_unsynthesizable_cursor_and_page_name_lookalike();
+        let modules = crate::models::module_names(&p);
+        let mut printer = Printer {
+            program: &p,
+            base_version: None,
+            modules: &modules,
+            paged: &paged,
+            body: String::new(),
+            uses_path_escape: false,
+        };
+        let name = ManagerName {
+            module: "items".to_string(),
+            struct_name: "ItemsManager".to_string(),
+            field: "items".to_string(),
+        };
+        printer.manager("items", &name, &[0, 1]);
+        let out = printer.body;
+
+        // No paginator is synthesized — the plain method ships instead (VR-6).
+        assert!(!out.contains("Paginator {"), "{out}");
+        assert!(out.contains("pub async fn list_items("), "{out}");
+        // The unrelated `list_items_page` operation keeps its natural,
+        // unsuffixed name: nothing was ever emitted under `list_items_page`,
+        // so nothing should have reserved it.
+        assert!(out.contains("pub async fn list_items_page("), "{out}");
+        assert!(!out.contains("list_items_page_2"), "{out}");
     }
 
     #[test]
