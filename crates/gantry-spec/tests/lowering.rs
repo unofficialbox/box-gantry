@@ -792,7 +792,10 @@ fn component_named_request_is_rejected() {
     .unwrap_err();
     let message = err.to_string();
     assert!(
-        message.contains("\"Request\"") && message.contains("reserved"),
+        message.contains("spec.json")
+            && message.contains("components.schemas.Request")
+            && message.contains("\"Request\"")
+            && message.contains("reserved"),
         "{err}"
     );
 }
@@ -805,7 +808,10 @@ fn component_named_response_is_rejected() {
     .unwrap_err();
     let message = err.to_string();
     assert!(
-        message.contains("\"Response\"") && message.contains("reserved"),
+        message.contains("spec.json")
+            && message.contains("components.schemas.Response")
+            && message.contains("\"Response\"")
+            && message.contains("reserved"),
         "{err}"
     );
 }
