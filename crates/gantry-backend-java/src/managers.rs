@@ -61,15 +61,28 @@ pub(crate) fn method_name(op: &ir::Operation) -> String {
     keyword_safe(&camel(&name))
 }
 
-/// The deduped `(op index, method name)` list for a manager's operations — the
-/// single source of truth the manager printer and docs both use, so a method
-/// heading in the docs matches the emitted method name exactly.
-pub(crate) fn deduped_methods(program: &ir::Program, ops: &[usize]) -> Vec<(usize, String)> {
+/// The deduped `(op index, method name, reserved page method)` list for a
+/// manager's operations — the single source of truth the manager printer and
+/// docs both use, so a method heading in the docs matches the emitted method
+/// name exactly. An operation whose cursor shape actually synthesizes (see
+/// [`cursor_is_synthesizable`] — a `paged` hit alone isn't enough, #78 review)
+/// reserves its private `<method>Page` fetch name in the same pool right
+/// after its own, so neither name can collide with a later operation's
+/// either, public or private (#78).
+pub(crate) fn deduped_methods(
+    program: &ir::Program,
+    ops: &[usize],
+    paged: &HashMap<usize, PagedOperation>,
+) -> Vec<(usize, String, Option<String>)> {
     let mut used: Vec<String> = Vec::new();
     ops.iter()
         .map(|&i| {
             let name = dedupe(&mut used, method_name(&program.operations[i]));
-            (i, name)
+            let page_name = paged
+                .get(&i)
+                .filter(|p| cursor_is_synthesizable(program, &program.operations[i], p))
+                .map(|_| dedupe(&mut used, format!("{name}Page")));
+            (i, name, page_name)
         })
         .collect()
 }
@@ -159,10 +172,7 @@ fn manager_base(key: &str) -> String {
 /// the IR).
 pub fn generate_managers(analysis: &Analysis<'_>, build: &BuildInfo) -> Vec<GeneratedFile> {
     let program = analysis.program;
-    let base_version = program
-        .operations
-        .first()
-        .and_then(|op| op.api_version.as_ref());
+    let base_version = program.base_api_version();
     let printer = ManagerPrinter {
         program,
         base_version,
@@ -244,7 +254,7 @@ impl ManagerPrinter<'_> {
         // Method names dedup per manager, so distinct ops that normalize to the
         // same name stay distinct — and the options class reuses the name. The
         // docs generator reuses this exact list (`deduped_methods`).
-        let methods = deduped_methods(self.program, &plan.ops);
+        let methods = deduped_methods(self.program, &plan.ops, &self.paged);
 
         let mut out = header(build);
         let _ = writeln!(out, "package {MANAGERS_PKG};\n");
@@ -258,22 +268,26 @@ impl ManagerPrinter<'_> {
             plan.class
         );
         let mut paginators = Vec::new();
-        for (i, name) in &methods {
+        for (i, name, page_name) in &methods {
             let op = &self.program.operations[*i];
             // Option A (FR-7.3): a paged operation whose cursor shape we can
             // synthesize exposes the auto-paging `Iterable` *as* the public
             // `<method>` — there is no separate single-page public method. The
-            // single-page fetch it drives ships as the package-private
-            // `<method>Page` (same package as the paginator, so reachable). A
-            // cursor shape we don't synthesize gets no paginator, so the plain
-            // single-page method ships as the public `<method>` (VR-6) — the
-            // same fallback Rust/TS follow.
+            // single-page fetch it drives ships as the package-private, already
+            // reserved `page_name` (normally `<method>Page`, #78; same package
+            // as the paginator, so reachable). A cursor shape we don't
+            // synthesize gets no paginator, so the plain single-page method
+            // ships as the public `<method>` (VR-6) — the same fallback
+            // Rust/TS follow.
             match self
                 .paged
                 .get(i)
                 .and_then(|paged| self.pagination_plan(op, plan, name, paged))
             {
-                Some(pplan) => {
+                Some(mut pplan) => {
+                    pplan.method = page_name
+                        .clone()
+                        .expect("a synthesized plan implies a reserved page method");
                     out.push_str(&self.operation(op, &pplan.method, name, false));
                     out.push('\n');
                     out.push_str(&self.paginate_method(op, name, &pplan));
@@ -290,7 +304,7 @@ impl ManagerPrinter<'_> {
             }
         }
         // Nested options classes, after the methods that reference them.
-        for (i, name) in &methods {
+        for (i, name, _) in &methods {
             if let Some(options) = self.options_class(&self.program.operations[*i], name) {
                 out.push_str(&options);
                 out.push('\n');
@@ -560,7 +574,7 @@ impl ManagerPrinter<'_> {
         let wire = format!("{:?}", field.wire_name);
         let acc = format!("body.{ident}()");
         // `if let` chains (not a `match`) so there is no wildcard over `ir::Type`.
-        let ty = self.resolve_alias(&field.ty);
+        let ty = resolve_alias(self.program, &field.ty);
         if let ir::Type::Optional(inner) = &ty {
             if let ir::Type::Nullable(n) = &**inner {
                 let value = self.form_value(&format!("{acc}.value()"), n);
@@ -589,16 +603,6 @@ impl ManagerPrinter<'_> {
             let value = self.form_value(&acc, &ty);
             let _ = writeln!(out, "        _form.put({wire}, {value});");
         }
-    }
-
-    /// Resolve a top-level alias chain to the type it stands for.
-    fn resolve_alias(&self, ty: &ir::Type) -> ir::Type {
-        if let ir::Type::Decl(id) = ty
-            && let ir::DeclKind::Alias(target) = &self.program.decl(*id).kind
-        {
-            return self.resolve_alias(&target.clone());
-        }
-        ty.clone()
     }
 
     /// Fetch through the session and decode per the response shape. Blocking and
@@ -654,6 +658,12 @@ impl ManagerPrinter<'_> {
         method: &str,
         paged: &PagedOperation,
     ) -> Option<PaginationPlan> {
+        // Gate on the same check `deduped_methods` runs before reserving the
+        // private fetch name (#78 review) — a single source of truth, so a
+        // shape this rejects can never phantom-reserve a name it also skips.
+        if !cursor_is_synthesizable(self.program, op, paged) {
+            return None;
+        }
         // The response envelope (a struct) carries `entries` + the cursor field.
         let ir::ResponseShape::Json(response_ty) = &op.response else {
             return None;
@@ -692,8 +702,8 @@ impl ManagerPrinter<'_> {
                 }
                 let acc = format!("_page.{cursor_ident}()");
                 let next = self.cursor_expr(&cursor_field.ty, &acc);
-                let (_, inner) = self.optionality_layer(&cursor_field.ty);
-                let inner = self.resolve_alias(&inner);
+                let (_, inner) = optionality_layer(self.program, &cursor_field.ty);
+                let inner = resolve_alias(self.program, &inner);
                 // The response cursor is a string (threaded directly) or an int
                 // (stringified). Any other shape we don't synthesize — skip the
                 // paginator (`if`/`matches!`, not a wildcard `match` — NF-1).
@@ -780,7 +790,9 @@ impl ManagerPrinter<'_> {
             class: format!("{prefix}{}Paginator", pascal(method)),
             manager_class: manager.class.clone(),
             // Option A: the public `<method>` *is* the paginator entry point; the
-            // single-page fetch it drives is the package-private `<method>Page`.
+            // single-page fetch it drives is the package-private `<method>Page` —
+            // a tentative name the caller overwrites with the one already
+            // reserved in the manager's dedup pool (#78).
             paginate: method.to_string(),
             method: format!("{method}Page"),
             options_ty: format!("{}.{}Options", manager.class, pascal(method)),
@@ -985,7 +997,7 @@ impl ManagerPrinter<'_> {
     /// A Java expression yielding the page's element `List` (empty when the
     /// `entries` field is absent or null), peeling the field's optionality layer.
     fn entries_expr(&self, ty: &ir::Type, acc: &str) -> String {
-        match self.optionality_layer(ty).0 {
+        match optionality_layer(self.program, ty).0 {
             OptLayer::Plain => acc.to_string(),
             OptLayer::Nullable => format!("{acc} != null ? {acc} : java.util.List.of()"),
             OptLayer::Optional => format!("{acc}.orElse(java.util.List.of())"),
@@ -1001,30 +1013,11 @@ impl ManagerPrinter<'_> {
     /// A Java expression yielding the response cursor value (or `null` when
     /// absent), peeling the field's optionality layer.
     fn cursor_expr(&self, ty: &ir::Type, acc: &str) -> String {
-        match self.optionality_layer(ty).0 {
+        match optionality_layer(self.program, ty).0 {
             OptLayer::Plain | OptLayer::Nullable => acc.to_string(),
             OptLayer::Optional => format!("{acc}.orElse(null)"),
             OptLayer::Tristate => format!("{acc}.isPresent() ? {acc}.value() : null"),
         }
-    }
-
-    /// Classify a field type's optionality wrapper (matching the model layer's
-    /// `component_type`, D-110) and return the inner base type. Top-level
-    /// aliases resolve through first, as the model does.
-    fn optionality_layer(&self, ty: &ir::Type) -> (OptLayer, ir::Type) {
-        // `if let` chains, not a `match`, so there is no wildcard over the many
-        // `ir::Type` variants (NF-1).
-        let ty = self.resolve_alias(ty);
-        if let ir::Type::Optional(inner) = &ty {
-            if let ir::Type::Nullable(nullable) = &**inner {
-                return (OptLayer::Tristate, (**nullable).clone());
-            }
-            return (OptLayer::Optional, (**inner).clone());
-        }
-        if let ir::Type::Nullable(inner) = &ty {
-            return (OptLayer::Nullable, (**inner).clone());
-        }
-        (OptLayer::Plain, ty)
     }
 
     /// A nested options class bundling the operation's optional parameters
@@ -1306,6 +1299,88 @@ fn is_json_writable(program: &ir::Program, ty: &ir::Type) -> bool {
             ir::DeclKind::Alias(target) => is_json_writable(program, target),
             ir::DeclKind::Struct(_) | ir::DeclKind::Union(_) | ir::DeclKind::Enum(_) => false,
         },
+    }
+}
+
+/// Resolve a top-level alias chain to the type it stands for. Free (not a
+/// `ManagerPrinter` method) so `pagination_plan`, `deduped_methods`, and
+/// `cursor_is_synthesizable` all resolve through it identically — the only
+/// state it needs is `program` (#78 review).
+fn resolve_alias(program: &ir::Program, ty: &ir::Type) -> ir::Type {
+    if let ir::Type::Decl(id) = ty
+        && let ir::DeclKind::Alias(target) = &program.decl(*id).kind
+    {
+        return resolve_alias(program, &target.clone());
+    }
+    ty.clone()
+}
+
+/// Classify a field type's optionality wrapper (matching the model layer's
+/// `component_type`, D-110) and return the inner base type. Top-level aliases
+/// resolve through first, as the model does. Free for the same reason as
+/// [`resolve_alias`].
+fn optionality_layer(program: &ir::Program, ty: &ir::Type) -> (OptLayer, ir::Type) {
+    // `if let` chains, not a `match`, so there is no wildcard over the many
+    // `ir::Type` variants (NF-1).
+    let ty = resolve_alias(program, ty);
+    if let ir::Type::Optional(inner) = &ty {
+        if let ir::Type::Nullable(nullable) = &**inner {
+            return (OptLayer::Tristate, (**nullable).clone());
+        }
+        return (OptLayer::Optional, (**inner).clone());
+    }
+    if let ir::Type::Nullable(inner) = &ty {
+        return (OptLayer::Nullable, (**inner).clone());
+    }
+    (OptLayer::Plain, ty)
+}
+
+/// Whether a `detect_pagination` hit's cursor shape is one this backend
+/// actually synthesizes. `detect_pagination` matches wire names and the
+/// request parameter's optionality only — not its scalar type — so a `paged`
+/// entry can still fail here. The single gate `pagination_plan` opens on
+/// (calls this first) and what `deduped_methods` must check before reserving
+/// the private fetch name: a plan that never materializes must not still
+/// consume a dedup slot and needlessly rename an unrelated operation (#78
+/// review).
+fn cursor_is_synthesizable(
+    program: &ir::Program,
+    op: &ir::Operation,
+    paged: &PagedOperation,
+) -> bool {
+    let ir::ResponseShape::Json(response_ty) = &op.response else {
+        return false;
+    };
+    let Some(decl_id) = decl_of(response_ty) else {
+        return false;
+    };
+    let ir::DeclKind::Struct(envelope) = &program.decl(decl_id).kind else {
+        return false;
+    };
+    let Some(cursor_field) = envelope
+        .fields
+        .iter()
+        .find(|f| f.wire_name == paged.cursor_wire)
+    else {
+        return false;
+    };
+    let Some(cursor_param) = op
+        .params
+        .iter()
+        .find(|p| p.location == ir::ParamLocation::Query && p.wire_name == paged.param_wire)
+    else {
+        return false;
+    };
+    match paged.style {
+        PageStyle::Marker => {
+            if !matches!(unwrap_optionality(&cursor_param.ty), ir::Type::String) {
+                return false;
+            }
+            let (_, inner) = optionality_layer(program, &cursor_field.ty);
+            let inner = resolve_alias(program, &inner);
+            matches!(inner, ir::Type::String | ir::Type::Int64)
+        }
+        PageStyle::Offset => matches!(unwrap_optionality(&cursor_param.ty), ir::Type::Int64),
     }
 }
 
@@ -1781,6 +1856,53 @@ mod tests {
     }
 
     #[test]
+    fn paginator_reserves_its_private_fetch_name_against_collision() {
+        // A plain operation literally named `get_items_page` alongside the
+        // paginated `get_items` — the exact shape `dedupe` must keep from
+        // colliding: without reserving the paginator's private fetch name up
+        // front, both would emit as `getItemsPage` (#78).
+        let mut p = paged_program(Entries::Plain, Type::Optional(Box::new(Type::String)));
+        p.operations.push(Operation {
+            name: ident("get_items_page"),
+            variation: None,
+            manager: ident("items"),
+            api_version: None,
+            method: HttpMethod::Get,
+            base_url: BaseUrl::Api,
+            path: vec![
+                PathSegment::Literal("items".into()),
+                PathSegment::Literal("page".into()),
+            ],
+            params: vec![],
+            request: None,
+            response: ResponseShape::Json(Type::Decl(ir::DeclId(0))),
+            deprecated: false,
+        });
+        let files = generated(&p);
+        let out = file_ending(&files, "managers/ItemsManager.java");
+
+        // The paginator's private single-page fetch keeps the unsuffixed
+        // name — it was reserved first — and stays package-private.
+        assert!(
+            out.contains(
+                "    dev.unofficialbox.model.schemas.Items getItemsPage(GetItemsOptions options) {"
+            ),
+            "{out}"
+        );
+        assert!(!out.contains("public dev.unofficialbox.model.schemas.Items getItemsPage("));
+        // The unrelated `get_items_page` operation is pushed to `_2` instead
+        // of silently colliding with the paginator's private fetch, and
+        // keeps its own public visibility.
+        assert!(
+            out.contains("public dev.unofficialbox.model.schemas.Item getItemsPage_2() {"),
+            "{out}"
+        );
+        // Exactly one method definition per name — no duplicate members.
+        assert_eq!(out.matches(" getItemsPage(").count(), 1, "{out}");
+        assert_eq!(out.matches(" getItemsPage_2(").count(), 1, "{out}");
+    }
+
+    #[test]
     fn tristate_entries_coalesce_absent_and_null_to_an_empty_list() {
         // entries: Optional<Nullable<List<Item>>> → Tristate<List<Item>>. The
         // extraction must treat both absent and explicit-null as an empty list.
@@ -1816,5 +1938,50 @@ mod tests {
             "{mgr}"
         );
         assert!(!mgr.contains("getItemsPaginate"), "{mgr}");
+    }
+
+    #[test]
+    fn unsynthesizable_pagination_does_not_phantom_reserve_the_page_name() {
+        // A cursor shape `pagination_plan` can't synthesize must not still
+        // reserve the private fetch name it would have used — a name
+        // nothing is ever emitted under must not consume a dedup slot and
+        // needlessly rename an unrelated operation (#78 review).
+        let mut p = paged_program(Entries::Plain, Type::Optional(Box::new(Type::Bool)));
+        p.operations.push(Operation {
+            name: ident("get_items_page"),
+            variation: None,
+            manager: ident("items"),
+            api_version: None,
+            method: HttpMethod::Get,
+            base_url: BaseUrl::Api,
+            path: vec![
+                PathSegment::Literal("items".into()),
+                PathSegment::Literal("page".into()),
+            ],
+            params: vec![],
+            request: None,
+            response: ResponseShape::Json(Type::Decl(ir::DeclId(0))),
+            deprecated: false,
+        });
+        let files = generated(&p);
+
+        assert!(
+            !files.iter().any(|f| f.path.ends_with("Paginator.java")),
+            "no paginator should be emitted for an unsupported cursor shape"
+        );
+        let mgr = file_ending(&files, "managers/ItemsManager.java");
+        // `get_items` ships as the plain public method (VR-6 fallback).
+        assert!(
+            mgr.contains("public dev.unofficialbox.model.schemas.Items getItems("),
+            "{mgr}"
+        );
+        // The unrelated `get_items_page` operation keeps its natural,
+        // unsuffixed name: nothing was ever emitted under `getItemsPage`, so
+        // nothing should have reserved it.
+        assert!(
+            mgr.contains("public dev.unofficialbox.model.schemas.Item getItemsPage() {"),
+            "{mgr}"
+        );
+        assert!(!mgr.contains("getItemsPage_2"), "{mgr}");
     }
 }

@@ -13,7 +13,7 @@ use std::fmt::Write as _;
 use gantry_ir as ir;
 use gantry_ir::naming::snake;
 use gantry_sema::Analysis;
-use gantry_synth::detect_pagination;
+use gantry_synth::{PagedOperation, detect_pagination};
 
 use crate::GeneratedFile;
 use crate::managers::{ManagerPlan, deduped_methods, plan_managers};
@@ -22,9 +22,9 @@ use crate::models::type_names;
 /// Generate `docs/` — an index, one page per manager, and the guides.
 pub fn generate_docs(analysis: &Analysis<'_>) -> Vec<GeneratedFile> {
     let program = analysis.program;
-    let paged: HashMap<usize, ()> = detect_pagination(analysis)
+    let paged: HashMap<usize, PagedOperation> = detect_pagination(analysis)
         .into_iter()
-        .map(|p| (p.operation, ()))
+        .map(|p| (p.operation, p))
         .collect();
     let names = type_names(program);
     let plans = plan_managers(analysis);
@@ -82,7 +82,7 @@ fn index_page(plans: &[ManagerPlan], has_chunked: bool) -> GeneratedFile {
 /// line, parameter table, request/response types, and a pagination note.
 fn manager_page(
     program: &ir::Program,
-    paged: &HashMap<usize, ()>,
+    paged: &HashMap<usize, PagedOperation>,
     names: &BTreeMap<ir::DeclId, String>,
     plan: &ManagerPlan,
 ) -> GeneratedFile {
@@ -94,7 +94,7 @@ fn manager_page(
         class = plan.class,
         field = plan.field,
     );
-    for (index, method) in deduped_methods(program, &plan.ops) {
+    for (index, method, _) in deduped_methods(program, &plan.ops, paged) {
         let op = &program.operations[index];
         let _ = writeln!(body, "## {method}\n");
         if op.deprecated {

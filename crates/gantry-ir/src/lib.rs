@@ -349,6 +349,17 @@ impl Program {
         self.decls.push(decl);
         id
     }
+
+    /// The API version every backend treats as the unversioned default: the
+    /// first operation's version, lowered first by convention (D-191). An
+    /// operation whose version differs from this one carries an explicit
+    /// `box-version` header; the base operation's own version never does.
+    /// The single source of truth for that assumption — every backend must
+    /// call this rather than recomputing `operations.first()` itself, so the
+    /// definition can't silently diverge between them (#78).
+    pub fn base_api_version(&self) -> Option<&ApiVersion> {
+        self.operations.first()?.api_version.as_ref()
+    }
 }
 
 #[cfg(test)]

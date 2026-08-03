@@ -232,9 +232,14 @@ fn emits_chunked_upload(analysis: &gantry_sema::Analysis<'_>) -> bool {
     }
     // The four `chunkedUploads` methods the orchestrator calls, named the way the
     // manager printer names them (`camel(method_base)`).
+    let paged: std::collections::HashMap<usize, gantry_synth::PagedOperation> =
+        gantry_synth::detect_pagination(analysis)
+            .into_iter()
+            .map(|p| (p.operation, p))
+            .collect();
     let mut methods: HashSet<String> = HashSet::new();
     for indices in analysis.managers.values() {
-        for base in managers::method_bases(program, indices) {
+        for (base, _) in managers::method_bases(program, indices, &paged) {
             methods.insert(managers::camel(&base));
         }
     }
