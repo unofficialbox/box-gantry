@@ -1640,6 +1640,16 @@ const ACTION_VERBS: &[&str] = &[
 ///   "Create upload session for existing file"; the singular
 ///   `createFileUploadSession` / `createFileVersionUploadSession` read the way the
 ///   chunked-upload orchestrators call them.
+/// - The `/group_memberships` CRUD endpoints share the "memberships" tag with
+///   the unrelated `/users/{id}/memberships` and `/groups/{id}/memberships`
+///   listings (Box's manager spans all three). The tag-echo strip in
+///   `short_op_tokens` removes the literal token `memberships` from
+///   `post_group_memberships` and friends, leaving only `group` — so they
+///   otherwise seed `createGroup`/`getGroup`/`updateGroup`/`deleteGroup`,
+///   reading as if they operate on a `Group`, not the join resource. Box's
+///   own summaries ("Add user to group", "Get group membership", "Update
+///   group membership", "Remove user from group") confirm `GroupMembership`
+///   is the real subject.
 ///
 /// Returns a camelCase seed; each backend cases it (`UploadFile`,
 /// `upload_file`, …). Curated names still flow through the dedup guard below.
@@ -1653,6 +1663,10 @@ fn curated_method_name(base_id: &str) -> Option<&'static str> {
         // "Query files/folders by metadata" — `execute_read` is Box's endpoint
         // plumbing, not user intent.
         "post_metadata_queries_execute_read" => Some("queryByMetadata"),
+        "post_group_memberships" => Some("createGroupMembership"),
+        "get_group_memberships_id" => Some("getGroupMembership"),
+        "put_group_memberships_id" => Some("updateGroupMembership"),
+        "delete_group_memberships_id" => Some("deleteGroupMembership"),
         _ => None,
     }
 }
@@ -1675,6 +1689,14 @@ fn curated_method_name(base_id: &str) -> Option<&'static str> {
 /// `TransferFoldersRequest` (already verb-noun) matches its `transferFolders`
 /// method.
 ///
+/// The `/group_memberships` create/update bodies otherwise seed bare
+/// `CreateGroupRequest` / `UpdateGroupRequest` (see [`curated_method_name`] for
+/// why the `memberships` tag-echo strips down to just `group`) — colliding
+/// with the real `Groups` manager's own create/update bodies and forcing a
+/// meaningless `…2` suffix on one side. The curated `CreateGroupMembershipRequest`
+/// / `UpdateGroupMembershipRequest` match the curated method names and the
+/// `GroupMembership` response schema.
+///
 /// Returns a PascalCase seed; each backend cases it per language. A curated seed
 /// bypasses the terse/`keep_id` collision dance in `lower_request_body`.
 fn curated_body_seed(base_id: &str) -> Option<&'static str> {
@@ -1682,6 +1704,8 @@ fn curated_body_seed(base_id: &str) -> Option<&'static str> {
         "post_files_upload_sessions" => Some("CreateFileUploadSessionRequest"),
         "post_files_id_upload_sessions" => Some("CreateFileVersionUploadSessionRequest"),
         "put_users_id_folders_0" => Some("TransferFoldersRequest"),
+        "post_group_memberships" => Some("CreateGroupMembershipRequest"),
+        "put_group_memberships_id" => Some("UpdateGroupMembershipRequest"),
         _ => None,
     }
 }
@@ -1801,7 +1825,10 @@ fn effective_nullable(raw: &RawSchema) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{body_seed_for, curated_body_seed, curated_method_name, variation_seed_tokens};
+    use super::{
+        body_seed_for, curated_body_seed, curated_method_name, short_op_tokens,
+        variation_seed_tokens,
+    };
 
     /// The chunked-upload orchestrators (every backend) call these exact method
     /// names and construct these exact request-body types; each backend's emit
@@ -1839,6 +1866,57 @@ mod tests {
         assert_eq!(
             body_seed_for("chunked_uploads", "post", &commit_tokens, false, &[]),
             "CommitFileUploadSessionRequest"
+        );
+    }
+
+    /// The `/group_memberships` CRUD endpoints share the `memberships` tag
+    /// with the unrelated `/users/{id}/memberships` and `/groups/{id}/memberships`
+    /// listings. Left uncurated, the tag-echo strip in `short_op_tokens` removes
+    /// the literal token `memberships`, leaving only `group` — so
+    /// `post_group_memberships`/`put_group_memberships_id` seed the same bare
+    /// `CreateGroupRequest`/`UpdateGroupRequest` the unrelated `Groups` manager's
+    /// own create/update bodies already claim, forcing a meaningless `…2`
+    /// suffix onto one side. Pin both the reproduction (so a future tokenizer
+    /// change can't silently reintroduce the collision unnoticed) and the
+    /// curated fix.
+    #[test]
+    fn group_membership_curation_avoids_the_groups_manager_collision() {
+        let uncurated_create = short_op_tokens("post_group_memberships", "memberships");
+        assert_eq!(
+            body_seed_for("memberships", "post", &uncurated_create, false, &[]),
+            "CreateGroupRequest",
+            "uncurated, this collides with the Groups manager's own CreateGroupRequest"
+        );
+        let uncurated_update = short_op_tokens("put_group_memberships_id", "memberships");
+        assert_eq!(
+            body_seed_for("memberships", "put", &uncurated_update, false, &[]),
+            "UpdateGroupRequest",
+            "uncurated, this collides with the Groups manager's own UpdateGroupRequest"
+        );
+
+        assert_eq!(
+            curated_method_name("post_group_memberships"),
+            Some("createGroupMembership")
+        );
+        assert_eq!(
+            curated_method_name("get_group_memberships_id"),
+            Some("getGroupMembership")
+        );
+        assert_eq!(
+            curated_method_name("put_group_memberships_id"),
+            Some("updateGroupMembership")
+        );
+        assert_eq!(
+            curated_method_name("delete_group_memberships_id"),
+            Some("deleteGroupMembership")
+        );
+        assert_eq!(
+            curated_body_seed("post_group_memberships"),
+            Some("CreateGroupMembershipRequest")
+        );
+        assert_eq!(
+            curated_body_seed("put_group_memberships_id"),
+            Some("UpdateGroupMembershipRequest")
         );
     }
 
