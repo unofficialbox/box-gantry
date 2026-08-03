@@ -286,7 +286,7 @@ impl<'a> DocLowerer<'a> {
         let leaf = pascal(&clean_name(name));
         if !raw.one_of.is_empty() || !raw.any_of.is_empty() {
             return self
-                .lower_union(location, &leaf, &leaf, raw)
+                .lower_union(location, &leaf, &leaf, &leaf, raw)
                 .map(ir::DeclKind::Union);
         }
         if let Some(values) = &raw.enumeration {
@@ -314,11 +314,11 @@ impl<'a> DocLowerer<'a> {
         }
         if !raw.all_of.is_empty() || is_object(raw) {
             return self
-                .lower_struct(location, &leaf, raw)
+                .lower_struct(location, &leaf, &leaf, raw)
                 .map(ir::DeclKind::Struct);
         }
         // A named primitive (or a schema that says nothing).
-        let ty = self.lower_type(location, &leaf, &leaf, raw)?;
+        let ty = self.lower_type(location, &leaf, &leaf, &leaf, raw)?;
         self.stats.aliases += 1;
         Ok(ir::DeclKind::Alias(ty))
     }
@@ -331,21 +331,27 @@ impl<'a> DocLowerer<'a> {
     /// synthesized type here (its parent's leaf + this leaf, e.g.
     /// `StaticConfigClassification`); `leaf` is the short prefix threaded to
     /// this type's *children* (just this leaf, so depth adds one segment per
-    /// level instead of accumulating the whole path). An array item or map
-    /// value shares its container's `(name, leaf)` — it is the same position.
+    /// level instead of accumulating the whole path). `ancestor` is a second,
+    /// *accumulating* prefix (never reset per level) that `synthesize` falls
+    /// back to — instead of a bare numeral — when two unrelated schemas'
+    /// immediate-context names coincide (D-127 collision, not a structural
+    /// dupe): real structure the short name dropped, not an invented word.
+    /// An array item or map value shares its container's `(name, leaf,
+    /// ancestor)` — it is the same position.
     fn lower_type(
         &mut self,
         location: &str,
         name: &str,
         leaf: &str,
+        ancestor: &str,
         raw: &'a RawSchema,
     ) -> Result<ir::Type, IngestError> {
         if let Some(reference) = &raw.reference {
             return Ok(ir::Type::Decl(self.resolve_ref(location, reference)?));
         }
         if !raw.one_of.is_empty() || !raw.any_of.is_empty() {
-            let union = self.lower_union(location, name, leaf, raw)?;
-            let id = self.synthesize(location, name, ir::DeclKind::Union(union))?;
+            let union = self.lower_union(location, name, leaf, ancestor, raw)?;
+            let id = self.synthesize(location, name, ancestor, ir::DeclKind::Union(union))?;
             return Ok(ir::Type::Decl(id));
         }
         if let Some(values) = &raw.enumeration {
@@ -356,7 +362,7 @@ impl<'a> DocLowerer<'a> {
             }
             let has_null = values.iter().any(serde_json::Value::is_null);
             let decl = self.lower_enum(location, values)?;
-            let id = self.synthesize(location, name, ir::DeclKind::Enum(decl))?;
+            let id = self.synthesize(location, name, ancestor, ir::DeclKind::Enum(decl))?;
             // A `null` entry in the value list is the spec's way of
             // saying the field may be explicitly null (D-105, D-110).
             let ty = ir::Type::Decl(id);
@@ -372,7 +378,7 @@ impl<'a> DocLowerer<'a> {
                 .filter(|part| !is_annotation_only(part))
                 .collect();
             if let [part] = structural.as_slice() {
-                return self.lower_type(&format!("{location}.allOf"), name, leaf, part);
+                return self.lower_type(&format!("{location}.allOf"), name, leaf, ancestor, part);
             }
             if structural.is_empty() {
                 self.stats.json_value_sites += 1;
@@ -380,8 +386,8 @@ impl<'a> DocLowerer<'a> {
             }
         }
         if !raw.all_of.is_empty() {
-            let decl = self.lower_struct(location, leaf, raw)?;
-            let id = self.synthesize(location, name, ir::DeclKind::Struct(decl))?;
+            let decl = self.lower_struct(location, leaf, ancestor, raw)?;
+            let id = self.synthesize(location, name, ancestor, ir::DeclKind::Struct(decl))?;
             return Ok(ir::Type::Decl(id));
         }
         match raw.schema_type.as_deref() {
@@ -389,12 +395,13 @@ impl<'a> DocLowerer<'a> {
                 let Some(items) = &raw.items else {
                     return Err(self.unsupported(location, "array schema has no `items`"));
                 };
-                let inner = self.lower_type(&format!("{location}.items"), name, leaf, items)?;
+                let inner =
+                    self.lower_type(&format!("{location}.items"), name, leaf, ancestor, items)?;
                 Ok(ir::Type::List(Box::new(inner)))
             }
             Some("object") if !raw.properties.is_empty() => {
-                let decl = self.lower_struct(location, leaf, raw)?;
-                let id = self.synthesize(location, name, ir::DeclKind::Struct(decl))?;
+                let decl = self.lower_struct(location, leaf, ancestor, raw)?;
+                let id = self.synthesize(location, name, ancestor, ir::DeclKind::Struct(decl))?;
                 Ok(ir::Type::Decl(id))
             }
             Some("object") => match raw.additional_properties.as_ref() {
@@ -403,6 +410,7 @@ impl<'a> DocLowerer<'a> {
                         &format!("{location}.additionalProperties"),
                         name,
                         leaf,
+                        ancestor,
                         value,
                     )?;
                     Ok(ir::Type::Map(Box::new(inner)))
@@ -418,8 +426,8 @@ impl<'a> DocLowerer<'a> {
                 Err(self.unsupported(location, &format!("unknown schema type {other:?}")))
             }
             None if !raw.properties.is_empty() => {
-                let decl = self.lower_struct(location, leaf, raw)?;
-                let id = self.synthesize(location, name, ir::DeclKind::Struct(decl))?;
+                let decl = self.lower_struct(location, leaf, ancestor, raw)?;
+                let id = self.synthesize(location, name, ancestor, ir::DeclKind::Struct(decl))?;
                 Ok(ir::Type::Decl(id))
             }
             None => {
@@ -454,11 +462,16 @@ impl<'a> DocLowerer<'a> {
     ///
     /// `leaf` is this struct's own short name; each inline field type is
     /// named `leaf + FieldName` and threads `FieldName` as the leaf for its
-    /// own children (immediate-context naming — see `lower_type`).
+    /// own children (immediate-context naming — see `lower_type`). `ancestor`
+    /// is the same idea one layer up: unlike `leaf`, it is never reset — each
+    /// field appends to it — so it always names the schema's true lineage,
+    /// for `synthesize` to fall back on when the short `leaf`-based name
+    /// collides with an unrelated schema's.
     fn lower_struct(
         &mut self,
         location: &str,
         leaf: &str,
+        ancestor: &str,
         raw: &'a RawSchema,
     ) -> Result<ir::StructDecl, IngestError> {
         let mut properties: IndexMap<String, &'a RawSchema> = IndexMap::new();
@@ -475,7 +488,14 @@ impl<'a> DocLowerer<'a> {
             let name = identifier(self.doc, &prop_location, &clean_name(&wire_name))?;
             let child_leaf = pascal(&clean_name(&wire_name));
             let child_name = synth_name(leaf, &wire_name);
-            let mut ty = self.lower_type(&prop_location, &child_name, &child_leaf, prop)?;
+            let child_ancestor = synth_name(ancestor, &wire_name);
+            let mut ty = self.lower_type(
+                &prop_location,
+                &child_name,
+                &child_leaf,
+                &child_ancestor,
+                prop,
+            )?;
             // The tri-state is structural (FR-2.3, D-110): `nullable`
             // means the wire value may be an explicit `null` (Box uses it
             // to clear fields); not-required means the key may be absent.
@@ -549,6 +569,7 @@ impl<'a> DocLowerer<'a> {
         location: &str,
         name: &str,
         leaf: &str,
+        ancestor: &str,
         raw: &'a RawSchema,
     ) -> Result<ir::UnionDecl, IngestError> {
         if !raw.one_of.is_empty() && !raw.any_of.is_empty() {
@@ -570,8 +591,14 @@ impl<'a> DocLowerer<'a> {
             } else {
                 let variant_name = format!("{name}Variant{index}");
                 let variant_leaf = format!("{leaf}Variant{index}");
-                let ty =
-                    self.lower_type(&variant_location, &variant_name, &variant_leaf, variant)?;
+                let variant_ancestor = format!("{ancestor}Variant{index}");
+                let ty = self.lower_type(
+                    &variant_location,
+                    &variant_name,
+                    &variant_leaf,
+                    &variant_ancestor,
+                    variant,
+                )?;
                 (ty, self.type_const(variant, 0))
             };
             variants.push(ir::UnionVariant {
@@ -660,10 +687,20 @@ impl<'a> DocLowerer<'a> {
 
     /// Add a synthesized declaration for an inline anonymous shape, with a
     /// deterministic, collision-free name.
+    ///
+    /// `ancestor` is the schema's full, never-reset lineage (see
+    /// `lower_struct`) — real structure the short `base` name dropped by
+    /// design. When `base` is already taken by an unrelated schema (D-127: a
+    /// genuine name coincidence, not a structural dupe — that's caught above),
+    /// retry with `ancestor` before falling back to a numeral. `ancestor`
+    /// equals `base` exactly at the shallowest synthesis depth (a component's
+    /// own direct field, or a top-level request/response body) — there is no
+    /// deeper lineage to fall back to, so a numeral is the honest name there.
     fn synthesize(
         &mut self,
         location: &str,
         base: &str,
+        ancestor: &str,
         kind: ir::DeclKind,
     ) -> Result<ir::DeclId, IngestError> {
         // Structural dedupe (D-127): an inline shape identical to one already
@@ -678,6 +715,12 @@ impl<'a> DocLowerer<'a> {
             return Ok(existing);
         }
         let mut name = base.to_string();
+        if self.used_names.contains(&name)
+            && ancestor != base
+            && !self.used_names.contains(ancestor)
+        {
+            name = ancestor.to_string();
+        }
         let mut suffix = 2;
         while self.used_names.contains(&name) {
             name = format!("{base}{suffix}");
@@ -926,6 +969,7 @@ impl<'a> DocLowerer<'a> {
                 &format!("{param_location}.schema"),
                 &synth_name(owner, wire_name),
                 &pascal(&clean_name(wire_name)),
+                owner,
                 schema,
             )?;
             if !resolved.required {
@@ -1094,6 +1138,7 @@ impl<'a> DocLowerer<'a> {
                 &format!("{body_location}.content[{media_key:?}]"),
                 &body_seed,
                 owner,
+                &body_seed,
                 schema,
             )?,
             None => {
@@ -1152,6 +1197,7 @@ impl<'a> DocLowerer<'a> {
                                 &format!("{response_location}.content[{media_key:?}]"),
                                 &format!("{owner}Response"),
                                 owner,
+                                &format!("{owner}Response"),
                                 schema,
                             )?,
                             None => {
