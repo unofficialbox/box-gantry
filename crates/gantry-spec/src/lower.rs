@@ -965,11 +965,12 @@ impl<'a> DocLowerer<'a> {
             let Some(schema) = &resolved.schema else {
                 return Err(self.unsupported(&param_location, "parameter has no schema"));
             };
+            let parameter_seed = synth_name(owner, wire_name);
             let mut ty = self.lower_type(
                 &format!("{param_location}.schema"),
-                &synth_name(owner, wire_name),
+                &parameter_seed,
                 &pascal(&clean_name(wire_name)),
-                owner,
+                &parameter_seed,
                 schema,
             )?;
             if !resolved.required {
