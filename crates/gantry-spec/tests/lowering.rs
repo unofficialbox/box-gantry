@@ -307,6 +307,85 @@ fn deep_collisions_fall_back_to_the_real_ancestor_not_a_numeral() {
 }
 
 #[test]
+fn parameter_ancestor_includes_the_parameter_itself() {
+    // A synthesized parameter's own name is `owner + wire_name`
+    // (`GetGadgetsPage`) — its ancestor fallback must match that exactly, not
+    // just `owner` (`GetGadgets`), or a deep collision inside the parameter's
+    // shape loses the parameter's own identity from its fallback name.
+    // `GetGadgets.page.sort.direction` collides with an unrelated
+    // `UnrelatedSortHolder.sort.direction` two levels deep; `GetGadgetsSortDirection`
+    // (the buggy, `wire_name`-less ancestor) is pre-claimed by a real component
+    // so the old bug would have been forced to a numeral instead.
+    let spec = serde_json::json!({
+        "openapi": "3.0.2",
+        "info": { "title": "Box Platform API", "version": "2025.0" },
+        "paths": {
+            "/gadgets": {
+                "get": {
+                    "operationId": "get_gadgets",
+                    "x-box-tag": "unrelated",
+                    "parameters": [{
+                        "name": "page", "in": "query", "required": false,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "sort": {
+                                    "type": "object",
+                                    "properties": {
+                                        "direction": { "type": "string", "enum": ["up", "down"] }
+                                    }
+                                }
+                            }
+                        }
+                    }]
+                }
+            }
+        },
+        "components": {
+            "schemas": {
+                "UnrelatedSortHolder": {
+                    "type": "object",
+                    "properties": {
+                        "sort": {
+                            "type": "object",
+                            "properties": {
+                                "direction": { "type": "string", "enum": ["asc", "desc"] }
+                            }
+                        }
+                    }
+                },
+                "GetGadgetsSortDirection": {
+                    "type": "object",
+                    "properties": { "id": { "type": "string" } }
+                }
+            }
+        }
+    });
+    let dir = std::env::temp_dir().join(format!(
+        "gantry-param-ancestor-test-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("spec.json");
+    std::fs::write(&file, serde_json::to_string_pretty(&spec).unwrap()).unwrap();
+    let lowering = gantry_spec::lower(&SpecSet::load(&[file]).unwrap()).unwrap();
+    assert!(
+        !lowering
+            .program
+            .decls
+            .iter()
+            .any(|d| d.name.as_str().starts_with("SortDirection2")),
+        "the parameter's own seed was available; the numeral fallback must not fire"
+    );
+    let enum_decl = find(&lowering.program, "GetGadgetsPageSortDirection");
+    let ir::DeclKind::Enum(decl) = &enum_decl.kind else {
+        panic!("expected an enum: {:?}", enum_decl.kind)
+    };
+    assert_eq!(decl.values, ["up", "down"]);
+}
+
+#[test]
 fn identical_inline_shapes_dedupe_to_one_declaration() {
     // D-127: two inline objects with the same structure collapse to a single
     // synthesized decl; both fields reference it. The repeated `{id}` refs
