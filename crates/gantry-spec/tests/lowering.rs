@@ -260,6 +260,53 @@ fn synthesized_names_disambiguate_deterministically() {
 }
 
 #[test]
+fn deep_collisions_fall_back_to_the_real_ancestor_not_a_numeral() {
+    // Two unrelated schemas each have a `fields.options` shape two levels
+    // deep. Immediate-context naming reduces both to the same short name
+    // (`FieldsOptions`) — a real D-127 collision, since the shapes differ.
+    // `Alpha` is lowered first (map order) and keeps the short name; `Beta`
+    // has a real ancestor to fall back on (`BetaFieldsOptions`) instead of
+    // the meaningless `FieldsOptions2`.
+    let lowering = lower_schemas(serde_json::json!({
+        "Alpha": {
+            "type": "object",
+            "properties": {
+                "fields": {
+                    "type": "object",
+                    "properties": {
+                        "options": { "type": "object", "properties": { "id": { "type": "string" } } }
+                    }
+                }
+            }
+        },
+        "Beta": {
+            "type": "object",
+            "properties": {
+                "fields": {
+                    "type": "object",
+                    "properties": {
+                        "options": { "type": "object", "properties": { "name": { "type": "string" } } }
+                    }
+                }
+            }
+        }
+    }))
+    .unwrap();
+    assert!(
+        !lowering
+            .program
+            .decls
+            .iter()
+            .any(|d| d.name.as_str() == "FieldsOptions2"),
+        "a real ancestor was available; the numeral fallback must not fire"
+    );
+    let options = struct_decl(find(&lowering.program, "FieldsOptions"));
+    assert_eq!(options.fields[0].wire_name, "id");
+    let options2 = struct_decl(find(&lowering.program, "BetaFieldsOptions"));
+    assert_eq!(options2.fields[0].wire_name, "name");
+}
+
+#[test]
 fn identical_inline_shapes_dedupe_to_one_declaration() {
     // D-127: two inline objects with the same structure collapse to a single
     // synthesized decl; both fields reference it. The repeated `{id}` refs
