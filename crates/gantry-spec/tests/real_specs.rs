@@ -51,9 +51,12 @@ fn the_full_real_spec_set_ingests() {
     let lowering = gantry_spec::lower(&set).expect("the vendored Box specs must lower");
     // After structural dedupe (D-127) identical inline shapes collapse, the
     // version merge (D-190) collapses 21 same-named cross-version schemas (16
-    // structs + 5 enums) into one superset each, and stripping the auto-set
-    // `box-version` header (D-191) drops its 2 inline version enums:
-    // 900 → 879 → 877 decls (490 synthesized).
+    // structs + 5 enums) into one superset each, stripping the auto-set
+    // `box-version` header (D-191) drops its 2 inline version enums, and
+    // recognizing the nullable-`$ref` `oneOf`/`anyOf` idiom (D-195) resolves
+    // 9 fields straight to their referenced type instead of synthesizing an
+    // opaque structural union for each:
+    // 900 → 879 → 877 → 868 decls (481 synthesized).
     assert_eq!(lowering.program.decls.len(), 868);
     let stats = &lowering.stats;
     assert_eq!(

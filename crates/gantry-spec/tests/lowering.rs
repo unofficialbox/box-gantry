@@ -240,6 +240,71 @@ fn nullable_ref_via_one_of_is_a_reference_not_a_synthesized_union() {
     assert_eq!(lowering.stats.unions, 0);
 }
 
+/// The idiom can also be a *named* top-level component schema — not just
+/// an inline field type — e.g. a schema that's nothing but a nullable
+/// reference to another schema. `lower_named` must recognize it too,
+/// before routing to `lower_union`, and emit an alias rather than a
+/// synthesized structural union.
+#[test]
+fn nullable_ref_via_named_one_of_is_an_alias_not_a_union() {
+    let lowering = lower_schemas(serde_json::json!({
+        "Thing": { "type": "object", "properties": { "id": { "type": "string" } } },
+        "MaybeThing": {
+            "oneOf": [
+                { "$ref": "#/components/schemas/Thing" },
+                { "type": "object", "nullable": true, "additionalProperties": false }
+            ]
+        }
+    }))
+    .unwrap();
+    let maybe_thing = find(&lowering.program, "MaybeThing");
+    let ir::DeclKind::Alias(ty) = &maybe_thing.kind else {
+        panic!("MaybeThing must be an alias: {:?}", maybe_thing.kind)
+    };
+    let ir::Type::Nullable(inner) = ty else {
+        panic!("MaybeThing must be nullable: {ty:?}")
+    };
+    let ir::Type::Decl(id) = **inner else {
+        panic!("MaybeThing must reference Thing: {inner:?}")
+    };
+    assert_eq!(lowering.program.decl(id).name.as_str(), "Thing");
+    assert_eq!(lowering.stats.unions, 0);
+}
+
+/// Same idiom, `anyOf` instead of `oneOf` — Box specs use both
+/// combinators for it interchangeably.
+#[test]
+fn nullable_ref_via_any_of_is_recognized_too() {
+    let lowering = lower_schemas(serde_json::json!({
+        "Thing": { "type": "object", "properties": { "id": { "type": "string" } } },
+        "Owner": {
+            "type": "object",
+            "properties": {
+                "thing": {
+                    "anyOf": [
+                        { "$ref": "#/components/schemas/Thing" },
+                        { "type": "object", "nullable": true, "additionalProperties": false }
+                    ]
+                }
+            }
+        }
+    }))
+    .unwrap();
+    let owner = struct_decl(find(&lowering.program, "Owner"));
+    let thing = &owner.fields[0];
+    let ir::Type::Optional(nullable) = &thing.ty else {
+        panic!("thing must be optional: {:?}", thing.ty)
+    };
+    let ir::Type::Nullable(inner) = &**nullable else {
+        panic!("thing must be nullable: {nullable:?}")
+    };
+    let ir::Type::Decl(id) = **inner else {
+        panic!("thing must reference Thing: {inner:?}")
+    };
+    assert_eq!(lowering.program.decl(id).name.as_str(), "Thing");
+    assert_eq!(lowering.stats.unions, 0);
+}
+
 #[test]
 fn enums_are_open_and_null_entries_encode_nullability() {
     let lowering = lower_schemas(serde_json::json!({

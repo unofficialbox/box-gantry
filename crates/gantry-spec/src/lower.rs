@@ -284,6 +284,28 @@ impl<'a> DocLowerer<'a> {
         // name (its decl name), so a field's inline type reads like
         // `FileFullType`, not the whole ancestry.
         let leaf = pascal(&clean_name(name));
+        let one_or_any = match (raw.one_of.is_empty(), raw.any_of.is_empty()) {
+            (false, true) => Some(("oneOf", &raw.one_of)),
+            (true, false) => Some(("anyOf", &raw.any_of)),
+            _ => None,
+        };
+        // A *named* schema can itself be the nullable-`$ref` idiom (see
+        // `lower_type`) — e.g. a component schema defined as nothing but a
+        // nullable reference to another component. Same recognition,
+        // before `lower_union` ever sees it.
+        if let Some((combinator, variants)) = one_or_any
+            && let Some((index, real)) = nullable_ref_variant(variants)
+        {
+            let ty = self.lower_type(
+                &format!("{location}.{combinator}[{index}]"),
+                name,
+                &leaf,
+                &leaf,
+                real,
+            )?;
+            self.stats.aliases += 1;
+            return Ok(ir::DeclKind::Alias(nullable(ty)));
+        }
         if !raw.one_of.is_empty() || !raw.any_of.is_empty() {
             return self
                 .lower_union(location, &leaf, &leaf, &leaf, raw)
@@ -364,12 +386,20 @@ impl<'a> DocLowerer<'a> {
         // colliding with the referenced schema's own name — the source of
         // the `EnterpriseConfigurationSecurity2`-style suffixes).
         let one_or_any = match (raw.one_of.is_empty(), raw.any_of.is_empty()) {
-            (false, true) => Some(&raw.one_of),
-            (true, false) => Some(&raw.any_of),
+            (false, true) => Some(("oneOf", &raw.one_of)),
+            (true, false) => Some(("anyOf", &raw.any_of)),
             _ => None,
         };
-        if let Some(real) = one_or_any.and_then(|variants| nullable_ref_variant(variants)) {
-            let ty = self.lower_type(&format!("{location}.oneOf"), name, leaf, ancestor, real)?;
+        if let Some((combinator, variants)) = one_or_any
+            && let Some((index, real)) = nullable_ref_variant(variants)
+        {
+            let ty = self.lower_type(
+                &format!("{location}.{combinator}[{index}]"),
+                name,
+                leaf,
+                ancestor,
+                real,
+            )?;
             return Ok(nullable(ty));
         }
         if !raw.one_of.is_empty() || !raw.any_of.is_empty() {
@@ -1833,14 +1863,16 @@ fn is_null_only_schema(raw: &RawSchema) -> bool {
 
 /// A two-variant `oneOf`/`anyOf` where exactly one variant is the
 /// [`is_null_only_schema`] placeholder is the "nullable `$ref`" idiom
-/// (D-195) — the other variant is the real type. Any other shape (more
-/// than two variants, neither/both variants null-only) isn't this idiom;
-/// `None` sends it to the normal union path.
-fn nullable_ref_variant(variants: &[RawSchema]) -> Option<&RawSchema> {
+/// (D-195) — the other variant is the real type, returned alongside its
+/// index in `variants` so callers can build an accurate JSON path if
+/// lowering that variant fails. Any other shape (more than two variants,
+/// neither/both variants null-only) isn't this idiom; `None` sends it to
+/// the normal union path.
+fn nullable_ref_variant(variants: &[RawSchema]) -> Option<(usize, &RawSchema)> {
     let [a, b] = variants else { return None };
     match (is_null_only_schema(a), is_null_only_schema(b)) {
-        (true, false) => Some(b),
-        (false, true) => Some(a),
+        (true, false) => Some((1, b)),
+        (false, true) => Some((0, a)),
         _ => None,
     }
 }
