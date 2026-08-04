@@ -54,15 +54,15 @@ fn the_full_real_spec_set_ingests() {
     // structs + 5 enums) into one superset each, and stripping the auto-set
     // `box-version` header (D-191) drops its 2 inline version enums:
     // 900 → 879 → 877 decls (490 synthesized).
-    assert_eq!(lowering.program.decls.len(), 877);
+    assert_eq!(lowering.program.decls.len(), 868);
     let stats = &lowering.stats;
     assert_eq!(
         (stats.structs, stats.unions, stats.discriminated_unions),
-        (592, 42, 23)
+        (592, 33, 23)
     );
     assert_eq!((stats.enums, stats.aliases), (241, 2));
-    assert_eq!(stats.synthesized, 490);
-    assert_eq!(stats.json_value_sites, 26);
+    assert_eq!(stats.synthesized, 481);
+    assert_eq!(stats.json_value_sites, 14);
 
     // Operations: every one lowered, with classified success shapes.
     assert_eq!(lowering.program.operations.len(), 336);

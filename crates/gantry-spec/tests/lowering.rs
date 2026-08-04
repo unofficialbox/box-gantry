@@ -188,6 +188,58 @@ fn one_of_without_type_constants_is_structural() {
     assert_eq!(lowering.stats.discriminated_unions, 0);
 }
 
+/// OpenAPI 3.0 has no way to write `nullable: true` alongside a sibling
+/// `$ref` (siblings of `$ref` are ignored), so specs fake a nullable
+/// reference with `oneOf: [ {$ref: X}, <null-only schema> ]` — a two-variant
+/// union neither `type_const` can discriminate. Left to `lower_union`, that
+/// becomes a synthesized structural union (which every backend then
+/// collapses to an opaque JSON blob) named `{owner}{field}`, exactly the
+/// name a real top-level schema of the same shape already claims —
+/// reproducing the real-world `EnterpriseConfigurationSecurity2` bug this
+/// test is modeled on. Recognizing the idiom must resolve straight to
+/// `Nullable(Decl(X))`, synthesizing nothing and claiming no name.
+#[test]
+fn nullable_ref_via_one_of_is_a_reference_not_a_synthesized_union() {
+    let lowering = lower_schemas(serde_json::json!({
+        "Thing": { "type": "object", "properties": { "id": { "type": "string" } } },
+        // Shares the exact name `Owner`'s own `thing` field would otherwise
+        // synthesize — present to prove the idiom claims no name at all,
+        // not just a non-colliding one.
+        "OwnerThing": { "type": "object", "properties": { "note": { "type": "string" } } },
+        "Owner": {
+            "type": "object",
+            "properties": {
+                "thing": {
+                    "oneOf": [
+                        { "$ref": "#/components/schemas/Thing" },
+                        { "type": "object", "nullable": true, "additionalProperties": false }
+                    ]
+                }
+            }
+        }
+    }))
+    .unwrap();
+    let owner = struct_decl(find(&lowering.program, "Owner"));
+    let thing = &owner.fields[0];
+    let ir::Type::Optional(nullable) = &thing.ty else {
+        panic!("thing must be optional: {:?}", thing.ty)
+    };
+    let ir::Type::Nullable(inner) = &**nullable else {
+        panic!("thing must be nullable: {nullable:?}")
+    };
+    let ir::Type::Decl(id) = **inner else {
+        panic!("thing must reference Thing: {inner:?}")
+    };
+    assert_eq!(lowering.program.decl(id).name.as_str(), "Thing");
+    // `OwnerThing` keeps its own name — the idiom never contended for it.
+    assert_eq!(
+        find(&lowering.program, "OwnerThing").name.as_str(),
+        "OwnerThing"
+    );
+    assert_eq!(lowering.stats.synthesized, 0);
+    assert_eq!(lowering.stats.unions, 0);
+}
+
 #[test]
 fn enums_are_open_and_null_entries_encode_nullability() {
     let lowering = lower_schemas(serde_json::json!({

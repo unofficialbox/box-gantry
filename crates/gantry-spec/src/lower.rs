@@ -349,6 +349,29 @@ impl<'a> DocLowerer<'a> {
         if let Some(reference) = &raw.reference {
             return Ok(ir::Type::Decl(self.resolve_ref(location, reference)?));
         }
+        // OpenAPI 3.0 has no way to write `nullable: true` alongside a
+        // sibling `$ref` (siblings of `$ref` are ignored), so specs express
+        // "nullable reference to X" as `oneOf: [ {$ref: X}, <null-only
+        // schema> ]` instead — a two-variant union where nothing distinguishes
+        // the variants (no `type` discriminator on either side), so
+        // `lower_union` finds it undiscriminated and falls back to a
+        // structural union. Every backend collapses a structural union with
+        // no shared shape to an opaque JSON blob — silently, since it isn't
+        // an unsupported shape, just an unhelpful one. Recognizing the idiom
+        // here, before `lower_union` ever sees it, keeps the real referenced
+        // type instead of discarding it into `serde_json::Value` (and, as a
+        // side effect, stops the null-only variant's synthesized name from
+        // colliding with the referenced schema's own name — the source of
+        // the `EnterpriseConfigurationSecurity2`-style suffixes).
+        let one_or_any = match (raw.one_of.is_empty(), raw.any_of.is_empty()) {
+            (false, true) => Some(&raw.one_of),
+            (true, false) => Some(&raw.any_of),
+            _ => None,
+        };
+        if let Some(real) = one_or_any.and_then(|variants| nullable_ref_variant(variants)) {
+            let ty = self.lower_type(&format!("{location}.oneOf"), name, leaf, ancestor, real)?;
+            return Ok(nullable(ty));
+        }
         if !raw.one_of.is_empty() || !raw.any_of.is_empty() {
             let union = self.lower_union(location, name, leaf, ancestor, raw)?;
             let id = self.synthesize(location, name, ancestor, ir::DeclKind::Union(union))?;
@@ -1784,6 +1807,42 @@ fn pascal(text: &str) -> String {
 
 fn is_object(raw: &RawSchema) -> bool {
     raw.schema_type.as_deref() == Some("object") || !raw.properties.is_empty()
+}
+
+/// The OpenAPI 3.0 "null schema type" placeholder: an object schema that
+/// describes nothing but the possibility of `null` — no properties, no
+/// extra ones allowed, just `nullable: true`. Specs use it as a `oneOf`
+/// sibling to fake a `nullable` `$ref`, since `$ref` can't carry sibling
+/// keywords in OpenAPI 3.0.
+fn is_null_only_schema(raw: &RawSchema) -> bool {
+    raw.reference.is_none()
+        && raw.schema_type.as_deref() == Some("object")
+        && raw.nullable
+        && matches!(
+            raw.additional_properties,
+            Some(RawAdditionalProperties::Bool(false))
+        )
+        && raw.properties.is_empty()
+        && raw.required.is_empty()
+        && raw.items.is_none()
+        && raw.one_of.is_empty()
+        && raw.all_of.is_empty()
+        && raw.any_of.is_empty()
+        && raw.enumeration.is_none()
+}
+
+/// A two-variant `oneOf`/`anyOf` where exactly one variant is the
+/// [`is_null_only_schema`] placeholder is the "nullable `$ref`" idiom
+/// (D-195) — the other variant is the real type. Any other shape (more
+/// than two variants, neither/both variants null-only) isn't this idiom;
+/// `None` sends it to the normal union path.
+fn nullable_ref_variant(variants: &[RawSchema]) -> Option<&RawSchema> {
+    let [a, b] = variants else { return None };
+    match (is_null_only_schema(a), is_null_only_schema(b)) {
+        (true, false) => Some(b),
+        (false, true) => Some(a),
+        _ => None,
+    }
 }
 
 /// An `allOf` part that contributes no structure — only annotations such
