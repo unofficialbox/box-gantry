@@ -178,12 +178,20 @@ fn render_decl(
                 ),
                 None => String::new(),
             };
-            let object_note = if wire.is_object_bearing(id) {
-                "\n * Some fields are `Object` (a union or free-form JSON), which native\n \
-                 * `JSON.deserialize` can't populate, so this class carries a static\n \
-                 * `deserialize(Object)` the managers call to read a response (D-140)."
-            } else {
-                ""
+            let object_note = match (wire.is_object_bearing(id), s.extra.is_some()) {
+                (true, true) => {
+                    "\n * Some fields are `Object` (a union or free-form JSON), or this class\n \
+                     * carries an open extra bag (additionalProperties) — either way native\n \
+                     * `JSON.deserialize` can't populate them, so this class carries a static\n \
+                     * `deserialize(Object)` the managers call to read a response (D-140,\n \
+                     * D-196)."
+                }
+                (true, false) => {
+                    "\n * Some fields are `Object` (a union or free-form JSON), which native\n \
+                     * `JSON.deserialize` can't populate, so this class carries a static\n \
+                     * `deserialize(Object)` the managers call to read a response (D-140)."
+                }
+                (false, _) => "",
             };
             let _ = writeln!(
                 out,
@@ -201,6 +209,16 @@ fn render_decl(
                     "    public {ty} {field_name}; // wire: {}",
                     field.wire_name
                 );
+            }
+            if let Some(extra_ty) = &s.extra {
+                // The open extra bag (D-196): every wire key `properties`
+                // doesn't name. Never populated by native `JSON.deserialize`
+                // (it can't route "everything else" into a map) or correctly
+                // flattened by native `JSON.serialize` (it nests instead of
+                // merging) — `deserialize`/`denormalizeKeys` above handle both.
+                let ty = apex_type(program, names, &ir::Type::Map(Box::new(extra_ty.clone())));
+                let field_name = wire.extra_field_name(s);
+                let _ = writeln!(out, "    public {ty} {field_name}; // additionalProperties");
             }
             if let Some(control) = &control {
                 let _ = writeln!(

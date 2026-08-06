@@ -36,7 +36,10 @@ fn struct_decl(name: &str, fields: Vec<ir::Field>) -> ir::Decl {
         name: ident(name),
         module: schemas(),
         api_version: None,
-        kind: ir::DeclKind::Struct(ir::StructDecl { fields }),
+        kind: ir::DeclKind::Struct(ir::StructDecl {
+            fields,
+            extra: None,
+        }),
     }
 }
 
@@ -394,6 +397,323 @@ fn a_nested_object_bearing_struct_deserializes_through_the_child() {
     assert_contains(parent_src, "result.child = Child.deserialize(d_child);");
 }
 
+// --- Extra bag / additionalProperties (D-196) -----------------------------
+
+fn struct_decl_with_extra(name: &str, fields: Vec<ir::Field>, extra: ir::Type) -> ir::Decl {
+    ir::Decl {
+        name: ident(name),
+        module: schemas(),
+        api_version: None,
+        kind: ir::DeclKind::Struct(ir::StructDecl {
+            fields,
+            extra: Some(extra),
+        }),
+    }
+}
+
+/// Like `struct_with_optional_body`, but for a struct with an open extra bag.
+fn struct_with_extra_and_optional_body(
+    fields: Vec<ir::Field>,
+    extra: ir::Type,
+    as_body: bool,
+) -> String {
+    let mut program = ir::Program::default();
+    let s = program.add(struct_decl_with_extra("S", fields, extra));
+    if as_body {
+        program.operations.push(ir::Operation {
+            name: ident("post_s"),
+            variation: None,
+            manager: ident("things"),
+            api_version: None,
+            method: ir::HttpMethod::Post,
+            base_url: ir::BaseUrl::Api,
+            path: vec![ir::PathSegment::Literal("things".into())],
+            params: vec![],
+            request: Some(ir::RequestBody {
+                media: ir::RequestMedia::Json,
+                ty: ir::Type::Decl(s),
+            }),
+            response: ir::ResponseShape::None,
+            deprecated: false,
+        });
+    }
+    let program = Box::leak(Box::new(program));
+    let analysis = gantry_sema::analyze(program).expect("fixture must analyze");
+    let files = generate(&analysis, &apex(), &BuildInfo::new("testfp"));
+    files
+        .into_iter()
+        .find(|f| f.path == format!("{CLASSES}/S.cls"))
+        .expect("S class")
+        .content
+}
+
+#[test]
+fn an_extra_bearing_struct_gets_a_deserialize_builder_that_strips_and_reattaches() {
+    // `QueryResultEntry`'s real shape: named fields plus an open bag for
+    // whatever else the API returns. Native `JSON.deserialize` would throw
+    // on the unrecognized keys, so they're computed and stripped before the
+    // typed shell is built, then reattached.
+    let s = struct_with_extra_and_optional_body(
+        vec![
+            field("id", ir::Type::String),
+            field("type", ir::Type::String),
+        ],
+        ir::Type::JsonValue,
+        false,
+    );
+    assert_contains(
+        &s,
+        "public Map<String, Object> extra; // additionalProperties",
+    );
+    assert_contains(&s, "public static S deserialize(Object rawInput) {");
+    assert_contains(&s, "Map<String, Object> extraRaw = raw.clone();");
+    assert_contains(&s, "extraRaw.remove('id');");
+    assert_contains(&s, "extraRaw.remove('type');");
+    assert_contains(&s, "for (String extraKey : extraRaw.keySet()) {");
+    assert_contains(&s, "raw.remove(extraKey);");
+    assert_contains(
+        &s,
+        "S result = (S) JSON.deserialize(JSON.serialize(raw), S.class);",
+    );
+    assert_contains(&s, "result.extra = (Map<String, Object>) extraRaw;");
+}
+
+#[test]
+fn a_pure_extra_struct_with_no_named_fields_still_gets_the_builder() {
+    // `GenericSource`'s real shape: no named fields at all, just the open
+    // bag. The empty-struct fast path must not swallow this.
+    let s = struct_with_extra_and_optional_body(vec![], ir::Type::JsonValue, false);
+    assert_contains(
+        &s,
+        "public Map<String, Object> extra; // additionalProperties",
+    );
+    assert_contains(&s, "public static S deserialize(Object rawInput) {");
+    assert_contains(&s, "result.extra = (Map<String, Object>) extraRaw;");
+}
+
+#[test]
+fn extra_field_name_dodges_a_colliding_schema_field() {
+    // A real schema field named `extra` must not be shadowed by the
+    // synthesized bag (Apex identifiers are case-insensitive) — the bag's
+    // name is disambiguated instead, mirroring `fieldsToNull`'s collision rule.
+    let s = struct_with_extra_and_optional_body(
+        vec![field("extra", ir::Type::String)],
+        ir::Type::JsonValue,
+        false,
+    );
+    assert_contains(&s, "public String extra; // wire: extra");
+    assert_contains(
+        &s,
+        "public Map<String, Object> extra2; // additionalProperties",
+    );
+    assert_contains(&s, "extraRaw.remove('extra');");
+    assert_contains(&s, "result.extra2 = (Map<String, Object>) extraRaw;");
+}
+
+#[test]
+fn a_body_reachable_extra_struct_gets_a_flatten_pass_in_denormalize() {
+    // `S` is a request body, so its `denormalizeKeys` must pop the extra
+    // bag's nested map (native `JSON.serialize` nests it under its own key)
+    // and merge its entries back into the parent object.
+    let s = struct_with_extra_and_optional_body(
+        vec![field("id", ir::Type::String)],
+        ir::Type::JsonValue,
+        true,
+    );
+    assert_contains(
+        &s,
+        "public static Map<String, Object> denormalizeKeys(Map<String, Object> raw) {",
+    );
+    assert_contains(&s, "Object extraRaw = raw.remove('extra');");
+    assert_contains(&s, "if (extraRaw instanceof Map<String, Object>) {");
+    assert_contains(&s, "raw.putAll((Map<String, Object>) extraRaw);");
+}
+
+#[test]
+fn a_response_only_extra_struct_gets_no_denormalize_hook() {
+    // The same struct, never used as a request body: no flatten pass, no
+    // `denormalizeKeys` at all — only the read-side `deserialize` builder.
+    let s = struct_with_extra_and_optional_body(
+        vec![field("id", ir::Type::String)],
+        ir::Type::JsonValue,
+        false,
+    );
+    assert!(
+        !s.contains("denormalizeKeys"),
+        "a response-only extra struct must not carry a write hook:\n{s}"
+    );
+}
+
+#[test]
+fn a_scalar_typed_extra_bag_reattaches_via_json_round_trip() {
+    // A typed `additionalProperties` need not be a struct or union — it can
+    // resolve to a bare scalar. `deserialize` reattaches the extra bag
+    // through the same `Map<String, T>` machinery as any other field, so the
+    // per-entry cast must round-trip through native (de)serialize rather
+    // than leaving the scalar arm empty (CodeRabbit: the empty arm left
+    // `dMv0` unassigned, a compile error once this shape became reachable).
+    let s = struct_with_extra_and_optional_body(
+        vec![field("id", ir::Type::String)],
+        ir::Type::Int64,
+        false,
+    );
+    assert_contains(
+        &s,
+        "public Map<String, Long> extra; // additionalProperties",
+    );
+    assert_contains(&s, "Map<String, Long> dMap0 = new Map<String, Long>();");
+    assert_contains(
+        &s,
+        "dMv0 = (Long) JSON.deserialize(JSON.serialize(dSm0.get(dK0)), Long.class);",
+    );
+    assert_contains(&s, "result.extra = dMap0;");
+}
+
+#[test]
+fn a_scalar_typed_extra_bag_gets_a_type_safe_coverage_probe() {
+    // The generated `BoxModelWireTest` exercise drives `deserialize` with a
+    // populated map so the extra-bag branch actually runs. A bare `'x'`
+    // probe (fine when `extra_ty` is `Object`/`String`) would throw here —
+    // `JSON.deserialize(JSON.serialize('x'), Long.class)` is not a valid
+    // `Long` literal — so the probe must be shaped for `extra_ty`, not a
+    // fixed placeholder.
+    let mut program = ir::Program::default();
+    program.add(struct_decl_with_extra(
+        "S",
+        vec![field("id", ir::Type::String)],
+        ir::Type::Int64,
+    ));
+    let program = Box::leak(Box::new(program));
+    let analysis = gantry_sema::analyze(program).expect("fixture must analyze");
+    let files = generate(&analysis, &apex(), &BuildInfo::new("testfp"));
+    let wire_test = files
+        .into_iter()
+        .find(|f| f.path == format!("{CLASSES}/BoxModelWireTest1.cls"))
+        .expect("a wire coverage-exercise class")
+        .content;
+    assert_contains(
+        &wire_test,
+        "S.deserialize(new Map<String, Object>{ '__extra_probe__' => null });",
+    );
+    assert!(
+        !wire_test.contains("'__extra_probe__' => 'x'"),
+        "a scalar extra_ty must not probe with a bare string literal:\n{wire_test}"
+    );
+}
+
+#[test]
+fn a_clean_struct_typed_extra_bag_normalizes_before_the_native_cast() {
+    // `Child` (the `remap_recurses_into_affected_children_only` fixture) is
+    // read-affected — a `limit` field mangled to `limit_r` — but not
+    // object-bearing on its own; only `S`'s own extra bag makes `S`
+    // object-bearing. The extra-bag reattach must still run Child's own
+    // `normalizeKeys` before the typed cast, same as any other read-affected
+    // struct, rather than leaving the entry unassigned (the empty "clean
+    // struct or enum" arm this used to fall into).
+    let child = struct_decl("Child", vec![field("limit", ir::Type::Int64)]);
+    let s = struct_decl_with_extra(
+        "S",
+        vec![field("id", ir::Type::String)],
+        ir::Type::Decl(ir::DeclId(0)),
+    );
+    let files = render(vec![child, s]);
+    let src = &files
+        .iter()
+        .find(|f| f.path.ends_with("/S.cls"))
+        .expect("S class")
+        .content;
+    assert_contains(
+        src,
+        "public Map<String, Child> extra; // additionalProperties",
+    );
+    assert_contains(
+        src,
+        "dMv0 = (Child) JSON.deserialize(JSON.serialize(Child.normalizeKeys((Map<String, Object>) dSm0.get(dK0))), Child.class);",
+    );
+}
+
+#[test]
+fn an_enum_typed_extra_bag_reattaches_via_a_plain_cast() {
+    // An enum is already a native `String` at runtime
+    // (`JSON.deserializeUntyped` never produces anything else for a JSON
+    // string) — `extra_ty` resolving to an enum needs only a cast, not the
+    // struct round-trip, and not the empty no-op arm this used to fall into
+    // (which left the entry unassigned).
+    let status = ir::Decl {
+        name: ident("Status"),
+        module: schemas(),
+        api_version: None,
+        kind: ir::DeclKind::Enum(ir::EnumDecl {
+            values: vec!["active".into(), "inactive".into()],
+            extensibility: ir::Extensibility::Open,
+        }),
+    };
+    let s = struct_decl_with_extra(
+        "S",
+        vec![field("id", ir::Type::String)],
+        ir::Type::Decl(ir::DeclId(0)),
+    );
+    let files = render(vec![status, s]);
+    let src = &files
+        .iter()
+        .find(|f| f.path.ends_with("/S.cls"))
+        .expect("S class")
+        .content;
+    assert_contains(
+        src,
+        "public Map<String, String> extra; // additionalProperties",
+    );
+    assert_contains(src, "dMv0 = (String) dSm0.get(dK0);");
+}
+
+#[test]
+fn an_extra_bag_of_a_write_affected_struct_denormalizes_before_flatten() {
+    // `Child` has a renamed field, so native `JSON.serialize` stamps its Apex
+    // field name into the extra bag's nested value, not the wire name. The
+    // flatten pass must denormalize each entry — the same transform a named
+    // `Child`-typed field would get — before merging it into the parent
+    // object, or a request sends the Apex shape instead of the wire shape.
+    let child = struct_decl("Child", vec![field("limit", ir::Type::Int64)]);
+    let s = struct_decl_with_extra(
+        "S",
+        vec![field("id", ir::Type::String)],
+        ir::Type::Decl(ir::DeclId(0)),
+    );
+    let mut program = ir::Program::default();
+    program.add(child);
+    let s_id = program.add(s);
+    program.operations.push(ir::Operation {
+        name: ident("post_s"),
+        variation: None,
+        manager: ident("things"),
+        api_version: None,
+        method: ir::HttpMethod::Post,
+        base_url: ir::BaseUrl::Api,
+        path: vec![ir::PathSegment::Literal("things".into())],
+        params: vec![],
+        request: Some(ir::RequestBody {
+            media: ir::RequestMedia::Json,
+            ty: ir::Type::Decl(s_id),
+        }),
+        response: ir::ResponseShape::None,
+        deprecated: false,
+    });
+    let program = Box::leak(Box::new(program));
+    let analysis = gantry_sema::analyze(program).expect("fixture must analyze");
+    let files = generate_models(&analysis, &apex());
+    let src = &files
+        .iter()
+        .find(|f| f.path.ends_with("/S.cls"))
+        .expect("S class")
+        .content;
+    assert_contains(src, "for (String extraKey : extraVals.keySet()) {");
+    assert_contains(
+        src,
+        "if (extraVal instanceof Map<String, Object>) extraVal = Child.denormalizeKeys((Map<String, Object>) extraVal);",
+    );
+    assert_contains(src, "extraVals.put(extraKey, extraVal);");
+}
+
 // --- enums / unions / aliases --------------------------------------------
 
 #[test]
@@ -685,10 +1005,13 @@ fn the_real_spec_lowers_to_apex_classes() {
 
     // Every struct/union/enum decl becomes one class; aliases (2 in the
     // real spec) do not. After structural dedupe (D-127), the version merge
-    // (D-190), and stripping the box-version header enums (D-191) the spec
-    // lowers to 877 decls − 2 aliases = 875 classes. Pinned so the count only
-    // moves deliberately with the spec (VR-6 lineage).
-    assert_eq!(files.len(), 875, "expected one class per non-alias decl");
+    // (D-190), stripping the box-version header enums (D-191), recognizing
+    // the OpenAPI 3.0 nullable-`$ref` idiom instead of synthesizing an
+    // opaque union for it (D-195), and the v2026.0 Box Query / Query
+    // Insights release (16 new decls), the spec lowers to
+    // 884 decls − 2 aliases = 882 classes. Pinned so the count only moves
+    // deliberately with the spec (VR-6 lineage).
+    assert_eq!(files.len(), 882, "expected one class per non-alias decl");
 
     // Every class name obeys the platform identifier limit (TR-Apex.1) and
     // is globally unique (flat namespace), and every file carries the
@@ -857,20 +1180,25 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     assert_eq!(parsed["packageAliases"], serde_json::json!({}));
 
     // Every class has exactly one matching -meta.xml sidecar (source
-    // format), so the tree deploys as-is. After dedupe (D-127): 898 model
-    // classes + 85 managers + the Box client + 3 contract stubs + 14
+    // format), so the tree deploys as-is. After dedupe (D-127), recognizing
+    // the OpenAPI 3.0 nullable-`$ref` idiom instead of synthesizing an opaque
+    // union for it (D-195), and the v2026.0 Box Query / Query Insights
+    // release (D-196, 16 new decls, 1 new "query" manager): 882 model
+    // classes + 86 managers + the Box client + 3 contract stubs + 14
     // hand-written runtime classes (the caching base, CCG + JWT providers, the
     // chunked-upload helper, the `BoxAuth` facade + its test — D-134/D-135/D-136/
-    // D-193 — plus the HTTP client's own HttpCalloutMock test) = 1001
+    // D-193 — plus the HTTP client's own HttpCalloutMock test) = 986
     // (pagination adds no classes — the base method's envelope is the page,
-    // D-131). Plus the generated `@isTest` suite for the 75% coverage gate: 85
-    // per-manager tests + the mock client + the unions test = 87, the
+    // D-131). Plus the generated `@isTest` suite for the 75% coverage gate: 86
+    // per-manager tests + the mock client + the unions test = 88, the
     // `BoxBuildInfo` provenance class (NF-7, D-141) = 1, and the model wire-hook
-    // suite = 4 (D-146): the 220 structs that carry a generated wire static
+    // suite = 4 (D-146): the structs that carry a generated wire static
     // (`normalizeKeys`/`denormalizeKeys`/`deserialize`) exercised with populated
     // inputs, chunked ≤ 60 structs per class so no method overruns Apex's
-    // compiled-size limit. The version merge (D-190) drops 21 model classes and
-    // the box-version strip (D-191) drops 2 more. 978 + 87 + 1 + 4 = 1070 total.
+    // compiled-size limit (the count grew by 3 — every extra-bearing struct,
+    // D-196, needs the `deserialize` builder too — without crossing a chunk
+    // boundary). The version merge (D-190) drops 21 model classes and the
+    // box-version strip (D-191) drops 2 more. 986 + 88 + 1 + 4 = 1079 total.
     let classes: Vec<&str> = files
         .iter()
         .filter(|f| f.path.ends_with(".cls"))
@@ -878,7 +1206,7 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         .collect();
     assert_eq!(
         classes.len(),
-        978 + 87 + 1 + 4,
+        986 + 88 + 1 + 4,
         "models + managers + client + stubs + runtime + @isTest suite + BoxBuildInfo + wire-hook suite"
     );
     // The generated test suite ships with the deployable tree.
@@ -964,17 +1292,17 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         docs.iter().all(|d| d.ends_with(".md")),
         "docs must be Markdown only"
     );
-    // 336 endpoint pages + 85 manager indexes + 1 top index + 3 topic guides
-    // (auth/pagination/errors) = 425.
+    // 338 endpoint pages + 86 manager indexes + 1 top index + 3 topic guides
+    // (auth/pagination/errors) = 428.
     assert_eq!(
         docs.len(),
-        425,
+        428,
         "endpoint + manager + top-index + guide docs"
     );
     // 7 base scaffolding (sfdx-project, scratch-def, .forceignore, package.xml,
-    // README, LICENSE, assets/banner.svg) + 4 Remote Site Settings + 1068
-    // classes + 1068 metas + 425 docs.
-    assert_eq!(files.len(), 7 + 4 + (978 + 87 + 1 + 4) * 2 + 425);
+    // README, LICENSE, assets/banner.svg) + 4 Remote Site Settings + 1079
+    // classes + 1079 metas + 428 docs.
+    assert_eq!(files.len(), 7 + 4 + (986 + 88 + 1 + 4) * 2 + 428);
 
     // Deterministic and path-sorted.
     let sorted: Vec<&String> = {

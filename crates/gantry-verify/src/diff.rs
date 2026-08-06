@@ -398,6 +398,26 @@ fn diff_fields(
             (None, None) => unreachable!(),
         }
     }
+    match (&before.extra, &after.extra) {
+        (None, None) => {}
+        // Gaining a catch-all is additive: named fields are untouched, and
+        // a reader that only knew the named shape still compiles.
+        (None, Some(_)) => notes.push((Severity::Compatible, "+additionalProperties".into())),
+        // Losing it drops data a reader may have depended on.
+        (Some(_), None) => notes.push((Severity::Breaking, "-additionalProperties".into())),
+        (Some(b), Some(a)) => {
+            if type_sig(old, b) != type_sig(new, a) {
+                notes.push((
+                    Severity::Breaking,
+                    format!(
+                        "additionalProperties type {} → {}",
+                        type_sig(old, b),
+                        type_sig(new, a)
+                    ),
+                ));
+            }
+        }
+    }
 }
 
 fn diff_values(before: &[String], after: &[String], notes: &mut Vec<(Severity, String)>) {

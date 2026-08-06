@@ -146,6 +146,12 @@ pub enum DeclKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructDecl {
     pub fields: Vec<Field>,
+    /// A catch-all for JSON object keys the schema doesn't name explicitly:
+    /// the OpenAPI idiom of named `properties` plus a non-`false`,
+    /// non-absent `additionalProperties` (D-196). `Some(JsonValue)` for a
+    /// bare/open `additionalProperties`; `Some(t)` for a typed one. `None`
+    /// for an ordinary closed struct — every existing struct.
+    pub extra: Option<Type>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -387,7 +393,10 @@ mod tests {
             name: Identifier::new("FileMini").unwrap(),
             module: ModulePath(vec![Identifier::new("schemas").unwrap()]),
             api_version: None,
-            kind: DeclKind::Struct(StructDecl { fields: vec![] }),
+            kind: DeclKind::Struct(StructDecl {
+                fields: vec![],
+                extra: None,
+            }),
         });
         let outer = program.add(Decl {
             name: Identifier::new("Folder").unwrap(),
@@ -400,6 +409,7 @@ mod tests {
                     // Optionality is structure, not a `!` suffix.
                     ty: Type::Optional(Box::new(Type::Decl(inner))),
                 }],
+                extra: None,
             }),
         });
         assert_eq!(program.decl(outer).name.as_str(), "Folder");

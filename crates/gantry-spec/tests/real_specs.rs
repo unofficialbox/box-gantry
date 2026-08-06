@@ -36,7 +36,7 @@ fn the_full_real_spec_set_ingests() {
     assert_eq!(base.managers().len(), 73);
 
     assert_eq!(set.documents[1].operations.len(), 37);
-    assert_eq!(set.documents[2].operations.len(), 3);
+    assert_eq!(set.documents[2].operations.len(), 5);
 
     // Every operation everywhere is grouped and identified.
     for doc in &set.documents {
@@ -51,22 +51,29 @@ fn the_full_real_spec_set_ingests() {
     let lowering = gantry_spec::lower(&set).expect("the vendored Box specs must lower");
     // After structural dedupe (D-127) identical inline shapes collapse, the
     // version merge (D-190) collapses 21 same-named cross-version schemas (16
-    // structs + 5 enums) into one superset each, and stripping the auto-set
-    // `box-version` header (D-191) drops its 2 inline version enums:
-    // 900 → 879 → 877 decls (490 synthesized).
-    assert_eq!(lowering.program.decls.len(), 877);
+    // structs + 5 enums) into one superset each, stripping the auto-set
+    // `box-version` header (D-191) drops its 2 inline version enums,
+    // recognizing the nullable-`$ref` `oneOf`/`anyOf` idiom (D-195) resolves
+    // 9 fields straight to their referenced type instead of synthesizing an
+    // opaque structural union for each, and the v2026.0 Box Query / Query
+    // Insights release adds 16 new decls. D-196 gives 3 of those — including
+    // `QueryResultEntry`'s open metadata bag — a real extra-fields
+    // representation instead of a silent drop. The same silent drop applied to
+    // `GenericSource`/`AiExtractResponse`, which D-195's fix also caught:
+    // 900 → 879 → 877 → 868 → 884 decls (486 synthesized).
+    assert_eq!(lowering.program.decls.len(), 884);
     let stats = &lowering.stats;
     assert_eq!(
         (stats.structs, stats.unions, stats.discriminated_unions),
-        (592, 42, 23)
+        (605, 33, 23)
     );
-    assert_eq!((stats.enums, stats.aliases), (241, 2));
-    assert_eq!(stats.synthesized, 490);
-    assert_eq!(stats.json_value_sites, 26);
+    assert_eq!((stats.enums, stats.aliases), (244, 2));
+    assert_eq!(stats.synthesized, 486);
+    assert_eq!(stats.json_value_sites, 19);
 
     // Operations: every one lowered, with classified success shapes.
-    assert_eq!(lowering.program.operations.len(), 336);
-    assert_eq!(stats.operations, 336);
+    assert_eq!(lowering.program.operations.len(), 338);
+    assert_eq!(stats.operations, 338);
     assert_eq!(
         (
             stats.empty_responses,
@@ -97,9 +104,9 @@ fn the_full_real_spec_set_ingests() {
     // reference bound, every type well-formed, identities unique.
     let analysis = gantry_sema::analyze(&lowering.program)
         .expect("the real program must pass semantic analysis");
-    assert_eq!(analysis.managers.len(), 85);
+    assert_eq!(analysis.managers.len(), 86);
     let indexed: usize = analysis.managers.values().map(Vec::len).sum();
-    assert_eq!(indexed, 336);
+    assert_eq!(indexed, 338);
 }
 
 /// Method names never fall through to a meaningless numeric collision suffix,

@@ -7,6 +7,7 @@ use gantry_ir as ir;
 use gantry_ir::naming::{constant, pascal};
 use gantry_sema::Analysis;
 
+use crate::managers::dedupe;
 use crate::{MODULE, RETRACTIONS, SERIALIZATION_IMPORT};
 
 /// One generated file, path relative to the SDK root.
@@ -125,12 +126,13 @@ impl Printer<'_> {
     }
 
     fn struct_decl(&mut self, name: &str, s: &ir::StructDecl) {
-        if s.fields.is_empty() {
+        if s.fields.is_empty() && s.extra.is_none() {
             let _ = writeln!(self.body, "type {name} struct{{}}\n");
             return;
         }
         // Rows first, then pad: gofmt column-aligns names, types, and
         // tags within a field block (G-17: clean by construction).
+        let mut used: Vec<String> = Vec::new();
         let mut rows: Vec<(String, String, String)> = Vec::new();
         for field in &s.fields {
             let (ty, omitempty) = self.field_type(&field.ty);
@@ -142,8 +144,26 @@ impl Printer<'_> {
             } else {
                 format!("`json:\"{}\"`", field.wire_name)
             };
-            rows.push((pascal(field.name.as_str()), ty, tag));
+            let field_name = dedupe(&mut used, pascal(field.name.as_str()));
+            rows.push((field_name, ty, tag));
         }
+        // D-196: named fields alongside a non-`false` `additionalProperties`.
+        // `Extra` is excluded from the struct-tag marshal (`json:"-"`) —
+        // `extra_json_methods` below merges it with the named fields by
+        // hand instead, so a plain `json.Marshal`/`Unmarshal` on this type
+        // would silently ignore it if that method weren't generated. Routed
+        // through the same dedup allocator as the named fields: a real field
+        // that also normalizes to `Extra` must not collide with it.
+        let extra_go_type = s.extra.as_ref().map(|t| self.bare_type(t));
+        let extra_field_name = extra_go_type.as_ref().map(|extra_ty| {
+            let field_name = dedupe(&mut used, "Extra".to_string());
+            rows.push((
+                field_name.clone(),
+                format!("map[string]{extra_ty}"),
+                "`json:\"-\"`".to_string(),
+            ));
+            field_name
+        });
         let name_width = rows.iter().map(|(n, _, _)| n.len()).max().unwrap_or(0);
         let type_width = rows.iter().map(|(_, t, _)| t.len()).max().unwrap_or(0);
         let _ = writeln!(self.body, "type {name} struct {{");
@@ -154,6 +174,72 @@ impl Printer<'_> {
             );
         }
         self.body.push_str("}\n\n");
+        if let Some(extra_ty) = extra_go_type {
+            let extra_field = extra_field_name.expect("set alongside extra_go_type");
+            self.extra_json_methods(name, s, &extra_ty, &extra_field);
+        }
+    }
+
+    /// `MarshalJSON`/`UnmarshalJSON` for a struct with an open extra bag
+    /// (D-196): a package-local `alias` type (same fields, no methods)
+    /// lets `encoding/json`'s ordinary struct-tag marshaling handle every
+    /// named field — including whatever pointer/`omitempty`/nullable-wrapper
+    /// shape `field_type` gave it — without reimplementing that dispatch
+    /// here. Only the merge with the extra field is hand-written.
+    fn extra_json_methods(
+        &mut self,
+        name: &str,
+        s: &ir::StructDecl,
+        extra_ty: &str,
+        extra_field: &str,
+    ) {
+        self.imports.insert("encoding/json");
+        let _ = writeln!(
+            self.body,
+            "func (s {name}) MarshalJSON() ([]byte, error) {{"
+        );
+        let _ = writeln!(self.body, "\ttype alias {name}");
+        self.body
+            .push_str("\tnamed, err := json.Marshal(alias(s))\n");
+        self.body
+            .push_str("\tif err != nil {\n\t\treturn nil, err\n\t}\n");
+        self.body.push_str("\tvar m map[string]json.RawMessage\n");
+        self.body.push_str(
+            "\tif err := json.Unmarshal(named, &m); err != nil {\n\t\treturn nil, err\n\t}\n",
+        );
+        let _ = writeln!(self.body, "\tfor k, v := range s.{extra_field} {{");
+        self.body.push_str("\t\traw, err := json.Marshal(v)\n");
+        self.body
+            .push_str("\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n");
+        self.body.push_str("\t\tm[k] = raw\n\t}\n");
+        self.body.push_str("\treturn json.Marshal(m)\n}\n\n");
+
+        let _ = writeln!(
+            self.body,
+            "func (s *{name}) UnmarshalJSON(data []byte) error {{"
+        );
+        let _ = writeln!(self.body, "\ttype alias {name}");
+        self.body.push_str(
+            "\tif err := json.Unmarshal(data, (*alias)(s)); err != nil {\n\t\treturn err\n\t}\n",
+        );
+        self.body.push_str("\tvar m map[string]json.RawMessage\n");
+        self.body
+            .push_str("\tif err := json.Unmarshal(data, &m); err != nil {\n\t\treturn err\n\t}\n");
+        for field in &s.fields {
+            let _ = writeln!(self.body, "\tdelete(m, {:?})", field.wire_name);
+        }
+        let _ = writeln!(
+            self.body,
+            "\ts.{extra_field} = make(map[string]{extra_ty}, len(m))"
+        );
+        self.body.push_str("\tfor k, raw := range m {\n");
+        let _ = writeln!(self.body, "\t\tvar v {extra_ty}");
+        self.body.push_str(
+            "\t\tif err := json.Unmarshal(raw, &v); err != nil {\n\t\t\treturn err\n\t\t}\n",
+        );
+        let _ = writeln!(self.body, "\t\ts.{extra_field}[k] = v");
+        self.body.push_str("\t}\n");
+        self.body.push_str("\treturn nil\n}\n\n");
     }
 
     /// Open enums (D-105): a named string type — unknown values

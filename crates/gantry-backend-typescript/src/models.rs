@@ -142,13 +142,36 @@ impl Printer<'_> {
     }
 
     fn struct_decl(&mut self, name: &str, s: &ir::StructDecl) {
-        if s.fields.is_empty() {
+        if s.fields.is_empty() && s.extra.is_none() {
             // An empty interface is a lint smell; a type alias to an empty
             // object is the tsc-clean equivalent.
             let _ = writeln!(self.body, "export type {name} = Record<string, never>;\n");
             return;
         }
-        let _ = writeln!(self.body, "export interface {name} {{");
+        if s.fields.is_empty() {
+            // A pure open map (D-196, no named fields — `GenericSource`'s
+            // real shape): nothing to intersect with, just the map itself.
+            let extra_ty = self.ts_type(s.extra.as_ref().expect("checked above"));
+            let _ = writeln!(
+                self.body,
+                "export type {name} = Record<string, {extra_ty}>;\n"
+            );
+            return;
+        }
+        // D-196: named fields alongside a non-`false` `additionalProperties`.
+        // An `interface` with both named properties *and* an index
+        // signature forces every named property's type to be assignable to
+        // the index signature's value type — a real constraint tsc
+        // enforces, and one an arbitrary typed `additionalProperties`
+        // wouldn't generally satisfy. Intersecting a plain object type with
+        // `Record<string, T>` instead sidesteps that: each half of the
+        // intersection keeps its own member types.
+        let extra_ty = s.extra.as_ref().map(|t| self.ts_type(t));
+        let (keyword, eq) = match extra_ty {
+            Some(_) => ("type", "= "),
+            None => ("interface", ""),
+        };
+        let _ = writeln!(self.body, "export {keyword} {name} {eq}{{");
         for field in &s.fields {
             // Peel the tri-state wrappers: an outer `Optional` makes the key
             // optional (`?:`), a `Nullable` widens the value with `| null`.
@@ -186,7 +209,12 @@ impl Printer<'_> {
             let null = if nullable { " | null" } else { "" };
             let _ = writeln!(self.body, "  {key}{opt}: {base}{null};");
         }
-        self.body.push_str("}\n\n");
+        match extra_ty {
+            Some(extra_ty) => {
+                let _ = writeln!(self.body, "}} & Record<string, {extra_ty}>;\n");
+            }
+            None => self.body.push_str("}\n\n"),
+        }
     }
 
     fn enum_decl(&mut self, name: &str, e: &ir::EnumDecl) {

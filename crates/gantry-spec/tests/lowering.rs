@@ -188,6 +188,192 @@ fn one_of_without_type_constants_is_structural() {
     assert_eq!(lowering.stats.discriminated_unions, 0);
 }
 
+/// OpenAPI 3.0 has no way to write `nullable: true` alongside a sibling
+/// `$ref` (siblings of `$ref` are ignored), so specs fake a nullable
+/// reference with `oneOf: [ {$ref: X}, <null-only schema> ]` — a two-variant
+/// union neither `type_const` can discriminate. Left to `lower_union`, that
+/// becomes a synthesized structural union (which every backend then
+/// collapses to an opaque JSON blob) named `{owner}{field}`, exactly the
+/// name a real top-level schema of the same shape already claims —
+/// reproducing the real-world `EnterpriseConfigurationSecurity2` bug this
+/// test is modeled on. Recognizing the idiom must resolve straight to
+/// `Nullable(Decl(X))`, synthesizing nothing and claiming no name.
+#[test]
+fn nullable_ref_via_one_of_is_a_reference_not_a_synthesized_union() {
+    let lowering = lower_schemas(serde_json::json!({
+        "Thing": { "type": "object", "properties": { "id": { "type": "string" } } },
+        // Shares the exact name `Owner`'s own `thing` field would otherwise
+        // synthesize — present to prove the idiom claims no name at all,
+        // not just a non-colliding one.
+        "OwnerThing": { "type": "object", "properties": { "note": { "type": "string" } } },
+        "Owner": {
+            "type": "object",
+            "properties": {
+                "thing": {
+                    "oneOf": [
+                        { "$ref": "#/components/schemas/Thing" },
+                        { "type": "object", "nullable": true, "additionalProperties": false }
+                    ]
+                }
+            }
+        }
+    }))
+    .unwrap();
+    let owner = struct_decl(find(&lowering.program, "Owner"));
+    let thing = &owner.fields[0];
+    let ir::Type::Optional(nullable) = &thing.ty else {
+        panic!("thing must be optional: {:?}", thing.ty)
+    };
+    let ir::Type::Nullable(inner) = &**nullable else {
+        panic!("thing must be nullable: {nullable:?}")
+    };
+    let ir::Type::Decl(id) = **inner else {
+        panic!("thing must reference Thing: {inner:?}")
+    };
+    assert_eq!(lowering.program.decl(id).name.as_str(), "Thing");
+    // `OwnerThing` keeps its own name — the idiom never contended for it.
+    assert_eq!(
+        find(&lowering.program, "OwnerThing").name.as_str(),
+        "OwnerThing"
+    );
+    assert_eq!(lowering.stats.synthesized, 0);
+    assert_eq!(lowering.stats.unions, 0);
+}
+
+/// The idiom can also be a *named* top-level component schema — not just
+/// an inline field type — e.g. a schema that's nothing but a nullable
+/// reference to another schema. `lower_named` must recognize it too,
+/// before routing to `lower_union`, and emit an alias rather than a
+/// synthesized structural union.
+#[test]
+fn nullable_ref_via_named_one_of_is_an_alias_not_a_union() {
+    let lowering = lower_schemas(serde_json::json!({
+        "Thing": { "type": "object", "properties": { "id": { "type": "string" } } },
+        "MaybeThing": {
+            "oneOf": [
+                { "$ref": "#/components/schemas/Thing" },
+                { "type": "object", "nullable": true, "additionalProperties": false }
+            ]
+        }
+    }))
+    .unwrap();
+    let maybe_thing = find(&lowering.program, "MaybeThing");
+    let ir::DeclKind::Alias(ty) = &maybe_thing.kind else {
+        panic!("MaybeThing must be an alias: {:?}", maybe_thing.kind)
+    };
+    let ir::Type::Nullable(inner) = ty else {
+        panic!("MaybeThing must be nullable: {ty:?}")
+    };
+    let ir::Type::Decl(id) = **inner else {
+        panic!("MaybeThing must reference Thing: {inner:?}")
+    };
+    assert_eq!(lowering.program.decl(id).name.as_str(), "Thing");
+    assert_eq!(lowering.stats.unions, 0);
+}
+
+/// Same idiom, `anyOf` instead of `oneOf` — Box specs use both
+/// combinators for it interchangeably.
+#[test]
+fn nullable_ref_via_any_of_is_recognized_too() {
+    let lowering = lower_schemas(serde_json::json!({
+        "Thing": { "type": "object", "properties": { "id": { "type": "string" } } },
+        "Owner": {
+            "type": "object",
+            "properties": {
+                "thing": {
+                    "anyOf": [
+                        { "$ref": "#/components/schemas/Thing" },
+                        { "type": "object", "nullable": true, "additionalProperties": false }
+                    ]
+                }
+            }
+        }
+    }))
+    .unwrap();
+    let owner = struct_decl(find(&lowering.program, "Owner"));
+    let thing = &owner.fields[0];
+    let ir::Type::Optional(nullable) = &thing.ty else {
+        panic!("thing must be optional: {:?}", thing.ty)
+    };
+    let ir::Type::Nullable(inner) = &**nullable else {
+        panic!("thing must be nullable: {nullable:?}")
+    };
+    let ir::Type::Decl(id) = **inner else {
+        panic!("thing must reference Thing: {inner:?}")
+    };
+    assert_eq!(lowering.program.decl(id).name.as_str(), "Thing");
+    assert_eq!(lowering.stats.unions, 0);
+}
+
+/// Named `properties` alongside a non-`false`, non-absent
+/// `additionalProperties` is the OpenAPI "typed fields + open extension"
+/// idiom (D-196, modeled on the real-world `QueryResultEntry`: fixed `id`/
+/// `type` fields plus arbitrary caller-requested metadata keys). Before
+/// D-196, `lower_struct` read only `properties`, so the open bag was
+/// silently discarded — every extra key the API actually returns vanished
+/// with no error and no stat bump. It must now surface as `StructDecl.extra`
+/// instead.
+#[test]
+fn named_properties_plus_open_additional_properties_keeps_the_extra_bag() {
+    let lowering = lower_schemas(serde_json::json!({
+        "Entry": {
+            "type": "object",
+            "properties": {
+                "id": { "type": "string" },
+                "type": { "type": "string" }
+            },
+            "required": ["id", "type"],
+            "additionalProperties": {}
+        }
+    }))
+    .unwrap();
+    let entry = struct_decl(find(&lowering.program, "Entry"));
+    let names: Vec<&str> = entry.fields.iter().map(|f| f.wire_name.as_str()).collect();
+    assert_eq!(names, ["id", "type"]);
+    assert_eq!(entry.extra, Some(ir::Type::JsonValue));
+}
+
+/// The `additionalProperties` half of the idiom can itself be a typed
+/// schema (a `$ref`, not just a bare open `{}`) — the extra bag's value
+/// type must be the referenced declaration, not degraded to raw JSON.
+#[test]
+fn named_properties_plus_typed_additional_properties_references_the_value_type() {
+    let lowering = lower_schemas(serde_json::json!({
+        "Metric": { "type": "object", "properties": { "count": { "type": "integer" } } },
+        "Entry": {
+            "type": "object",
+            "properties": { "id": { "type": "string" } },
+            "required": ["id"],
+            "additionalProperties": { "$ref": "#/components/schemas/Metric" }
+        }
+    }))
+    .unwrap();
+    let entry = struct_decl(find(&lowering.program, "Entry"));
+    let ir::Type::Decl(id) = entry.extra.as_ref().expect("Entry must have an extra bag") else {
+        panic!("extra must reference Metric: {:?}", entry.extra)
+    };
+    assert_eq!(lowering.program.decl(*id).name.as_str(), "Metric");
+}
+
+/// A schema with `additionalProperties` and *no* named `properties` at all
+/// (a pure open map, e.g. the real-world `GenericSource`/`AiExtractResponse`)
+/// still routes through `lower_struct` when it's a named top-level schema
+/// (`lower_named`'s object dispatch doesn't distinguish "has named fields"
+/// from "map-shaped"). D-196 fixes this case too, as a side effect of no
+/// longer ignoring `additionalProperties` once inside `lower_struct`: zero
+/// fields, but the extra bag is still captured instead of silently
+/// vanishing into an empty, meaningless struct.
+#[test]
+fn pure_open_map_named_schema_keeps_the_extra_bag_too() {
+    let lowering = lower_schemas(serde_json::json!({
+        "Bag": { "type": "object", "additionalProperties": {} }
+    }))
+    .unwrap();
+    let bag = struct_decl(find(&lowering.program, "Bag"));
+    assert!(bag.fields.is_empty());
+    assert_eq!(bag.extra, Some(ir::Type::JsonValue));
+}
+
 #[test]
 fn enums_are_open_and_null_entries_encode_nullability() {
     let lowering = lower_schemas(serde_json::json!({

@@ -31,7 +31,10 @@ fn struct_decl(name: &str, fields: Vec<ir::Field>) -> ir::Decl {
         name: ident(name),
         module: schemas(),
         api_version: None,
-        kind: ir::DeclKind::Struct(ir::StructDecl { fields }),
+        kind: ir::DeclKind::Struct(ir::StructDecl {
+            fields,
+            extra: None,
+        }),
     }
 }
 
@@ -315,4 +318,97 @@ fn alias_renders_as_a_go_type_alias() {
 fn empty_struct_renders_without_a_body() {
     let go = render(vec![struct_decl("Empty", vec![])]);
     assert_contains(&go, "type Empty struct{}");
+}
+
+/// D-196: named fields alongside a non-`false` `additionalProperties`
+/// (`QueryResultEntry`'s real shape) get a hidden `Extra` field plus
+/// hand-written `MarshalJSON`/`UnmarshalJSON` that merge it with the named
+/// fields on the wire — a plain struct-tag marshal can't express "everything
+/// else goes here".
+#[test]
+fn struct_with_extra_gets_merge_marshal_methods() {
+    let mut program = ir::Program::default();
+    program.add(ir::Decl {
+        name: ident("Entry"),
+        module: schemas(),
+        api_version: None,
+        kind: ir::DeclKind::Struct(ir::StructDecl {
+            fields: vec![field("id", ir::Type::String)],
+            extra: Some(ir::Type::JsonValue),
+        }),
+    });
+    let program = Box::leak(Box::new(program));
+    let analysis = gantry_sema::analyze(program).expect("fixture program must analyze");
+    let build = BuildInfo::new("fixtures");
+    let go = gantry_backend_go::generate_models(&analysis, &build)
+        .into_iter()
+        .find(|f| f.path == "schemas/schemas.go")
+        .expect("the schemas module must be generated")
+        .content;
+
+    assert_contains_aligned(&go, r#"Extra map[string]any `json:"-"`"#);
+    assert_contains(&go, "func (s Entry) MarshalJSON() ([]byte, error) {");
+    assert_contains(&go, "func (s *Entry) UnmarshalJSON(data []byte) error {");
+    // The named field's wire key is excluded from the extra bag on decode.
+    assert_contains(&go, r#"delete(m, "id")"#);
+}
+
+/// A struct with *only* `additionalProperties` (no named fields at all —
+/// `GenericSource`'s real shape) still gets the merge methods; the
+/// empty-struct fast path only applies when there's truly nothing.
+#[test]
+fn extra_only_struct_still_gets_merge_methods() {
+    let mut program = ir::Program::default();
+    program.add(ir::Decl {
+        name: ident("Bag"),
+        module: schemas(),
+        api_version: None,
+        kind: ir::DeclKind::Struct(ir::StructDecl {
+            fields: vec![],
+            extra: Some(ir::Type::JsonValue),
+        }),
+    });
+    let program = Box::leak(Box::new(program));
+    let analysis = gantry_sema::analyze(program).expect("fixture program must analyze");
+    let build = BuildInfo::new("fixtures");
+    let go = gantry_backend_go::generate_models(&analysis, &build)
+        .into_iter()
+        .find(|f| f.path == "schemas/schemas.go")
+        .expect("the schemas module must be generated")
+        .content;
+
+    assert!(!go.contains("type Bag struct{}"), "{go}");
+    assert_contains(&go, "func (s Bag) MarshalJSON() ([]byte, error) {");
+}
+
+/// A real field that itself normalizes to `Extra` must not collide with the
+/// synthesized catch-all — the dedup allocator gives the synthetic field a
+/// fresh name instead of emitting a duplicate `Extra` struct field (a Go
+/// compile error).
+#[test]
+fn extra_field_name_collision_is_disambiguated() {
+    let mut program = ir::Program::default();
+    program.add(ir::Decl {
+        name: ident("Entry"),
+        module: schemas(),
+        api_version: None,
+        kind: ir::DeclKind::Struct(ir::StructDecl {
+            fields: vec![field("extra", ir::Type::String)],
+            extra: Some(ir::Type::JsonValue),
+        }),
+    });
+    let program = Box::leak(Box::new(program));
+    let analysis = gantry_sema::analyze(program).expect("fixture program must analyze");
+    let build = BuildInfo::new("fixtures");
+    let go = gantry_backend_go::generate_models(&analysis, &build)
+        .into_iter()
+        .find(|f| f.path == "schemas/schemas.go")
+        .expect("the schemas module must be generated")
+        .content;
+
+    assert_contains_aligned(&go, r#"Extra   string `json:"extra"`"#);
+    assert_contains_aligned(&go, r#"Extra_2 map[string]any `json:"-"`"#);
+    assert_contains(&go, r#"delete(m, "extra")"#);
+    assert_contains(&go, "for k, v := range s.Extra_2 {");
+    assert_contains(&go, "s.Extra_2 = make(map[string]any, len(m))");
 }

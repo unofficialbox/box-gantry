@@ -70,10 +70,14 @@ pub(crate) struct Wire<'a> {
     /// Body-reachable structs with a `Nullable` field — they carry `fieldsToNull`
     /// and inject explicit nulls on the write path.
     null_writable: HashSet<u32>,
+    /// Body-reachable structs with an open extra bag (D-196) — they carry a
+    /// flatten pass in `denormalizeKeys` (see `build`).
+    extra_writable: HashSet<u32>,
     /// Structs that transitively contain an `Object` leaf — a union or
-    /// `JsonValue` field. Apex's typed `JSON.deserialize` can't populate an
-    /// `Object` field (D-140), so these get a generated `deserialize(Object)`
-    /// builder used on the read path.
+    /// `JsonValue` field — **or** carry an open extra bag (D-196), which is
+    /// equally unpopulatable by native typed deserialize (it can't route
+    /// "every key I don't otherwise recognize" into a map field). Both get a
+    /// generated `deserialize(Object)` builder used on the read path.
     object_bearing: HashSet<u32>,
 }
 
@@ -107,10 +111,26 @@ impl<'a> Wire<'a> {
                 null_writable.insert(id);
             }
         }
+        // Extra-writable: body-reachable structs with an open extra bag
+        // (D-196). Native `JSON.serialize` nests it under its own field name
+        // instead of merging its keys into the parent object, so
+        // `denormalizeKeys` needs a flatten pass for it — same shape as the
+        // null-injection pass above, gated the same way.
+        let mut extra_writable = HashSet::new();
+        for (index, decl) in program.decls.iter().enumerate() {
+            let id = index as u32;
+            if body_reachable.contains(&id)
+                && let ir::DeclKind::Struct(s) = &decl.kind
+                && s.extra.is_some()
+            {
+                extra_writable.insert(id);
+            }
+        }
 
         let mut wire = Wire {
             program,
             names,
+            extra_writable,
             read_affected: HashSet::new(),
             write_affected: HashSet::new(),
             null_writable,
@@ -120,10 +140,12 @@ impl<'a> Wire<'a> {
         // name-mismatched or its type reaches a read-affected struct.
         wire.read_affected = wire.close(HashSet::new());
         // Write set (fixpoint): seed with the read set (every rename must also
-        // remap on write) plus the null-writable structs (they inject explicit
-        // nulls), then close over "contains a write-affected struct".
+        // remap on write) plus the null-writable and extra-writable structs
+        // (they inject explicit nulls / flatten the extra bag), then close
+        // over "contains a write-affected struct".
         let mut seed = wire.read_affected.clone();
         seed.extend(wire.null_writable.iter().copied());
+        seed.extend(wire.extra_writable.iter().copied());
         wire.write_affected = wire.close(seed);
         // Object-bearing set (fixpoint): a struct is object-bearing if a field
         // is an `Object` leaf (union / JsonValue) or reaches an object-bearing
@@ -144,9 +166,10 @@ impl<'a> Wire<'a> {
                     continue;
                 }
                 if let ir::DeclKind::Struct(s) = &decl.kind
-                    && s.fields
-                        .iter()
-                        .any(|f| self.type_reaches_object(&f.ty, &set))
+                    && (s.extra.is_some()
+                        || s.fields
+                            .iter()
+                            .any(|f| self.type_reaches_object(&f.ty, &set)))
                 {
                     set.insert(id);
                     changed = true;
@@ -219,6 +242,26 @@ impl<'a> Wire<'a> {
     /// `fieldsToNull` and injects explicit nulls)?
     pub(crate) fn is_null_writable(&self, id: ir::DeclId) -> bool {
         self.null_writable.contains(&id.0)
+    }
+
+    /// The open extra bag's Apex field name (D-196). Normally `extra`, but
+    /// disambiguated (case-insensitively) if a real schema field already
+    /// sanitizes to that name — same collision rule as `null_control_name`,
+    /// and for the same reason: it must never consume a named field's value.
+    /// Deterministic: same field set → same name.
+    pub(crate) fn extra_field_name(&self, s: &ir::StructDecl) -> String {
+        let taken: HashSet<String> = s
+            .fields
+            .iter()
+            .map(|f| safe_word(f.name.as_str()).to_ascii_lowercase())
+            .collect();
+        let mut name = "extra".to_string();
+        let mut n = 2u32;
+        while taken.contains(&name.to_ascii_lowercase()) {
+            name = format!("extra{n}");
+            n += 1;
+        }
+        name
     }
 
     /// Does a response value of this type reach a read-affected struct?
@@ -298,13 +341,14 @@ impl<'a> Wire<'a> {
     }
 
     /// The generated hook statics for a struct: `normalizeKeys` if read-affected,
-    /// `denormalizeKeys` (with explicit-null injection if null-writable) if
-    /// write-affected. Both operate on and return the untyped `Map<String,
-    /// Object>` so native (de)serialization does the type work.
+    /// `denormalizeKeys` (with explicit-null injection if null-writable, and an
+    /// extra-bag flatten pass if extra-writable) if write-affected. Both operate
+    /// on and return the untyped `Map<String, Object>` so native
+    /// (de)serialization does the type work.
     pub(crate) fn hooks(&self, id: ir::DeclId, class: &str, s: &ir::StructDecl) -> String {
         let mut out = String::new();
         if self.read_affected.contains(&id.0) {
-            self.emit_method(&mut out, class, s, Dir::Normalize, false);
+            self.emit_method(&mut out, class, s, Dir::Normalize, false, false);
         }
         if self.write_affected.contains(&id.0) {
             self.emit_method(
@@ -313,6 +357,7 @@ impl<'a> Wire<'a> {
                 s,
                 Dir::Denormalize,
                 self.null_writable.contains(&id.0),
+                self.extra_writable.contains(&id.0),
             );
         }
         out
@@ -383,10 +428,19 @@ impl<'a> Wire<'a> {
     }
 
     /// Denormalize entries plus, for a null-writable struct, the explicit-null
-    /// control key carrying every nullable field's Apex name — so each
-    /// `if (nfName == '…')` injection branch executes.
+    /// control key carrying every nullable field's Apex name (so each
+    /// `if (nfName == '…')` injection branch executes) and, for an
+    /// extra-writable struct, the extra field's own name under a nested map
+    /// (so the flatten pass's `instanceof`/`putAll` branch executes).
     fn denormalize_entries(&self, s: &ir::StructDecl, id: ir::DeclId) -> String {
         let mut entries = self.branch_entries(s, Dir::Denormalize);
+        let push = |entries: &mut String, entry: String| {
+            *entries = if entries.is_empty() {
+                entry
+            } else {
+                format!("{entries}, {entry}")
+            };
+        };
         if self.null_writable.contains(&id.0) {
             let names: Vec<String> = s
                 .fields
@@ -394,22 +448,34 @@ impl<'a> Wire<'a> {
                 .filter(|f| is_nullable(&f.ty))
                 .map(|f| format!("'{}'", escape(&safe_word(f.name.as_str()))))
                 .collect();
-            let control = format!(
-                "'{}' => new List<Object>{{ {} }}",
-                escape(&self.null_control_name(s)),
-                names.join(", ")
+            push(
+                &mut entries,
+                format!(
+                    "'{}' => new List<Object>{{ {} }}",
+                    escape(&self.null_control_name(s)),
+                    names.join(", ")
+                ),
             );
-            entries = if entries.is_empty() {
-                control
-            } else {
-                format!("{entries}, {control}")
-            };
+        }
+        if self.extra_writable.contains(&id.0) {
+            push(
+                &mut entries,
+                format!(
+                    "'{}' => new Map<String, Object>{{ 'x' => 'y' }}",
+                    escape(&self.extra_field_name(s))
+                ),
+            );
         }
         entries
     }
 
     /// `'wire' => <value>` entries for each object-bearing field `deserialize`
-    /// detaches and reattaches, the value shaped to drive its reattach arm.
+    /// detaches and reattaches, the value shaped to drive its reattach arm,
+    /// plus (for an extra-bearing struct) an unrecognized key whose value is
+    /// shaped for `extra_ty` — not a bare `'x'`, which would throw when
+    /// `extra_ty` is a strict-typed scalar (e.g. `JSON.deserialize('x',
+    /// Integer.class)`) — so the extra-bag computation loop executes cleanly
+    /// regardless of the extra bag's value type.
     fn detach_entries(&self, s: &ir::StructDecl) -> String {
         let mut parts = Vec::new();
         for field in &s.fields {
@@ -420,6 +486,12 @@ impl<'a> Wire<'a> {
                 "'{}' => {}",
                 escape(&field.wire_name),
                 self.reattach_value(&field.ty)
+            ));
+        }
+        if let Some(extra_ty) = &s.extra {
+            parts.push(format!(
+                "'__extra_probe__' => {}",
+                self.reattach_value(extra_ty)
             ));
         }
         parts.join(", ")
@@ -468,7 +540,9 @@ impl<'a> Wire<'a> {
     /// An untyped Apex value that makes `emit_reattach` enter its branches one
     /// level: an `Object` leaf takes any scalar; a nested object-bearing struct
     /// an empty map (its `deserialize` runs on it); a list/map of either wraps
-    /// one such value so the element loop executes.
+    /// one such value so the element loop executes. Also used to shape the
+    /// extra bag's (D-196) probe value, where `ty` is `extra_ty` itself rather
+    /// than a field type.
     fn reattach_value(&self, ty: &ir::Type) -> String {
         match ty {
             ir::Type::Optional(inner) | ir::Type::Nullable(inner) => self.reattach_value(inner),
@@ -494,7 +568,11 @@ impl<'a> Wire<'a> {
                     self.reattach_value(inner)
                 )
             }
-            // Scalars never reach the detached set.
+            // Scalars never reach the detached set for an object-bearing
+            // field's own type — but `extra_ty` (D-196) can itself be a bare
+            // scalar, and `null` round-trips cleanly through
+            // `emit_reattach`'s scalar-arm cast for any strict Apex type
+            // without throwing.
             ir::Type::Bool
             | ir::Type::Int64
             | ir::Type::Float64
@@ -506,7 +584,8 @@ impl<'a> Wire<'a> {
     }
 
     /// Emit one direction's remap static. `inject_nulls` appends the explicit-null
-    /// pass (denormalize / null-writable only).
+    /// pass (denormalize / null-writable only); `flatten_extra` appends the
+    /// extra-bag merge (denormalize / extra-writable only).
     fn emit_method(
         &self,
         out: &mut String,
@@ -514,6 +593,7 @@ impl<'a> Wire<'a> {
         s: &ir::StructDecl,
         dir: Dir,
         inject_nulls: bool,
+        flatten_extra: bool,
     ) {
         let _ = writeln!(
             out,
@@ -532,11 +612,71 @@ impl<'a> Wire<'a> {
         for field in &s.fields {
             self.emit_field(out, field, dir);
         }
+        if flatten_extra {
+            self.emit_extra_flatten(out, s);
+        }
         if inject_nulls {
             self.emit_null_injection(out, s);
         }
         let _ = writeln!(out, "        return raw;");
         let _ = writeln!(out, "    }}");
+    }
+
+    /// Emit the extra-bag flatten pass (D-196): native `JSON.serialize` puts
+    /// the extra field's own map under its own key, nested one level too
+    /// deep — Box's wire shape has those keys sitting alongside the named
+    /// fields, not under an `"extra"` object. Pop the nested map and merge
+    /// its entries back into `raw`. A struct whose extra bag was never set
+    /// serializes it as absent (native null-suppression), so the removed
+    /// value is `null` here, not an empty map — the `instanceof` guards that.
+    ///
+    /// A typed `additionalProperties` value can itself be a write-affected
+    /// struct — one with a renamed field, or its own nested extra bag. Native
+    /// `JSON.serialize` stamped its Apex field names, not their wire names
+    /// (Apex has no `@JsonProperty` equivalent), so each entry is
+    /// denormalized in place before the merge — the same transform a named
+    /// field of the same type would get.
+    fn emit_extra_flatten(&self, out: &mut String, s: &ir::StructDecl) {
+        let field = self.extra_field_name(s);
+        let extra_ty = s
+            .extra
+            .as_ref()
+            .expect("an extra-writable struct always carries an extra type");
+        let _ = writeln!(
+            out,
+            "        // Extra bag (D-196): merge its keys into the parent object."
+        );
+        let _ = writeln!(
+            out,
+            "        Object extraRaw = raw.remove('{}');",
+            escape(&field)
+        );
+        let _ = writeln!(
+            out,
+            "        if (extraRaw instanceof Map<String, Object>) {{"
+        );
+        if self.type_reaches_write_affected(extra_ty) {
+            let _ = writeln!(
+                out,
+                "            Map<String, Object> extraVals = (Map<String, Object>) extraRaw;"
+            );
+            let _ = writeln!(
+                out,
+                "            for (String extraKey : extraVals.keySet()) {{"
+            );
+            let _ = writeln!(
+                out,
+                "                Object extraVal = extraVals.get(extraKey);"
+            );
+            self.emit_transform(out, "extraVal", extra_ty, Dir::Denormalize, 0);
+            let _ = writeln!(out, "                extraVals.put(extraKey, extraVal);");
+            let _ = writeln!(out, "            }}");
+        }
+        let _ = writeln!(
+            out,
+            "            raw.putAll((Map<String, Object>) extraRaw);"
+        );
+        let _ = writeln!(out, "        }}");
     }
 
     /// Emit the explicit-null pass: for each Apex field name the caller listed in
@@ -754,6 +894,15 @@ impl<'a> Wire<'a> {
     /// from the untyped map, the natively-typed shell is deserialized (renamed
     /// first, if read-affected), and the detached fields are reattached from the
     /// raw tree — recursing into nested object-bearing structs (D-140).
+    ///
+    /// An open extra bag (D-196) is the same underlying problem — native
+    /// deserialize can't route "every key I don't otherwise recognize" into a
+    /// map field either, and worse: `JSON.deserialize` **throws** on a JSON
+    /// property with no matching instance variable, so those keys must be
+    /// stripped from the map before the typed shell is built, not just left
+    /// for the extra field to pick up. The extra keys are computed first (raw
+    /// minus every named field's wire key), removed from `raw` so the shell
+    /// deserialize never sees them, and reattached last.
     pub(crate) fn emit_deserialize(
         &self,
         id: ir::DeclId,
@@ -765,8 +914,9 @@ impl<'a> Wire<'a> {
             out,
             "    /** Build `{class}` from the untyped JSON tree. Apex's typed\n     \
              * `JSON.deserialize` can't populate an `Object` field (a union or\n     \
-             * free-form JSON), so those are detached, the typed shell is\n     \
-             * deserialized, then they are reattached from the raw tree (D-140). */"
+             * free-form JSON) or an open extra bag, so those are detached, the\n     \
+             * typed shell is deserialized, then they are reattached from the\n     \
+             * raw tree (D-140). */"
         );
         let _ = writeln!(
             out,
@@ -777,6 +927,25 @@ impl<'a> Wire<'a> {
             out,
             "        Map<String, Object> raw = ((Map<String, Object>) rawInput).clone();"
         );
+        if s.extra.is_some() {
+            let _ = writeln!(
+                out,
+                "        // Extra bag (D-196): every key no named field claims. Computed\n        \
+                 // and stripped before the shell deserialize below — an unrecognized\n        \
+                 // JSON property makes native `JSON.deserialize` throw."
+            );
+            let _ = writeln!(out, "        Map<String, Object> extraRaw = raw.clone();");
+            for field in &s.fields {
+                let _ = writeln!(
+                    out,
+                    "        extraRaw.remove('{}');",
+                    escape(&field.wire_name)
+                );
+            }
+            let _ = writeln!(out, "        for (String extraKey : extraRaw.keySet()) {{");
+            let _ = writeln!(out, "            raw.remove(extraKey);");
+            let _ = writeln!(out, "        }}");
+        }
         let detached: Vec<&ir::Field> = s
             .fields
             .iter()
@@ -806,6 +975,17 @@ impl<'a> Wire<'a> {
                 &format!("result.{apex}"),
                 &format!("d_{apex}"),
                 &field.ty,
+                0,
+            );
+        }
+        if let Some(extra_ty) = &s.extra {
+            let extra_field = self.extra_field_name(s);
+            let map_ty = ir::Type::Map(Box::new(extra_ty.clone()));
+            self.emit_reattach(
+                &mut out,
+                &format!("result.{extra_field}"),
+                "extraRaw",
+                &map_ty,
                 0,
             );
         }
@@ -839,8 +1019,32 @@ impl<'a> Wire<'a> {
                         .expect("object-bearing struct has a name");
                     let _ = writeln!(out, "        {lval} = {child}.deserialize({src});");
                 }
-                // A clean struct or enum is never in the detached set.
-                ir::DeclKind::Struct(_) | ir::DeclKind::Enum(_) => {}
+                // A clean struct or enum's own type never reaches the
+                // detached set as a *named field* (that's what made the
+                // empty arm safe before D-196) — but `extra_ty` can resolve
+                // to either, and every extra-bag entry funnels through here
+                // regardless of `extra_ty`'s own shape. An enum is already a
+                // native `String` at runtime (`JSON.deserializeUntyped`
+                // never produces anything else for a JSON string), so a cast
+                // suffices. A clean struct still needs its own
+                // `normalizeKeys` first when read-affected — same as the
+                // top-level `deserialize` builder's shell — since native
+                // typed `JSON.deserialize` has no `@JsonProperty` equivalent.
+                ir::DeclKind::Enum(_) => {
+                    let _ = writeln!(out, "        {lval} = (String) {src};");
+                }
+                ir::DeclKind::Struct(_) => {
+                    let class = self.names.get(*id).expect("clean struct has a name");
+                    let shell = if self.read_affected.contains(&id.0) {
+                        format!("{class}.normalizeKeys((Map<String, Object>) {src})")
+                    } else {
+                        src.to_string()
+                    };
+                    let _ = writeln!(
+                        out,
+                        "        {lval} = ({class}) JSON.deserialize(JSON.serialize({shell}), {class}.class);"
+                    );
+                }
             },
             ir::Type::List(inner) if self.is_object_leaf(inner) => {
                 let _ = writeln!(out, "        {lval} = (List<Object>) {src};");
@@ -901,14 +1105,29 @@ impl<'a> Wire<'a> {
                 let _ = writeln!(out, "            {lval} = {map};");
                 let _ = writeln!(out, "        }}");
             }
-            // Scalars never reach the detached set.
+            // A named field's own scalar type never reaches the detached
+            // set (it's never an `Object` leaf itself), so this arm was
+            // unreachable until the extra bag (D-196) started calling
+            // `emit_reattach` on a `Map<extra_ty>` whose value type can be
+            // any scalar (a typed `additionalProperties` need not be a
+            // struct or union). Round-trip through native (de)serialize —
+            // the same trick the struct/union arms use — rather than
+            // hand-coding `Object`→scalar coercion for every JSON.
+            // deserializeUntyped() representation (Decimal for numbers,
+            // ISO strings for Date/DateTime, base64 for Blob, …).
             ir::Type::Bool
             | ir::Type::Int64
             | ir::Type::Float64
             | ir::Type::String
             | ir::Type::Date
             | ir::Type::DateTime
-            | ir::Type::Binary => {}
+            | ir::Type::Binary => {
+                let apex_ty = apex_type(self.program, self.names, ty);
+                let _ = writeln!(
+                    out,
+                    "        {lval} = ({apex_ty}) JSON.deserialize(JSON.serialize({src}), {apex_ty}.class);"
+                );
+            }
         }
     }
 

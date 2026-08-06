@@ -435,9 +435,10 @@ impl Printer<'_> {
             None => String::new(),
         };
         let fields = struct_components(s);
-        let header = self.struct_header(name, &fields, &implements);
-        let body = self.struct_codec(name, &fields);
-        let builder = self.struct_builder(name, &fields);
+        let extra = s.extra.as_ref();
+        let header = self.struct_header(name, &fields, extra, &implements);
+        let body = self.struct_codec(name, &fields, extra);
+        let builder = self.struct_builder(name, &fields, extra);
         format!("{header} {{\n{body}{builder}}}\n")
     }
 
@@ -447,7 +448,12 @@ impl Printer<'_> {
     /// what makes multi-field bodies readable —
     /// `MetadataQuery.builder().from(…).ancestorFolderId(…).build()` — which the
     /// canonical positional record constructor is not.
-    fn struct_builder(&mut self, name: &str, fields: &[(String, &ir::Field)]) -> String {
+    fn struct_builder(
+        &mut self,
+        name: &str,
+        fields: &[(String, &ir::Field)],
+        extra: Option<&ir::Type>,
+    ) -> String {
         let mut out = String::new();
         out.push_str("\n    /** A fluent builder; unset optional fields default to empty. */\n");
         out.push_str(
@@ -465,7 +471,16 @@ impl Printer<'_> {
                 let _ = writeln!(out, "        private {ty} {ident};");
             }
         }
-        if !fields.is_empty() {
+        // D-196: the open extra bag defaults to empty, like an unset
+        // optional field — a caller who never touches it still builds.
+        let extra_ty = extra.map(|t| self.bare(&ir::Type::Map(Box::new(t.clone()))));
+        if let Some(extra_ty) = &extra_ty {
+            let _ = writeln!(
+                out,
+                "        private {extra_ty} extra = java.util.Map.of();"
+            );
+        }
+        if !fields.is_empty() || extra_ty.is_some() {
             out.push('\n');
         }
         for (ident, field) in fields {
@@ -486,17 +501,25 @@ impl Printer<'_> {
                 }
             }
         }
-        if !fields.is_empty() {
+        if let Some(extra_ty) = &extra_ty {
+            let _ = writeln!(out, "        public Builder extra({extra_ty} extra) {{");
+            out.push_str("            this.extra = extra;\n            return this;\n        }\n");
+        }
+        if !fields.is_empty() || extra_ty.is_some() {
             out.push('\n');
         }
         let _ = writeln!(out, "        public {name} build() {{");
-        if fields.is_empty() {
+        let total = fields.len() + usize::from(extra_ty.is_some());
+        if total == 0 {
             let _ = writeln!(out, "            return new {name}();");
         } else {
             let _ = writeln!(out, "            return new {name}(");
             for (i, (ident, _)) in fields.iter().enumerate() {
-                let tail = if i + 1 == fields.len() { "" } else { "," };
+                let tail = if i + 1 == total { "" } else { "," };
                 let _ = writeln!(out, "                {ident}{tail}");
+            }
+            if extra_ty.is_some() {
+                out.push_str("                extra\n");
             }
             out.push_str("            );\n");
         }
@@ -511,12 +534,19 @@ impl Printer<'_> {
         &mut self,
         name: &str,
         fields: &[(String, &ir::Field)],
+        extra: Option<&ir::Type>,
         implements: &str,
     ) -> String {
-        let components: Vec<String> = fields
+        let mut components: Vec<String> = fields
             .iter()
             .map(|(ident, field)| format!("{} {ident}", self.component_type(&field.ty)))
             .collect();
+        // D-196: the open extra bag is always present (never Optional), so
+        // it's a plain trailing component, not a tri-state one.
+        if let Some(extra_ty) = extra {
+            let bare = self.bare(&ir::Type::Map(Box::new(extra_ty.clone())));
+            components.push(format!("{bare} extra"));
+        }
         let single = format!(
             "public record {name}({}){implements}",
             components.join(", ")
@@ -542,7 +572,12 @@ impl Printer<'_> {
     /// The struct's JSON codec (D-172): `toJson` builds an ordered field map
     /// (the tri-state omits an absent field, writes an explicit `null`, or
     /// writes the value — D-110); `fromJson` reconstructs from the parsed tree.
-    fn struct_codec(&mut self, name: &str, fields: &[(String, &ir::Field)]) -> String {
+    fn struct_codec(
+        &mut self,
+        name: &str,
+        fields: &[(String, &ir::Field)],
+        extra: Option<&ir::Type>,
+    ) -> String {
         let mut out = String::new();
         out.push_str("    public java.util.Map<String, Object> toJson() {\n");
         out.push_str(
@@ -553,22 +588,48 @@ impl Printer<'_> {
                 let _ = writeln!(out, "        {line}");
             }
         }
+        // D-196: merge the extra bag's own keys in after the named fields —
+        // `additionalProperties` is exactly the wire keys `properties`
+        // doesn't name, so this never legitimately overlaps a named field.
+        if let Some(extra_ty) = extra {
+            let map_ty = ir::Type::Map(Box::new(extra_ty.clone()));
+            let enc = self.encode_bare(&map_ty, "extra()", 0);
+            let _ = writeln!(out, "        _m.putAll({enc});");
+        }
         out.push_str("        return _m;\n");
         out.push_str("    }\n\n");
 
         let _ = writeln!(out, "    public static {name} fromJson(Object _json) {{");
-        if fields.is_empty() {
+        if fields.is_empty() && extra.is_none() {
             let _ = writeln!(out, "        return new {name}();");
         } else {
             out.push_str(
                 "        java.util.Map<String, Object> _m = dev.unofficialbox.core.Json.asObject(_json);\n",
             );
+            if extra.is_some() {
+                out.push_str(
+                    "        java.util.Map<String, Object> _extra = new java.util.LinkedHashMap<>(_m);\n",
+                );
+                for (_ident, field) in fields {
+                    let _ = writeln!(
+                        out,
+                        "        _extra.remove({});",
+                        java_string(&field.wire_name)
+                    );
+                }
+            }
             let _ = writeln!(out, "        return new {name}(");
+            let total = fields.len() + usize::from(extra.is_some());
             for (i, (_ident, field)) in fields.iter().enumerate() {
-                let last = i + 1 == fields.len();
+                let last = i + 1 == total;
                 let tail = if last { "" } else { "," };
                 let expr = self.decode_field(field);
                 let _ = writeln!(out, "            {expr}{tail}");
+            }
+            if let Some(extra_ty) = extra {
+                let map_ty = ir::Type::Map(Box::new(extra_ty.clone()));
+                let expr = self.decode_bare(&map_ty, "_extra", 0);
+                let _ = writeln!(out, "            {expr}");
             }
             out.push_str("        );\n");
         }
@@ -1147,6 +1208,12 @@ pub(crate) fn type_name(name: &str) -> String {
 /// managers backend reuses it to read a struct's fields (e.g. a form body).
 pub(crate) fn struct_components(s: &ir::StructDecl) -> Vec<(String, &ir::Field)> {
     let mut used: Vec<String> = Vec::new();
+    // The synthesized `extra` component (D-196) claims that name first, so a
+    // real field that also normalizes to `extra` is disambiguated instead of
+    // colliding with it.
+    if s.extra.is_some() {
+        used.push("extra".to_string());
+    }
     s.fields
         .iter()
         .map(|field| {
@@ -1479,6 +1546,7 @@ mod tests {
                         ty: Type::String,
                     },
                 ],
+                extra: None,
             }),
             "Widget",
         );
@@ -1512,7 +1580,10 @@ mod tests {
         let mut p = ir::Program::default();
         let s = add(
             &mut p,
-            DeclKind::Struct(StructDecl { fields: vec![] }),
+            DeclKind::Struct(StructDecl {
+                fields: vec![],
+                extra: None,
+            }),
             "Empty",
         );
         let out = render(&p, s);
@@ -1544,6 +1615,7 @@ mod tests {
                         ty: Type::String,
                     },
                 ],
+                extra: None,
             }),
             "Widget",
         );
@@ -1632,6 +1704,7 @@ mod tests {
                     wire_name: "kind".into(),
                     ty: Type::String,
                 }],
+                extra: None,
             }),
             "Dog",
         );
@@ -1643,6 +1716,7 @@ mod tests {
                     wire_name: "kind".into(),
                     ty: Type::String,
                 }],
+                extra: None,
             }),
             "Cat",
         );
@@ -1727,12 +1801,16 @@ mod tests {
                     wire_name: "kind".into(),
                     ty: Type::String,
                 }],
+                extra: None,
             }),
             "Dog",
         );
         let fish = add(
             &mut p,
-            DeclKind::Struct(StructDecl { fields: vec![] }),
+            DeclKind::Struct(StructDecl {
+                fields: vec![],
+                extra: None,
+            }),
             "Fish",
         );
         let pet = add(
@@ -1773,6 +1851,7 @@ mod tests {
                     wire_name: "id".into(),
                     ty: Type::Decl(alias),
                 }],
+                extra: None,
             }),
             "Widget",
         );
@@ -1815,6 +1894,7 @@ mod tests {
                         ty: Type::Decl(tri),
                     },
                 ],
+                extra: None,
             }),
             "Widget",
         );
@@ -1841,6 +1921,7 @@ mod tests {
                         ty: Type::Binary,
                     },
                 ],
+                extra: None,
             }),
             "Widget",
         );
@@ -1858,12 +1939,18 @@ mod tests {
         let mut p = ir::Program::default();
         let a = add(
             &mut p,
-            DeclKind::Struct(StructDecl { fields: vec![] }),
+            DeclKind::Struct(StructDecl {
+                fields: vec![],
+                extra: None,
+            }),
             "displayName",
         );
         let b = add(
             &mut p,
-            DeclKind::Struct(StructDecl { fields: vec![] }),
+            DeclKind::Struct(StructDecl {
+                fields: vec![],
+                extra: None,
+            }),
             "display_name",
         );
         let s = add(
@@ -1881,6 +1968,7 @@ mod tests {
                         ty: Type::Decl(b),
                     },
                 ],
+                extra: None,
             }),
             "Holder",
         );
@@ -1918,6 +2006,7 @@ mod tests {
                         ty: Type::Optional(Box::new(Type::Nullable(Box::new(Type::Int64)))),
                     },
                 ],
+                extra: None,
             }),
             "Widget",
         );
@@ -1963,7 +2052,10 @@ mod tests {
         let mut p = ir::Program::default();
         let owner = add(
             &mut p,
-            DeclKind::Struct(StructDecl { fields: vec![] }),
+            DeclKind::Struct(StructDecl {
+                fields: vec![],
+                extra: None,
+            }),
             "Owner",
         );
         let s = add(
@@ -1981,6 +2073,7 @@ mod tests {
                         ty: Type::Decl(owner),
                     },
                 ],
+                extra: None,
             }),
             "Widget",
         );
@@ -2001,6 +2094,73 @@ mod tests {
             out.contains(r#"(_m.get("owner") == null ? null : Owner.fromJson(_m.get("owner")))"#),
             "{out}"
         );
+    }
+
+    /// D-196: named fields alongside a non-`false` `additionalProperties`
+    /// (`QueryResultEntry`'s real shape) get a trailing `extra` record
+    /// component, a builder setter for it, and codec logic that merges it
+    /// with the named fields on the wire instead of silently dropping it.
+    #[test]
+    fn struct_codec_merges_the_extra_bag_with_named_fields() {
+        let mut p = ir::Program::default();
+        let s = add(
+            &mut p,
+            DeclKind::Struct(StructDecl {
+                fields: vec![Field {
+                    name: ident("id"),
+                    wire_name: "id".into(),
+                    ty: Type::String,
+                }],
+                extra: Some(Type::JsonValue),
+            }),
+            "Entry",
+        );
+        let out = render(&p, s);
+        assert!(
+            out.contains("public record Entry(String id, Map<String, Object> extra)"),
+            "{out}"
+        );
+        // Encode: named field first, then the extra bag's own keys merged in.
+        assert!(out.contains(r#"_m.put("id", id());"#), "{out}");
+        assert!(out.contains("_m.putAll(extra());"), "{out}");
+        // Decode: the named field's wire key is excluded from the extra bag.
+        assert!(out.contains(r#"_extra.remove("id");"#), "{out}");
+        assert!(
+            out.contains("dev.unofficialbox.core.Json.decodeMap(_extra, _x0 -> _x0)"),
+            "{out}"
+        );
+        // The builder defaults the bag to empty and exposes a setter.
+        assert!(
+            out.contains("private Map<String, Object> extra = java.util.Map.of();"),
+            "{out}"
+        );
+        assert!(
+            out.contains("public Builder extra(Map<String, Object> extra) {"),
+            "{out}"
+        );
+    }
+
+    /// A struct with *only* `additionalProperties` (no named fields at all —
+    /// `GenericSource`'s real shape) still gets the merge codec; the
+    /// empty-record fast path only applies when there's truly nothing.
+    #[test]
+    fn extra_only_struct_still_gets_the_merge_codec() {
+        let mut p = ir::Program::default();
+        let s = add(
+            &mut p,
+            DeclKind::Struct(StructDecl {
+                fields: vec![],
+                extra: Some(Type::JsonValue),
+            }),
+            "Bag",
+        );
+        let out = render(&p, s);
+        assert!(
+            out.contains("public record Bag(Map<String, Object> extra)"),
+            "{out}"
+        );
+        assert!(!out.contains("public record Bag()"), "{out}");
+        assert!(out.contains("_m.putAll(extra());"), "{out}");
     }
 
     #[test]

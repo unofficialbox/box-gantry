@@ -14,7 +14,7 @@
       "url": "https://www.apache.org/licenses/LICENSE-2.0"
     },
     "version": "2025.0",
-    "x-box-commit-hash": "056413ec44"
+    "x-box-commit-hash": "e1aaef784a"
   },
   "servers": [
     {
@@ -99,7 +99,8 @@
         "x-box-tag": "docgen_template",
         "tags": [
           "Box Doc Gen templates"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "get": {
         "operationId": "get_docgen_templates_v2025.0",
@@ -177,7 +178,8 @@
         "x-box-tag": "docgen_template",
         "tags": [
           "Box Doc Gen templates"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/docgen_templates/{template_id}": {
@@ -258,7 +260,8 @@
         "x-box-tag": "docgen_template",
         "tags": [
           "Box Doc Gen templates"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "get": {
         "operationId": "get_docgen_templates_id_v2025.0",
@@ -324,7 +327,8 @@
         "x-box-tag": "docgen_template",
         "tags": [
           "Box Doc Gen templates"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/docgen_templates/{template_id}/tags": {
@@ -454,7 +458,8 @@
         "x-box-tag": "docgen_template",
         "tags": [
           "Box Doc Gen templates"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/docgen_jobs/{job_id}": {
@@ -532,7 +537,8 @@
         "x-box-tag": "docgen",
         "tags": [
           "Box Doc Gen"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/docgen_jobs": {
@@ -622,7 +628,8 @@
         "x-box-tag": "docgen",
         "tags": [
           "Box Doc Gen"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/docgen_template_jobs/{template_id}": {
@@ -732,7 +739,8 @@
         "x-box-tag": "docgen_template",
         "tags": [
           "Box Doc Gen templates"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/docgen_batch_jobs/{batch_id}": {
@@ -842,7 +850,8 @@
         "x-box-tag": "docgen",
         "tags": [
           "Box Doc Gen"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/docgen_batches": {
@@ -886,6 +895,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request payload exceeds the maximum allowed size.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientError"
+                }
+              }
+            }
+          },
           "429": {
             "description": "The user has sent too many requests in a given amount of time.",
             "content": {
@@ -910,7 +929,8 @@
         "x-box-tag": "docgen",
         "tags": [
           "Box Doc Gen"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/enterprise_configurations/{enterprise_id}": {
@@ -7503,6 +7523,7 @@
     "securitySchemes": {
       "OAuth2Security": {
         "type": "oauth2",
+        "description": "The access token received from the authorization server in the OAuth 2.0 flow.",
         "flows": {
           "authorizationCode": {
             "authorizationUrl": "https://account.box.com/api/oauth2/authorize",

@@ -202,7 +202,30 @@ fn merge_structs(
         });
     }
 
-    Ok(ir::StructDecl { fields })
+    // A struct is open (D-196) if any version says so — matching the
+    // superset philosophy the field loop above uses. Versions that
+    // disagree on the *shape* of the extra data are a real conflict, same
+    // as a field whose type disagrees across versions.
+    let mut extra: Option<&ir::Type> = None;
+    for s in &all {
+        if let Some(t) = &s.extra {
+            match extra {
+                None => extra = Some(t),
+                Some(prev) if types_equivalent(prev, t, decls, &mut HashSet::new()) => {}
+                Some(_) => {
+                    return Err(conflict(
+                        name,
+                        "additionalProperties has non-equivalent types across versions",
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(ir::StructDecl {
+        fields,
+        extra: extra.cloned(),
+    })
 }
 
 /// Union enum values (base order first) and loosen extensibility.

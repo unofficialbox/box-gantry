@@ -284,6 +284,28 @@ impl<'a> DocLowerer<'a> {
         // name (its decl name), so a field's inline type reads like
         // `FileFullType`, not the whole ancestry.
         let leaf = pascal(&clean_name(name));
+        let one_or_any = match (raw.one_of.is_empty(), raw.any_of.is_empty()) {
+            (false, true) => Some(("oneOf", &raw.one_of)),
+            (true, false) => Some(("anyOf", &raw.any_of)),
+            _ => None,
+        };
+        // A *named* schema can itself be the nullable-`$ref` idiom (see
+        // `lower_type`) — e.g. a component schema defined as nothing but a
+        // nullable reference to another component. Same recognition,
+        // before `lower_union` ever sees it.
+        if let Some((combinator, variants)) = one_or_any
+            && let Some((index, real)) = nullable_ref_variant(variants)
+        {
+            let ty = self.lower_type(
+                &format!("{location}.{combinator}[{index}]"),
+                name,
+                &leaf,
+                &leaf,
+                real,
+            )?;
+            self.stats.aliases += 1;
+            return Ok(ir::DeclKind::Alias(nullable(ty)));
+        }
         if !raw.one_of.is_empty() || !raw.any_of.is_empty() {
             return self
                 .lower_union(location, &leaf, &leaf, &leaf, raw)
@@ -314,7 +336,7 @@ impl<'a> DocLowerer<'a> {
         }
         if !raw.all_of.is_empty() || is_object(raw) {
             return self
-                .lower_struct(location, &leaf, &leaf, raw)
+                .lower_struct(location, name, &leaf, &leaf, raw)
                 .map(ir::DeclKind::Struct);
         }
         // A named primitive (or a schema that says nothing).
@@ -348,6 +370,37 @@ impl<'a> DocLowerer<'a> {
     ) -> Result<ir::Type, IngestError> {
         if let Some(reference) = &raw.reference {
             return Ok(ir::Type::Decl(self.resolve_ref(location, reference)?));
+        }
+        // OpenAPI 3.0 has no way to write `nullable: true` alongside a
+        // sibling `$ref` (siblings of `$ref` are ignored), so specs express
+        // "nullable reference to X" as `oneOf: [ {$ref: X}, <null-only
+        // schema> ]` instead — a two-variant union where nothing distinguishes
+        // the variants (no `type` discriminator on either side), so
+        // `lower_union` finds it undiscriminated and falls back to a
+        // structural union. Every backend collapses a structural union with
+        // no shared shape to an opaque JSON blob — silently, since it isn't
+        // an unsupported shape, just an unhelpful one. Recognizing the idiom
+        // here, before `lower_union` ever sees it, keeps the real referenced
+        // type instead of discarding it into `serde_json::Value` (and, as a
+        // side effect, stops the null-only variant's synthesized name from
+        // colliding with the referenced schema's own name — the source of
+        // the `EnterpriseConfigurationSecurity2`-style suffixes).
+        let one_or_any = match (raw.one_of.is_empty(), raw.any_of.is_empty()) {
+            (false, true) => Some(("oneOf", &raw.one_of)),
+            (true, false) => Some(("anyOf", &raw.any_of)),
+            _ => None,
+        };
+        if let Some((combinator, variants)) = one_or_any
+            && let Some((index, real)) = nullable_ref_variant(variants)
+        {
+            let ty = self.lower_type(
+                &format!("{location}.{combinator}[{index}]"),
+                name,
+                leaf,
+                ancestor,
+                real,
+            )?;
+            return Ok(nullable(ty));
         }
         if !raw.one_of.is_empty() || !raw.any_of.is_empty() {
             let union = self.lower_union(location, name, leaf, ancestor, raw)?;
@@ -386,7 +439,7 @@ impl<'a> DocLowerer<'a> {
             }
         }
         if !raw.all_of.is_empty() {
-            let decl = self.lower_struct(location, leaf, ancestor, raw)?;
+            let decl = self.lower_struct(location, name, leaf, ancestor, raw)?;
             let id = self.synthesize(location, name, ancestor, ir::DeclKind::Struct(decl))?;
             return Ok(ir::Type::Decl(id));
         }
@@ -400,7 +453,7 @@ impl<'a> DocLowerer<'a> {
                 Ok(ir::Type::List(Box::new(inner)))
             }
             Some("object") if !raw.properties.is_empty() => {
-                let decl = self.lower_struct(location, leaf, ancestor, raw)?;
+                let decl = self.lower_struct(location, name, leaf, ancestor, raw)?;
                 let id = self.synthesize(location, name, ancestor, ir::DeclKind::Struct(decl))?;
                 Ok(ir::Type::Decl(id))
             }
@@ -426,7 +479,7 @@ impl<'a> DocLowerer<'a> {
                 Err(self.unsupported(location, &format!("unknown schema type {other:?}")))
             }
             None if !raw.properties.is_empty() => {
-                let decl = self.lower_struct(location, leaf, ancestor, raw)?;
+                let decl = self.lower_struct(location, name, leaf, ancestor, raw)?;
                 let id = self.synthesize(location, name, ancestor, ir::DeclKind::Struct(decl))?;
                 Ok(ir::Type::Decl(id))
             }
@@ -470,6 +523,7 @@ impl<'a> DocLowerer<'a> {
     fn lower_struct(
         &mut self,
         location: &str,
+        name: &str,
         leaf: &str,
         ancestor: &str,
         raw: &'a RawSchema,
@@ -512,7 +566,27 @@ impl<'a> DocLowerer<'a> {
                 ty,
             });
         }
-        Ok(ir::StructDecl { fields })
+        // Named `properties` alongside a non-`false`, non-absent
+        // `additionalProperties` is the OpenAPI "typed fields + open
+        // extension" idiom (D-196): an open bag of extra keys beyond the
+        // named ones. `lower_type`'s properties-empty branch already
+        // handles a *pure* additionalProperties map (D-127); this is the
+        // same idea, alongside named fields instead of in place of them.
+        let extra = match &raw.additional_properties {
+            None | Some(RawAdditionalProperties::Bool(false)) => None,
+            Some(RawAdditionalProperties::Bool(true)) => {
+                self.stats.json_value_sites += 1;
+                Some(ir::Type::JsonValue)
+            }
+            Some(RawAdditionalProperties::Schema(schema)) => Some(self.lower_type(
+                &format!("{location}.additionalProperties"),
+                name,
+                leaf,
+                ancestor,
+                schema,
+            )?),
+        };
+        Ok(ir::StructDecl { fields, extra })
     }
 
     /// Walk a schema's `allOf` chain (through `$ref`s), collecting
@@ -1650,6 +1724,12 @@ const ACTION_VERBS: &[&str] = &[
 ///   own summaries ("Add user to group", "Get group membership", "Update
 ///   group membership", "Remove user from group") confirm `GroupMembership`
 ///   is the real subject.
+/// - `POST /query` and `POST /query_insights` default to the generic
+///   `create`/`createInsights` (every bare POST seeds the `create` verb),
+///   which reads as if a query resource is being persisted. Neither call
+///   creates anything — they run a query. Box's summaries ("Query for Box
+///   items", "Create insights for Box items" — itself imprecise) and guide
+///   titles ("Box query", "Query insights") back `query`/`queryInsights`.
 ///
 /// Returns a camelCase seed; each backend cases it (`UploadFile`,
 /// `upload_file`, …). Curated names still flow through the dedup guard below.
@@ -1667,6 +1747,8 @@ fn curated_method_name(base_id: &str) -> Option<&'static str> {
         "get_group_memberships_id" => Some("getGroupMembership"),
         "put_group_memberships_id" => Some("updateGroupMembership"),
         "delete_group_memberships_id" => Some("deleteGroupMembership"),
+        "post_query" => Some("query"),
+        "post_query_insights" => Some("queryInsights"),
         _ => None,
     }
 }
@@ -1784,6 +1866,44 @@ fn pascal(text: &str) -> String {
 
 fn is_object(raw: &RawSchema) -> bool {
     raw.schema_type.as_deref() == Some("object") || !raw.properties.is_empty()
+}
+
+/// The OpenAPI 3.0 "null schema type" placeholder: an object schema that
+/// describes nothing but the possibility of `null` — no properties, no
+/// extra ones allowed, just `nullable: true`. Specs use it as a `oneOf`
+/// sibling to fake a `nullable` `$ref`, since `$ref` can't carry sibling
+/// keywords in OpenAPI 3.0.
+fn is_null_only_schema(raw: &RawSchema) -> bool {
+    raw.reference.is_none()
+        && raw.schema_type.as_deref() == Some("object")
+        && raw.nullable
+        && matches!(
+            raw.additional_properties,
+            Some(RawAdditionalProperties::Bool(false))
+        )
+        && raw.properties.is_empty()
+        && raw.required.is_empty()
+        && raw.items.is_none()
+        && raw.one_of.is_empty()
+        && raw.all_of.is_empty()
+        && raw.any_of.is_empty()
+        && raw.enumeration.is_none()
+}
+
+/// A two-variant `oneOf`/`anyOf` where exactly one variant is the
+/// [`is_null_only_schema`] placeholder is the "nullable `$ref`" idiom
+/// (D-195) — the other variant is the real type, returned alongside its
+/// index in `variants` so callers can build an accurate JSON path if
+/// lowering that variant fails. Any other shape (more than two variants,
+/// neither/both variants null-only) isn't this idiom; `None` sends it to
+/// the normal union path.
+fn nullable_ref_variant(variants: &[RawSchema]) -> Option<(usize, &RawSchema)> {
+    let [a, b] = variants else { return None };
+    match (is_null_only_schema(a), is_null_only_schema(b)) {
+        (true, false) => Some((1, b)),
+        (false, true) => Some((0, a)),
+        _ => None,
+    }
 }
 
 /// An `allOf` part that contributes no structure — only annotations such

@@ -1577,6 +1577,7 @@ mod tests {
                     wire_name: "id".into(),
                     ty: Type::String,
                 }],
+                extra: None,
             }),
         });
         p.operations.push(Operation {
@@ -1731,6 +1732,7 @@ mod tests {
                     wire_name: "id".into(),
                     ty: Type::String,
                 }],
+                extra: None,
             }),
         });
         let list = Type::List(Box::new(Type::Decl(item)));
@@ -1756,6 +1758,7 @@ mod tests {
                         ty: cursor_ty,
                     },
                 ],
+                extra: None,
             }),
         });
         p.operations.push(Operation {
