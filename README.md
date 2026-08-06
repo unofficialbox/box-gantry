@@ -87,6 +87,19 @@ cargo run -p gantry-cli -- verify --target go \
   fixtures/specs/openapi-v2026.0.json
 ```
 
+## Generated SDKs
+
+Each target is released to its own repo, regenerated from this engine by
+`release.yml` (`scripts/release.sh`):
+
+| Target | Repo |
+| --- | --- |
+| Go (v1) | [`unofficialbox/box-open-go-sdk`](https://github.com/unofficialbox/box-open-go-sdk) |
+| Salesforce Apex (v2) | [`unofficialbox/box-open-apex-sdk`](https://github.com/unofficialbox/box-open-apex-sdk) |
+| Rust (v3) | [`unofficialbox/box-open-rust-sdk`](https://github.com/unofficialbox/box-open-rust-sdk) |
+| TypeScript (v4) | [`unofficialbox/box-open-ts-sdk`](https://github.com/unofficialbox/box-open-ts-sdk) |
+| Java 26 (v5) | [`unofficialbox/box-open-java-sdk`](https://github.com/unofficialbox/box-open-java-sdk) |
+
 ## How it works
 
 box-gantry is a small Rust pipeline. One spec set flows through fixed stages,
