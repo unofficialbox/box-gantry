@@ -14,7 +14,7 @@
       "url": "https://www.apache.org/licenses/LICENSE-2.0"
     },
     "version": "2024.0",
-    "x-box-commit-hash": "056413ec44"
+    "x-box-commit-hash": "e1aaef784a"
   },
   "servers": [
     {
@@ -14975,6 +14975,11 @@
                     "type": "boolean",
                     "example": true
                   },
+                  "is_collaborated_content_available_when_owner_inactive": {
+                    "description": "Whether collaborators can access content owned by the user when\nthe user is inactive. This setting preserves existing\ncollaborator access and does not grant new permissions.",
+                    "type": "boolean",
+                    "example": true
+                  },
                   "status": {
                     "description": "The user's account status.",
                     "type": "string",
@@ -17696,11 +17701,13 @@
                   "SHARED_LINK_SEND",
                   "SHARE_EXPIRATION",
                   "SHIELD_ALERT",
+                  "SHIELD_DOWNLOAD_BLOCKED",
                   "SHIELD_EXTERNAL_COLLAB_ACCESS_BLOCKED",
                   "SHIELD_EXTERNAL_COLLAB_ACCESS_BLOCKED_MISSING_JUSTIFICATION",
                   "SHIELD_EXTERNAL_COLLAB_INVITE_BLOCKED",
                   "SHIELD_EXTERNAL_COLLAB_INVITE_BLOCKED_MISSING_JUSTIFICATION",
                   "SHIELD_JUSTIFICATION_APPROVAL",
+                  "SHIELD_PREVIEW_BLOCKED",
                   "SHIELD_SHARED_LINK_ACCESS_BLOCKED",
                   "SHIELD_SHARED_LINK_STATUS_RESTRICTED_ON_CREATE",
                   "SHIELD_SHARED_LINK_STATUS_RESTRICTED_ON_UPDATE",
@@ -30765,6 +30772,7 @@
                   "SHIELD_INFORMATION_BARRIER_PENDING",
                   "SHIELD_INFORMATION_BARRIER_SHARED_ITEM_ACCESS_BLOCKED",
                   "SHIELD_JUSTIFICATION_APPROVAL",
+                  "SHIELD_PREVIEW_BLOCKED",
                   "SHIELD_SHARED_LINK_ACCESS_BLOCKED",
                   "SHIELD_SHARED_LINK_STATUS_RESTRICTED_ON_CREATE",
                   "SHIELD_SHARED_LINK_STATUS_RESTRICTED_ON_UPDATE",
@@ -31888,6 +31896,49 @@
                 "description": "This field will return true if the file or any ancestor of the file\nis associated with at least one app item. Note that this will return\ntrue even if the context user does not have access to the app item(s)\nassociated with the file.",
                 "type": "boolean",
                 "example": true,
+                "nullable": false
+              },
+              "collections": {
+                "description": "The collections that this file belongs to.\n\nFor more information, see the\n[collections guide](https://developer.box.com/guides/collections).",
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Collection"
+                }
+              },
+              "is_download_available": {
+                "description": "Whether the file's binary content is eligible to be downloaded.\n\nThis is a content-level flag and does not reflect whether the\ncurrent user is authorized to download the file. Use\n`permissions.can_download`, when available, for that.",
+                "type": "boolean",
+                "example": true
+              },
+              "download_url": {
+                "description": "A pre-authorized, expiring URL for directly downloading the file's\ncontent. Requires authentication and is valid only for the current\nsession.\n\nThis field is only returned for files, not folders or web links.",
+                "type": "string",
+                "format": "url",
+                "example": "https://dl.boxcloud.com/d/1/example_token/download"
+              },
+              "authenticated_download_url": {
+                "description": "A stable API URL for the file content endpoint,\n`/2.0/files/{id}/content`. Unlike `download_url`, authorization is\nevaluated when the URL is requested with a valid access token.\n\nThis field is only returned for files, not folders or web links.",
+                "type": "string",
+                "format": "url",
+                "example": "https://api.box.com/2.0/files/12345/content"
+              },
+              "allowed_shared_link_access_levels": {
+                "description": "The shared link access levels the authenticated user is allowed to\nuse when creating or updating a shared link for this file.\n\nThe list depends on item policy and user authorization, so it may be\nnarrower than the levels available to the owner. An empty array means\nno access level is available to this user.",
+                "type": "array",
+                "items": {
+                  "title": "Shared link access level",
+                  "type": "string",
+                  "description": "The access level for a shared link.",
+                  "example": "open",
+                  "enum": [
+                    "open",
+                    "company",
+                    "collaborators"
+                  ]
+                },
+                "example": [
+                  "open"
+                ],
                 "nullable": false
               }
             }
@@ -33394,10 +33445,13 @@
                 ]
               },
               "allowed_shared_link_access_levels": {
-                "description": "A list of access levels that are available\nfor this folder.\n\nFor some folders, like the root folder, this will always\nbe an empty list as sharing is not allowed at that level.",
+                "description": "The shared link access levels the authenticated user is allowed to\nuse when creating or updating a shared link for this folder.\n\nThe list depends on item policy and user authorization. For some\nfolders, like the root folder, this is always empty as sharing is\nnot allowed at that level.",
                 "type": "array",
                 "items": {
+                  "title": "Shared link access level",
                   "type": "string",
+                  "description": "The access level for a shared link.",
+                  "example": "open",
                   "enum": [
                     "open",
                     "company",
@@ -33509,6 +33563,13 @@
                 "type": "boolean",
                 "example": true,
                 "nullable": false
+              },
+              "collections": {
+                "description": "The collections that this folder belongs to.\n\nFor more information, see the\n[collections guide](https://developer.box.com/guides/collections).",
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Collection"
+                }
               }
             }
           }
@@ -42627,6 +42688,11 @@
                 "type": "boolean",
                 "example": true
               },
+              "is_collaborated_content_available_when_owner_inactive": {
+                "description": "Whether collaborators can access content owned by the user when the\nuser is inactive. This setting preserves existing collaborator access\nand does not grant new permissions.",
+                "type": "boolean",
+                "example": true
+              },
               "enterprise": {
                 "allOf": [
                   {
@@ -43355,6 +43421,32 @@
                   "trashed",
                   "deleted"
                 ]
+              },
+              "collections": {
+                "description": "The collections that this web link belongs to.\n\nFor more information, see the\n[collections guide](https://developer.box.com/guides/collections).",
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Collection"
+                }
+              },
+              "allowed_shared_link_access_levels": {
+                "description": "The shared link access levels the authenticated user is allowed to\nuse when creating or updating a shared link for this web link.\n\nThe list depends on item policy and user authorization, so it may be\nnarrower than the levels available to the owner. An empty array means\nno access level is available to this user.",
+                "type": "array",
+                "items": {
+                  "title": "Shared link access level",
+                  "type": "string",
+                  "description": "The access level for a shared link.",
+                  "example": "open",
+                  "enum": [
+                    "open",
+                    "company",
+                    "collaborators"
+                  ]
+                },
+                "example": [
+                  "open"
+                ],
+                "nullable": false
               }
             }
           }
@@ -43968,6 +44060,7 @@
     "securitySchemes": {
       "OAuth2Security": {
         "type": "oauth2",
+        "description": "The access token received from the authorization server in the OAuth 2.0 flow.",
         "flows": {
           "authorizationCode": {
             "authorizationUrl": "https://account.box.com/api/oauth2/authorize",

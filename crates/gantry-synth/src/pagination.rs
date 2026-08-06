@@ -154,7 +154,10 @@ mod tests {
             name: ident("Item"),
             module: module.clone(),
             api_version: None,
-            kind: ir::DeclKind::Struct(ir::StructDecl { fields: vec![] }),
+            kind: ir::DeclKind::Struct(ir::StructDecl {
+                fields: vec![],
+                extra: None,
+            }),
         };
         let mut envelope_fields = vec![ir::Field {
             name: ident("entries"),
@@ -172,6 +175,7 @@ mod tests {
             api_version: None,
             kind: ir::DeclKind::Struct(ir::StructDecl {
                 fields: envelope_fields,
+                extra: None,
             }),
         };
         let op = ir::Operation {

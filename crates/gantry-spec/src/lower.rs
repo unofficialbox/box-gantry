@@ -336,7 +336,7 @@ impl<'a> DocLowerer<'a> {
         }
         if !raw.all_of.is_empty() || is_object(raw) {
             return self
-                .lower_struct(location, &leaf, &leaf, raw)
+                .lower_struct(location, name, &leaf, &leaf, raw)
                 .map(ir::DeclKind::Struct);
         }
         // A named primitive (or a schema that says nothing).
@@ -439,7 +439,7 @@ impl<'a> DocLowerer<'a> {
             }
         }
         if !raw.all_of.is_empty() {
-            let decl = self.lower_struct(location, leaf, ancestor, raw)?;
+            let decl = self.lower_struct(location, name, leaf, ancestor, raw)?;
             let id = self.synthesize(location, name, ancestor, ir::DeclKind::Struct(decl))?;
             return Ok(ir::Type::Decl(id));
         }
@@ -453,7 +453,7 @@ impl<'a> DocLowerer<'a> {
                 Ok(ir::Type::List(Box::new(inner)))
             }
             Some("object") if !raw.properties.is_empty() => {
-                let decl = self.lower_struct(location, leaf, ancestor, raw)?;
+                let decl = self.lower_struct(location, name, leaf, ancestor, raw)?;
                 let id = self.synthesize(location, name, ancestor, ir::DeclKind::Struct(decl))?;
                 Ok(ir::Type::Decl(id))
             }
@@ -479,7 +479,7 @@ impl<'a> DocLowerer<'a> {
                 Err(self.unsupported(location, &format!("unknown schema type {other:?}")))
             }
             None if !raw.properties.is_empty() => {
-                let decl = self.lower_struct(location, leaf, ancestor, raw)?;
+                let decl = self.lower_struct(location, name, leaf, ancestor, raw)?;
                 let id = self.synthesize(location, name, ancestor, ir::DeclKind::Struct(decl))?;
                 Ok(ir::Type::Decl(id))
             }
@@ -523,6 +523,7 @@ impl<'a> DocLowerer<'a> {
     fn lower_struct(
         &mut self,
         location: &str,
+        name: &str,
         leaf: &str,
         ancestor: &str,
         raw: &'a RawSchema,
@@ -565,7 +566,27 @@ impl<'a> DocLowerer<'a> {
                 ty,
             });
         }
-        Ok(ir::StructDecl { fields })
+        // Named `properties` alongside a non-`false`, non-absent
+        // `additionalProperties` is the OpenAPI "typed fields + open
+        // extension" idiom (D-196): an open bag of extra keys beyond the
+        // named ones. `lower_type`'s properties-empty branch already
+        // handles a *pure* additionalProperties map (D-127); this is the
+        // same idea, alongside named fields instead of in place of them.
+        let extra = match &raw.additional_properties {
+            None | Some(RawAdditionalProperties::Bool(false)) => None,
+            Some(RawAdditionalProperties::Bool(true)) => {
+                self.stats.json_value_sites += 1;
+                Some(ir::Type::JsonValue)
+            }
+            Some(RawAdditionalProperties::Schema(schema)) => Some(self.lower_type(
+                &format!("{location}.additionalProperties"),
+                name,
+                leaf,
+                ancestor,
+                schema,
+            )?),
+        };
+        Ok(ir::StructDecl { fields, extra })
     }
 
     /// Walk a schema's `allOf` chain (through `$ref`s), collecting
@@ -1703,6 +1724,12 @@ const ACTION_VERBS: &[&str] = &[
 ///   own summaries ("Add user to group", "Get group membership", "Update
 ///   group membership", "Remove user from group") confirm `GroupMembership`
 ///   is the real subject.
+/// - `POST /query` and `POST /query_insights` default to the generic
+///   `create`/`createInsights` (every bare POST seeds the `create` verb),
+///   which reads as if a query resource is being persisted. Neither call
+///   creates anything — they run a query. Box's summaries ("Query for Box
+///   items", "Create insights for Box items" — itself imprecise) and guide
+///   titles ("Box query", "Query insights") back `query`/`queryInsights`.
 ///
 /// Returns a camelCase seed; each backend cases it (`UploadFile`,
 /// `upload_file`, …). Curated names still flow through the dedup guard below.
@@ -1720,6 +1747,8 @@ fn curated_method_name(base_id: &str) -> Option<&'static str> {
         "get_group_memberships_id" => Some("getGroupMembership"),
         "put_group_memberships_id" => Some("updateGroupMembership"),
         "delete_group_memberships_id" => Some("deleteGroupMembership"),
+        "post_query" => Some("query"),
+        "post_query_insights" => Some("queryInsights"),
         _ => None,
     }
 }

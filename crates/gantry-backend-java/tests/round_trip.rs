@@ -53,6 +53,7 @@ fn build_program() -> Program {
                 field("kind", "kind", Type::String),
                 field("bark", "bark", Type::String),
             ],
+            extra: None,
         }),
     );
     let cat = add(
@@ -63,6 +64,7 @@ fn build_program() -> Program {
                 field("kind", "kind", Type::String),
                 field("meows", "meows", Type::Optional(Box::new(Type::Int64))),
             ],
+            extra: None,
         }),
     );
     let pet = add(
@@ -108,6 +110,7 @@ fn build_program() -> Program {
                 field("pet", "pet", Type::Decl(pet)),
                 field("color", "color", Type::Decl(color)),
             ],
+            extra: None,
         }),
     );
     p

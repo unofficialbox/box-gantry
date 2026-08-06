@@ -183,7 +183,7 @@ impl Printer<'_> {
         self.body.push_str(
             "#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]\n",
         );
-        if s.fields.is_empty() {
+        if s.fields.is_empty() && s.extra.is_none() {
             let _ = writeln!(self.body, "pub struct {name} {{}}\n");
             return;
         }
@@ -204,6 +204,21 @@ impl Printer<'_> {
                 &form.serde_parts(&serde_name, &field.wire_name),
             );
             emit_field(&mut self.body, &ident, &form.rust_type());
+        }
+        // The open-extension idiom (D-196): named fields plus a
+        // non-`false` `additionalProperties`. `flatten` merges the
+        // catch-all bag's keys into the same wire object on both sides —
+        // no nested `extra` object appears in the JSON.
+        if let Some(extra) = &s.extra {
+            let base = dedupe(&mut used, "extra".to_string());
+            let (ident, _) = keyword_wrap(&base);
+            let value_ty = self.bare_type(extra);
+            self.body.push_str("    #[serde(flatten)]\n");
+            emit_field(
+                &mut self.body,
+                &ident,
+                &format!("std::collections::HashMap<String, {value_ty}>"),
+            );
         }
         self.body.push_str("}\n\n");
     }
@@ -801,6 +816,7 @@ mod tests {
                         ty: Type::String,
                     },
                 ],
+                extra: None,
             }),
             "Widget",
         );
@@ -817,6 +833,79 @@ mod tests {
         // Keyword field → raw identifier; serde default name already matches
         // the wire, so no rename.
         assert!(out.contains("pub r#type: String,"));
+    }
+
+    /// D-196: named fields alongside a non-`false` `additionalProperties`
+    /// (`QueryResultEntry`'s real shape) emit a flattened catch-all map
+    /// instead of silently dropping the open part.
+    #[test]
+    fn struct_with_extra_emits_a_flattened_catch_all_map() {
+        let mut p = ir::Program::default();
+        let s = add(
+            &mut p,
+            DeclKind::Struct(StructDecl {
+                fields: vec![Field {
+                    name: ident("id"),
+                    wire_name: "id".into(),
+                    ty: Type::String,
+                }],
+                extra: Some(Type::JsonValue),
+            }),
+            "Entry",
+        );
+        let out = render(&p, &[s]);
+        assert!(out.contains("pub id: String,"), "{out}");
+        assert!(out.contains("#[serde(flatten)]"), "{out}");
+        assert!(
+            out.contains("pub extra: std::collections::HashMap<String, serde_json::Value>,"),
+            "{out}"
+        );
+    }
+
+    /// A struct with *only* `additionalProperties` (no named fields at all
+    /// — `GenericSource`'s real shape) still gets its extra bag; the
+    /// empty-struct fast path only applies when there's truly nothing.
+    #[test]
+    fn extra_only_struct_is_not_treated_as_empty() {
+        let mut p = ir::Program::default();
+        let s = add(
+            &mut p,
+            DeclKind::Struct(StructDecl {
+                fields: vec![],
+                extra: Some(Type::JsonValue),
+            }),
+            "Bag",
+        );
+        let out = render(&p, &[s]);
+        assert!(!out.contains("pub struct Bag {}"), "{out}");
+        assert!(out.contains("pub extra: std::collections::HashMap<String, serde_json::Value>,"));
+    }
+
+    /// A real field that itself normalizes to `extra` must not collide with
+    /// the synthesized catch-all — the dedup allocator gives the synthetic
+    /// field a fresh name instead of silently shadowing (two `pub extra:`
+    /// fields would not compile).
+    #[test]
+    fn extra_field_name_collision_is_disambiguated() {
+        let mut p = ir::Program::default();
+        let s = add(
+            &mut p,
+            DeclKind::Struct(StructDecl {
+                fields: vec![Field {
+                    name: ident("extra"),
+                    wire_name: "extra".into(),
+                    ty: Type::String,
+                }],
+                extra: Some(Type::JsonValue),
+            }),
+            "Entry",
+        );
+        let out = render(&p, &[s]);
+        assert!(out.contains("pub extra: String,"), "{out}");
+        assert!(
+            out.contains("pub extra_2: std::collections::HashMap<String, serde_json::Value>,"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -838,6 +927,7 @@ mod tests {
                         ty: Type::String,
                     },
                 ],
+                extra: None,
             }),
             "Widget",
         );
@@ -914,6 +1004,7 @@ mod tests {
                         wire_name: "kind".into(),
                         ty: Type::String,
                     }],
+                    extra: None,
                 }),
                 name,
             );
@@ -985,12 +1076,16 @@ mod tests {
                     wire_name: "kind".into(),
                     ty: Type::String,
                 }],
+                extra: None,
             }),
             "Dog",
         );
         let fish = add(
             &mut p,
-            DeclKind::Struct(StructDecl { fields: vec![] }),
+            DeclKind::Struct(StructDecl {
+                fields: vec![],
+                extra: None,
+            }),
             "Fish",
         );
         let u = add(

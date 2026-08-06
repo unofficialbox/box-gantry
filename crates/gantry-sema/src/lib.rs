@@ -133,6 +133,9 @@ pub fn analyze(program: &ir::Program) -> Result<Analysis<'_>, Vec<SemaError>> {
                     }
                     check_type(program, &context, &field.ty, Wrapper::None, &mut errors);
                 }
+                if let Some(extra) = &s.extra {
+                    check_type(program, &context, extra, Wrapper::None, &mut errors);
+                }
             }
             ir::DeclKind::Union(u) => {
                 if u.variants.is_empty() {
@@ -340,6 +343,7 @@ mod tests {
                     wire_name: "id".into(),
                     ty: ir::Type::String,
                 }],
+                extra: None,
             }),
         )]);
         let analysis = analyze(&program).unwrap();
@@ -366,6 +370,7 @@ mod tests {
                             )))),
                         },
                     ],
+                    extra: None,
                 }),
             ),
             decl(
@@ -396,6 +401,7 @@ mod tests {
                 "File",
                 ir::DeclKind::Struct(ir::StructDecl {
                     fields: vec![field("id"), field("id")],
+                    extra: None,
                 }),
             ),
             decl("File", ir::DeclKind::Alias(ir::Type::String)),
@@ -486,6 +492,7 @@ mod tests {
         let program = program_with(vec![decl(
             "Bad",
             ir::DeclKind::Struct(ir::StructDecl {
+                extra: None,
                 fields: vec![
                     field(
                         "double_null",

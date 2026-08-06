@@ -34,6 +34,7 @@ fn variant_struct(program: &mut Program, name: &str, extra: &str) -> DeclId {
                     ty: Type::Optional(Box::new(Type::String)),
                 },
             ],
+            extra: None,
         }),
     })
 }

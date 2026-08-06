@@ -1149,6 +1149,7 @@ mod tests {
                     wire_name: "id".into(),
                     ty: Type::String,
                 }],
+                extra: None,
             }),
         });
         p.add(Decl {
@@ -1168,6 +1169,7 @@ mod tests {
                         ty: Type::Optional(Box::new(Type::String)),
                     },
                 ],
+                extra: None,
             }),
         });
         p.operations.push(Operation {

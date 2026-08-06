@@ -63,9 +63,9 @@ fn the_generated_go_sdk_is_conformant() {
             .find(|c| c.capability == cap)
             .unwrap_or_else(|| panic!("no {cap} check"))
     };
-    assert_eq!(by("managers").expected, 85);
-    assert_eq!(by("operations").expected, 336);
-    assert_eq!(by("operations").actual, 336, "one method per operation");
+    assert_eq!(by("managers").expected, 86);
+    assert_eq!(by("operations").expected, 338);
+    assert_eq!(by("operations").actual, 338, "one method per operation");
     assert_eq!(by("pagination").expected, 64);
     assert_eq!(
         by("pagination").actual,
@@ -104,10 +104,10 @@ fn the_generated_apex_sdk_is_conformant() {
             .unwrap_or_else(|| panic!("no {cap} check"))
     };
     // Same expected surface as Go — the contract is target-neutral.
-    assert_eq!(by("managers").expected, 85);
-    assert_eq!(by("managers").actual, 85, "one class per manager");
-    assert_eq!(by("operations").expected, 336);
-    assert_eq!(by("operations").actual, 336, "one method per operation");
+    assert_eq!(by("managers").expected, 86);
+    assert_eq!(by("managers").actual, 86, "one class per manager");
+    assert_eq!(by("operations").expected, 338);
+    assert_eq!(by("operations").actual, 338, "one method per operation");
     assert_eq!(by("pagination").expected, 64);
     assert_eq!(
         by("pagination").actual,
@@ -160,10 +160,10 @@ fn the_generated_typescript_sdk_is_conformant() {
             .unwrap_or_else(|| panic!("no {cap} check"))
     };
     // Same expected surface as Go — the contract is target-neutral.
-    assert_eq!(by("managers").expected, 85);
-    assert_eq!(by("managers").actual, 85, "one class per manager");
-    assert_eq!(by("operations").expected, 336);
-    assert_eq!(by("operations").actual, 336, "one method per operation");
+    assert_eq!(by("managers").expected, 86);
+    assert_eq!(by("managers").actual, 86, "one class per manager");
+    assert_eq!(by("operations").expected, 338);
+    assert_eq!(by("operations").actual, 338, "one method per operation");
     assert_eq!(by("pagination").expected, 64);
     assert_eq!(
         by("pagination").actual,
@@ -171,7 +171,7 @@ fn the_generated_typescript_sdk_is_conformant() {
         "one paginator per paged surface"
     );
     assert_eq!(by("auth-flows").actual, 4, "all four flows documented");
-    assert_eq!(by("manager-docs").actual, 85, "one doc page per manager");
+    assert_eq!(by("manager-docs").actual, 86, "one doc page per manager");
     assert_eq!(by("docs-guides").actual, 4, "index + 3 topic guides");
     // The generated behavioral tests: the serialization baseline plus one
     // round-trip test per discriminated union.

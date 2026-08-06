@@ -125,7 +125,7 @@ impl Printer<'_> {
     }
 
     fn struct_decl(&mut self, name: &str, s: &ir::StructDecl) {
-        if s.fields.is_empty() {
+        if s.fields.is_empty() && s.extra.is_none() {
             let _ = writeln!(self.body, "type {name} struct{{}}\n");
             return;
         }
@@ -144,6 +144,19 @@ impl Printer<'_> {
             };
             rows.push((pascal(field.name.as_str()), ty, tag));
         }
+        // D-196: named fields alongside a non-`false` `additionalProperties`.
+        // `Extra` is excluded from the struct-tag marshal (`json:"-"`) —
+        // `extra_json_methods` below merges it with the named fields by
+        // hand instead, so a plain `json.Marshal`/`Unmarshal` on this type
+        // would silently ignore it if that method weren't generated.
+        let extra_go_type = s.extra.as_ref().map(|t| self.bare_type(t));
+        if let Some(extra_ty) = &extra_go_type {
+            rows.push((
+                "Extra".to_string(),
+                format!("map[string]{extra_ty}"),
+                "`json:\"-\"`".to_string(),
+            ));
+        }
         let name_width = rows.iter().map(|(n, _, _)| n.len()).max().unwrap_or(0);
         let type_width = rows.iter().map(|(_, t, _)| t.len()).max().unwrap_or(0);
         let _ = writeln!(self.body, "type {name} struct {{");
@@ -154,6 +167,61 @@ impl Printer<'_> {
             );
         }
         self.body.push_str("}\n\n");
+        if let Some(extra_ty) = extra_go_type {
+            self.extra_json_methods(name, s, &extra_ty);
+        }
+    }
+
+    /// `MarshalJSON`/`UnmarshalJSON` for a struct with an open extra bag
+    /// (D-196): a package-local `alias` type (same fields, no methods)
+    /// lets `encoding/json`'s ordinary struct-tag marshaling handle every
+    /// named field — including whatever pointer/`omitempty`/nullable-wrapper
+    /// shape `field_type` gave it — without reimplementing that dispatch
+    /// here. Only the merge with `Extra` is hand-written.
+    fn extra_json_methods(&mut self, name: &str, s: &ir::StructDecl, extra_ty: &str) {
+        self.imports.insert("encoding/json");
+        let _ = writeln!(
+            self.body,
+            "func (s {name}) MarshalJSON() ([]byte, error) {{"
+        );
+        let _ = writeln!(self.body, "\ttype alias {name}");
+        self.body
+            .push_str("\tnamed, err := json.Marshal(alias(s))\n");
+        self.body
+            .push_str("\tif err != nil {\n\t\treturn nil, err\n\t}\n");
+        self.body.push_str("\tvar m map[string]json.RawMessage\n");
+        self.body.push_str(
+            "\tif err := json.Unmarshal(named, &m); err != nil {\n\t\treturn nil, err\n\t}\n",
+        );
+        self.body.push_str("\tfor k, v := range s.Extra {\n");
+        self.body.push_str("\t\traw, err := json.Marshal(v)\n");
+        self.body
+            .push_str("\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n");
+        self.body.push_str("\t\tm[k] = raw\n\t}\n");
+        self.body.push_str("\treturn json.Marshal(m)\n}\n\n");
+
+        let _ = writeln!(
+            self.body,
+            "func (s *{name}) UnmarshalJSON(data []byte) error {{"
+        );
+        let _ = writeln!(self.body, "\ttype alias {name}");
+        self.body.push_str(
+            "\tif err := json.Unmarshal(data, (*alias)(s)); err != nil {\n\t\treturn err\n\t}\n",
+        );
+        self.body.push_str("\tvar m map[string]json.RawMessage\n");
+        self.body
+            .push_str("\tif err := json.Unmarshal(data, &m); err != nil {\n\t\treturn err\n\t}\n");
+        for field in &s.fields {
+            let _ = writeln!(self.body, "\tdelete(m, {:?})", field.wire_name);
+        }
+        let _ = writeln!(self.body, "\ts.Extra = make(map[string]{extra_ty}, len(m))");
+        self.body.push_str("\tfor k, raw := range m {\n");
+        let _ = writeln!(self.body, "\t\tvar v {extra_ty}");
+        self.body.push_str(
+            "\t\tif err := json.Unmarshal(raw, &v); err != nil {\n\t\t\treturn err\n\t\t}\n",
+        );
+        self.body.push_str("\t\ts.Extra[k] = v\n\t}\n");
+        self.body.push_str("\treturn nil\n}\n\n");
     }
 
     /// Open enums (D-105): a named string type — unknown values

@@ -38,7 +38,10 @@ mod tests {
             name: ident(name),
             module: schema_module(),
             api_version: None,
-            kind: ir::DeclKind::Struct(ir::StructDecl { fields }),
+            kind: ir::DeclKind::Struct(ir::StructDecl {
+                fields,
+                extra: None,
+            }),
         }
     }
 

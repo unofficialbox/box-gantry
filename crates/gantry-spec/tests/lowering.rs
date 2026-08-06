@@ -305,6 +305,75 @@ fn nullable_ref_via_any_of_is_recognized_too() {
     assert_eq!(lowering.stats.unions, 0);
 }
 
+/// Named `properties` alongside a non-`false`, non-absent
+/// `additionalProperties` is the OpenAPI "typed fields + open extension"
+/// idiom (D-196, modeled on the real-world `QueryResultEntry`: fixed `id`/
+/// `type` fields plus arbitrary caller-requested metadata keys). Before
+/// D-196, `lower_struct` read only `properties`, so the open bag was
+/// silently discarded — every extra key the API actually returns vanished
+/// with no error and no stat bump. It must now surface as `StructDecl.extra`
+/// instead.
+#[test]
+fn named_properties_plus_open_additional_properties_keeps_the_extra_bag() {
+    let lowering = lower_schemas(serde_json::json!({
+        "Entry": {
+            "type": "object",
+            "properties": {
+                "id": { "type": "string" },
+                "type": { "type": "string" }
+            },
+            "required": ["id", "type"],
+            "additionalProperties": {}
+        }
+    }))
+    .unwrap();
+    let entry = struct_decl(find(&lowering.program, "Entry"));
+    let names: Vec<&str> = entry.fields.iter().map(|f| f.wire_name.as_str()).collect();
+    assert_eq!(names, ["id", "type"]);
+    assert_eq!(entry.extra, Some(ir::Type::JsonValue));
+}
+
+/// The `additionalProperties` half of the idiom can itself be a typed
+/// schema (a `$ref`, not just a bare open `{}`) — the extra bag's value
+/// type must be the referenced declaration, not degraded to raw JSON.
+#[test]
+fn named_properties_plus_typed_additional_properties_references_the_value_type() {
+    let lowering = lower_schemas(serde_json::json!({
+        "Metric": { "type": "object", "properties": { "count": { "type": "integer" } } },
+        "Entry": {
+            "type": "object",
+            "properties": { "id": { "type": "string" } },
+            "required": ["id"],
+            "additionalProperties": { "$ref": "#/components/schemas/Metric" }
+        }
+    }))
+    .unwrap();
+    let entry = struct_decl(find(&lowering.program, "Entry"));
+    let ir::Type::Decl(id) = entry.extra.as_ref().expect("Entry must have an extra bag") else {
+        panic!("extra must reference Metric: {:?}", entry.extra)
+    };
+    assert_eq!(lowering.program.decl(*id).name.as_str(), "Metric");
+}
+
+/// A schema with `additionalProperties` and *no* named `properties` at all
+/// (a pure open map, e.g. the real-world `GenericSource`/`AiExtractResponse`)
+/// still routes through `lower_struct` when it's a named top-level schema
+/// (`lower_named`'s object dispatch doesn't distinguish "has named fields"
+/// from "map-shaped"). D-196 fixes this case too, as a side effect of no
+/// longer ignoring `additionalProperties` once inside `lower_struct`: zero
+/// fields, but the extra bag is still captured instead of silently
+/// vanishing into an empty, meaningless struct.
+#[test]
+fn pure_open_map_named_schema_keeps_the_extra_bag_too() {
+    let lowering = lower_schemas(serde_json::json!({
+        "Bag": { "type": "object", "additionalProperties": {} }
+    }))
+    .unwrap();
+    let bag = struct_decl(find(&lowering.program, "Bag"));
+    assert!(bag.fields.is_empty());
+    assert_eq!(bag.extra, Some(ir::Type::JsonValue));
+}
+
 #[test]
 fn enums_are_open_and_null_entries_encode_nullability() {
     let lowering = lower_schemas(serde_json::json!({
