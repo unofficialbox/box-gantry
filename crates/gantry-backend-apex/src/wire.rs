@@ -629,8 +629,19 @@ impl<'a> Wire<'a> {
     /// its entries back into `raw`. A struct whose extra bag was never set
     /// serializes it as absent (native null-suppression), so the removed
     /// value is `null` here, not an empty map — the `instanceof` guards that.
+    ///
+    /// A typed `additionalProperties` value can itself be a write-affected
+    /// struct — one with a renamed field, or its own nested extra bag. Native
+    /// `JSON.serialize` stamped its Apex field names, not their wire names
+    /// (Apex has no `@JsonProperty` equivalent), so each entry is
+    /// denormalized in place before the merge — the same transform a named
+    /// field of the same type would get.
     fn emit_extra_flatten(&self, out: &mut String, s: &ir::StructDecl) {
         let field = self.extra_field_name(s);
+        let extra_ty = s
+            .extra
+            .as_ref()
+            .expect("an extra-writable struct always carries an extra type");
         let _ = writeln!(
             out,
             "        // Extra bag (D-196): merge its keys into the parent object."
@@ -644,6 +655,23 @@ impl<'a> Wire<'a> {
             out,
             "        if (extraRaw instanceof Map<String, Object>) {{"
         );
+        if self.type_reaches_write_affected(extra_ty) {
+            let _ = writeln!(
+                out,
+                "            Map<String, Object> extraVals = (Map<String, Object>) extraRaw;"
+            );
+            let _ = writeln!(
+                out,
+                "            for (String extraKey : extraVals.keySet()) {{"
+            );
+            let _ = writeln!(
+                out,
+                "                Object extraVal = extraVals.get(extraKey);"
+            );
+            self.emit_transform(out, "extraVal", extra_ty, Dir::Denormalize, 0);
+            let _ = writeln!(out, "                extraVals.put(extraKey, extraVal);");
+            let _ = writeln!(out, "            }}");
+        }
         let _ = writeln!(
             out,
             "            raw.putAll((Map<String, Object>) extraRaw);"
@@ -991,8 +1019,32 @@ impl<'a> Wire<'a> {
                         .expect("object-bearing struct has a name");
                     let _ = writeln!(out, "        {lval} = {child}.deserialize({src});");
                 }
-                // A clean struct or enum is never in the detached set.
-                ir::DeclKind::Struct(_) | ir::DeclKind::Enum(_) => {}
+                // A clean struct or enum's own type never reaches the
+                // detached set as a *named field* (that's what made the
+                // empty arm safe before D-196) — but `extra_ty` can resolve
+                // to either, and every extra-bag entry funnels through here
+                // regardless of `extra_ty`'s own shape. An enum is already a
+                // native `String` at runtime (`JSON.deserializeUntyped`
+                // never produces anything else for a JSON string), so a cast
+                // suffices. A clean struct still needs its own
+                // `normalizeKeys` first when read-affected — same as the
+                // top-level `deserialize` builder's shell — since native
+                // typed `JSON.deserialize` has no `@JsonProperty` equivalent.
+                ir::DeclKind::Enum(_) => {
+                    let _ = writeln!(out, "        {lval} = (String) {src};");
+                }
+                ir::DeclKind::Struct(_) => {
+                    let class = self.names.get(*id).expect("clean struct has a name");
+                    let shell = if self.read_affected.contains(&id.0) {
+                        format!("{class}.normalizeKeys((Map<String, Object>) {src})")
+                    } else {
+                        src.to_string()
+                    };
+                    let _ = writeln!(
+                        out,
+                        "        {lval} = ({class}) JSON.deserialize(JSON.serialize({shell}), {class}.class);"
+                    );
+                }
             },
             ir::Type::List(inner) if self.is_object_leaf(inner) => {
                 let _ = writeln!(out, "        {lval} = (List<Object>) {src};");

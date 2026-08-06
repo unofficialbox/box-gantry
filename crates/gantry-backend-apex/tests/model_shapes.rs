@@ -601,6 +601,119 @@ fn a_scalar_typed_extra_bag_gets_a_type_safe_coverage_probe() {
     );
 }
 
+#[test]
+fn a_clean_struct_typed_extra_bag_normalizes_before_the_native_cast() {
+    // `Child` (the `remap_recurses_into_affected_children_only` fixture) is
+    // read-affected — a `limit` field mangled to `limit_r` — but not
+    // object-bearing on its own; only `S`'s own extra bag makes `S`
+    // object-bearing. The extra-bag reattach must still run Child's own
+    // `normalizeKeys` before the typed cast, same as any other read-affected
+    // struct, rather than leaving the entry unassigned (the empty "clean
+    // struct or enum" arm this used to fall into).
+    let child = struct_decl("Child", vec![field("limit", ir::Type::Int64)]);
+    let s = struct_decl_with_extra(
+        "S",
+        vec![field("id", ir::Type::String)],
+        ir::Type::Decl(ir::DeclId(0)),
+    );
+    let files = render(vec![child, s]);
+    let src = &files
+        .iter()
+        .find(|f| f.path.ends_with("/S.cls"))
+        .expect("S class")
+        .content;
+    assert_contains(
+        src,
+        "public Map<String, Child> extra; // additionalProperties",
+    );
+    assert_contains(
+        src,
+        "dMv0 = (Child) JSON.deserialize(JSON.serialize(Child.normalizeKeys((Map<String, Object>) dSm0.get(dK0))), Child.class);",
+    );
+}
+
+#[test]
+fn an_enum_typed_extra_bag_reattaches_via_a_plain_cast() {
+    // An enum is already a native `String` at runtime
+    // (`JSON.deserializeUntyped` never produces anything else for a JSON
+    // string) — `extra_ty` resolving to an enum needs only a cast, not the
+    // struct round-trip, and not the empty no-op arm this used to fall into
+    // (which left the entry unassigned).
+    let status = ir::Decl {
+        name: ident("Status"),
+        module: schemas(),
+        api_version: None,
+        kind: ir::DeclKind::Enum(ir::EnumDecl {
+            values: vec!["active".into(), "inactive".into()],
+            extensibility: ir::Extensibility::Open,
+        }),
+    };
+    let s = struct_decl_with_extra(
+        "S",
+        vec![field("id", ir::Type::String)],
+        ir::Type::Decl(ir::DeclId(0)),
+    );
+    let files = render(vec![status, s]);
+    let src = &files
+        .iter()
+        .find(|f| f.path.ends_with("/S.cls"))
+        .expect("S class")
+        .content;
+    assert_contains(
+        src,
+        "public Map<String, String> extra; // additionalProperties",
+    );
+    assert_contains(src, "dMv0 = (String) dSm0.get(dK0);");
+}
+
+#[test]
+fn an_extra_bag_of_a_write_affected_struct_denormalizes_before_flatten() {
+    // `Child` has a renamed field, so native `JSON.serialize` stamps its Apex
+    // field name into the extra bag's nested value, not the wire name. The
+    // flatten pass must denormalize each entry — the same transform a named
+    // `Child`-typed field would get — before merging it into the parent
+    // object, or a request sends the Apex shape instead of the wire shape.
+    let child = struct_decl("Child", vec![field("limit", ir::Type::Int64)]);
+    let s = struct_decl_with_extra(
+        "S",
+        vec![field("id", ir::Type::String)],
+        ir::Type::Decl(ir::DeclId(0)),
+    );
+    let mut program = ir::Program::default();
+    program.add(child);
+    let s_id = program.add(s);
+    program.operations.push(ir::Operation {
+        name: ident("post_s"),
+        variation: None,
+        manager: ident("things"),
+        api_version: None,
+        method: ir::HttpMethod::Post,
+        base_url: ir::BaseUrl::Api,
+        path: vec![ir::PathSegment::Literal("things".into())],
+        params: vec![],
+        request: Some(ir::RequestBody {
+            media: ir::RequestMedia::Json,
+            ty: ir::Type::Decl(s_id),
+        }),
+        response: ir::ResponseShape::None,
+        deprecated: false,
+    });
+    let program = Box::leak(Box::new(program));
+    let analysis = gantry_sema::analyze(program).expect("fixture must analyze");
+    let files = generate_models(&analysis, &apex());
+    let src = &files
+        .iter()
+        .find(|f| f.path.ends_with("/S.cls"))
+        .expect("S class")
+        .content;
+    assert_contains(src, "for (String extraKey : extraVals.keySet()) {");
+    assert_contains(
+        src,
+        "if (extraVal instanceof Map<String, Object>) extraVal = Child.denormalizeKeys((Map<String, Object>) extraVal);",
+    );
+    assert_contains(src, "extraVals.put(extraKey, extraVal);");
+}
+
 // --- enums / unions / aliases --------------------------------------------
 
 #[test]
