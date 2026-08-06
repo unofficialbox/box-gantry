@@ -1049,7 +1049,7 @@ fn page_method(public: &str) -> String {
 
 /// Allocate a collision-free name in a scope: `base`, else `base_2`, … —
 /// deterministic given a stable iteration order (FR-6.2).
-fn dedupe(used: &mut Vec<String>, base: String) -> String {
+pub(crate) fn dedupe(used: &mut Vec<String>, base: String) -> String {
     let mut candidate = base.clone();
     let mut n = 2;
     while used.contains(&candidate) {

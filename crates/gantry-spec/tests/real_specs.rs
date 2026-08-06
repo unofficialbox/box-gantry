@@ -56,10 +56,10 @@ fn the_full_real_spec_set_ingests() {
     // recognizing the nullable-`$ref` `oneOf`/`anyOf` idiom (D-195) resolves
     // 9 fields straight to their referenced type instead of synthesizing an
     // opaque structural union for each, and the v2026.0 Box Query / Query
-    // Insights release adds 16 new decls (D-196 gives 3 of them — including
+    // Insights release adds 16 new decls. D-196 gives 3 of those — including
     // `QueryResultEntry`'s open metadata bag — a real extra-fields
-    // representation instead of the silent drop D-195's fix also caught
-    // `GenericSource`/`AiExtractResponse` doing):
+    // representation instead of a silent drop. The same silent drop applied to
+    // `GenericSource`/`AiExtractResponse`, which D-195's fix also caught:
     // 900 → 879 → 877 → 868 → 884 decls (486 synthesized).
     assert_eq!(lowering.program.decls.len(), 884);
     let stats = &lowering.stats;

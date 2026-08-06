@@ -380,3 +380,35 @@ fn extra_only_struct_still_gets_merge_methods() {
     assert!(!go.contains("type Bag struct{}"), "{go}");
     assert_contains(&go, "func (s Bag) MarshalJSON() ([]byte, error) {");
 }
+
+/// A real field that itself normalizes to `Extra` must not collide with the
+/// synthesized catch-all — the dedup allocator gives the synthetic field a
+/// fresh name instead of emitting a duplicate `Extra` struct field (a Go
+/// compile error).
+#[test]
+fn extra_field_name_collision_is_disambiguated() {
+    let mut program = ir::Program::default();
+    program.add(ir::Decl {
+        name: ident("Entry"),
+        module: schemas(),
+        api_version: None,
+        kind: ir::DeclKind::Struct(ir::StructDecl {
+            fields: vec![field("extra", ir::Type::String)],
+            extra: Some(ir::Type::JsonValue),
+        }),
+    });
+    let program = Box::leak(Box::new(program));
+    let analysis = gantry_sema::analyze(program).expect("fixture program must analyze");
+    let build = BuildInfo::new("fixtures");
+    let go = gantry_backend_go::generate_models(&analysis, &build)
+        .into_iter()
+        .find(|f| f.path == "schemas/schemas.go")
+        .expect("the schemas module must be generated")
+        .content;
+
+    assert_contains_aligned(&go, r#"Extra   string `json:"extra"`"#);
+    assert_contains_aligned(&go, r#"Extra_2 map[string]any `json:"-"`"#);
+    assert_contains(&go, r#"delete(m, "extra")"#);
+    assert_contains(&go, "for k, v := range s.Extra_2 {");
+    assert_contains(&go, "s.Extra_2 = make(map[string]any, len(m))");
+}

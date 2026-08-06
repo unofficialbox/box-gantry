@@ -471,8 +471,11 @@ impl<'a> Wire<'a> {
 
     /// `'wire' => <value>` entries for each object-bearing field `deserialize`
     /// detaches and reattaches, the value shaped to drive its reattach arm,
-    /// plus (for an extra-bearing struct) an unrecognized key so the extra-bag
-    /// computation loop executes.
+    /// plus (for an extra-bearing struct) an unrecognized key whose value is
+    /// shaped for `extra_ty` — not a bare `'x'`, which would throw when
+    /// `extra_ty` is a strict-typed scalar (e.g. `JSON.deserialize('x',
+    /// Integer.class)`) — so the extra-bag computation loop executes cleanly
+    /// regardless of the extra bag's value type.
     fn detach_entries(&self, s: &ir::StructDecl) -> String {
         let mut parts = Vec::new();
         for field in &s.fields {
@@ -485,8 +488,11 @@ impl<'a> Wire<'a> {
                 self.reattach_value(&field.ty)
             ));
         }
-        if s.extra.is_some() {
-            parts.push("'__extra_probe__' => 'x'".to_string());
+        if let Some(extra_ty) = &s.extra {
+            parts.push(format!(
+                "'__extra_probe__' => {}",
+                self.reattach_value(extra_ty)
+            ));
         }
         parts.join(", ")
     }
@@ -534,7 +540,9 @@ impl<'a> Wire<'a> {
     /// An untyped Apex value that makes `emit_reattach` enter its branches one
     /// level: an `Object` leaf takes any scalar; a nested object-bearing struct
     /// an empty map (its `deserialize` runs on it); a list/map of either wraps
-    /// one such value so the element loop executes.
+    /// one such value so the element loop executes. Also used to shape the
+    /// extra bag's (D-196) probe value, where `ty` is `extra_ty` itself rather
+    /// than a field type.
     fn reattach_value(&self, ty: &ir::Type) -> String {
         match ty {
             ir::Type::Optional(inner) | ir::Type::Nullable(inner) => self.reattach_value(inner),
@@ -560,7 +568,11 @@ impl<'a> Wire<'a> {
                     self.reattach_value(inner)
                 )
             }
-            // Scalars never reach the detached set.
+            // Scalars never reach the detached set for an object-bearing
+            // field's own type — but `extra_ty` (D-196) can itself be a bare
+            // scalar, and `null` round-trips cleanly through
+            // `emit_reattach`'s scalar-arm cast for any strict Apex type
+            // without throwing.
             ir::Type::Bool
             | ir::Type::Int64
             | ir::Type::Float64
@@ -1041,14 +1053,29 @@ impl<'a> Wire<'a> {
                 let _ = writeln!(out, "            {lval} = {map};");
                 let _ = writeln!(out, "        }}");
             }
-            // Scalars never reach the detached set.
+            // A named field's own scalar type never reaches the detached
+            // set (it's never an `Object` leaf itself), so this arm was
+            // unreachable until the extra bag (D-196) started calling
+            // `emit_reattach` on a `Map<extra_ty>` whose value type can be
+            // any scalar (a typed `additionalProperties` need not be a
+            // struct or union). Round-trip through native (de)serialize —
+            // the same trick the struct/union arms use — rather than
+            // hand-coding `Object`→scalar coercion for every JSON.
+            // deserializeUntyped() representation (Decimal for numbers,
+            // ISO strings for Date/DateTime, base64 for Blob, …).
             ir::Type::Bool
             | ir::Type::Int64
             | ir::Type::Float64
             | ir::Type::String
             | ir::Type::Date
             | ir::Type::DateTime
-            | ir::Type::Binary => {}
+            | ir::Type::Binary => {
+                let apex_ty = apex_type(self.program, self.names, ty);
+                let _ = writeln!(
+                    out,
+                    "        {lval} = ({apex_ty}) JSON.deserialize(JSON.serialize({src}), {apex_ty}.class);"
+                );
+            }
         }
     }
 

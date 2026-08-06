@@ -544,6 +544,63 @@ fn a_response_only_extra_struct_gets_no_denormalize_hook() {
     );
 }
 
+#[test]
+fn a_scalar_typed_extra_bag_reattaches_via_json_round_trip() {
+    // A typed `additionalProperties` need not be a struct or union — it can
+    // resolve to a bare scalar. `deserialize` reattaches the extra bag
+    // through the same `Map<String, T>` machinery as any other field, so the
+    // per-entry cast must round-trip through native (de)serialize rather
+    // than leaving the scalar arm empty (CodeRabbit: the empty arm left
+    // `dMv0` unassigned, a compile error once this shape became reachable).
+    let s = struct_with_extra_and_optional_body(
+        vec![field("id", ir::Type::String)],
+        ir::Type::Int64,
+        false,
+    );
+    assert_contains(
+        &s,
+        "public Map<String, Long> extra; // additionalProperties",
+    );
+    assert_contains(&s, "Map<String, Long> dMap0 = new Map<String, Long>();");
+    assert_contains(
+        &s,
+        "dMv0 = (Long) JSON.deserialize(JSON.serialize(dSm0.get(dK0)), Long.class);",
+    );
+    assert_contains(&s, "result.extra = dMap0;");
+}
+
+#[test]
+fn a_scalar_typed_extra_bag_gets_a_type_safe_coverage_probe() {
+    // The generated `BoxModelWireTest` exercise drives `deserialize` with a
+    // populated map so the extra-bag branch actually runs. A bare `'x'`
+    // probe (fine when `extra_ty` is `Object`/`String`) would throw here —
+    // `JSON.deserialize(JSON.serialize('x'), Long.class)` is not a valid
+    // `Long` literal — so the probe must be shaped for `extra_ty`, not a
+    // fixed placeholder.
+    let mut program = ir::Program::default();
+    program.add(struct_decl_with_extra(
+        "S",
+        vec![field("id", ir::Type::String)],
+        ir::Type::Int64,
+    ));
+    let program = Box::leak(Box::new(program));
+    let analysis = gantry_sema::analyze(program).expect("fixture must analyze");
+    let files = generate(&analysis, &apex(), &BuildInfo::new("testfp"));
+    let wire_test = files
+        .into_iter()
+        .find(|f| f.path == format!("{CLASSES}/BoxModelWireTest1.cls"))
+        .expect("a wire coverage-exercise class")
+        .content;
+    assert_contains(
+        &wire_test,
+        "S.deserialize(new Map<String, Object>{ '__extra_probe__' => null });",
+    );
+    assert!(
+        !wire_test.contains("'__extra_probe__' => 'x'"),
+        "a scalar extra_ty must not probe with a bare string literal:\n{wire_test}"
+    );
+}
+
 // --- enums / unions / aliases --------------------------------------------
 
 #[test]
