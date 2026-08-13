@@ -101,12 +101,15 @@ export class CachedToken implements Auth {
  * token acquisition never escapes the runtime's error contract. The optional
  * `signal` cancels an explicit caller-initiated exchange (`exchangeCode`); the
  * cached flows do not thread one, so a shared refresh is never bound to a single
- * request's cancellation.
+ * request's cancellation. `fetchImpl` defaults to the global `fetch`; a caller
+ * building an `Auth` with a custom transport (matching the runtime `Client`'s
+ * own `fetch` override) passes it through so auth traffic is observable too.
  */
 export async function postTokenForm(
   tokenUrl: string,
   form: Record<string, string>,
   signal?: AbortSignal,
+  fetchImpl: typeof fetch = fetch,
 ): Promise<Token> {
   // An internal deadline independent of the caller's signal, combined with it
   // when present. It also covers the body read, since the signal aborts an
@@ -117,7 +120,7 @@ export async function postTokenForm(
   let response: Awaited<ReturnType<typeof fetch>>;
   let text: string;
   try {
-    response = await fetch(tokenUrl, {
+    response = await fetchImpl(tokenUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',

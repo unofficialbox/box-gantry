@@ -29,6 +29,10 @@ export interface JwtConfig {
   userId?: string;
   /** Optional; defaults to Box's token endpoint. */
   tokenUrl?: string;
+  /** Override the platform `fetch` used for the token exchange — e.g. to match
+   * the runtime `Client`'s own transport override. Defaults to the global
+   * `fetch`. */
+  fetch?: typeof fetch;
 }
 
 /**
@@ -64,12 +68,17 @@ export async function jwtAuth(config: JwtConfig): Promise<Auth> {
     : { type: 'enterprise', id: config.enterpriseId ?? '' };
   return new CachedToken(async () => {
     const assertion = signAssertion(crypto, config, privateKey, subject, tokenUrl);
-    return postTokenForm(tokenUrl, {
-      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-      assertion,
-      client_id: config.clientId,
-      client_secret: config.clientSecret,
-    });
+    return postTokenForm(
+      tokenUrl,
+      {
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion,
+        client_id: config.clientId,
+        client_secret: config.clientSecret,
+      },
+      undefined,
+      config.fetch,
+    );
   });
 }
 

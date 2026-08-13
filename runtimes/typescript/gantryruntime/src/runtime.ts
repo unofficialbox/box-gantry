@@ -68,6 +68,9 @@ export interface ClientOptions {
   maxRetries?: number;
   /** Override individual base-URL classes (custom deployments). */
   baseUrls?: Record<string, string>;
+  /** Override the platform `fetch` (same signature) — e.g. to inject an
+   * instrumented or mocked transport. Defaults to the global `fetch`. */
+  fetch?: typeof fetch;
 }
 
 /** The runtime session: it holds the auth flow, base-URL configuration, and
@@ -76,6 +79,7 @@ export class Client {
   private readonly auth: Auth;
   private readonly baseUrls: Record<string, string>;
   private readonly maxRetries: number;
+  private readonly fetchImpl: typeof fetch;
 
   constructor(auth: Auth, options: ClientOptions = {}) {
     this.auth = auth;
@@ -85,6 +89,7 @@ export class Client {
     }
     this.maxRetries = maxRetries;
     this.baseUrls = { ...DEFAULT_BASE_URLS, ...(options.baseUrls ?? {}) };
+    this.fetchImpl = options.fetch ?? fetch;
   }
 
   /** The configured base URL for a D-106 class, without a trailing slash. */
@@ -127,7 +132,7 @@ export class Client {
       // shadowed by this module's `Response` class, so it is never annotated).
       let httpResponse;
       try {
-        httpResponse = await fetch(url, {
+        httpResponse = await this.fetchImpl(url, {
           method: request.method,
           headers,
           // A `Uint8Array` is a valid `BodyInit` at runtime; the cast bridges

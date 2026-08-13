@@ -36,6 +36,10 @@ export interface CcgConfig {
   userId?: string;
   /** Optional; defaults to Box's token endpoint. */
   tokenUrl?: string;
+  /** Override the platform `fetch` used for the token exchange — e.g. to match
+   * the runtime `Client`'s own transport override. Defaults to the global
+   * `fetch`. */
+  fetch?: typeof fetch;
 }
 
 /** Build a CCG `Auth`. Requires a subject: `enterpriseId` or `userId`. */
@@ -50,13 +54,18 @@ export function clientCredentials(config: CcgConfig): Auth {
     ? { type: 'user', id: config.userId }
     : { type: 'enterprise', id: config.enterpriseId ?? '' };
   return new CachedToken(() =>
-    postTokenForm(tokenUrl, {
-      grant_type: 'client_credentials',
-      client_id: config.clientId,
-      client_secret: config.clientSecret,
-      box_subject_type: subject.type,
-      box_subject_id: subject.id,
-    }),
+    postTokenForm(
+      tokenUrl,
+      {
+        grant_type: 'client_credentials',
+        client_id: config.clientId,
+        client_secret: config.clientSecret,
+        box_subject_type: subject.type,
+        box_subject_id: subject.id,
+      },
+      undefined,
+      config.fetch,
+    ),
   );
 }
 
@@ -76,6 +85,10 @@ export interface OAuthConfig {
    * stale, already-invalidated token.
    */
   onRefresh?: (refreshToken: string) => void;
+  /** Override the platform `fetch` used for token exchanges — e.g. to match
+   * the runtime `Client`'s own transport override. Defaults to the global
+   * `fetch`. */
+  fetch?: typeof fetch;
 }
 
 /**
@@ -105,12 +118,17 @@ function refreshTokenExchange(
 ): () => Promise<Token> {
   let refreshToken = initialRefresh;
   return async () => {
-    const token = await postTokenForm(tokenUrl, {
-      grant_type: 'refresh_token',
-      refresh_token: refreshToken,
-      client_id: config.clientId,
-      client_secret: config.clientSecret,
-    });
+    const token = await postTokenForm(
+      tokenUrl,
+      {
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: config.clientId,
+        client_secret: config.clientSecret,
+      },
+      undefined,
+      config.fetch,
+    );
     if (token.refreshToken) {
       refreshToken = token.refreshToken;
       config.onRefresh?.(token.refreshToken);
@@ -150,6 +168,7 @@ export async function exchangeCode(
       redirect_uri: redirectUri,
     },
     signal,
+    config.fetch,
   );
   if (!token.refreshToken) {
     throw new BoxApiError('authorization-code exchange returned no refresh_token');
