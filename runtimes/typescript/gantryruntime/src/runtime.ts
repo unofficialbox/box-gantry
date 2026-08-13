@@ -71,6 +71,11 @@ export interface ClientOptions {
   /** Override the platform `fetch` (same signature) — e.g. to inject an
    * instrumented or mocked transport. Defaults to the global `fetch`. */
   fetch?: typeof fetch;
+  /** Headers sent with every request from this client — e.g. a tracing or
+   * `User-Agent` header the embedding application wants on every call. A
+   * header set on an individual `Request` (via `withHeader`) takes
+   * precedence over a same-named default. */
+  headers?: Record<string, string>;
 }
 
 /** The runtime session: it holds the auth flow, base-URL configuration, and
@@ -80,6 +85,7 @@ export class Client {
   private readonly baseUrls: Record<string, string>;
   private readonly maxRetries: number;
   private readonly fetchImpl: typeof fetch;
+  private readonly defaultHeaders: Record<string, string>;
 
   constructor(auth: Auth, options: ClientOptions = {}) {
     this.auth = auth;
@@ -90,6 +96,7 @@ export class Client {
     this.maxRetries = maxRetries;
     this.baseUrls = { ...DEFAULT_BASE_URLS, ...(options.baseUrls ?? {}) };
     this.fetchImpl = options.fetch ?? fetch;
+    this.defaultHeaders = { ...(options.headers ?? {}) };
   }
 
   /** The configured base URL for a D-106 class, without a trailing slash. */
@@ -125,7 +132,8 @@ export class Client {
     let refreshed = false;
     let lastError: unknown;
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-      const headers = new Headers(request.headers);
+      const headers = new Headers(this.defaultHeaders);
+      request.headers.forEach((value, name) => headers.set(name, value));
       headers.set('Authorization', `Bearer ${token}`);
 
       // `httpResponse` is the platform `Response` (via inference — the name is
@@ -157,7 +165,7 @@ export class Client {
 
       // A single force-refresh on 401: re-acquire past the token cache so the
       // retry doesn't just resend the same rejected token.
-      if (response.status === 401 && !refreshed) {
+      if (response.status === 401 && !refreshed && attempt < this.maxRetries) {
         refreshed = true;
         token = await this.auth.forceRefresh(token);
         continue;

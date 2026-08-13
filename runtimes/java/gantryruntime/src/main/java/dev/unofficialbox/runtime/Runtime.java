@@ -139,6 +139,7 @@ public final class Runtime {
         private final int maxRetries;
         private final Map<String, String> baseUrls;
         private final Map<String, String> baseUrlOverrides;
+        private final Map<String, String> defaultHeaders;
 
         /** Build a runtime session for an authentication flow, with the default
          * HTTP client, retry policy, and base URLs. Equivalent to
@@ -153,6 +154,7 @@ public final class Runtime {
             this.maxRetries = builder.maxRetries;
             this.baseUrls = defaultBaseUrls();
             this.baseUrlOverrides = Map.copyOf(builder.baseUrlOverrides);
+            this.defaultHeaders = Map.copyOf(builder.defaultHeaders);
         }
 
         /**
@@ -256,6 +258,13 @@ public final class Runtime {
                 builder.header("Content-Type", request.contentType);
             }
             builder.header("Authorization", "Bearer " + token);
+            for (Map.Entry<String, String> header : defaultHeaders.entrySet()) {
+                boolean overridden = request.headers.stream()
+                        .anyMatch(h -> h[0].equalsIgnoreCase(header.getKey()));
+                if (!overridden) {
+                    builder.header(header.getKey(), header.getValue());
+                }
+            }
             for (String[] header : request.headers) {
                 builder.header(header[0], header[1]);
             }
@@ -315,6 +324,7 @@ public final class Runtime {
             private HttpClient http;
             private int maxRetries = DEFAULT_MAX_RETRIES;
             private final Map<String, String> baseUrlOverrides = new LinkedHashMap<>();
+            private final Map<String, String> defaultHeaders = new LinkedHashMap<>();
 
             private Builder(Auth auth) {
                 this.auth = auth;
@@ -342,6 +352,18 @@ public final class Runtime {
              * property and the built-in default (see {@link Session#baseUrl}). */
             public Builder baseUrl(String name, String url) {
                 baseUrlOverrides.put(name, url);
+                return this;
+            }
+
+            /** Add a header sent with every request from this session — e.g. a
+             * tracing or {@code User-Agent} header the embedding application
+             * wants on every call. Replaces any prior default with the same
+             * name (case-insensitively). A header set on an individual {@link
+             * Request} (via {@link Runtime#withHeader}) takes precedence over
+             * a same-named default. */
+            public Builder header(String name, String value) {
+                defaultHeaders.keySet().removeIf(key -> key.equalsIgnoreCase(name));
+                defaultHeaders.put(name, value);
                 return this;
             }
 

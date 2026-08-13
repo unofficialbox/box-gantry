@@ -23,3 +23,22 @@ declare module 'node:fs' {
 declare module 'node:process' {
   export const env: Record<string, string | undefined>;
 }
+// A minimal ambient declaration for the slice of `node:http` the local
+// (credential-free) runtime unit tests use, for the same reason as above.
+declare module 'node:http' {
+  export interface IncomingMessage {
+    readonly headers: Record<string, string | string[] | undefined>;
+  }
+  export interface ServerResponse {
+    statusCode: number;
+    end(): void;
+  }
+  export interface Server {
+    listen(port: number, host: string, callback: () => void): void;
+    close(callback: () => void): void;
+    address(): { port: number } | null;
+  }
+  export function createServer(
+    handler: (req: IncomingMessage, res: ServerResponse) => void,
+  ): Server;
+}

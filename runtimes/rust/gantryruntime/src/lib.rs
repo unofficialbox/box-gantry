@@ -118,6 +118,7 @@ pub struct Client {
     http: reqwest::Client,
     base_urls: HashMap<String, String>,
     max_retries: u32,
+    default_headers: Vec<(String, String)>,
 }
 
 impl Client {
@@ -133,6 +134,7 @@ impl Client {
             http,
             max_retries: 5,
             base_urls: default_base_urls(),
+            default_headers: Vec::new(),
         }
     }
 
@@ -146,6 +148,19 @@ impl Client {
     /// inject an instrumented transport instead of the internally built default.
     pub fn with_http_client(mut self, http: reqwest::Client) -> Client {
         self.http = http;
+        self
+    }
+
+    /// Add a header sent with every request from this client (fluent) — e.g.
+    /// a tracing or `User-Agent` header an embedding application wants on
+    /// every call. Replaces any prior default with the same name
+    /// (case-insensitive). A header set on an individual `Request` (via the
+    /// free [`with_header`]) takes precedence over a same-named default.
+    pub fn with_header(mut self, name: &str, value: &str) -> Client {
+        self.default_headers
+            .retain(|(key, _)| !key.eq_ignore_ascii_case(name));
+        self.default_headers
+            .push((name.to_string(), value.to_string()));
         self
     }
 
@@ -201,6 +216,15 @@ impl Client {
                 .request(method.clone(), &request.url)
                 .query(&request.query)
                 .header("Authorization", format!("Bearer {token}"));
+            for (name, value) in &self.default_headers {
+                if !request
+                    .headers
+                    .iter()
+                    .any(|(n, _)| n.eq_ignore_ascii_case(name))
+                {
+                    builder = builder.header(name, value);
+                }
+            }
             for (name, value) in &request.headers {
                 builder = builder.header(name, value);
             }
@@ -222,7 +246,7 @@ impl Client {
 
             // A single force-refresh on 401: re-acquire past the token cache so
             // the retry doesn't just resend the same rejected token.
-            if response.status == 401 && !refreshed {
+            if response.status == 401 && !refreshed && attempt < self.max_retries {
                 refreshed = true;
                 token = self.auth.force_refresh(&token).await?;
                 continue;
@@ -698,5 +722,68 @@ mod tests {
             elapsed < Duration::from_secs(5),
             "fetch took {elapsed:?}, expected it to fail fast via the injected client's timeout"
         );
+    }
+
+    /// A server that captures the raw bytes of the first request it receives,
+    /// answers 200, then hands the captured text back over the returned
+    /// channel — enough to assert on the headers a `fetch` call actually sent.
+    async fn capture_request() -> (String, tokio::sync::oneshot::Receiver<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let n = socket.read(&mut buf).await.unwrap();
+            let _ = tx.send(String::from_utf8_lossy(&buf[..n]).to_string());
+            let _ = socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await;
+        });
+        (format!("http://{addr}/"), rx)
+    }
+
+    #[tokio::test]
+    async fn with_header_sends_a_default_on_every_request() {
+        let (url, rx) = capture_request().await;
+        let client = Client::new(Auth::developer_token("t")).with_header("X-Trace-Id", "abc");
+        client.fetch(client.new_request("GET", &url)).await.unwrap();
+        let sent = rx.await.unwrap();
+        assert!(sent.contains("x-trace-id: abc") || sent.contains("X-Trace-Id: abc"));
+    }
+
+    #[tokio::test]
+    async fn a_401_with_no_retries_left_returns_the_response_not_an_error() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let _ = socket.read(&mut buf).await.unwrap();
+            let _ = socket
+                .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
+                .await;
+        });
+        let client = Client::new(Auth::developer_token("t")).with_max_retries(0);
+        let response = client
+            .fetch(client.new_request("GET", &format!("http://{addr}/")))
+            .await
+            .unwrap();
+        assert_eq!(status_code(&response), 401);
+    }
+
+    #[tokio::test]
+    async fn request_header_overrides_a_same_named_default() {
+        let (url, rx) = capture_request().await;
+        let client = Client::new(Auth::developer_token("t")).with_header("X-Trace-Id", "default");
+        let request = with_header(client.new_request("GET", &url), "X-Trace-Id", "override");
+        client.fetch(request).await.unwrap();
+        let sent = rx.await.unwrap();
+        assert!(sent.to_lowercase().contains("x-trace-id: override"));
+        assert!(!sent.to_lowercase().contains("x-trace-id: default"));
     }
 }

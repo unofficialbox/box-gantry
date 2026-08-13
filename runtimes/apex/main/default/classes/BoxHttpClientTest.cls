@@ -246,6 +246,35 @@ private class BoxHttpClientTest {
     }
 
     @isTest
+    static void defaultHeaderIsSentAndOverridableByARequestHeader() {
+        SequenceMock mock = new SequenceMock(
+            new List<Integer>{ 200, 200 },
+            new List<String>{ '{}', '{}' }
+        );
+        Test.setMock(HttpCalloutMock.class, mock);
+        CountingTokens tokens = new CountingTokens();
+        BoxHttpClient client = new BoxHttpClient(tokens).withHeader('X-Trace-Id', 'default');
+
+        Test.startTest();
+        client.send(request('GET', 'api', '/a'));
+        BoxRequest overriding = request('GET', 'api', '/b');
+        overriding.headers.put('X-Trace-Id', 'override');
+        client.send(overriding);
+        Test.stopTest();
+
+        System.assertEquals(
+            'default',
+            mock.seen[0].getHeader('X-Trace-Id'),
+            'the client default is sent when the request sets no override'
+        );
+        System.assertEquals(
+            'override',
+            mock.seen[1].getHeader('X-Trace-Id'),
+            'a request-level header overrides the same-named default'
+        );
+    }
+
+    @isTest
     static void suppressNullsOmitsNullKeysByDefault() {
         // The default (suppressNulls = true) path receives a typed model object;
         // a null-valued field is dropped from the serialized body — an unset

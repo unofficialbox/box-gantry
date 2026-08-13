@@ -16,6 +16,7 @@ public with sharing class BoxHttpClient implements BoxClient {
     private final Integer maxRetries;
     private final Integer timeoutMs;
     private final Map<String, String> baseUrls;
+    private final Map<String, String> defaultHeaders = new Map<String, String>();
 
     /** Build against a token provider with sensible defaults. */
     public BoxHttpClient(BoxTokenProvider tokens) {
@@ -36,6 +37,15 @@ public with sharing class BoxHttpClient implements BoxClient {
     /** Override one base-URL class (custom / sandbox deployments). */
     public BoxHttpClient overrideBaseUrl(String key, String url) {
         this.baseUrls.put(key, url.removeEnd('/'));
+        return this;
+    }
+
+    /** Add a header sent with every callout from this client — e.g. a
+     * tracing or User-Agent header the embedding application wants on every
+     * call. A header set on an individual BoxRequest takes precedence over a
+     * same-named default. */
+    public BoxHttpClient withHeader(String name, String value) {
+        this.defaultHeaders.put(name, value);
         return this;
     }
 
@@ -86,6 +96,19 @@ public with sharing class BoxHttpClient implements BoxClient {
         req.setMethod(request.method);
         req.setTimeout(this.timeoutMs);
         req.setHeader('Authorization', 'Bearer ' + this.tokens.getAccessToken());
+        if (!this.defaultHeaders.isEmpty()) {
+            Set<String> requestKeysLower = new Set<String>();
+            if (request.headers != null) {
+                for (String key : request.headers.keySet()) {
+                    requestKeysLower.add(key.toLowerCase());
+                }
+            }
+            for (String key : this.defaultHeaders.keySet()) {
+                if (!requestKeysLower.contains(key.toLowerCase())) {
+                    req.setHeader(key, this.defaultHeaders.get(key));
+                }
+            }
+        }
         if (request.headers != null) {
             for (String key : request.headers.keySet()) {
                 req.setHeader(key, request.headers.get(key));
