@@ -231,7 +231,7 @@ public final class Runtime {
                     sleep(backoff(attempt));
                     continue;
                 }
-                if (response.status == 401 && !refreshed) {
+                if (response.status == 401 && !refreshed && attempt < maxRetries) {
                     refreshed = true;
                     token = auth.forceRefresh(token);
                     continue;
