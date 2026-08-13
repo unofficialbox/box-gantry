@@ -17,7 +17,7 @@
 mod auth;
 mod jwt;
 
-pub use auth::{Auth, CcgConfig, OAuthConfig, RefreshTokenStore};
+pub use auth::{Auth, CcgConfig, OAuthConfig, RefreshTokenStore, TokenSource};
 pub use jwt::JwtConfig;
 
 use std::collections::HashMap;
@@ -139,6 +139,13 @@ impl Client {
     /// Override how many times a retriable failure is retried (fluent).
     pub fn with_max_retries(mut self, n: u32) -> Client {
         self.max_retries = n;
+        self
+    }
+
+    /// Override the `reqwest::Client` used for API requests (fluent) — e.g. to
+    /// inject an instrumented transport instead of the internally built default.
+    pub fn with_http_client(mut self, http: reqwest::Client) -> Client {
+        self.http = http;
         self
     }
 
@@ -649,5 +656,47 @@ mod tests {
     async fn developer_token_returns_the_fixed_token() {
         let client = Client::new(Auth::developer_token("dev-123"));
         assert_eq!(client.access_token().await.unwrap(), "dev-123");
+    }
+
+    /// A listener that accepts a connection and then never responds, so a
+    /// request against it only returns once its client's own timeout fires.
+    async fn hang_forever() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = listener.accept().await;
+            std::future::pending::<()>().await;
+        });
+        format!("http://{addr}/hang")
+    }
+
+    #[tokio::test]
+    async fn with_http_client_is_used_for_requests() {
+        // The default client's timeout is 60s; a request through it against a
+        // server that never responds would hang this test for a minute. An
+        // injected client with a much shorter timeout proves `fetch` actually
+        // uses it rather than the internally built default.
+        let url = hang_forever().await;
+        let injected = reqwest::Client::builder()
+            .timeout(Duration::from_millis(200))
+            .build()
+            .unwrap();
+        // Retries would otherwise chain several timed-out attempts with
+        // backoff sleeps between them; disable them so the bound below tests
+        // only the injected client's own timeout.
+        let client = Client::new(Auth::developer_token("t"))
+            .with_http_client(injected)
+            .with_max_retries(0);
+        let request = client.new_request("GET", &url);
+        let elapsed = {
+            let start = std::time::Instant::now();
+            let result = client.fetch(request).await;
+            assert!(result.is_err(), "expected the short timeout to fire");
+            start.elapsed()
+        };
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "fetch took {elapsed:?}, expected it to fail fast via the injected client's timeout"
+        );
     }
 }

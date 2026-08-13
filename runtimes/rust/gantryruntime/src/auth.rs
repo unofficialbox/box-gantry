@@ -43,6 +43,25 @@ enum Source {
     /// A cached token refreshed by signing a fresh JWT bearer assertion. Boxed:
     /// the parsed RSA key makes this variant far larger than the others.
     Jwt(Box<JwtSource>),
+    /// A caller-supplied [`TokenSource`] (see [`Auth::custom`]).
+    Custom(Arc<dyn TokenSource>),
+}
+
+/// A custom access-token source, for callers that need to own token
+/// acquisition and refresh outside the built-in flows — e.g. an
+/// engine-owned token cache with proactive refresh and per-identity fan-out.
+/// Build an [`Auth`] from one with [`Auth::custom`].
+#[async_trait::async_trait]
+pub trait TokenSource: Send + Sync {
+    /// A valid access token, refreshing through the implementation's own
+    /// cache as needed.
+    async fn access_token(&self) -> Result<String, Error>;
+
+    /// Re-acquire a token after `stale` was rejected by a 401, bypassing any
+    /// cache. If another caller already refreshed past `stale`, return the
+    /// newer token instead of re-acquiring again — single-flight behavior is
+    /// the implementation's responsibility, mirroring the built-in sources.
+    async fn force_refresh(&self, stale: &str) -> Result<String, Error>;
 }
 
 impl Auth {
@@ -119,6 +138,16 @@ impl Auth {
         Self::oauth_source(config, refresh_token.into(), Some(store))
     }
 
+    /// Build an `Auth` from a custom [`TokenSource`] — for callers that need
+    /// to own token acquisition and refresh outside the built-in flows (e.g.
+    /// an engine-owned token cache with proactive refresh and per-identity
+    /// fan-out) instead of one of the flows above.
+    pub fn custom(source: Arc<dyn TokenSource>) -> Auth {
+        Auth {
+            source: Source::Custom(source),
+        }
+    }
+
     fn oauth_source(
         config: OAuthConfig,
         refresh_token: String,
@@ -149,6 +178,7 @@ impl Auth {
             Source::Form(source) => source.access_token().await,
             Source::OAuth(source) => source.access_token().await,
             Source::Jwt(source) => source.access_token().await,
+            Source::Custom(source) => source.access_token().await,
         }
     }
 
@@ -163,6 +193,7 @@ impl Auth {
             Source::Form(source) => source.force_refresh(stale).await,
             Source::OAuth(source) => source.force_refresh(stale).await,
             Source::Jwt(source) => source.force_refresh(stale).await,
+            Source::Custom(source) => source.force_refresh(stale).await,
         }
     }
 }
@@ -609,7 +640,7 @@ mod tests {
                     .form
                     .contains(&("box_subject_id".to_string(), "ent-1".to_string())));
             }
-            Source::Developer(_) | Source::OAuth(_) | Source::Jwt(_) => {
+            Source::Developer(_) | Source::OAuth(_) | Source::Jwt(_) | Source::Custom(_) => {
                 panic!("expected a form source")
             }
         }
@@ -717,6 +748,43 @@ mod tests {
         let auth = oauth_with(url, store);
         assert_eq!(auth.access_token().await.unwrap(), "at");
         assert_eq!(saved.lock().unwrap().as_slice(), ["rotated"]);
+    }
+
+    /// A `TokenSource` that hands out a fixed token and records `force_refresh`
+    /// calls, so a custom `Auth` can be verified without a network round-trip.
+    struct FixedTokenSource {
+        token: String,
+        force_refresh_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl TokenSource for FixedTokenSource {
+        async fn access_token(&self) -> Result<String, Error> {
+            Ok(self.token.clone())
+        }
+
+        async fn force_refresh(&self, _stale: &str) -> Result<String, Error> {
+            self.force_refresh_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(self.token.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn custom_token_source_serves_access_and_force_refresh() {
+        let source = Arc::new(FixedTokenSource {
+            token: "custom-token".to_string(),
+            force_refresh_calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let auth = Auth::custom(source.clone());
+        assert_eq!(auth.access_token().await.unwrap(), "custom-token");
+        assert_eq!(auth.force_refresh("stale").await.unwrap(), "custom-token");
+        assert_eq!(
+            source
+                .force_refresh_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
     }
 
     #[tokio::test]
