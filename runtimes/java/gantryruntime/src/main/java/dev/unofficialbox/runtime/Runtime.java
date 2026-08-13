@@ -260,7 +260,8 @@ public final class Runtime {
             builder.header("Authorization", "Bearer " + token);
             for (Map.Entry<String, String> header : defaultHeaders.entrySet()) {
                 boolean overridden = request.headers.stream()
-                        .anyMatch(h -> h[0].equalsIgnoreCase(header.getKey()));
+                        .anyMatch(h -> h[0].equalsIgnoreCase(header.getKey()))
+                        || (request.contentType != null && header.getKey().equalsIgnoreCase("Content-Type"));
                 if (!overridden) {
                     builder.header(header.getKey(), header.getValue());
                 }

@@ -35,7 +35,9 @@ test('a client default header is sent, and a per-request header overrides it', a
     async (url) => {
       const client = new Client(developerToken('t'), { headers: { 'X-Trace-Id': 'default' } });
       await client.fetch(client.newRequest('GET', url));
-      const overriding = withHeader(client.newRequest('GET', url), 'X-Trace-Id', 'override');
+      // Different casing than the default, to prove the override is
+      // case-insensitive, not just a literal-name match.
+      const overriding = withHeader(client.newRequest('GET', url), 'x-trace-id', 'override');
       await client.fetch(overriding);
     },
   );

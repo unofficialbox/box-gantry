@@ -735,9 +735,23 @@ mod tests {
         let (tx, rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let mut buf = vec![0u8; 8192];
-            let n = socket.read(&mut buf).await.unwrap();
-            let _ = tx.send(String::from_utf8_lossy(&buf[..n]).to_string());
+            // A single `read` may return only part of the request (TCP makes
+            // no framing guarantee), which would flake a header assertion on
+            // a split read. Keep reading until the header terminator shows up,
+            // bounded so a malformed request can't hang the test.
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let n = socket.read(&mut chunk).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") || buf.len() > 64 * 1024 {
+                    break;
+                }
+            }
+            let _ = tx.send(String::from_utf8_lossy(&buf).to_string());
             let _ = socket
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
                 .await;

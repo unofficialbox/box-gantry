@@ -45,6 +45,11 @@ public with sharing class BoxHttpClient implements BoxClient {
      * call. A header set on an individual BoxRequest takes precedence over a
      * same-named default. */
     public BoxHttpClient withHeader(String name, String value) {
+        for (String existing : new List<String>(this.defaultHeaders.keySet())) {
+            if (existing.equalsIgnoreCase(name)) {
+                this.defaultHeaders.remove(existing);
+            }
+        }
         this.defaultHeaders.put(name, value);
         return this;
     }
