@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/**/*.ts", "livesmoke.test.ts", "node-live.d.ts"]
+  "include": ["src/**/*.ts", "livesmoke.test.ts", "runtime.test.ts", "node-live.d.ts"]
 }

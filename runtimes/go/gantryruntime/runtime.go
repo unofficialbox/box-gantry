@@ -49,10 +49,11 @@ type Response struct {
 // Client is the runtime session: it holds the auth source, HTTP client,
 // base-URL configuration, and retry policy shared by every manager.
 type Client struct {
-	ts         TokenSource
-	http       *http.Client
-	baseURLs   map[string]string
-	maxRetries int
+	ts             TokenSource
+	http           *http.Client
+	baseURLs       map[string]string
+	maxRetries     int
+	defaultHeaders http.Header
 }
 
 // Option configures a Client at construction (the With* surface, G-3).
@@ -69,12 +70,21 @@ func WithBaseURL(name, base string) Option {
 	return func(c *Client) { c.baseURLs[name] = strings.TrimRight(base, "/") }
 }
 
+// WithDefaultHeader adds a header sent with every request from this client —
+// e.g. a tracing or User-Agent header the embedding application wants on
+// every call. A header set on an individual Request (via the package-level
+// WithHeader) takes precedence over a same-named default.
+func WithDefaultHeader(name, value string) Option {
+	return func(c *Client) { c.defaultHeaders.Set(name, value) }
+}
+
 // New builds a runtime Client for a token source and options.
 func New(ts TokenSource, opts ...Option) *Client {
 	c := &Client{
-		ts:         ts,
-		http:       &http.Client{Timeout: 60 * time.Second},
-		maxRetries: 5,
+		ts:             ts,
+		http:           &http.Client{Timeout: 60 * time.Second},
+		maxRetries:     5,
+		defaultHeaders: http.Header{},
 		baseURLs: map[string]string{
 			"api":             "https://api.box.com/2.0",
 			"api_root":        "https://api.box.com",
@@ -127,6 +137,14 @@ func (c *Client) Fetch(ctx context.Context, request *Request) (*Response, error)
 		if err != nil {
 			return nil, err
 		}
+		for key, values := range c.defaultHeaders {
+			if _, overridden := request.header[http.CanonicalHeaderKey(key)]; overridden {
+				continue
+			}
+			for _, v := range values {
+				httpReq.Header.Add(key, v)
+			}
+		}
 		for key, values := range request.header {
 			for _, v := range values {
 				httpReq.Header.Add(key, v)
@@ -147,8 +165,8 @@ func (c *Client) Fetch(ctx context.Context, request *Request) (*Response, error)
 			return nil, err
 		}
 
-		// A single token refresh on 401.
-		if resp.status == http.StatusUnauthorized && !refreshed {
+		// A single token refresh on 401, only when another attempt remains.
+		if resp.status == http.StatusUnauthorized && !refreshed && attempt < c.maxRetries {
 			refreshed = true
 			if token, err = c.AccessToken(ctx); err != nil {
 				return nil, err
