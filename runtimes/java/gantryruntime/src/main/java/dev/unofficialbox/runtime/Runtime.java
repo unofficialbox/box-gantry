@@ -138,31 +138,47 @@ public final class Runtime {
         private final HttpClient http;
         private final int maxRetries;
         private final Map<String, String> baseUrls;
+        private final Map<String, String> baseUrlOverrides;
 
-        /** Build a runtime session for an authentication flow. */
+        /** Build a runtime session for an authentication flow, with the default
+         * HTTP client, retry policy, and base URLs. Equivalent to
+         * {@code Session.builder(auth).build()}. */
         public Session(Auth auth) {
-            this.auth = auth;
-            // Prefer HTTP/3 (JEP 517). With the default ALT_SVC discovery the
-            // first request negotiates over HTTP/2 and upgrades to HTTP/3 for
-            // subsequent requests once the origin advertises it via Alt-Svc
-            // (Box does), transparently falling back to HTTP/2 or HTTP/1.1 when
-            // it doesn't — so no request ever fails for lack of HTTP/3.
-            this.http = HttpClient.newBuilder()
-                    .version(HttpClient.Version.HTTP_3)
-                    .connectTimeout(API_TIMEOUT)
-                    .build();
-            this.maxRetries = DEFAULT_MAX_RETRIES;
+            this(new Builder(auth));
+        }
+
+        private Session(Builder builder) {
+            this.auth = builder.auth;
+            this.http = builder.http != null ? builder.http : defaultHttpClient();
+            this.maxRetries = builder.maxRetries;
             this.baseUrls = defaultBaseUrls();
+            this.baseUrlOverrides = Map.copyOf(builder.baseUrlOverrides);
+        }
+
+        /**
+         * Start a configurable {@link Session} build: an injected {@link
+         * HttpClient}, a retry policy (0 disables retries), and per-session
+         * base-URL overrides. Embedding tools that own their own transport and
+         * measurement (e.g. a load-testing harness) use this instead of the
+         * process-global {@code -Dbox.baseUrl.*} escape hatch, which cannot
+         * differ across sessions in the same JVM.
+         */
+        public static Builder builder(Auth auth) {
+            return new Builder(auth);
         }
 
         /**
          * The configured base URL for a D-106 class, without a trailing slash.
-         * A {@code -Dbox.baseUrl.<name>} system property overrides the default —
-         * the hook for sovereign/on-prem Box deployments and for pointing the SDK
-         * at a mock server in tests.
+         * A per-session override set via {@link Builder#baseUrl} takes
+         * precedence; otherwise a {@code -Dbox.baseUrl.<name>} system property
+         * overrides the default — the hook for sovereign/on-prem Box
+         * deployments and for pointing the SDK at a mock server in tests.
          */
         public String baseUrl(String name) {
-            String override = System.getProperty("box.baseUrl." + name);
+            String override = baseUrlOverrides.get(name);
+            if (override == null) {
+                override = System.getProperty("box.baseUrl." + name);
+            }
             if (override != null && !override.isBlank()) {
                 // Managers append `/...`, so honor the no-trailing-slash contract
                 // even when an override is set with a stray trailing slash.
@@ -215,7 +231,7 @@ public final class Runtime {
                     sleep(backoff(attempt));
                     continue;
                 }
-                if (response.status == 401 && !refreshed) {
+                if (response.status == 401 && !refreshed && attempt < maxRetries) {
                     refreshed = true;
                     token = auth.forceRefresh(token);
                     continue;
@@ -267,6 +283,72 @@ public final class Runtime {
                 out.append(encode(pair[0])).append('=').append(encode(pair[1]));
             }
             return out.toString();
+        }
+
+        /**
+         * The default HTTP client construction, shared by the no-arg
+         * {@link Session#Session(Auth)} constructor and any {@link Builder}
+         * that does not inject its own {@link HttpClient}.
+         *
+         * <p>Prefers HTTP/3 (JEP 517). With the default ALT_SVC discovery the
+         * first request negotiates over HTTP/2 and upgrades to HTTP/3 for
+         * subsequent requests once the origin advertises it via Alt-Svc (Box
+         * does), transparently falling back to HTTP/2 or HTTP/1.1 when it
+         * doesn't — so no request ever fails for lack of HTTP/3.
+         */
+        private static HttpClient defaultHttpClient() {
+            return HttpClient.newBuilder()
+                    .version(HttpClient.Version.HTTP_3)
+                    .connectTimeout(API_TIMEOUT)
+                    .build();
+        }
+
+        /**
+         * A configurable construction path for {@link Session}: an injected
+         * {@link HttpClient}, retry policy, and per-session base-URL
+         * overrides, for callers that need to own their own transport (D-142
+         * follow-up — see the runtime seams issue for embedding load-testing
+         * or instrumentation harnesses over the generated SDK).
+         */
+        public static final class Builder {
+            private final Auth auth;
+            private HttpClient http;
+            private int maxRetries = DEFAULT_MAX_RETRIES;
+            private final Map<String, String> baseUrlOverrides = new LinkedHashMap<>();
+
+            private Builder(Auth auth) {
+                this.auth = auth;
+            }
+
+            /** Inject the HTTP client used for API requests. Defaults to an
+             * HTTP/3-preferring {@link HttpClient} built internally. */
+            public Builder httpClient(HttpClient http) {
+                this.http = http;
+                return this;
+            }
+
+            /** How many times a retriable failure is retried; 0 disables
+             * retries entirely (default 5). */
+            public Builder maxRetries(int maxRetries) {
+                if (maxRetries < 0) {
+                    throw new IllegalArgumentException("gantryruntime: maxRetries must be non-negative");
+                }
+                this.maxRetries = maxRetries;
+                return this;
+            }
+
+            /** Override a base-URL class for this session only — takes
+             * precedence over the {@code -Dbox.baseUrl.<name>} system
+             * property and the built-in default (see {@link Session#baseUrl}). */
+            public Builder baseUrl(String name, String url) {
+                baseUrlOverrides.put(name, url);
+                return this;
+            }
+
+            /** Build the configured session. */
+            public Session build() {
+                return new Session(this);
+            }
         }
     }
 
