@@ -87,6 +87,35 @@ fn generation_is_deterministic() {
         union_tests >= 1,
         "expected generated union round-trip tests"
     );
+    // The per-manager schema-file split (D-201): most of the 884 real decls
+    // are exclusively owned by one manager and split out of the catch-all,
+    // which shrinks accordingly. Pinned loosely (a real ceiling, not an exact
+    // count) so ordinary spec growth doesn't trip it — the tight numbers live
+    // in gantry-spec's real_specs.rs.
+    let schema_files: Vec<&str> = once
+        .iter()
+        .filter_map(|f| f.path.strip_prefix("schemas/"))
+        .filter(|name| name.ends_with(".go") && !name.ends_with("_test.go"))
+        .collect();
+    assert!(
+        schema_files.len() > 20,
+        "expected the schema split to produce more than 20 files, got {}: {schema_files:?}",
+        schema_files.len()
+    );
+    assert!(
+        schema_files.contains(&"ai.go"),
+        "expected a schemas/ai.go bucket, got {schema_files:?}"
+    );
+    let catch_all = once
+        .iter()
+        .find(|f| f.path == "schemas/schemas.go")
+        .expect("the schemas catch-all must still be generated");
+    let catch_all_lines = catch_all.content.lines().count();
+    assert!(
+        catch_all_lines < 4_000,
+        "schemas/schemas.go is {catch_all_lines} lines — the per-manager split regressed \
+         (was 8,069 before D-201)"
+    );
 }
 
 #[test]
