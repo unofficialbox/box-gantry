@@ -58,6 +58,35 @@ fn generation_is_deterministic() {
     // The module tree: one module file per IR module plus the mod root.
     assert!(once.iter().any(|f| f.path == "src/models/mod.rs"));
     assert!(once.iter().any(|f| f.path == "src/models/schemas.rs"));
+    // The per-manager schema-file split (D-201): most of the 884 real decls
+    // are exclusively owned by one manager and split out of the catch-all,
+    // which shrinks accordingly. Pinned loosely (a real ceiling, not an exact
+    // count) so ordinary spec growth doesn't trip it — the tight numbers live
+    // in gantry-spec's real_specs.rs.
+    let schema_buckets: Vec<&str> = once
+        .iter()
+        .filter_map(|f| f.path.strip_prefix("src/models/schemas/"))
+        .filter(|name| name.ends_with(".rs"))
+        .collect();
+    assert!(
+        schema_buckets.len() > 20,
+        "expected the schema split to produce more than 20 bucket files, got {}: {schema_buckets:?}",
+        schema_buckets.len()
+    );
+    assert!(
+        schema_buckets.contains(&"ai.rs"),
+        "expected a src/models/schemas/ai.rs bucket, got {schema_buckets:?}"
+    );
+    let catch_all = once
+        .iter()
+        .find(|f| f.path == "src/models/schemas.rs")
+        .expect("the schemas catch-all must still be generated");
+    let catch_all_lines = catch_all.content.lines().count();
+    assert!(
+        catch_all_lines < 6_000,
+        "src/models/schemas.rs is {catch_all_lines} lines — the per-manager split regressed \
+         (was 12,935 before D-201)"
+    );
     // The managers/client/runtime layer (M5 slice 3).
     assert!(once.iter().any(|f| f.path == "src/managers/mod.rs"));
     assert!(once.iter().any(|f| f.path == "src/client.rs"));

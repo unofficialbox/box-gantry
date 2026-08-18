@@ -43,8 +43,9 @@ pub(crate) fn module_names(
     map
 }
 
-/// Generate `src/models/mod.rs` and one `src/models/<module>.rs` per IR
-/// module.
+/// Generate `src/models/mod.rs` and, per IR module, one `src/models/<module>.rs`
+/// catch-all plus one `src/models/<module>/<manager>.rs` per manager that
+/// exclusively owns a slice of that module's declarations (D-201).
 pub fn generate_models(analysis: &Analysis<'_>, build: &BuildInfo) -> Vec<GeneratedFile> {
     let program = analysis.program;
     let names = module_names(program);
@@ -65,12 +66,58 @@ pub fn generate_models(analysis: &Analysis<'_>, build: &BuildInfo) -> Vec<Genera
         .collect();
     named.sort_by(|a, b| a.0.cmp(&b.0));
 
+    // Manager tag → Rust module base, the same allocation `managers.rs` uses
+    // for `src/managers/<module>.rs` (D-149/D-201): a per-manager schema file
+    // and its manager file can never name different managers for one tag.
+    let manager_modules: std::collections::BTreeMap<&str, String> =
+        crate::managers::plan_managers(analysis)
+            .into_iter()
+            .map(|(key, _, name)| (key.as_str(), name.module))
+            .collect();
+    // Each declaration's owning file within its module: `None` = the
+    // module's catch-all, `Some(bucket)` = `src/models/<module>/<bucket>.rs`.
+    let bucket_of: Vec<Option<String>> = (0..program.decls.len())
+        .map(|i| analysis.sole_manager(i).map(|m| manager_modules[m].clone()))
+        .collect();
+
     let mut files = vec![GeneratedFile {
         path: "src/models/mod.rs".to_string(),
         content: models_mod_rs(&named, build),
     }];
-    for (name, path, indices) in &named {
-        files.push(render_module(program, name, path, indices, build));
+    for (name, _path, indices) in &named {
+        let api_version = indices
+            .first()
+            .and_then(|&i| program.decls[i].api_version.as_ref())
+            .map_or("unversioned", |v| v.0.as_str());
+        let (shared, buckets) = analysis.bucket_decls(indices);
+        let mut bucket_mods: Vec<&str> = buckets
+            .keys()
+            .map(|manager| manager_modules[manager.as_str()].as_str())
+            .collect();
+        bucket_mods.sort_unstable();
+        files.push(render_file(
+            program,
+            name,
+            FileKind::CatchAll {
+                submodules: &bucket_mods,
+            },
+            &shared,
+            api_version,
+            &bucket_of,
+            build,
+        ));
+        for (manager, bucket_indices) in &buckets {
+            let bucket = manager_modules[manager.as_str()].as_str();
+            files.push(render_file(
+                program,
+                name,
+                FileKind::Bucket { name: bucket },
+                bucket_indices,
+                api_version,
+                &bucket_of,
+                build,
+            ));
+        }
     }
     files
 }
@@ -120,17 +167,42 @@ fn models_mod_rs(named: &[(String, &ir::ModulePath, &[usize])], build: &BuildInf
     content
 }
 
-fn render_module(
+/// Which file [`render_file`] is producing: the catch-all (with the buckets
+/// split out of this module, so it can `mod`+`pub use` them) or one manager's
+/// bucket. Mutually exclusive by construction — a bucket file never has
+/// submodules of its own, and only the catch-all does — so this replaces what
+/// would otherwise be two separately-optional parameters.
+enum FileKind<'a> {
+    CatchAll { submodules: &'a [&'a str] },
+    Bucket { name: &'a str },
+}
+
+/// Render one file: `module`/`kind` place it (the catch-all at
+/// `src/models/<module>.rs`, a bucket at `src/models/<module>/<name>.rs`) and
+/// keeps `models::<module>::Type` valid for every type regardless of which
+/// file declares it.
+fn render_file(
     program: &ir::Program,
-    name: &str,
-    _path: &ir::ModulePath,
+    module: &str,
+    kind: FileKind<'_>,
     indices: &[usize],
+    api_version: &str,
+    bucket_of: &[Option<String>],
     build: &BuildInfo,
 ) -> GeneratedFile {
-    let api_version = indices
-        .first()
-        .and_then(|&i| program.decls[i].api_version.as_ref())
-        .map_or("unversioned", |v| v.0.as_str());
+    let (bucket, submodules) = match kind {
+        FileKind::CatchAll { submodules } => (None, submodules),
+        FileKind::Bucket { name } => (Some(name), [].as_slice()),
+    };
+    // A bucket file only ever needs the catch-all's declarations (per the
+    // decl_managers invariant: a sole-owned decl's own references are either
+    // in its own bucket or the shared catch-all, never a different bucket).
+    // The catch-all's `pub use` of every bucket brings those names into its
+    // own scope too, so `use super::*;` from a bucket reaches all of them —
+    // emitted only when actually needed, so it can't be an unused import
+    // under `-D warnings`.
+    let uses_super =
+        bucket.is_some() && references_another_file(program, indices, bucket_of, bucket);
 
     let mut printer = Printer {
         program,
@@ -148,13 +220,71 @@ fn render_module(
     if printer.uses_double_option {
         content.push_str("use crate::serde_helpers::double_option;\n\n");
     }
+    if uses_super {
+        // Its own blank-line-separated group, so rustfmt's import reordering
+        // never has to choose an order between this and `use crate::…`.
+        content.push_str("use super::*;\n\n");
+    }
+    for submodule in submodules {
+        let _ = writeln!(content, "mod {submodule};");
+    }
+    if !submodules.is_empty() {
+        content.push('\n');
+        for submodule in submodules {
+            let _ = writeln!(content, "pub use {submodule}::*;");
+        }
+        content.push('\n');
+    }
     content.push_str(printer.body.trim_end());
+    // An empty-body file (a bucket-less catch-all, or a catch-all that is
+    // only `mod`/`pub use` lines) must not end in a stray blank line, or
+    // `cargo fmt --check` fails.
+    content.truncate(content.trim_end().len());
     content.push('\n');
 
-    GeneratedFile {
-        path: format!("src/models/{name}.rs"),
-        content,
+    let path = match bucket {
+        None => format!("src/models/{module}.rs"),
+        Some(bucket) => format!("src/models/{module}/{bucket}.rs"),
+    };
+    GeneratedFile { path, content }
+}
+
+/// Whether any declaration in `indices` references one declared in *another*
+/// file of the same module — the only case `use super::*;` resolves
+/// anything. A reference crossing an IR *module* boundary is ignored: the
+/// base and versioned modules share no references (D-147), and the printer
+/// has always emitted those bare.
+fn references_another_file(
+    program: &ir::Program,
+    indices: &[usize],
+    bucket_of: &[Option<String>],
+    own: Option<&str>,
+) -> bool {
+    let mut refs: Vec<ir::DeclId> = Vec::new();
+    for &index in indices {
+        match &program.decls[index].kind {
+            ir::DeclKind::Struct(s) => {
+                for field in &s.fields {
+                    gantry_sema::decl_refs(&field.ty, &mut refs);
+                }
+                if let Some(extra) = &s.extra {
+                    gantry_sema::decl_refs(extra, &mut refs);
+                }
+            }
+            ir::DeclKind::Union(u) => {
+                for variant in &u.variants {
+                    gantry_sema::decl_refs(&variant.ty, &mut refs);
+                }
+            }
+            ir::DeclKind::Alias(ty) => gantry_sema::decl_refs(ty, &mut refs),
+            ir::DeclKind::Enum(_) => {}
+        }
     }
+    let own_module = &program.decls[indices[0]].module;
+    refs.iter().any(|id| {
+        let target = id.0 as usize;
+        program.decls[target].module == *own_module && bucket_of[target].as_deref() != own
+    })
 }
 
 struct Printer<'p> {
@@ -775,7 +905,17 @@ mod tests {
 
     fn render(program: &ir::Program, indices: &[usize]) -> String {
         let build = BuildInfo::new("testfp");
-        render_module(program, "schemas", &module(), indices, &build).content
+        let bucket_of = vec![None; program.decls.len()];
+        render_file(
+            program,
+            "schemas",
+            FileKind::CatchAll { submodules: &[] },
+            indices,
+            "unversioned",
+            &bucket_of,
+            &build,
+        )
+        .content
     }
 
     fn add(program: &mut ir::Program, kind: DeclKind, name: &str) -> usize {
