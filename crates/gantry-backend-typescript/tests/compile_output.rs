@@ -98,6 +98,46 @@ fn generation_is_deterministic() {
     assert!(once.iter().any(|f| f.path == "README.md"));
     assert!(once.iter().any(|f| f.path == "src/index.ts"));
     assert!(once.iter().any(|f| f.path == "src/models/index.ts"));
+    // The per-manager schema-file split (D-201): most of the 884 real decls
+    // are exclusively owned by one manager and split out of the catch-all,
+    // which shrinks accordingly. Pinned loosely (a real ceiling, not an exact
+    // count) so ordinary spec growth doesn't trip it — the tight numbers live
+    // in gantry-spec's real_specs.rs.
+    let index_ts = once
+        .iter()
+        .find(|f| f.path == "src/models/index.ts")
+        .unwrap();
+    assert!(
+        index_ts
+            .content
+            .contains("export * as schemas from './schemas.js';"),
+        "the split must not move the public models.schemas.* path:\n{}",
+        index_ts.content
+    );
+    let schema_buckets: Vec<&str> = once
+        .iter()
+        .filter_map(|f| f.path.strip_prefix("src/models/schemas/"))
+        .filter(|name| name.ends_with(".ts"))
+        .collect();
+    assert!(
+        schema_buckets.len() > 20,
+        "expected the schema split to produce more than 20 bucket files, got {}: {schema_buckets:?}",
+        schema_buckets.len()
+    );
+    assert!(
+        schema_buckets.contains(&"ai.ts"),
+        "expected a src/models/schemas/ai.ts bucket, got {schema_buckets:?}"
+    );
+    let catch_all = once
+        .iter()
+        .find(|f| f.path == "src/models/schemas.ts")
+        .expect("the schemas catch-all must still be generated");
+    let catch_all_lines = catch_all.content.lines().count();
+    assert!(
+        catch_all_lines < 3_000,
+        "src/models/schemas.ts is {catch_all_lines} lines — the per-manager split regressed \
+         (was 5,173 before D-201)"
+    );
     // The managers/client surface, calling only through the runtime contract.
     assert!(once.iter().any(|f| f.path == "src/client.ts"));
     assert!(once.iter().any(|f| f.path == "src/managers/index.ts"));
