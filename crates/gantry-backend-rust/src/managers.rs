@@ -27,10 +27,34 @@ const RUNTIME: &str = "runtime";
 
 /// The deduped, keyword-safe Rust names for one manager: its module/file, its
 /// struct, and its `Client` field — all derived from one collision-free base.
-struct ManagerName {
-    module: String,
+pub(crate) struct ManagerName {
+    pub(crate) module: String,
     struct_name: String,
     field: String,
+}
+
+/// Allocate one collision-free, keyword-safe [`ManagerName`] per manager
+/// (sorted keys via the `BTreeMap`), reused for the module, file, struct, and
+/// field. The single source of truth for manager naming, so `managers.rs` and
+/// the per-manager schema-file split in `models.rs` (D-201) can't disagree on
+/// what a manager tag's module is called.
+pub(crate) fn plan_managers<'a>(
+    analysis: &'a Analysis<'_>,
+) -> Vec<(&'a String, &'a Vec<usize>, ManagerName)> {
+    let mut used: Vec<String> = Vec::new();
+    analysis
+        .managers
+        .iter()
+        .map(|(key, indices)| {
+            let base = dedupe(&mut used, safe_module_base(key));
+            let name = ManagerName {
+                struct_name: format!("{}Manager", pascal(&base)),
+                field: base.clone(),
+                module: base,
+            };
+            (key, indices, name)
+        })
+        .collect()
 }
 
 /// Generate the `managers` module (one file per manager), the `client` entry
@@ -48,22 +72,7 @@ pub fn generate_managers(analysis: &Analysis<'_>, _build: &BuildInfo) -> Vec<Gen
         .map(|p| (p.operation, p))
         .collect();
 
-    // Allocate one collision-free, keyword-safe name per manager (sorted keys
-    // via the `BTreeMap`) and reuse it for the module, file, struct, and field.
-    let managers: Vec<(&String, &Vec<usize>)> = analysis.managers.iter().collect();
-    let mut used: Vec<String> = Vec::new();
-    let named: Vec<(&String, &Vec<usize>, ManagerName)> = managers
-        .iter()
-        .map(|(key, indices)| {
-            let base = dedupe(&mut used, safe_module_base(key));
-            let name = ManagerName {
-                struct_name: format!("{}Manager", pascal(&base)),
-                field: base.clone(),
-                module: base,
-            };
-            (*key, *indices, name)
-        })
-        .collect();
+    let named = plan_managers(analysis);
 
     let mut files = Vec::new();
 
