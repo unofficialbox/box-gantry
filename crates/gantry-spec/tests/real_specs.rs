@@ -107,6 +107,22 @@ fn the_full_real_spec_set_ingests() {
     assert_eq!(analysis.managers.len(), 86);
     let indexed: usize = analysis.managers.values().map(Vec::len).sum();
     assert_eq!(indexed, 338);
+
+    // Every declaration carries a reachability entry, and the split between
+    // sole-owned (goes to a per-manager file, D-201), shared/orphaned (stays
+    // in the catch-all), and true orphans is pinned so it only moves
+    // deliberately with the spec (VR-6 lineage), exactly like the decl and
+    // operation counts above.
+    assert_eq!(analysis.decl_managers.len(), lowering.program.decls.len());
+    let sole = (0..lowering.program.decls.len())
+        .filter(|&i| analysis.sole_manager(i).is_some())
+        .count();
+    let orphan = analysis
+        .decl_managers
+        .iter()
+        .filter(|owners| owners.is_empty())
+        .count();
+    assert_eq!((sole, orphan), (655, 37));
 }
 
 /// Method names never fall through to a meaningless numeric collision suffix,
