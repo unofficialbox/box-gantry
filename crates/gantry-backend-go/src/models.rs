@@ -37,7 +37,43 @@ pub fn generate_models(analysis: &Analysis<'_>, build: &crate::BuildInfo) -> Vec
         content: format!("module {MODULE}\n\ngo 1.23\n{RETRACTIONS}"),
     }];
     for (module, indices) in &modules {
-        files.push(render_module(program, module, indices, build));
+        let (dir, package) = module_dir_and_package(module);
+        // The module's API version, taken once from its first declaration and
+        // shared by every file of the module, so a bucket file's header can
+        // never disagree with the catch-all's.
+        let api_version = indices
+            .first()
+            .and_then(|&i| program.decls[i].api_version.as_ref())
+            .map_or("unversioned", |v| v.0.as_str());
+        let (shared, buckets) = analysis.bucket_decls(indices);
+
+        // The catch-all keeps this module's existing filename, and is
+        // emitted even when empty so `schemas/schemas.go` never disappears
+        // (a behavioral change every existing hardcoded test path assumes
+        // does not happen). Bucket bases are allocated from a pool seeded
+        // with it, so a manager tag equal to the package name can't collide.
+        let mut used = vec![package.clone()];
+        files.push(render_file(
+            program,
+            &dir,
+            &package,
+            &package,
+            &shared,
+            api_version,
+            build,
+        ));
+        for (manager, bucket_indices) in &buckets {
+            let base = dedupe(&mut used, manager.clone());
+            files.push(render_file(
+                program,
+                &dir,
+                &package,
+                &base,
+                bucket_indices,
+                api_version,
+                build,
+            ));
+        }
     }
     files
 }
@@ -60,13 +96,18 @@ struct Printer<'p> {
     imports: BTreeSet<&'static str>,
 }
 
-fn render_module(
+/// Render one file: `dir`/`package` place it in the module's Go package,
+/// `file_base` names the file itself (the package name for the catch-all, a
+/// manager base for a bucket — see [`generate_models`]).
+fn render_file(
     program: &ir::Program,
-    module: &ir::ModulePath,
+    dir: &str,
+    package: &str,
+    file_base: &str,
     indices: &[usize],
+    api_version: &str,
     build: &crate::BuildInfo,
 ) -> GeneratedFile {
-    let (dir, package) = module_dir_and_package(module);
     let mut printer = Printer {
         program,
         body: String::new(),
@@ -77,10 +118,6 @@ fn render_module(
     }
 
     let mut content = String::new();
-    let api_version = indices
-        .first()
-        .and_then(|&i| program.decls[i].api_version.as_ref())
-        .map_or("unversioned", |v| v.0.as_str());
     // FR-6.3/NF-7: the generated-file header with engine + spec identity.
     let _ = writeln!(
         content,
@@ -103,10 +140,13 @@ fn render_module(
         }
     }
     content.push_str(printer.body.trim_end());
+    // An empty-body file (a bucket-less catch-all) must not end in a stray
+    // blank line, or gofmt -l flags it.
+    content.truncate(content.trim_end().len());
     content.push('\n');
 
     GeneratedFile {
-        path: format!("{dir}/{package}.go"),
+        path: format!("{dir}/{file_base}.go"),
         content,
     }
 }
