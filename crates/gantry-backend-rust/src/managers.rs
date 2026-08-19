@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use gantry_ir as ir;
-use gantry_ir::naming::{pascal, snake};
+use gantry_ir::naming::{append_without_repeating, pascal, snake};
 use gantry_sema::Analysis;
 use gantry_synth::{PageStyle, PagedOperation, detect_pagination};
 
@@ -374,7 +374,10 @@ impl Printer<'_> {
         forward.push("Some(self.options.clone())".to_string());
 
         Some(PaginationPlan {
-            struct_name: format!("{}{}Paginator", pascal(op.manager.as_str()), pascal(method)),
+            struct_name: append_without_repeating(
+                &format!("{}{}", pascal(op.manager.as_str()), pascal(method)),
+                "Paginator",
+            ),
             manager_ty: name.struct_name.clone(),
             element: self.rust_type(&paged.element),
             options_ty: options_type(op.manager.as_str(), method),
@@ -1125,7 +1128,7 @@ pub(crate) fn method_name(op: &ir::Operation) -> String {
 /// The module-level options struct name for an operation (manager-qualified so
 /// it stays unique across the `managers` module).
 fn options_type(manager: &str, method: &str) -> String {
-    format!("{}{}Options", pascal(manager), pascal(method))
+    append_without_repeating(&format!("{}{}", pascal(manager), pascal(method)), "Options")
 }
 
 /// A `String`-producing JSON encode for a complex query value (the Box

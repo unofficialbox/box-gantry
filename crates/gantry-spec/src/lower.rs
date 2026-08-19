@@ -1845,10 +1845,13 @@ fn method_name(short_tokens: &[String], keep_all_ids: bool, drop_trailing_id: bo
 }
 
 /// `Owner` + PascalCase(property): `File` + `shared_link` → `FileSharedLink`.
+/// Collapses a duplicate word at the seam: Box occasionally names a schema
+/// `…Validation` and then nests a `validation_type` field inside it, which a
+/// plain concatenation would double to `…ValidationValidationType`. Same bug
+/// family as the `IdId` token collapse in `lower_operation`'s owner seed,
+/// generalized to whole words (`gantry_ir::naming::append_without_repeating`).
 fn synth_name(owner: &str, property: &str) -> String {
-    let mut name = String::from(owner);
-    name.push_str(&pascal(&clean_name(property)));
-    name
+    gantry_ir::naming::append_without_repeating(owner, &pascal(&clean_name(property)))
 }
 
 /// PascalCase from snake/kebab case: `get_files_id` → `GetFilesId`.

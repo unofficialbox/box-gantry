@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
 use gantry_ir as ir;
-use gantry_ir::naming::{pascal, snake};
+use gantry_ir::naming::{append_without_repeating, pascal, snake};
 use gantry_sema::Analysis;
 use gantry_synth::{PageStyle, PagedOperation, detect_pagination};
 
@@ -901,7 +901,7 @@ fn operation_base(op: &ir::Operation) -> String {
 /// The options interface name for an operation (class-qualified so it stays
 /// unique across the `managers` module).
 fn options_type(class: &str, base: &str) -> String {
-    format!("{class}{}Options", pascal(base))
+    append_without_repeating(&format!("{class}{}", pascal(base)), "Options")
 }
 
 /// A JSON-encode producing a `string` for a complex query/form value (the Box

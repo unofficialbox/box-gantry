@@ -87,6 +87,47 @@ pub fn constant(value: &str) -> String {
     }
 }
 
+/// Append `suffix` (already Pascal-cased — a synthesized field name, or a
+/// fixed naming-convention word like `Options`) to `owner`, collapsing a
+/// duplicate seam: when `suffix`'s own leading word(s) repeat `owner`'s
+/// trailing word(s), a plain concatenation stutters. Box occasionally names
+/// a schema `…Validation` and then nests a `validation_type` field inside
+/// it (`…ValidationValidationType`); an operation already named
+/// `…FieldOptions` gets a backend's own `Options`/`Paginator` suffix
+/// appended too (`…FieldOptionsOptions`). Word-level generalization of the
+/// token-level `IdId` collapse in gantry-spec's operation-name synthesis —
+/// same bug family, same fix shape, wherever an owner and a suffix are
+/// concatenated instead of one being derived from the other.
+///
+/// May consume `suffix` entirely when it is wholly redundant (`owner`
+/// already ends exactly in `suffix`). That is only safe because every
+/// caller's `owner`/`suffix` pair is already unique on its own before this
+/// collapse — gantry-spec's synthesized names re-run their own collision
+/// check after calling this (D-127's `ancestor`/numeral fallback), and a
+/// backend's `Options`/`Paginator` suffix is a fixed convention marker, not
+/// the source of a name's uniqueness (the method name it's appended to
+/// already is). A caller relying on the *appended suffix itself* to
+/// disambiguate two different names must not use this.
+pub fn append_without_repeating(owner: &str, suffix: &str) -> String {
+    // `snake`'s acronym-aware word boundaries (`ZIP4Validation` →
+    // `zip4_validation`) do the tokenizing; a naive uppercase-letter split
+    // would wrongly cut `ZIP4` into individual letters.
+    let owner_snake = snake(owner);
+    let suffix_snake = snake(suffix);
+    let owner_words: Vec<&str> = owner_snake.split('_').filter(|w| !w.is_empty()).collect();
+    let suffix_words: Vec<&str> = suffix_snake.split('_').filter(|w| !w.is_empty()).collect();
+    let max_overlap = owner_words.len().min(suffix_words.len());
+    let overlap = (1..=max_overlap)
+        .rev()
+        .find(|&k| owner_words[owner_words.len() - k..] == suffix_words[..k])
+        .unwrap_or(0);
+    if overlap == 0 {
+        format!("{owner}{suffix}")
+    } else {
+        format!("{owner}{}", pascal(&suffix_words[overlap..].join("_")))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,5 +152,82 @@ mod tests {
         assert_eq!(snake("can_edit"), "can_edit");
         assert_eq!(snake("type"), "type");
         assert_eq!(snake("-leading-trailing-"), "leading_trailing");
+    }
+
+    #[test]
+    fn append_without_repeating_collapses_a_single_word_seam() {
+        // SignRequestSignerInputNumberWithPeriodValidation + ValidationType.
+        assert_eq!(
+            append_without_repeating(
+                "SignRequestSignerInputNumberWithPeriodValidation",
+                "ValidationType"
+            ),
+            "SignRequestSignerInputNumberWithPeriodValidationType"
+        );
+    }
+
+    #[test]
+    fn append_without_repeating_consumes_a_wholly_redundant_suffix() {
+        // MetadataTaxonomiesListMetadataTemplateFieldOptions + Options.
+        assert_eq!(
+            append_without_repeating(
+                "MetadataTaxonomiesListMetadataTemplateFieldOptions",
+                "Options"
+            ),
+            "MetadataTaxonomiesListMetadataTemplateFieldOptions"
+        );
+    }
+
+    #[test]
+    fn append_without_repeating_is_a_no_op_without_a_seam() {
+        assert_eq!(
+            append_without_repeating("File", "SharedLink"),
+            "FileSharedLink"
+        );
+        assert_eq!(append_without_repeating("User", "Id"), "UserId");
+    }
+
+    #[test]
+    fn append_without_repeating_is_case_insensitive_at_the_seam() {
+        assert_eq!(
+            append_without_repeating("FileVALIDATION", "ValidationType"),
+            "FileVALIDATIONType"
+        );
+    }
+
+    #[test]
+    fn append_without_repeating_prefers_the_longest_overlap() {
+        // Both a 1-word and a 2-word overlap are possible here; the longer
+        // one must win so nothing is left half-collapsed.
+        assert_eq!(
+            append_without_repeating("FooBarBaz", "BarBazQux"),
+            "FooBarBazQux"
+        );
+    }
+
+    #[test]
+    fn append_without_repeating_does_not_catch_a_whole_prefix_duplicate() {
+        // ShieldInformationBarrierSegmentMember + ShieldInformationBarrierSegment:
+        // the overlap isn't at the owner/suffix seam (owner's last word is
+        // "Member", suffix's first word is "Shield") — a documented gap, not
+        // this function's job. Pinned so a future "smarter" rewrite doesn't
+        // silently change this on-purpose non-fix into a guess.
+        assert_eq!(
+            append_without_repeating(
+                "ShieldInformationBarrierSegmentMember",
+                "ShieldInformationBarrierSegment"
+            ),
+            "ShieldInformationBarrierSegmentMemberShieldInformationBarrierSegment"
+        );
+    }
+
+    #[test]
+    fn append_without_repeating_preserves_an_owner_acronym() {
+        // The overlap-consuming side is always the suffix; an acronym inside
+        // `owner` (never re-pascal-cased) must survive untouched.
+        assert_eq!(
+            append_without_repeating("SignRequestSignerInputZIP4Validation", "ValidationType"),
+            "SignRequestSignerInputZIP4ValidationType"
+        );
     }
 }
