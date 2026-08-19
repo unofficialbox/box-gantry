@@ -18,9 +18,13 @@ mod error;
 mod ingest;
 mod lower;
 mod merge;
+mod overrides;
 mod raw;
+mod report;
 
 pub use error::IngestError;
 pub use ingest::{Document, HttpMethod, OperationSummary, SpecSet};
-pub use lower::{Lowering, LoweringStats, lower};
+pub use lower::{Lowering, LoweringStats, lower, lower_with_overrides};
+pub use overrides::NameOverrides;
 pub use raw::RawSchema;
+pub use report::{LongName, LongNamesReport, long_names};

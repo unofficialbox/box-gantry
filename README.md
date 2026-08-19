@@ -29,10 +29,14 @@ cargo run -p gantry-cli -- check \
   fixtures/specs/openapi-v2026.0.json
 ```
 
-The `gantry` CLI has five subcommands: `check` (ingest + validate a spec
+The `gantry` CLI has six subcommands: `check` (ingest + validate a spec
 set), `generate` (emit an SDK), `verify` (generate then compile with the
-target toolchain), `conform` (the R§1 capability checklist), and `diff` (the
-breaking-change report between two spec sets). The **Go SDK (v1) is shipped**,
+target toolchain), `conform` (the R§1 capability checklist), `diff` (the
+breaking-change report between two spec sets), and `names` (enumerate
+synthesized type names that are long but not wrong, e.g.
+`EnterpriseConfigurationContentAndSharingSharedLinkDefaultPermissionsSelected`
+— a real, non-redundant concatenation of a long Box schema name and a long
+Box field name, not a bug). The **Go SDK (v1) is shipped**,
 and Apex (v2), Rust (v3), TypeScript (v4), and Java (v5) are feature-complete —
 each with a `verify` toolchain gate (formatter + compiler + tests) and a
 `conform` capability checklist gating the CI release check.
@@ -86,6 +90,44 @@ cargo run -p gantry-cli -- verify --target go \
   fixtures/specs/openapi-v2025.0.json \
   fixtures/specs/openapi-v2026.0.json
 ```
+
+### Long names
+
+Most synthesized type names are short (`Owner` + the field name). A few
+aren't, because the underlying Box schema or field name is itself long — not
+a bug, and not something the engine should guess a shorter name for (an
+invented abbreviation risks a new collision and isn't structural naming
+anymore). `names` enumerates every synthesized name at or above
+`--min-length` (default 40), grouped by the top-level component schema it's
+inherited from, with a word-by-word breakdown:
+
+```sh
+cargo run -p gantry-cli -- names --min-length 50 \
+  fixtures/specs/openapi.json \
+  fixtures/specs/openapi-v2025.0.json \
+  fixtures/specs/openapi-v2026.0.json
+```
+
+If a name's worth shortening, `generate --overrides <file.json>` takes a
+human-chosen replacement — either for one exact synthesis site
+(`locations`, from the report's `at ...` line) or, with more leverage, for
+a whole top-level component (`components`), which cascades to every field
+synthesized under it:
+
+```json
+{
+  "components": {
+    "EnterpriseConfigurationContentAndSharing": "ContentSharingConfig"
+  },
+  "locations": {
+    "components.schemas.Widget.properties.budget_report": "Report"
+  }
+}
+```
+
+An override key that doesn't match anything in the given specs, or a
+replacement that collides with an existing name, fails the run loudly
+rather than silently doing nothing or numeral-suffixing around it.
 
 ## Generated SDKs
 

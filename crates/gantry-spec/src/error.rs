@@ -100,4 +100,55 @@ pub enum IngestError {
         "schema {name:?}: incompatible definitions across API versions cannot be merged: {detail}"
     )]
     SchemaVersionConflict { name: String, detail: String },
+
+    #[error("{file}: cannot read name-overrides file: {source}")]
+    OverridesIo {
+        file: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("{file}: malformed name-overrides file: {source}")]
+    OverridesParse {
+        file: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+
+    /// An override's replacement text isn't itself a valid identifier —
+    /// caught at load time so a bad override fails before it can silently
+    /// mint garbage into the generated SDK.
+    #[error("name-overrides file: {kind} override {key:?} → {value:?}: {detail}")]
+    InvalidOverrideName {
+        kind: &'static str,
+        key: String,
+        value: String,
+        detail: String,
+    },
+
+    /// An override key that never matched anything during lowering — a
+    /// typo, or the spec changed shape since the override was written.
+    /// Loud rather than a silent no-op (NF-1): an override that quietly
+    /// does nothing looks identical to one that worked, until someone goes
+    /// looking for the shorter name and it isn't there.
+    #[error(
+        "name-overrides file: {kind} override {key:?} did not match anything in the given specs \
+         (typo, or the spec changed since this override was written)"
+    )]
+    UnusedOverride { kind: &'static str, key: String },
+
+    /// An override's replacement text collides with a name already taken by
+    /// something else. Loud rather than silently falling back to a numeral
+    /// suffix (as an auto-derived collision would) — the human chose this
+    /// text specifically to be readable, so a silent `2` suffix would defeat
+    /// the point without telling them.
+    #[error(
+        "name-overrides file: {kind} override {key:?} → {value:?} collides with an existing \
+         name; pick a different override"
+    )]
+    OverrideCollision {
+        kind: &'static str,
+        key: String,
+        value: String,
+    },
 }
