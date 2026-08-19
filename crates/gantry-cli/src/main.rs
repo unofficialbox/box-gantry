@@ -2,8 +2,8 @@
 //!
 //! A thin argument parser over the engine library: no naming rules, no
 //! spec shaping, no business logic lives here (FR-8.2 — the `PostFolders`
-//! lesson). Subcommands appear as the engine grows them; only `check`
-//! exists today.
+//! lesson). Subcommands appear as the engine grows them: `check`,
+//! `generate`, `verify`, `conform`, `diff`, `names`.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -55,6 +55,25 @@ enum Command {
         /// each SDK lands in a `<out>/<target>/` subdirectory.
         #[arg(long)]
         out: PathBuf,
+        /// A JSON file of human-chosen replacements for synthesized names
+        /// that are long but not wrong (see `gantry names`). Two optional
+        /// top-level maps: `components` (keyed by a top-level schema's own
+        /// name — cascades to every field synthesized under it) and
+        /// `locations` (keyed by the exact synthesis site `gantry names`
+        /// reports — replaces just that one name).
+        #[arg(long)]
+        overrides: Option<PathBuf>,
+    },
+    /// Report every synthesized name at or above `--min-length`, grouped by
+    /// shared top-level component prefix, with enough detail to write a
+    /// `--overrides` file by hand (no invented replacement text — see the
+    /// module doc on `gantry_spec::report`). Informational: always exits 0
+    /// unless the specs themselves fail to load.
+    Names {
+        #[arg(required = true, value_name = "SPEC")]
+        specs: Vec<PathBuf>,
+        #[arg(long, default_value_t = 40)]
+        min_length: usize,
     },
     /// Generate, then compile the output with the target's real toolchain
     /// (`go` → VR-1.1; `rust` → VR-1.2). Exits 4 when the generated code fails
@@ -96,11 +115,54 @@ enum Command {
 fn main() -> ExitCode {
     match Cli::parse().command {
         Command::Check { specs } => check(&specs),
-        Command::Generate { specs, target, out } => generate(&specs, &target, &out),
+        Command::Generate {
+            specs,
+            target,
+            out,
+            overrides,
+        } => generate(&specs, &target, &out, overrides.as_deref()),
         Command::Verify { specs, target } => verify(&specs, &target),
         Command::Conform { specs, target } => conform(&specs, &target),
         Command::Diff { from, to } => diff(&from, &to),
+        Command::Names { specs, min_length } => names(&specs, min_length),
     }
+}
+
+/// Load a `--overrides` file if one was given; `None` behaves exactly like
+/// `gantry_spec::NameOverrides::empty()` (generation without it is
+/// unaffected).
+fn load_overrides(path: Option<&Path>) -> Result<gantry_spec::NameOverrides, ExitCode> {
+    match path {
+        Some(path) => gantry_spec::NameOverrides::load(path).map_err(|err| {
+            eprintln!("error: {err}");
+            ExitCode::from(exit_codes::SPEC_ERROR)
+        }),
+        None => Ok(gantry_spec::NameOverrides::empty()),
+    }
+}
+
+/// `gantry names`: enumerate synthesized names at or above `--min-length`.
+/// Always runs against the *raw*, un-overridden state — the report exists
+/// to help write an `--overrides` file, so it always shows what's there
+/// before one is applied.
+fn names(specs: &[PathBuf], min_length: usize) -> ExitCode {
+    let set = match gantry_spec::SpecSet::load(specs) {
+        Ok(set) => set,
+        Err(err) => {
+            eprintln!("error: {err}");
+            return ExitCode::from(exit_codes::SPEC_ERROR);
+        }
+    };
+    let lowering = match gantry_spec::lower(&set) {
+        Ok(lowering) => lowering,
+        Err(err) => {
+            eprintln!("error: {err}");
+            return ExitCode::from(exit_codes::SPEC_ERROR);
+        }
+    };
+    let report = gantry_spec::long_names(&lowering.synthesis_log, min_length);
+    print!("{}", report.report());
+    ExitCode::SUCCESS
 }
 
 /// VR-3: report the capability conformance checklist for a target. Prints
@@ -229,13 +291,14 @@ fn diff(from: &[PathBuf], to: &[PathBuf]) -> ExitCode {
 fn generate_files(
     specs: &[PathBuf],
     target: &str,
+    overrides: &gantry_spec::NameOverrides,
 ) -> Result<Vec<gantry_backend_go::GeneratedFile>, ExitCode> {
     assert_eq!(target, "go", "clap restricts --target to known manifests");
     let set = gantry_spec::SpecSet::load(specs).map_err(|err| {
         eprintln!("error: {err}");
         ExitCode::from(exit_codes::SPEC_ERROR)
     })?;
-    let lowering = gantry_spec::lower(&set).map_err(|err| {
+    let lowering = gantry_spec::lower_with_overrides(&set, overrides).map_err(|err| {
         eprintln!("error: {err}");
         ExitCode::from(exit_codes::SPEC_ERROR)
     })?;
@@ -262,7 +325,16 @@ fn generate_files(
 /// Every target `all` expands to, in output order.
 const ALL_TARGETS: &[&str] = &["go", "apex", "rust", "typescript", "java"];
 
-fn generate(specs: &[PathBuf], targets: &[String], out: &Path) -> ExitCode {
+fn generate(
+    specs: &[PathBuf],
+    targets: &[String],
+    out: &Path,
+    overrides: Option<&Path>,
+) -> ExitCode {
+    let overrides = match load_overrides(overrides) {
+        Ok(overrides) => overrides,
+        Err(code) => return code,
+    };
     let resolved = resolve_targets(targets);
     // A single target writes into `--out` directly (the common case). Two or
     // more each land in their own `<out>/<target>/` subdirectory so the fleet
@@ -275,7 +347,7 @@ fn generate(specs: &[PathBuf], targets: &[String], out: &Path) -> ExitCode {
         } else {
             out.to_path_buf()
         };
-        match generate_one(specs, target, &dir) {
+        match generate_one(specs, target, &dir, &overrides) {
             ExitCode::SUCCESS => {}
             code => return code,
         }
@@ -305,25 +377,30 @@ fn resolve_targets(targets: &[String]) -> Vec<&'static str> {
 
 /// Generate one target into `out`. Both backends emit `(path, content)`;
 /// dispatch on the target and write a common shape.
-fn generate_one(specs: &[PathBuf], target: &str, out: &Path) -> ExitCode {
+fn generate_one(
+    specs: &[PathBuf],
+    target: &str,
+    out: &Path,
+    overrides: &gantry_spec::NameOverrides,
+) -> ExitCode {
     let files: Vec<(String, String)> = match target {
-        "go" => match generate_files(specs, "go") {
+        "go" => match generate_files(specs, "go", overrides) {
             Ok(files) => files.into_iter().map(|f| (f.path, f.content)).collect(),
             Err(code) => return code,
         },
-        "apex" => match generate_apex(specs) {
+        "apex" => match generate_apex(specs, overrides) {
             Ok(files) => files,
             Err(code) => return code,
         },
-        "rust" => match generate_rust(specs) {
+        "rust" => match generate_rust(specs, overrides) {
             Ok(files) => files,
             Err(code) => return code,
         },
-        "typescript" => match generate_typescript(specs) {
+        "typescript" => match generate_typescript(specs, overrides) {
             Ok(files) => files,
             Err(code) => return code,
         },
-        "java" => match generate_java(specs) {
+        "java" => match generate_java(specs, overrides) {
             Ok(files) => files,
             Err(code) => return code,
         },
@@ -344,13 +421,16 @@ fn generate_one(specs: &[PathBuf], target: &str, out: &Path) -> ExitCode {
 /// Load → lower → analyze → Apex-generate. The Apex backend consumes the
 /// `apex()` manifest; no toolchain runs here (the scratch-org deploy loop
 /// is the VR-1.3 gate).
-fn generate_apex(specs: &[PathBuf]) -> Result<Vec<(String, String)>, ExitCode> {
+fn generate_apex(
+    specs: &[PathBuf],
+    overrides: &gantry_spec::NameOverrides,
+) -> Result<Vec<(String, String)>, ExitCode> {
     let set = gantry_spec::SpecSet::load(specs).map_err(|err| {
         eprintln!("error: {err}");
         ExitCode::from(exit_codes::SPEC_ERROR)
     })?;
     let build = gantry_backend_apex::BuildInfo::new(set.fingerprint());
-    let lowering = gantry_spec::lower(&set).map_err(|err| {
+    let lowering = gantry_spec::lower_with_overrides(&set, overrides).map_err(|err| {
         eprintln!("error: {err}");
         ExitCode::from(exit_codes::SPEC_ERROR)
     })?;
@@ -381,13 +461,16 @@ fn generate_apex(specs: &[PathBuf]) -> Result<Vec<(String, String)>, ExitCode> {
 /// `rust()` manifest; no toolchain runs here — `verify --target rust` runs the
 /// VR-1.2 toolchain gate (rustfmt + `cargo check` + clippy + `cargo test`) on
 /// this output.
-fn generate_rust(specs: &[PathBuf]) -> Result<Vec<(String, String)>, ExitCode> {
+fn generate_rust(
+    specs: &[PathBuf],
+    overrides: &gantry_spec::NameOverrides,
+) -> Result<Vec<(String, String)>, ExitCode> {
     let set = gantry_spec::SpecSet::load(specs).map_err(|err| {
         eprintln!("error: {err}");
         ExitCode::from(exit_codes::SPEC_ERROR)
     })?;
     let build = gantry_backend_rust::BuildInfo::new(set.fingerprint());
-    let lowering = gantry_spec::lower(&set).map_err(|err| {
+    let lowering = gantry_spec::lower_with_overrides(&set, overrides).map_err(|err| {
         eprintln!("error: {err}");
         ExitCode::from(exit_codes::SPEC_ERROR)
     })?;
@@ -417,13 +500,16 @@ fn generate_rust(specs: &[PathBuf]) -> Result<Vec<(String, String)>, ExitCode> {
 /// Load → lower → analyze → TypeScript-generate. The TypeScript backend
 /// consumes the `typescript()` manifest; no toolchain runs here — `verify
 /// --target typescript` runs the VR-1.5 gate (`tsc --noEmit` under `strict`).
-fn generate_typescript(specs: &[PathBuf]) -> Result<Vec<(String, String)>, ExitCode> {
+fn generate_typescript(
+    specs: &[PathBuf],
+    overrides: &gantry_spec::NameOverrides,
+) -> Result<Vec<(String, String)>, ExitCode> {
     let set = gantry_spec::SpecSet::load(specs).map_err(|err| {
         eprintln!("error: {err}");
         ExitCode::from(exit_codes::SPEC_ERROR)
     })?;
     let build = gantry_backend_typescript::BuildInfo::new(set.fingerprint());
-    let lowering = gantry_spec::lower(&set).map_err(|err| {
+    let lowering = gantry_spec::lower_with_overrides(&set, overrides).map_err(|err| {
         eprintln!("error: {err}");
         ExitCode::from(exit_codes::SPEC_ERROR)
     })?;
@@ -453,13 +539,16 @@ fn generate_typescript(specs: &[PathBuf]) -> Result<Vec<(String, String)>, ExitC
 /// Load → lower → analyze → Java-generate. The Java backend consumes the
 /// `java()` manifest; no toolchain runs here — the VR-1.6 gate (`javac
 /// -Xlint:all -Werror`) runs in the backend's `compile_output` test.
-fn generate_java(specs: &[PathBuf]) -> Result<Vec<(String, String)>, ExitCode> {
+fn generate_java(
+    specs: &[PathBuf],
+    overrides: &gantry_spec::NameOverrides,
+) -> Result<Vec<(String, String)>, ExitCode> {
     let set = gantry_spec::SpecSet::load(specs).map_err(|err| {
         eprintln!("error: {err}");
         ExitCode::from(exit_codes::SPEC_ERROR)
     })?;
     let build = gantry_backend_java::BuildInfo::new(set.fingerprint());
-    let lowering = gantry_spec::lower(&set).map_err(|err| {
+    let lowering = gantry_spec::lower_with_overrides(&set, overrides).map_err(|err| {
         eprintln!("error: {err}");
         ExitCode::from(exit_codes::SPEC_ERROR)
     })?;
@@ -539,12 +628,17 @@ fn write_pairs(root: &Path, files: &[(String, String)]) -> std::io::Result<()> {
 /// Generate one target's SDK as `(path, content)` pairs — the common currency
 /// `verify` and `conform` measure, so the backend file types stay internal.
 fn generate_pairs(specs: &[PathBuf], target: &str) -> Result<Vec<(String, String)>, ExitCode> {
+    // `verify` checks a target's real-toolchain compile against the plain,
+    // un-overridden output — overriding a name doesn't change whether the
+    // generated code compiles, so there is nothing an `--overrides` flag
+    // here would verify differently.
+    let overrides = gantry_spec::NameOverrides::empty();
     match target {
-        "go" => generate_files(specs, "go")
+        "go" => generate_files(specs, "go", &overrides)
             .map(|files| files.into_iter().map(|f| (f.path, f.content)).collect()),
-        "apex" => generate_apex(specs),
-        "rust" => generate_rust(specs),
-        "typescript" => generate_typescript(specs),
+        "apex" => generate_apex(specs, &overrides),
+        "rust" => generate_rust(specs, &overrides),
+        "typescript" => generate_typescript(specs, &overrides),
         other => unreachable!("clap restricts --target to known manifests, got {other:?}"),
     }
 }
@@ -740,7 +834,9 @@ fn check(specs: &[PathBuf]) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{ALL_TARGETS, resolve_targets};
+    use std::process::ExitCode;
+
+    use super::{ALL_TARGETS, exit_codes, load_overrides, resolve_targets};
 
     fn resolve(args: &[&str]) -> Vec<&'static str> {
         resolve_targets(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
@@ -767,5 +863,20 @@ mod tests {
     fn duplicates_are_removed() {
         assert_eq!(resolve(&["apex", "apex"]), vec!["apex"]);
         assert_eq!(resolve(&["go", "apex", "go"]), vec!["go", "apex"]);
+    }
+
+    #[test]
+    fn no_overrides_flag_behaves_like_empty_overrides() {
+        assert_eq!(
+            load_overrides(None).unwrap(),
+            gantry_spec::NameOverrides::empty()
+        );
+    }
+
+    #[test]
+    fn a_missing_overrides_file_is_a_spec_error() {
+        let missing = std::path::Path::new("/no/such/gantry-overrides-file.json");
+        let err = load_overrides(Some(missing)).unwrap_err();
+        assert_eq!(err, ExitCode::from(exit_codes::SPEC_ERROR));
     }
 }

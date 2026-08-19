@@ -28,6 +28,7 @@ use indexmap::IndexMap;
 
 use crate::error::IngestError;
 use crate::ingest::{Document, SpecSet};
+use crate::overrides::NameOverrides;
 use crate::raw::{RawAdditionalProperties, RawOperation, RawParameter, RawSchema};
 
 /// Bound on `allOf`/`$ref` chain walks; a real chain is 2–3 deep, so
@@ -42,6 +43,14 @@ const DISCRIMINATOR_FIELD: &str = "type";
 pub struct Lowering {
     pub program: ir::Program,
     pub stats: LoweringStats,
+    /// `(location, name)` for every declaration this run gave a name to —
+    /// both predeclared top-level components and inline-synthesized shapes
+    /// — in lowering order, before the cross-version merge. `gantry names`
+    /// reads this to enumerate override candidates with their exact
+    /// override key; nothing else in the engine depends on it, so it's
+    /// deliberately the raw per-document record, not reconciled against
+    /// `program`'s post-merge decls.
+    pub synthesis_log: Vec<(String, String)>,
 }
 
 /// What the lowering produced — reported by `gantry check` so growth and
@@ -71,15 +80,30 @@ pub struct LoweringStats {
     pub redirect_responses: usize,
 }
 
-/// Lower every document of the set into one typed [`ir::Program`].
+/// Lower every document of the set into one typed [`ir::Program`], with no
+/// name overrides — the common case. Thin wrapper over
+/// [`lower_with_overrides`].
+pub fn lower(set: &SpecSet) -> Result<Lowering, IngestError> {
+    lower_with_overrides(set, &NameOverrides::empty())
+}
+
+/// Lower every document of the set into one typed [`ir::Program`], applying
+/// `overrides` to synthesized names as they're minted (see
+/// [`crate::NameOverrides`]).
 ///
 /// Declarations keep spec order per document, lowered into per-version modules
 /// so nothing collides mid-lowering; the version merge (D-190) then collapses
 /// them into one `schemas` namespace, superset-merging same-named types.
-pub fn lower(set: &SpecSet) -> Result<Lowering, IngestError> {
+pub fn lower_with_overrides(
+    set: &SpecSet,
+    overrides: &NameOverrides,
+) -> Result<Lowering, IngestError> {
     let mut arena: Vec<Option<ir::Decl>> = Vec::new();
     let mut operations: Vec<ir::Operation> = Vec::new();
     let mut stats = LoweringStats::default();
+    let mut synthesis_log: Vec<(String, String)> = Vec::new();
+    let mut consulted_components: HashSet<String> = HashSet::new();
+    let mut consulted_locations: HashSet<String> = HashSet::new();
     for (index, doc) in set.documents.iter().enumerate() {
         let module = module_for(doc, index == 0)?;
         DocLowerer {
@@ -93,8 +117,35 @@ pub fn lower(set: &SpecSet) -> Result<Lowering, IngestError> {
             method_names: HashMap::new(),
             idless_body_seeds: HashSet::new(),
             shapes: HashMap::new(),
+            overrides,
+            synthesis_log: &mut synthesis_log,
+            consulted_components: &mut consulted_components,
+            consulted_locations: &mut consulted_locations,
         }
         .lower_document()?;
+    }
+    // Loud, not silent (NF-1): an override key that never matched anything
+    // — a typo, or the spec changed shape since the override was written —
+    // looks identical to a working override until someone goes looking for
+    // the shorter name and it isn't there. Checked once, after every
+    // document has had a chance to consult it.
+    if !overrides.is_empty() {
+        for key in overrides.components.keys() {
+            if !consulted_components.contains(key) {
+                return Err(IngestError::UnusedOverride {
+                    kind: "component",
+                    key: key.clone(),
+                });
+            }
+        }
+        for key in overrides.locations.keys() {
+            if !consulted_locations.contains(key) {
+                return Err(IngestError::UnusedOverride {
+                    kind: "location",
+                    key: key.clone(),
+                });
+            }
+        }
     }
     let decls: Vec<ir::Decl> = arena
         .into_iter()
@@ -121,7 +172,11 @@ pub fn lower(set: &SpecSet) -> Result<Lowering, IngestError> {
             ir::DeclKind::Alias(_) => {}
         }
     }
-    Ok(Lowering { program, stats })
+    Ok(Lowering {
+        program,
+        stats,
+        synthesis_log,
+    })
 }
 
 /// `schemas` for the base document, `schemas::vNrM` for versioned ones.
@@ -171,6 +226,19 @@ struct DocLowerer<'a> {
     /// type each. Bottom-up: identical subtrees dedupe first, so their
     /// parents then match too.
     shapes: HashMap<String, ir::DeclId>,
+    /// Human-supplied replacements for names too long to be comfortable,
+    /// but not wrong (see [`crate::NameOverrides`]).
+    overrides: &'a NameOverrides,
+    /// `(location, name)` for every declaration this document gives a name
+    /// to, in lowering order — shared across all documents in the run so
+    /// `Lowering::synthesis_log` ends up complete. See `Lowering`'s field
+    /// doc for why it's pre-merge.
+    synthesis_log: &'a mut Vec<(String, String)>,
+    /// Which `overrides.components`/`overrides.locations` keys have
+    /// actually been consulted, shared across all documents — the other
+    /// half of the unused-override check in `lower_with_overrides`.
+    consulted_components: &'a mut HashSet<String>,
+    consulted_locations: &'a mut HashSet<String>,
 }
 
 impl<'a> DocLowerer<'a> {
@@ -185,8 +253,31 @@ impl<'a> DocLowerer<'a> {
         }
         for (name, raw) in &doc.schemas {
             let location = format!("components.schemas.{name}");
-            let kind = self.lower_named(&location, name, raw)?;
-            let decl = self.decl(&location, name, kind)?;
+            // A component-name override reseeds every field synthesized
+            // under this schema too: `lower_named` derives its children's
+            // naming seed purely from `display_name`, never from `name`
+            // itself, so overriding the display name here cascades for
+            // free. `name` (the spec's own key) stays untouched in
+            // `self.ids` — `$ref`s resolve against it regardless of what
+            // this schema is displayed as.
+            let display_name = match self.overrides.component(name) {
+                Some(overridden) => {
+                    self.consulted_components.insert(name.clone());
+                    if self.used_names.contains(overridden) {
+                        return Err(IngestError::OverrideCollision {
+                            kind: "component",
+                            key: name.clone(),
+                            value: overridden.to_string(),
+                        });
+                    }
+                    self.used_names.insert(overridden.to_string());
+                    overridden.to_string()
+                }
+                None => name.clone(),
+            };
+            let kind = self.lower_named(&location, &display_name, raw)?;
+            let decl = self.decl(&location, &display_name, kind)?;
+            self.synthesis_log.push((location, display_name));
             let id = self.ids[name];
             self.arena[id.0 as usize] = Some(decl);
         }
@@ -788,19 +879,45 @@ impl<'a> DocLowerer<'a> {
         if let Some(&existing) = self.shapes.get(&key) {
             return Ok(existing);
         }
-        let mut name = base.to_string();
-        if self.used_names.contains(&name)
-            && ancestor != base
-            && !self.used_names.contains(ancestor)
-        {
-            name = ancestor.to_string();
-        }
-        let mut suffix = 2;
-        while self.used_names.contains(&name) {
-            name = format!("{base}{suffix}");
-            suffix += 1;
-        }
+        // A location override — checked before the base/ancestor/numeral
+        // fallback below runs at all — always wins outright, same as
+        // `curated_method_name`/`curated_body_seed` win over their derived
+        // names. It's checked *after* structural dedupe (D-127) on purpose:
+        // a location whose shape is identical to an earlier one never mints
+        // its own decl to begin with, so an override on it would be
+        // unreachable — the "unused override" check below catches that
+        // honestly rather than silently accepting a key that can't apply.
+        let name = match self.overrides.location(location) {
+            Some(overridden) => {
+                self.consulted_locations.insert(location.to_string());
+                if self.used_names.contains(overridden) {
+                    return Err(IngestError::OverrideCollision {
+                        kind: "location",
+                        key: location.to_string(),
+                        value: overridden.to_string(),
+                    });
+                }
+                overridden.to_string()
+            }
+            None => {
+                let mut name = base.to_string();
+                if self.used_names.contains(&name)
+                    && ancestor != base
+                    && !self.used_names.contains(ancestor)
+                {
+                    name = ancestor.to_string();
+                }
+                let mut suffix = 2;
+                while self.used_names.contains(&name) {
+                    name = format!("{base}{suffix}");
+                    suffix += 1;
+                }
+                name
+            }
+        };
         self.used_names.insert(name.clone());
+        self.synthesis_log
+            .push((location.to_string(), name.clone()));
         let decl = self.decl(location, &name, kind)?;
         let id = self.next_id();
         self.arena.push(Some(decl));
