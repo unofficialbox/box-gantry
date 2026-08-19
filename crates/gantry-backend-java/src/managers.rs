@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
 use gantry_ir as ir;
-use gantry_ir::naming::{camel, pascal, snake};
+use gantry_ir::naming::{append_without_repeating, camel, pascal, snake};
 use gantry_sema::Analysis;
 use gantry_synth::{PageStyle, PagedOperation, detect_pagination};
 
@@ -359,7 +359,10 @@ impl ManagerPrinter<'_> {
             ));
         }
         if !optional.is_empty() {
-            sig.push(format!("{}Options options", pascal(options_name)));
+            sig.push(format!(
+                "{} options",
+                append_without_repeating(&pascal(options_name), "Options")
+            ));
         }
 
         let mut out = String::new();
@@ -787,7 +790,7 @@ impl ManagerPrinter<'_> {
             .strip_suffix("Manager")
             .unwrap_or(&manager.class);
         Some(PaginationPlan {
-            class: format!("{prefix}{}Paginator", pascal(method)),
+            class: append_without_repeating(&format!("{prefix}{}", pascal(method)), "Paginator"),
             manager_class: manager.class.clone(),
             // Option A: the public `<method>` *is* the paginator entry point; the
             // single-page fetch it drives is the package-private `<method>Page` —
@@ -795,7 +798,11 @@ impl ManagerPrinter<'_> {
             // reserved in the manager's dedup pool (#78).
             paginate: method.to_string(),
             method: format!("{method}Page"),
-            options_ty: format!("{}.{}Options", manager.class, pascal(method)),
+            options_ty: format!(
+                "{}.{}",
+                manager.class,
+                append_without_repeating(&pascal(method), "Options")
+            ),
             envelope: self.java_type(unwrap_optionality(response_ty)),
             element: self.java_type(&paged.element),
             stored,
@@ -831,7 +838,10 @@ impl ManagerPrinter<'_> {
                 self.java_type(unwrap_optionality(&body.ty))
             ));
         }
-        sig.push(format!("{}Options options", pascal(method)));
+        sig.push(format!(
+            "{} options",
+            append_without_repeating(&pascal(method), "Options")
+        ));
 
         let mut args = vec!["session".to_string()];
         args.extend(plan.forward.iter().cloned());
@@ -1034,8 +1044,8 @@ impl ManagerPrinter<'_> {
         let mut out = String::new();
         let _ = writeln!(
             out,
-            "    /** Optional parameters for {method}. */\n    public static final class {}Options {{",
-            pascal(method)
+            "    /** Optional parameters for {method}. */\n    public static final class {} {{",
+            append_without_repeating(&pascal(method), "Options")
         );
         for param in &optional {
             let _ = writeln!(

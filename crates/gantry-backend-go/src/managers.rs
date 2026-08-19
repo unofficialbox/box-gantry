@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 use gantry_ir as ir;
-use gantry_ir::naming::{camel, pascal};
+use gantry_ir::naming::{append_without_repeating, camel, pascal};
 use gantry_sema::Analysis;
 use gantry_synth::{PageStyle, PagedOperation};
 
@@ -237,7 +237,10 @@ impl ManagerPrinter<'_> {
         // Manager-qualified: method names are unique per manager (they are
         // receiver-scoped), but this options struct is package-level, so it
         // must carry the manager to stay unique across the `managers` package.
-        let options_type = format!("{}{options_method}Options", pascal(op.manager.as_str()));
+        let options_type = append_without_repeating(
+            &format!("{}{options_method}", pascal(op.manager.as_str())),
+            "Options",
+        );
         if !optional.is_empty() {
             args.push(format!("opts *{options_type}"));
         }
@@ -403,7 +406,10 @@ impl ManagerPrinter<'_> {
         // Manager-qualified: method names are unique per manager (they are
         // receiver-scoped), but this options struct is package-level, so it
         // must carry the manager to stay unique across the `managers` package.
-        let options_type = format!("{}{method}Options", pascal(op.manager.as_str()));
+        let options_type = append_without_repeating(
+            &format!("{}{method}", pascal(op.manager.as_str())),
+            "Options",
+        );
         sig.push(format!("opts *{options_type}"));
         call.push("&o".to_string());
 
