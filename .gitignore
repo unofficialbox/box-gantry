@@ -36,3 +36,6 @@ NAMING_AUDIT.md
 
 # Claude Code personal (per-user) settings — the shared .claude/settings.json is committed
 .claude/settings.local.json
+
+# Claude Code worktree-isolated subagent scratch — session-local, never repo content
+.claude/worktrees/
