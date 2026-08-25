@@ -205,15 +205,22 @@ pub const V1: RuntimeContract = RuntimeContract {
             receiver: Receiver::Free,
             params: &[
                 ("request", ContractType::Request),
-                ("attributes", ContractType::Bytes),
-                ("file_name", ContractType::String),
+                ("json_part_name", ContractType::String),
+                ("json_bytes", ContractType::Bytes),
+                ("file_part_name", ContractType::String),
                 ("file", ContractType::Stream),
             ],
             ret: Some(ContractType::Request),
             fallible: false,
             takes_context: false,
-            behavior: "Return the request with a Box-style multipart body: an `attributes` \
-                       JSON part plus a file part (G-7).",
+            behavior: "Return the request with a Box-style multipart body. Writes a JSON \
+                       part named `json_part_name` iff `json_bytes` is non-empty, and a \
+                       binary part named `file_part_name` (used as both the form field \
+                       name and the Content-Disposition filename — the real filename \
+                       isn't structurally knowable, and inventing one by reading a \
+                       sibling field's name would smuggle semantics into a string) iff \
+                       `file` is non-empty (G-7). A caller signals a part's absence with \
+                       an empty value, never by omitting the call.",
         },
         ContractFn {
             name: "response_bytes",

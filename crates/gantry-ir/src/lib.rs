@@ -368,6 +368,114 @@ impl Program {
     }
 }
 
+/// The parts of a multipart request body (G-7): the field carrying raw
+/// binary content, and the field carrying everything else (JSON encoded as
+/// one part), each identified structurally — never by a hardcoded field
+/// name. Either may be absent (e.g. the avatar-upload shape has no JSON
+/// part at all).
+#[derive(Debug)]
+pub struct MultipartShape<'a> {
+    pub binary_field: Option<&'a Field>,
+    pub json_field: Option<&'a Field>,
+}
+
+/// Classify a multipart request body's struct into its binary and JSON
+/// parts (see [`MultipartShape`]). The field whose type — after unwrapping
+/// optionality and alias indirection — is [`Type::Binary`] is the binary
+/// part; every other field collectively is the JSON part. More than one
+/// field of either kind is a shape this engine doesn't support: `Err`
+/// names it rather than silently guessing which field wins (NF-1).
+pub fn classify_multipart<'a>(
+    program: &'a Program,
+    ty: &'a Type,
+) -> Result<MultipartShape<'a>, String> {
+    let s = unwrap_to_struct(program, ty)?;
+    let mut binary_field = None;
+    let mut json_field = None;
+    for field in &s.fields {
+        if resolve_type(program, &field.ty) == &Type::Binary {
+            if let Some(prior) = binary_field {
+                return Err(format!(
+                    "multipart body has more than one binary field: {} and {}",
+                    field_wire_name(prior),
+                    field_wire_name(field),
+                ));
+            }
+            binary_field = Some(field);
+        } else {
+            if let Some(prior) = json_field {
+                return Err(format!(
+                    "multipart body has more than one non-binary field: {} and {}",
+                    field_wire_name(prior),
+                    field_wire_name(field),
+                ));
+            }
+            json_field = Some(field);
+        }
+    }
+    Ok(MultipartShape {
+        binary_field,
+        json_field,
+    })
+}
+
+fn field_wire_name(field: &Field) -> &str {
+    &field.wire_name
+}
+
+fn unwrap_optionality(ty: &Type) -> &Type {
+    match ty {
+        Type::Optional(inner) | Type::Nullable(inner) => unwrap_optionality(inner),
+        Type::Bool
+        | Type::Int64
+        | Type::Float64
+        | Type::String
+        | Type::Date
+        | Type::DateTime
+        | Type::Binary
+        | Type::JsonValue
+        | Type::List(_)
+        | Type::Map(_)
+        | Type::Decl(_) => ty,
+    }
+}
+
+/// Unwrap optionality, then resolve through alias declarations to the
+/// underlying type.
+fn resolve_type<'a>(program: &'a Program, ty: &'a Type) -> &'a Type {
+    let ty = unwrap_optionality(ty);
+    if let Type::Decl(id) = ty
+        && let DeclKind::Alias(inner) = &program.decl(*id).kind
+    {
+        return resolve_type(program, inner);
+    }
+    ty
+}
+
+fn unwrap_to_struct<'a>(program: &'a Program, ty: &'a Type) -> Result<&'a StructDecl, String> {
+    match resolve_type(program, ty) {
+        Type::Decl(id) => match &program.decl(*id).kind {
+            DeclKind::Struct(s) => Ok(s),
+            other @ (DeclKind::Union(_) | DeclKind::Enum(_) | DeclKind::Alias(_)) => Err(format!(
+                "multipart body must be a struct, found {other:?} at {}",
+                program.decl(*id).name.as_str()
+            )),
+        },
+        other @ (Type::Bool
+        | Type::Int64
+        | Type::Float64
+        | Type::String
+        | Type::Date
+        | Type::DateTime
+        | Type::Binary
+        | Type::Optional(_)
+        | Type::Nullable(_)
+        | Type::List(_)
+        | Type::Map(_)
+        | Type::JsonValue) => Err(format!("multipart body must be a struct, found {other:?}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,5 +522,113 @@ mod tests {
         });
         assert_eq!(program.decl(outer).name.as_str(), "Folder");
         assert_eq!(program.decl(inner).name.as_str(), "FileMini");
+    }
+
+    fn field(name: &str, wire_name: &str, ty: Type) -> Field {
+        Field {
+            name: Identifier::new(name).unwrap(),
+            wire_name: wire_name.into(),
+            ty,
+        }
+    }
+
+    fn struct_decl(name: &str, fields: Vec<Field>, program: &mut Program) -> Type {
+        let id = program.add(Decl {
+            name: Identifier::new(name).unwrap(),
+            module: ModulePath(vec![Identifier::new("schemas").unwrap()]),
+            api_version: None,
+            kind: DeclKind::Struct(StructDecl {
+                fields,
+                extra: None,
+            }),
+        });
+        Type::Decl(id)
+    }
+
+    #[test]
+    fn classifies_the_upload_shape_with_both_parts() {
+        let mut program = Program::default();
+        let attrs = struct_decl("PostFileContentAttributes", vec![], &mut program);
+        let body = struct_decl(
+            "CreateFileContentRequest",
+            vec![
+                field("attributes", "attributes", attrs),
+                field("file", "file", Type::Binary),
+            ],
+            &mut program,
+        );
+        let shape = classify_multipart(&program, &body).unwrap();
+        assert_eq!(shape.binary_field.unwrap().wire_name, "file");
+        assert_eq!(shape.json_field.unwrap().wire_name, "attributes");
+    }
+
+    #[test]
+    fn classifies_the_avatar_shape_with_no_json_field() {
+        let mut program = Program::default();
+        let body = struct_decl(
+            "CreateUserAvatarRequest",
+            vec![field("pic", "pic", Type::Binary)],
+            &mut program,
+        );
+        let shape = classify_multipart(&program, &body).unwrap();
+        assert_eq!(shape.binary_field.unwrap().wire_name, "pic");
+        assert!(shape.json_field.is_none());
+    }
+
+    #[test]
+    fn two_binary_fields_is_a_loud_error() {
+        let mut program = Program::default();
+        let body = struct_decl(
+            "Bogus",
+            vec![field("a", "a", Type::Binary), field("b", "b", Type::Binary)],
+            &mut program,
+        );
+        let err = classify_multipart(&program, &body).unwrap_err();
+        assert!(err.contains('a') && err.contains('b'), "{err}");
+    }
+
+    #[test]
+    fn two_non_binary_fields_is_a_loud_error() {
+        let mut program = Program::default();
+        let inner = struct_decl("Inner", vec![], &mut program);
+        let body = struct_decl(
+            "Bogus",
+            vec![field("a", "a", inner.clone()), field("b", "b", inner)],
+            &mut program,
+        );
+        let err = classify_multipart(&program, &body).unwrap_err();
+        assert!(err.contains('a') && err.contains('b'), "{err}");
+    }
+
+    #[test]
+    fn an_empty_multipart_body_classifies_with_no_parts() {
+        let mut program = Program::default();
+        let body = struct_decl("Empty", vec![], &mut program);
+        let shape = classify_multipart(&program, &body).unwrap();
+        assert!(shape.binary_field.is_none());
+        assert!(shape.json_field.is_none());
+    }
+
+    #[test]
+    fn optionality_and_alias_indirection_are_unwrapped() {
+        let mut program = Program::default();
+        let alias_id = program.add(Decl {
+            name: Identifier::new("FileAlias").unwrap(),
+            module: ModulePath(vec![Identifier::new("schemas").unwrap()]),
+            api_version: None,
+            kind: DeclKind::Alias(Type::Binary),
+        });
+        let body = struct_decl(
+            "Upload",
+            vec![field(
+                "file",
+                "file",
+                Type::Optional(Box::new(Type::Decl(alias_id))),
+            )],
+            &mut program,
+        );
+        let optional_body = Type::Optional(Box::new(body));
+        let shape = classify_multipart(&program, &optional_body).unwrap();
+        assert_eq!(shape.binary_field.unwrap().wire_name, "file");
     }
 }

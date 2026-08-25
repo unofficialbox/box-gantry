@@ -411,10 +411,17 @@ public final class Runtime {
         return request;
     }
 
-    /** Return the request with a Box-style multipart body: an attributes JSON part + a file part (G-7). */
-    public static Request withMultipartBody(Request request, byte[] attributes, String fileName, Stream file) {
+    /**
+     * Return the request with a Box-style multipart body. Writes a JSON part named
+     * {@code jsonPartName} iff {@code jsonBytes} is non-empty, and a binary part named
+     * {@code filePartName} — used as both the form field name and the Content-Disposition
+     * filename, since the real filename isn't structurally knowable — iff {@code file} is
+     * non-empty (G-7).
+     */
+    public static Request withMultipartBody(
+            Request request, String jsonPartName, byte[] jsonBytes, String filePartName, Stream file) {
         String boundary = "gantryBoundary" + Long.toHexString(ThreadLocalRandom.current().nextLong());
-        request.body = multipartBody(boundary, attributes, fileName, file.toBytes());
+        request.body = multipartBody(boundary, jsonPartName, jsonBytes, filePartName, file.toBytes());
         request.contentType = "multipart/form-data; boundary=" + boundary;
         return request;
     }
@@ -993,25 +1000,37 @@ public final class Runtime {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 
-    private static byte[] multipartBody(String boundary, byte[] attributes, String fileName, byte[] file) {
-        // Sanitize the filename so it can't break out of the header field.
-        String safeName = fileName.replace("\r", "").replace("\n", "")
-                .replace("\\", "\\\\").replace("\"", "\\\"");
+    private static byte[] multipartBody(
+            String boundary, String jsonPartName, byte[] jsonBytes, String filePartName, byte[] file) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try {
-            write(out, "--" + boundary + "\r\n");
-            write(out, "Content-Disposition: form-data; name=\"attributes\"\r\n");
-            write(out, "Content-Type: application/json\r\n\r\n");
-            out.write(attributes);
-            write(out, "\r\n--" + boundary + "\r\n");
-            write(out, "Content-Disposition: form-data; name=\"file\"; filename=\"" + safeName + "\"\r\n");
-            write(out, "Content-Type: application/octet-stream\r\n\r\n");
-            out.write(file);
-            write(out, "\r\n--" + boundary + "--\r\n");
+            if (jsonBytes.length > 0) {
+                write(out, "--" + boundary + "\r\n");
+                write(out, "Content-Disposition: form-data; name=\"" + safeHeaderValue(jsonPartName) + "\"\r\n");
+                write(out, "Content-Type: application/json\r\n\r\n");
+                out.write(jsonBytes);
+                write(out, "\r\n");
+            }
+            if (file.length > 0) {
+                String safeName = safeHeaderValue(filePartName);
+                write(out, "--" + boundary + "\r\n");
+                write(out, "Content-Disposition: form-data; name=\"" + safeName + "\"; filename=\"" + safeName
+                        + "\"\r\n");
+                write(out, "Content-Type: application/octet-stream\r\n\r\n");
+                out.write(file);
+                write(out, "\r\n");
+            }
+            write(out, "--" + boundary + "--\r\n");
         } catch (IOException err) {
             throw new BoxApiException("gantryruntime: failed to assemble multipart body", err);
         }
         return out.toByteArray();
+    }
+
+    /** Sanitize a header value so it can't break out of a quoted field (CRLF, quote, backslash). */
+    private static String safeHeaderValue(String value) {
+        return value.replace("\r", "").replace("\n", "")
+                .replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     private static void write(ByteArrayOutputStream out, String text) throws IOException {

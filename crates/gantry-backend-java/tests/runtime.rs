@@ -183,6 +183,15 @@ public final class RuntimeSmoke {
             }
         });
 
+        // Echoes the raw request body (ISO-8859-1 so every byte round-trips
+        // losslessly through String) for the multipart assertions below.
+        AtomicReference<String> multipartBody = new AtomicReference<>();
+        server.createContext("/multipart", ex -> {
+            byte[] raw = ex.getRequestBody().readAllBytes();
+            multipartBody.set(new String(raw, StandardCharsets.ISO_8859_1));
+            respond(ex, 200, "ok");
+        });
+
         server.start();
         String base = "http://127.0.0.1:" + server.getAddress().getPort();
 
@@ -216,6 +225,32 @@ public final class RuntimeSmoke {
                 .tokenUrl(base + "/jwt"));
         Runtime.Session jwtSession = new Runtime.Session(jwt);
         check(jwtSession.accessToken().equals("jwttok"), "jwt token");
+
+        // Multipart: the JSON part is the bare attributes object (not wrapped)
+        // and the file part carries the real bytes — the pre-fix bug sent a
+        // wrapped attributes part and never sent the file bytes at all (G-7).
+        Runtime.Session mpSession = new Runtime.Session(Runtime.developerToken("t"));
+        Runtime.Request mpReq = Runtime.withMultipartBody(
+            mpSession.newRequest("POST", base + "/multipart"),
+            "attributes", "{\"name\":\"f.txt\"}".getBytes(StandardCharsets.UTF_8),
+            "file", Runtime.Stream.fromBytes("file bytes".getBytes(StandardCharsets.UTF_8)));
+        mpSession.fetch(mpReq);
+        String mp = multipartBody.get();
+        check(mp.contains("name=\"attributes\""), "multipart: expected attributes part, got: " + mp);
+        check(mp.contains("{\"name\":\"f.txt\"}"), "multipart: expected bare attributes JSON, got: " + mp);
+        check(mp.contains("name=\"file\"; filename=\"file\""), "multipart: expected file part, got: " + mp);
+        check(mp.contains("file bytes"), "multipart: expected file bytes, got: " + mp);
+
+        // The avatar-upload shape has no attributes field at all: no JSON part
+        // should be sent, regardless.
+        Runtime.Request avatarReq = Runtime.withMultipartBody(
+            mpSession.newRequest("POST", base + "/multipart"),
+            "", new byte[0],
+            "pic", Runtime.Stream.fromBytes("avatar bytes".getBytes(StandardCharsets.UTF_8)));
+        mpSession.fetch(avatarReq);
+        String avatarBody = multipartBody.get();
+        check(!avatarBody.contains("application/json"), "avatar: expected no JSON part, got: " + avatarBody);
+        check(avatarBody.contains("name=\"pic\"; filename=\"pic\""), "avatar: expected pic file part, got: " + avatarBody);
 
         server.stop(0);
         System.out.println("RUNTIME_OK");

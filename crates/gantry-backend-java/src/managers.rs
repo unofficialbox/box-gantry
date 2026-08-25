@@ -524,15 +524,56 @@ impl ManagerPrinter<'_> {
                     "        _req = {RUNTIME}.withStreamBody(_req, {STREAM}.fromBytes(body), \"application/octet-stream\");"
                 );
             }
+            // Which field is the binary part vs. the JSON part is structural
+            // (G-7), never a hardcoded field name.
             ir::RequestMedia::Multipart => {
+                let shape =
+                    ir::classify_multipart(self.program, &body.ty).unwrap_or_else(|detail| {
+                        panic!("java backend cannot express multipart body: {detail} — engine bug")
+                    });
+                let ir::Type::Decl(id) = inner else {
+                    panic!(
+                        "java backend cannot express multipart body: not a declared struct — engine bug"
+                    );
+                };
+                let ir::DeclKind::Struct(s) = &self.program.decl(*id).kind else {
+                    panic!(
+                        "java backend cannot express multipart body: not a declared struct — engine bug"
+                    );
+                };
+                let components = struct_components(s);
+                let ident_for = |wire: &str| -> String {
+                    components
+                        .iter()
+                        .find(|(_, f)| f.wire_name == wire)
+                        .map(|(ident, _)| ident.clone())
+                        .expect("classify_multipart returns a field from this struct")
+                };
+                let (json_expr, json_wire) = match shape.json_field {
+                    Some(field) => {
+                        let access = format!("body.{}()", ident_for(&field.wire_name));
+                        let _ = writeln!(
+                            out,
+                            "        byte[] _jsonBytes = {JSON}.write({}).getBytes({UTF_8});",
+                            self.encode_value(&field.ty, &access, 0)
+                        );
+                        ("_jsonBytes".to_string(), field.wire_name.clone())
+                    }
+                    None => ("new byte[0]".to_string(), String::new()),
+                };
+                let (file_expr, file_wire) = match shape.binary_field {
+                    Some(field) => {
+                        let access = format!("body.{}()", ident_for(&field.wire_name));
+                        (
+                            format!("{STREAM}.fromBytes({access})"),
+                            field.wire_name.clone(),
+                        )
+                    }
+                    None => (format!("{STREAM}.empty()"), String::new()),
+                };
                 let _ = writeln!(
                     out,
-                    "        byte[] _attributes = {JSON}.write({}).getBytes({UTF_8});",
-                    self.encode_value(inner, "body", 0)
-                );
-                let _ = writeln!(
-                    out,
-                    "        _req = {RUNTIME}.withMultipartBody(_req, _attributes, \"file\", {STREAM}.empty());"
+                    "        _req = {RUNTIME}.withMultipartBody(_req, {json_wire:?}, {json_expr}, {file_wire:?}, {file_expr});"
                 );
             }
             ir::RequestMedia::UrlEncoded => self.url_encoded_body(out, inner),
