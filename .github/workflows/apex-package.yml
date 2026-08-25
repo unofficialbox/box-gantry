@@ -3,11 +3,15 @@
 # Generates the Apex SDK and runs `sf package version create` against the Dev
 # Hub that SFDX_AUTH_URL authorizes (the `unbox` namespace is linked to that
 # Dev Hub's Namespace Registry — D-142). The output is the installable `04t…`
-# SubscriberPackageVersionId, surfaced in the job summary.
+# SubscriberPackageVersionId, surfaced in the job summary and exposed as the
+# `subscriber_id` output for a caller (release.yml) to publish onward.
 #
-# Manual (workflow_dispatch): package-version builds are slow and count against
-# the Dev Hub's version-create limits, so this is not a per-push gate. The auth
-# comes from a repo secret, never the repository; without it the job skips.
+# Both a standalone workflow_dispatch (manual, ad-hoc rebuilds without cutting
+# a release) and a workflow_call (release.yml calls this as a job once the
+# fleet is tagged, so the package version is built from the exact released
+# source). Package-version builds are slow and count against the Dev Hub's
+# version-create limits, so neither trigger is a per-push gate. The auth comes
+# from a secret, never the repository; without it the job skips cleanly.
 #
 # The generated `sfdx-project.json` ships with an empty `packageAliases` (it is
 # regenerated every build), so the durable handle is the package's `0Ho…` id.
@@ -17,6 +21,17 @@ name: Apex package build (NF-8)
 
 on:
   workflow_dispatch:
+  workflow_call:
+    secrets:
+      SFDX_AUTH_URL:
+        required: false
+    outputs:
+      subscriber_id:
+        description: The installable 04t… SubscriberPackageVersionId, empty when the build was skipped or failed.
+        value: ${{ jobs.package.outputs.subscriber_id }}
+      skipped:
+        description: "'true' when the build was skipped (no SFDX_AUTH_URL secret configured)."
+        value: ${{ jobs.package.outputs.skipped }}
 
 # The package name must match the generated sfdx-project.json (APEX_PACKAGE_NAME).
 env:
@@ -25,6 +40,9 @@ env:
 jobs:
   package:
     runs-on: ubuntu-latest
+    outputs:
+      subscriber_id: ${{ steps.build.outputs.subscriber_id }}
+      skipped: ${{ steps.guard.outputs.skip == 'true' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -58,6 +76,7 @@ jobs:
           fixtures/specs/openapi-v2026.0.json
       - if: steps.guard.outputs.skip != 'true'
         name: Build the unlocked package version
+        id: build
         working-directory: apex-sdk
         env:
           SFDX_AUTH_URL: ${{ secrets.SFDX_AUTH_URL }}
@@ -105,6 +124,8 @@ jobs:
             exit 1
           fi
 
+          echo "subscriber_id=$subscriber_id" >> "$GITHUB_OUTPUT"
+
           {
             echo "## Apex package version built (NF-8)"
             echo ""
@@ -116,4 +137,6 @@ jobs:
             echo '```bash'
             echo "sf package install --package $subscriber_id --target-org yourOrg --wait 20"
             echo '```'
+            echo ""
+            echo "Or click to install: <https://login.salesforce.com/packaging/installPackage.apexp?p0=$subscriber_id>"
           } >> "$GITHUB_STEP_SUMMARY"

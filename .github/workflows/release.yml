@@ -43,10 +43,17 @@
 #     MAVEN_GPG_PASSPHRASE     its passphrase.
 #     CENTRAL_TOKEN_USERNAME   Central Portal token, user half.
 #     CENTRAL_TOKEN_PASSWORD   Central Portal token, password half.
+#     SFDX_AUTH_URL            Dev Hub auth URL (`sf org display --verbose
+#                              --json`'s sfdxAuthUrl) for the Apex package
+#                              build below. Optional — that job skips cleanly
+#                              without it, same as an unconfigured Maven.
 #
-# Apex is not published here: promoting a 2GP package needs an authenticated
-# Dev Hub and has its own workflow (apex-package.yml). It is still regenerated,
-# tagged, and released alongside the rest.
+# Apex's source is regenerated, tagged, and released here like the other four.
+# Promoting it to an installable *package version* needs an authenticated Dev
+# Hub, so that part runs as a separate job calling apex-package.yml (also
+# runnable standalone for an ad-hoc rebuild) — its `04t…` SubscriberPackageVersionId
+# and install link then get appended to the box-open-apex-sdk release this job
+# already cut, so the release page is the one place to find it.
 name: Release the fleet
 
 on:
@@ -74,10 +81,18 @@ on:
         description: 'Publish to Maven Central'
         type: boolean
         default: true
+      publish_apex:
+        description: 'Build the Apex unlocked package version (needs SFDX_AUTH_URL; costs a Dev Hub version-create)'
+        type: boolean
+        default: true
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      # Exposed so the apex_package/apex_release_notes jobs below can build
+      # the same tag without re-deriving it from the manifest a second time.
+      version: ${{ steps.version.outputs.version }}
     permissions:
       # The OIDC identity crates.io and npm exchange for a short-lived publish
       # token. Without it, trusted publishing cannot authenticate at all.
@@ -264,7 +279,66 @@ jobs:
               echo "| crates.io | ${{ inputs.publish_crates }} |"
               echo "| npm | ${{ inputs.publish_npm }} |"
               echo "| Maven Central | ${{ inputs.publish_maven }} |"
+              echo "| Apex unlocked package | ${{ inputs.publish_apex }} (separate job below) |"
               echo ""
               echo "A registry left out still needs publishing at this version."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Builds the installable unlocked package version against the Dev Hub, from
+  # the exact source release just tagged and pushed above. Reusable so the
+  # same workflow also supports a standalone, ad-hoc rebuild (workflow_dispatch).
+  apex_package:
+    needs: release
+    if: ${{ !cancelled() && needs.release.result == 'success' && inputs.dry_run == false && inputs.publish_apex }}
+    uses: ./.github/workflows/apex-package.yml
+    secrets:
+      SFDX_AUTH_URL: ${{ secrets.SFDX_AUTH_URL }}
+
+  # Appends the built package version's install command and link to the
+  # box-open-apex-sdk GitHub Release release.sh already cut, so the release
+  # page is the one discoverable place for it — not buried in an Actions run
+  # in this repository.
+  apex_release_notes:
+    needs: [release, apex_package]
+    if: ${{ !cancelled() && needs.apex_package.result == 'success' && needs.apex_package.outputs.skipped != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint a push token scoped to box-open-apex-sdk
+        id: apex_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.FLEET_APP_ID }}
+          private-key: ${{ secrets.FLEET_APP_PRIVATE_KEY }}
+          owner: unofficialbox
+          repositories: box-open-apex-sdk
+
+      - name: Link the installable package version on the release
+        env:
+          GH_TOKEN: ${{ steps.apex_token.outputs.token }}
+          TAG: v${{ needs.release.outputs.version }}
+          SUBSCRIBER_ID: ${{ needs.apex_package.outputs.subscriber_id }}
+        run: |
+          set -euo pipefail
+
+          # Idempotent: a re-run of a partially-failed release must not
+          # append the install section a second time.
+          existing="$(gh release view "$TAG" --repo unofficialbox/box-open-apex-sdk --json body -q .body)"
+          if printf '%s' "$existing" | grep -q '## Install (unlocked package)'; then
+            echo "::notice::Install section already present on $TAG; leaving it as-is."
+            exit 0
+          fi
+
+          {
+            printf '%s\n' "$existing"
+            echo ""
+            echo "## Install (unlocked package)"
+            echo ""
+            printf '```bash\n'
+            echo "sf package install --package $SUBSCRIBER_ID --target-org yourOrg --wait 20"
+            printf '```\n'
+            echo ""
+            echo "Or click to install: <https://login.salesforce.com/packaging/installPackage.apexp?p0=$SUBSCRIBER_ID>"
+          } > /tmp/notes.md
+
+          gh release edit "$TAG" --repo unofficialbox/box-open-apex-sdk --notes-file /tmp/notes.md
