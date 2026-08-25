@@ -143,28 +143,29 @@ public with sharing class BoxHttpClient implements BoxClient {
     // part named request.multipartJsonName iff set, and a binary part named
     // request.multipartFilePartName — used as both the form field name and
     // the Content-Disposition filename, since the real filename isn't
-    // structurally knowable — iff set. Apex's Blob type supports `+` for
-    // concatenation.
+    // structurally knowable — iff set.
     private static Blob buildMultipartBody(BoxRequest request, String boundary) {
-        Blob out = Blob.valueOf('');
+        List<Blob> parts = new List<Blob>();
         if (request.multipartJsonName != null) {
             String json = JSON.serialize(request.multipartJsonValue, request.suppressNulls);
-            out = out + Blob.valueOf(
+            parts.add(Blob.valueOf(
                 '--' + boundary + '\r\n' +
                 'Content-Disposition: form-data; name="' + safeMultipartName(request.multipartJsonName) + '"\r\n' +
                 'Content-Type: application/json\r\n\r\n' + json + '\r\n'
-            );
+            ));
         }
         if (request.multipartFilePartName != null) {
             String name = safeMultipartName(request.multipartFilePartName);
-            out = out + Blob.valueOf(
+            parts.add(Blob.valueOf(
                 '--' + boundary + '\r\n' +
                 'Content-Disposition: form-data; name="' + name + '"; filename="' + name + '"\r\n' +
                 'Content-Type: application/octet-stream\r\n\r\n'
-            ) + request.multipartFile + Blob.valueOf('\r\n');
+            ));
+            parts.add(request.multipartFile);
+            parts.add(Blob.valueOf('\r\n'));
         }
-        out = out + Blob.valueOf('--' + boundary + '--\r\n');
-        return out;
+        parts.add(Blob.valueOf('--' + boundary + '--\r\n'));
+        return concatBlobs(parts);
     }
 
     // Sanitize a multipart part name so it can't break out of the quoted
@@ -172,6 +173,75 @@ public with sharing class BoxHttpClient implements BoxClient {
     private static String safeMultipartName(String value) {
         return value.replace('\r', '').replace('\n', '')
             .replace('\\', '\\\\').replace('"', '\\"');
+    }
+
+    private static final String HEX_DIGITS = '0123456789abcdef';
+    private static final String BASE64_ALPHABET =
+        'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+    // Concatenate blobs byte-exactly. Apex's `+` is an arithmetic operator —
+    // not overloaded for Blob, confirmed by the compiler ("Arithmetic
+    // expressions must use numeric arguments") — and Apex has no byte-array
+    // Blob constructor either. This round-trips through hex instead of
+    // base64: a byte is always exactly 2 hex characters, so hex strings from
+    // different blobs concatenate safely regardless of length, unlike
+    // base64's 3-byte groups (BoxChunkedUpload.cls hits that same alignment
+    // constraint when it slices, not concatenates, a Blob). The combined hex
+    // is then hand-encoded to base64 to reach the one guaranteed decode path,
+    // EncodingUtil.base64Decode.
+    private static Blob concatBlobs(List<Blob> parts) {
+        String hex = '';
+        for (Blob part : parts) {
+            // Lower-cased defensively: hexByte's lookup only recognizes
+            // lowercase digits, and a silently wrong index (-1) would corrupt
+            // bytes rather than fail loudly (NF-1).
+            hex += EncodingUtil.convertToHex(part).toLowerCase();
+        }
+        return EncodingUtil.base64Decode(hexToBase64(hex));
+    }
+
+    // Every byte is 2 hex characters; group 3 bytes (6 hex characters) into
+    // 4 base64 characters, padding a final 1- or 2-byte group per the spec.
+    private static String hexToBase64(String hex) {
+        String out = '';
+        Integer i = 0;
+        Integer total = hex.length();
+        while (i < total) {
+            Integer remaining = total - i;
+            Integer b0 = hexByte(hex, i);
+            if (remaining >= 6) {
+                Integer b1 = hexByte(hex, i + 2);
+                Integer b2 = hexByte(hex, i + 4);
+                out += base64Char(b0 >> 2);
+                out += base64Char(((b0 & 3) << 4) | (b1 >> 4));
+                out += base64Char(((b1 & 15) << 2) | (b2 >> 6));
+                out += base64Char(b2 & 63);
+                i += 6;
+            } else if (remaining == 4) {
+                Integer b1 = hexByte(hex, i + 2);
+                out += base64Char(b0 >> 2);
+                out += base64Char(((b0 & 3) << 4) | (b1 >> 4));
+                out += base64Char((b1 & 15) << 2);
+                out += '=';
+                i += 4;
+            } else {
+                out += base64Char(b0 >> 2);
+                out += base64Char((b0 & 3) << 4);
+                out += '==';
+                i += 2;
+            }
+        }
+        return out;
+    }
+
+    private static Integer hexByte(String hex, Integer at) {
+        Integer high = HEX_DIGITS.indexOf(hex.substring(at, at + 1));
+        Integer low = HEX_DIGITS.indexOf(hex.substring(at + 1, at + 2));
+        return (high << 4) | low;
+    }
+
+    private static String base64Char(Integer sixBits) {
+        return BASE64_ALPHABET.substring(sixBits, sixBits + 1);
     }
 
     private String buildUrl(BoxRequest request) {
