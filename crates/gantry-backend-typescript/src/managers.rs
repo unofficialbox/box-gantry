@@ -654,13 +654,44 @@ impl Printer<'_> {
                      \x20   req = runtime.withStreamBody(req, new runtime.Stream(fileBytes), 'application/octet-stream');\n",
                 );
             }
-            // Multipart's file part is still an empty placeholder (D-149): the
-            // single-shot upload endpoints don't yet stream the file body.
-            // Multipart still sends the serialized attributes.
+            // Which field is the binary part vs. the JSON part is structural
+            // (G-7), never a hardcoded field name.
             ir::RequestMedia::Multipart => {
-                self.body.push_str(
-                    "    const attributes = new TextEncoder().encode(JSON.stringify(body));\n\
-                     \x20   req = runtime.withMultipartBody(req, attributes, 'file', runtime.Stream.empty());\n",
+                let shape = ir::classify_multipart(self.program, &body.ty).unwrap_or_else(
+                    |detail| {
+                        panic!(
+                            "typescript backend cannot express multipart body: {detail} — engine bug"
+                        )
+                    },
+                );
+                let (json_expr, json_wire) = match shape.json_field {
+                    Some(field) => {
+                        let access = member_access("body", &field.wire_name);
+                        let _ = writeln!(
+                            self.body,
+                            "    const jsonBytes = new TextEncoder().encode(JSON.stringify({access}));"
+                        );
+                        ("jsonBytes".to_string(), field.wire_name.clone())
+                    }
+                    None => ("new Uint8Array(0)".to_string(), String::new()),
+                };
+                let (file_expr, file_wire) = match shape.binary_field {
+                    Some(field) => {
+                        let access = member_access("body", &field.wire_name);
+                        let _ = writeln!(
+                            self.body,
+                            "    const fileBytes = new Uint8Array(await {access}.arrayBuffer());"
+                        );
+                        (
+                            "new runtime.Stream(fileBytes)".to_string(),
+                            field.wire_name.clone(),
+                        )
+                    }
+                    None => ("runtime.Stream.empty()".to_string(), String::new()),
+                };
+                let _ = writeln!(
+                    self.body,
+                    "    req = runtime.withMultipartBody(req, {json_wire:?}, {json_expr}, {file_wire:?}, {file_expr});"
                 );
             }
             ir::RequestMedia::UrlEncoded => self.url_encoded_body(body),

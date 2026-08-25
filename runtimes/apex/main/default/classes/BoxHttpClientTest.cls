@@ -328,6 +328,61 @@ private class BoxHttpClientTest {
     }
 
     @isTest
+    static void multipartBodySendsBareJsonAndTheFileBytes() {
+        SequenceMock mock = new SequenceMock(
+            new List<Integer>{ 200 },
+            new List<String>{ '{}' }
+        );
+        Test.setMock(HttpCalloutMock.class, mock);
+        CountingTokens tokens = new CountingTokens();
+
+        BoxRequest req = request('POST', 'upload', '/files/content');
+        req.multipartJsonName = 'attributes';
+        req.multipartJsonValue = new Map<String, Object>{ 'name' => 'f.txt' };
+        req.multipartFilePartName = 'file';
+        req.multipartFile = Blob.valueOf('file bytes');
+
+        Test.startTest();
+        new BoxHttpClient(tokens).send(req);
+        Test.stopTest();
+
+        String body = mock.seen[0].getBody();
+        System.assert(body.contains('name="attributes"'), 'attributes part present: ' + body);
+        // The bare attributes object, not wrapped in another JSON layer.
+        System.assert(body.contains('{"name":"f.txt"}'), 'bare attributes JSON: ' + body);
+        System.assert(body.contains('name="file"; filename="file"'), 'file part present: ' + body);
+        System.assert(body.contains('file bytes'), 'file bytes present: ' + body);
+        System.assert(
+            mock.seen[0].getHeader('Content-Type').startsWith('multipart/form-data; boundary='),
+            'multipart content type set: ' + mock.seen[0].getHeader('Content-Type')
+        );
+    }
+
+    @isTest
+    static void multipartBodyOmitsAnAbsentJsonPart() {
+        // The avatar-upload shape has no attributes field at all (G-7); the
+        // bug this guards against sent a bogus empty attributes part anyway.
+        SequenceMock mock = new SequenceMock(
+            new List<Integer>{ 200 },
+            new List<String>{ '{}' }
+        );
+        Test.setMock(HttpCalloutMock.class, mock);
+        CountingTokens tokens = new CountingTokens();
+
+        BoxRequest req = request('POST', 'api', '/users/0/avatar');
+        req.multipartFilePartName = 'pic';
+        req.multipartFile = Blob.valueOf('avatar bytes');
+
+        Test.startTest();
+        new BoxHttpClient(tokens).send(req);
+        Test.stopTest();
+
+        String body = mock.seen[0].getBody();
+        System.assert(!body.contains('application/json'), 'no JSON part: ' + body);
+        System.assert(body.contains('name="pic"; filename="pic"'), 'pic file part present: ' + body);
+    }
+
+    @isTest
     static void unknownBaseUrlThrowsBeforeAnyCallout() {
         SequenceMock mock = new SequenceMock(
             new List<Integer>{ 200 },

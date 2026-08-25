@@ -361,10 +361,7 @@ fn render_operation(
             ir::RequestMedia::OctetStream => {
                 let _ = writeln!(out, "        request.binaryBody = body;");
             }
-            ir::RequestMedia::Json
-            | ir::RequestMedia::JsonPatch
-            | ir::RequestMedia::UrlEncoded
-            | ir::RequestMedia::Multipart => {
+            ir::RequestMedia::Json | ir::RequestMedia::JsonPatch | ir::RequestMedia::UrlEncoded => {
                 // A body whose type reaches an affected struct is serialized,
                 // then its keys are renamed to the wire shape (Apex → wire);
                 // otherwise the typed object serializes directly.
@@ -372,6 +369,40 @@ fn render_operation(
                     wire.emit_request_body(out, &body.ty);
                 } else {
                     let _ = writeln!(out, "        request.body = body;");
+                }
+            }
+            // Which field is the binary part vs. the JSON part is structural
+            // (G-7), never a hardcoded field name.
+            ir::RequestMedia::Multipart => {
+                let shape = ir::classify_multipart(program, &body.ty).unwrap_or_else(|detail| {
+                    panic!("apex backend cannot express multipart body: {detail} — engine bug")
+                });
+                if let Some(field) = shape.json_field {
+                    let expr = format!("body.{}", safe_word(field.name.as_str()));
+                    let _ = writeln!(
+                        out,
+                        "        request.multipartJsonName = '{}';",
+                        escape(&field.wire_name)
+                    );
+                    if wire.type_reaches_write_affected(&field.ty) {
+                        wire.emit_request_value(out, "wireJson", &expr, &field.ty);
+                        let _ = writeln!(out, "        request.multipartJsonValue = wireJson;");
+                        let _ = writeln!(out, "        request.suppressNulls = false;");
+                    } else {
+                        let _ = writeln!(out, "        request.multipartJsonValue = {expr};");
+                    }
+                }
+                if let Some(field) = shape.binary_field {
+                    let _ = writeln!(
+                        out,
+                        "        request.multipartFilePartName = '{}';",
+                        escape(&field.wire_name)
+                    );
+                    let _ = writeln!(
+                        out,
+                        "        request.multipartFile = body.{};",
+                        safe_word(field.name.as_str())
+                    );
                 }
             }
         }
@@ -504,6 +535,13 @@ fn runtime_stubs() -> Vec<GeneratedFile> {
          \x20   // body routed through denormalizeKeys sets this false so injected\n\
          \x20   // explicit nulls (D-138) survive; the map already omits unset keys.\n\
          \x20   public Boolean suppressNulls = true;\n\
+         \x20   // A Box-style multipart body (G-7): a JSON part and/or a binary\n\
+         \x20   // part, each present iff its name is non-null. Never both `body`/\n\
+         \x20   // `binaryBody` and these on the same request.\n\
+         \x20   public String multipartJsonName;\n\
+         \x20   public Object multipartJsonValue;\n\
+         \x20   public String multipartFilePartName;\n\
+         \x20   public Blob multipartFile;\n\
          }}\n",
         header = header()
     );

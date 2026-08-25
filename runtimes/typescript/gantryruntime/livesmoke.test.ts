@@ -175,8 +175,9 @@ async function smokeUploadDownloadDelete(client: Client): Promise<void> {
 
   const upReq = withMultipartBody(
     client.newRequest('POST', `${client.baseUrl('upload')}/files/content`),
+    'attributes',
     attributes,
-    name,
+    'file',
     new Stream(content),
   );
   const upBody = await fetchOk(client, upReq);

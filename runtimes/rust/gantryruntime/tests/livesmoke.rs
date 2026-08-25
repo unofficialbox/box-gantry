@@ -201,8 +201,9 @@ async fn smoke_upload_download_delete(client: &Client) {
     let up_url = format!("{}/files/content", client.base_url("upload"));
     let up_req = with_multipart_body(
         client.new_request("POST", &up_url),
+        "attributes",
         &attributes,
-        &name,
+        "file",
         Stream::from_bytes(content.clone()),
     );
     let up_body = fetch_ok(client, up_req).await;

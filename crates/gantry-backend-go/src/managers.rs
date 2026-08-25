@@ -781,14 +781,39 @@ impl ManagerPrinter<'_> {
                     .push_str("\treq = gantryruntime.WithStreamBody(req, body, \"application/octet-stream\")\n");
             }
             ir::RequestMedia::Multipart => {
-                // The Box multipart shape: an `attributes` JSON part plus
-                // a binary `file` part (G-7); the contract owns assembly.
-                self.imports.insert("encoding/json".to_string());
+                // Which field is the binary part vs. the JSON part is
+                // structural (G-7), never a hardcoded field name.
+                let shape =
+                    ir::classify_multipart(self.analysis.program, &body.ty).map_err(|detail| {
+                        BackendError {
+                            context: context.to_string(),
+                            detail,
+                        }
+                    })?;
+                let json_expr = match shape.json_field {
+                    Some(field) => {
+                        self.imports.insert("encoding/json".to_string());
+                        let _ = writeln!(
+                            self.body,
+                            "\tjsonBytes, err := json.Marshal(body.{})\n\tif err != nil {{\n\t\treturn {}\n\t}}",
+                            pascal(field.name.as_str()),
+                            self.zero_and_err(op)
+                        );
+                        ("jsonBytes".to_string(), field.wire_name.clone())
+                    }
+                    None => ("nil".to_string(), String::new()),
+                };
+                let file_expr = match shape.binary_field {
+                    Some(field) => (
+                        format!("body.{}", pascal(field.name.as_str())),
+                        field.wire_name.clone(),
+                    ),
+                    None => ("nil".to_string(), String::new()),
+                };
                 let _ = writeln!(
                     self.body,
-                    "\tattributes, err := json.Marshal(body)\n\tif err != nil {{\n\t\treturn {}\n\t}}\n\
-                     \treq = gantryruntime.WithMultipartBody(req, attributes, \"file\", nil)",
-                    self.zero_and_err(op)
+                    "\treq = gantryruntime.WithMultipartBody(req, {:?}, {}, {:?}, {})",
+                    json_expr.1, json_expr.0, file_expr.1, file_expr.0
                 );
             }
             ir::RequestMedia::UrlEncoded => {

@@ -282,27 +282,40 @@ export function withStreamBody(request: Request, body: Stream, contentType: stri
 
 /** Return the request with a Box-style multipart body: an `attributes` JSON
  * part plus a file part (G-7). */
+/** Writes a JSON part named `jsonPartName` iff `jsonBytes` is non-empty, and
+ * a binary part named `filePartName` — used as both the form field name and
+ * the Content-Disposition filename, since the real filename isn't
+ * structurally knowable — iff `file` is non-empty (G-7). */
 export function withMultipartBody(
   request: Request,
-  attributes: Uint8Array,
-  fileName: string,
+  jsonPartName: string,
+  jsonBytes: Uint8Array,
+  filePartName: string,
   file: Stream,
 ): Request {
   const boundary = `----gantryFormBoundary${Math.random().toString(36).slice(2)}`;
   const encoder = new TextEncoder();
-  const escaped = fileName.replace(/["\r\n]/g, '_');
-  const parts: Uint8Array[] = [
-    encoder.encode(
-      `--${boundary}\r\nContent-Disposition: form-data; name="attributes"\r\n\r\n`,
-    ),
-    attributes,
-    encoder.encode(
-      `\r\n--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${escaped}"\r\n` +
-        'Content-Type: application/octet-stream\r\n\r\n',
-    ),
-    file.data,
-    encoder.encode(`\r\n--${boundary}--\r\n`),
-  ];
+  const parts: Uint8Array[] = [];
+  if (jsonBytes.length > 0) {
+    const escaped = jsonPartName.replace(/["\r\n]/g, '_');
+    parts.push(
+      encoder.encode(`--${boundary}\r\nContent-Disposition: form-data; name="${escaped}"\r\n\r\n`),
+      jsonBytes,
+      encoder.encode('\r\n'),
+    );
+  }
+  if (file.data.length > 0) {
+    const escaped = filePartName.replace(/["\r\n]/g, '_');
+    parts.push(
+      encoder.encode(
+        `--${boundary}\r\nContent-Disposition: form-data; name="${escaped}"; filename="${escaped}"\r\n` +
+          'Content-Type: application/octet-stream\r\n\r\n',
+      ),
+      file.data,
+      encoder.encode('\r\n'),
+    );
+  }
+  parts.push(encoder.encode(`--${boundary}--\r\n`));
   request.headers.set('Content-Type', `multipart/form-data; boundary=${boundary}`);
   request.body = concat(parts);
   return request;

@@ -28,6 +28,8 @@ declare module 'node:process' {
 declare module 'node:http' {
   export interface IncomingMessage {
     readonly headers: Record<string, string | string[] | undefined>;
+    on(event: 'data', listener: (chunk: Uint8Array) => void): void;
+    on(event: 'end', listener: () => void): void;
   }
   export interface ServerResponse {
     statusCode: number;

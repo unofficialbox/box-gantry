@@ -270,14 +270,18 @@ func WithStreamBody(request *Request, body io.Reader, contentType string) *Reque
 	return request
 }
 
-// WithMultipartBody returns the request with a Box-style multipart body:
-// an "attributes" JSON part plus a file part (G-7).
-func WithMultipartBody(request *Request, attributes []byte, fileName string, file io.Reader) *Request {
+// WithMultipartBody writes a JSON part named jsonPartName iff jsonBytes is
+// non-empty, and a binary part named filePartName (used as both the form
+// field name and the Content-Disposition filename — the real filename
+// isn't structurally knowable) iff file is non-nil (G-7).
+func WithMultipartBody(request *Request, jsonPartName string, jsonBytes []byte, filePartName string, file io.Reader) *Request {
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
-	_ = writeField(writer, "attributes", attributes)
+	if len(jsonBytes) > 0 {
+		_ = writeField(writer, jsonPartName, jsonBytes)
+	}
 	if file != nil {
-		if part, err := writer.CreateFormFile("file", fileName); err == nil {
+		if part, err := writer.CreateFormFile(filePartName, filePartName); err == nil {
 			_, _ = io.Copy(part, file)
 		}
 	}

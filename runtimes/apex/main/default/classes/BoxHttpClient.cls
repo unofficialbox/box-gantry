@@ -119,7 +119,11 @@ public with sharing class BoxHttpClient implements BoxClient {
                 req.setHeader(key, request.headers.get(key));
             }
         }
-        if (request.binaryBody != null) {
+        if (request.multipartJsonName != null || request.multipartFilePartName != null) {
+            String boundary = 'gantryBoundary' + String.valueOf(Math.abs(Crypto.getRandomLong()));
+            req.setHeader('Content-Type', 'multipart/form-data; boundary=' + boundary);
+            req.setBodyAsBlob(buildMultipartBody(request, boundary));
+        } else if (request.binaryBody != null) {
             req.setBodyAsBlob(request.binaryBody);
         } else if (request.body != null) {
             req.setHeader('Content-Type', 'application/json');
@@ -132,6 +136,42 @@ public with sharing class BoxHttpClient implements BoxClient {
             req.setBody(JSON.serialize(request.body, request.suppressNulls));
         }
         return new Http().send(req);
+    }
+
+    // Salesforce's HttpRequest has no native multipart support, so this
+    // assembles a Box-style multipart/form-data body by hand (G-7): a JSON
+    // part named request.multipartJsonName iff set, and a binary part named
+    // request.multipartFilePartName — used as both the form field name and
+    // the Content-Disposition filename, since the real filename isn't
+    // structurally knowable — iff set. Apex's Blob type supports `+` for
+    // concatenation.
+    private static Blob buildMultipartBody(BoxRequest request, String boundary) {
+        Blob out = Blob.valueOf('');
+        if (request.multipartJsonName != null) {
+            String json = JSON.serialize(request.multipartJsonValue, request.suppressNulls);
+            out = out + Blob.valueOf(
+                '--' + boundary + '\r\n' +
+                'Content-Disposition: form-data; name="' + safeMultipartName(request.multipartJsonName) + '"\r\n' +
+                'Content-Type: application/json\r\n\r\n' + json + '\r\n'
+            );
+        }
+        if (request.multipartFilePartName != null) {
+            String name = safeMultipartName(request.multipartFilePartName);
+            out = out + Blob.valueOf(
+                '--' + boundary + '\r\n' +
+                'Content-Disposition: form-data; name="' + name + '"; filename="' + name + '"\r\n' +
+                'Content-Type: application/octet-stream\r\n\r\n'
+            ) + request.multipartFile + Blob.valueOf('\r\n');
+        }
+        out = out + Blob.valueOf('--' + boundary + '--\r\n');
+        return out;
+    }
+
+    // Sanitize a multipart part name so it can't break out of the quoted
+    // Content-Disposition header value (CRLF injection, unescaped quote).
+    private static String safeMultipartName(String value) {
+        return value.replace('\r', '').replace('\n', '')
+            .replace('\\', '\\\\').replace('"', '\\"');
     }
 
     private String buildUrl(BoxRequest request) {

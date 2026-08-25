@@ -846,14 +846,51 @@ impl Printer<'_> {
                      \x20       );\n",
                 );
             }
-            // Multipart's file part is still an empty placeholder (D-149): the
-            // single-shot upload endpoints don't yet stream the file body.
-            // Multipart still sends the serialized attributes.
+            // Which field is the binary part vs. the JSON part is structural
+            // (G-7), never a hardcoded field name.
             ir::RequestMedia::Multipart => {
-                self.body.push_str(
-                    "        let attributes = serde_json::to_vec(&body)?;\n\
-                     \x20       req = runtime::with_multipart_body(req, &attributes, \"file\", runtime::Stream::empty());\n",
+                let shape =
+                    ir::classify_multipart(self.program, &body.ty).unwrap_or_else(|detail| {
+                        panic!("rust backend cannot express multipart body: {detail} — engine bug")
+                    });
+                let (json_expr, json_wire) = match shape.json_field {
+                    Some(field) => {
+                        let _ = writeln!(
+                            self.body,
+                            "        let json_bytes = serde_json::to_vec(&body.{})?;",
+                            field_ident(field.name.as_str())
+                        );
+                        ("json_bytes".to_string(), field.wire_name.clone())
+                    }
+                    None => ("Vec::new()".to_string(), String::new()),
+                };
+                let (file_expr, file_wire) = match shape.binary_field {
+                    Some(field) => (
+                        format!(
+                            "runtime::Stream::from_bytes(body.{})",
+                            field_ident(field.name.as_str())
+                        ),
+                        field.wire_name.clone(),
+                    ),
+                    None => ("runtime::Stream::empty()".to_string(), String::new()),
+                };
+                let inline = format!(
+                    "        req = runtime::with_multipart_body(req, {json_wire:?}, &{json_expr}, {file_wire:?}, {file_expr});"
                 );
+                if inline.len() <= 100 {
+                    let _ = writeln!(self.body, "{inline}");
+                } else {
+                    let _ = writeln!(
+                        self.body,
+                        "        req = runtime::with_multipart_body(\n\
+                         \x20           req,\n\
+                         \x20           {json_wire:?},\n\
+                         \x20           &{json_expr},\n\
+                         \x20           {file_wire:?},\n\
+                         \x20           {file_expr},\n\
+                         \x20       );"
+                    );
+                }
             }
             ir::RequestMedia::UrlEncoded => self.url_encoded_body(body),
         }

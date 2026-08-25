@@ -85,10 +85,13 @@ impl Stream {
 enum Body {
     /// A byte body with a fixed content type (JSON, form, buffered stream).
     Bytes { content_type: String, data: Vec<u8> },
-    /// A Box-style multipart body: an `attributes` JSON part plus a file part.
+    /// A Box-style multipart body (G-7): a JSON part and/or a binary part,
+    /// each present iff its bytes are non-empty — never by a hardcoded
+    /// `"attributes"`/`"file"` part name.
     Multipart {
-        attributes: Vec<u8>,
-        file_name: String,
+        json_part_name: String,
+        json_bytes: Vec<u8>,
+        file_part_name: String,
         file: Vec<u8>,
     },
 }
@@ -286,14 +289,16 @@ fn apply_body(builder: reqwest::RequestBuilder, body: Option<&Body>) -> reqwest:
             .header("Content-Type", content_type)
             .body(data.clone()),
         Some(Body::Multipart {
-            attributes,
-            file_name,
+            json_part_name,
+            json_bytes,
+            file_part_name,
             file,
         }) => {
             // A boundary that provably does not occur in either part, so the
             // payload's own bytes can never split the framing.
-            let boundary = multipart_boundary(attributes, file);
-            let payload = multipart_body(&boundary, attributes, file_name, file);
+            let boundary = multipart_boundary(json_bytes, file);
+            let payload =
+                multipart_body(&boundary, json_part_name, json_bytes, file_part_name, file);
             builder
                 .header(
                     "Content-Type",
@@ -304,26 +309,43 @@ fn apply_body(builder: reqwest::RequestBuilder, body: Option<&Body>) -> reqwest:
     }
 }
 
-/// Build a Box-style multipart/form-data body: an `attributes` JSON field plus
-/// a `file` part (G-7). `file_name` is escaped for the quoted header value.
-fn multipart_body(boundary: &str, attributes: &[u8], file_name: &str, file: &[u8]) -> Vec<u8> {
+/// Build a Box-style multipart/form-data body (G-7): a JSON part named
+/// `json_part_name` iff `json_bytes` is non-empty, and a binary part named
+/// `file_part_name` — used as both the form field name and the
+/// Content-Disposition filename, since the real filename isn't
+/// structurally knowable — iff `file` is non-empty.
+fn multipart_body(
+    boundary: &str,
+    json_part_name: &str,
+    json_bytes: &[u8],
+    file_part_name: &str,
+    file: &[u8],
+) -> Vec<u8> {
     let mut out = Vec::new();
-    out.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
-    out.extend_from_slice(b"Content-Disposition: form-data; name=\"attributes\"\r\n");
-    out.extend_from_slice(b"Content-Type: application/json\r\n\r\n");
-    out.extend_from_slice(attributes);
-    out.extend_from_slice(b"\r\n");
-    out.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
-    out.extend_from_slice(
-        format!(
-            "Content-Disposition: form-data; name=\"file\"; filename=\"{}\"\r\n",
-            escape_filename(file_name)
-        )
-        .as_bytes(),
-    );
-    out.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
-    out.extend_from_slice(file);
-    out.extend_from_slice(b"\r\n");
+    if !json_bytes.is_empty() {
+        out.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        out.extend_from_slice(
+            format!(
+                "Content-Disposition: form-data; name=\"{}\"\r\n",
+                escape_filename(json_part_name)
+            )
+            .as_bytes(),
+        );
+        out.extend_from_slice(b"Content-Type: application/json\r\n\r\n");
+        out.extend_from_slice(json_bytes);
+        out.extend_from_slice(b"\r\n");
+    }
+    if !file.is_empty() {
+        let name = escape_filename(file_part_name);
+        out.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        out.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{name}\"; filename=\"{name}\"\r\n")
+                .as_bytes(),
+        );
+        out.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
+        out.extend_from_slice(file);
+        out.extend_from_slice(b"\r\n");
+    }
     out.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
     out
 }
@@ -496,17 +518,21 @@ pub fn with_stream_body(mut request: Request, body: Stream, content_type: &str) 
     request
 }
 
-/// Return the request with a Box-style multipart body: an `attributes` JSON
-/// part plus a file part (G-7).
+/// Return the request with a Box-style multipart body. Writes a JSON part
+/// named `json_part_name` iff `json_bytes` is non-empty, and a binary part
+/// named `file_part_name` iff `file` is non-empty (G-7). A caller signals a
+/// part's absence with an empty value, never by omitting the call.
 pub fn with_multipart_body(
     mut request: Request,
-    attributes: &[u8],
-    file_name: &str,
+    json_part_name: &str,
+    json_bytes: &[u8],
+    file_part_name: &str,
     file: Stream,
 ) -> Request {
     request.body = Some(Body::Multipart {
-        attributes: attributes.to_vec(),
-        file_name: file_name.to_string(),
+        json_part_name: json_part_name.to_string(),
+        json_bytes: json_bytes.to_vec(),
+        file_part_name: file_part_name.to_string(),
         file: file.into_bytes(),
     });
     request
@@ -641,14 +667,22 @@ mod tests {
 
     #[test]
     fn multipart_body_frames_both_parts() {
-        let body = multipart_body("BOUND", br#"{"name":"f"}"#, "f.txt", b"data");
+        let body = multipart_body("BOUND", "attributes", br#"{"name":"f"}"#, "file", b"data");
         let text = String::from_utf8(body).unwrap();
         assert!(text.contains("--BOUND\r\n"));
         assert!(text.contains("name=\"attributes\""));
         assert!(text.contains(r#"{"name":"f"}"#));
-        assert!(text.contains("name=\"file\"; filename=\"f.txt\""));
+        assert!(text.contains("name=\"file\"; filename=\"file\""));
         assert!(text.contains("data"));
         assert!(text.ends_with("--BOUND--\r\n"));
+    }
+
+    #[test]
+    fn multipart_body_omits_an_absent_part() {
+        let body = multipart_body("BOUND", "", b"", "pic", b"data");
+        let text = String::from_utf8(body).unwrap();
+        assert!(!text.contains("application/json"));
+        assert!(text.contains("name=\"pic\"; filename=\"pic\""));
     }
 
     #[test]
@@ -766,6 +800,65 @@ mod tests {
         client.fetch(client.new_request("GET", &url)).await.unwrap();
         let sent = rx.await.unwrap();
         assert!(sent.contains("x-trace-id: abc") || sent.contains("X-Trace-Id: abc"));
+    }
+
+    /// Like `capture_request`, but reads the full request (headers + body,
+    /// bounded by `Content-Length`) — enough to assert on an outgoing
+    /// multipart body's exact bytes end to end through `fetch`.
+    async fn capture_request_with_body() -> (String, tokio::sync::oneshot::Receiver<Vec<u8>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            let header_end = loop {
+                let n = socket.read(&mut chunk).await.unwrap();
+                buf.extend_from_slice(&chunk[..n]);
+                if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break pos + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&buf[..header_end]).to_lowercase();
+            let content_length: usize = headers
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:"))
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0);
+            while buf.len() < header_end + content_length {
+                let n = socket.read(&mut chunk).await.unwrap();
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            let _ = tx.send(buf[header_end..header_end + content_length].to_vec());
+            let _ = socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await;
+        });
+        (format!("http://{addr}/"), rx)
+    }
+
+    #[tokio::test]
+    async fn with_multipart_body_sends_bare_json_and_the_file_bytes_end_to_end() {
+        let (url, rx) = capture_request_with_body().await;
+        let client = Client::new(Auth::developer_token("t"));
+        let req = with_multipart_body(
+            client.new_request("POST", &url),
+            "attributes",
+            br#"{"name":"f.txt"}"#,
+            "file",
+            Stream::from_bytes(b"file bytes".to_vec()),
+        );
+        client.fetch(req).await.unwrap();
+        let body = rx.await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("name=\"attributes\""));
+        // The bare attributes object, not wrapped in another JSON layer.
+        assert!(text.contains(r#"{"name":"f.txt"}"#));
+        assert!(text.contains("name=\"file\"; filename=\"file\""));
+        assert!(text.contains("file bytes"));
     }
 
     #[tokio::test]

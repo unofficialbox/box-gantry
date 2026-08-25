@@ -865,6 +865,23 @@ impl<'a> Wire<'a> {
         let _ = writeln!(out, "        request.suppressNulls = false;");
     }
 
+    /// Like [`Self::emit_request_body`], but for an arbitrary expression bound
+    /// to `out_var` instead of the whole `body` — the multipart JSON part
+    /// serializes one field, not the whole request body (G-7).
+    pub(crate) fn emit_request_value(
+        &self,
+        out: &mut String,
+        out_var: &str,
+        expr: &str,
+        ty: &ir::Type,
+    ) {
+        let _ = writeln!(
+            out,
+            "        Object {out_var} = JSON.deserializeUntyped(JSON.serialize({expr}, true));"
+        );
+        self.emit_transform(out, out_var, ty, Dir::Denormalize, 0);
+    }
+
     /// Is this type position an `Object` leaf — a union or `JsonValue` (peeling
     /// only the tri-state / alias wrappers, not a list or map)?
     fn is_object_leaf(&self, ty: &ir::Type) -> bool {
