@@ -165,17 +165,50 @@ fi
 # phase that mutates anything remote.
 # ---------------------------------------------------------------------------
 say "Committing, tagging, and pushing"
+
+# The generated repos' own commits are all "Release $VERSION, regenerated
+# from box-gantry" — no detail lives there. The real changelog is box-gantry's
+# own history between this version's bump commit and the previous one. Walk
+# the commits that touched SDK_VERSION and take the nearest one where the
+# constant read something other than $VERSION — that is the previous
+# release's cut point.
+PREV_VERSION_SHA="$(
+  git -C "$REPO_ROOT" log --format=%H -- crates/gantry-manifest/src/lib.rs \
+    | while read -r sha; do
+        v="$(git -C "$REPO_ROOT" show "$sha:crates/gantry-manifest/src/lib.rs" \
+          | sed -n 's/^pub const SDK_VERSION: &str = "\(.*\)";$/\1/p')"
+        if [ "$v" != "$VERSION" ]; then
+          echo "$sha"
+          break
+        fi
+      done
+)"
+HEAD_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+
 NOTES_FILE="$(mktemp)"
 trap 'rm -f "$NOTES_FILE"' EXIT
-cat >"$NOTES_FILE" <<EOF
-## box-open-sdk $VERSION
-
-Generated from the Box OpenAPI specification by
-[box-gantry](https://github.com/unofficialbox/box-gantry).
-
-> Not affiliated with, authorized, or endorsed by Box, Inc.
-> A community, generated client.
-EOF
+{
+  echo "## box-open-sdk $VERSION"
+  echo ""
+  if [ -n "$PREV_VERSION_SHA" ]; then
+    echo "Changes in box-gantry since the previous release:"
+    echo ""
+    # The bump commit itself ("ship: bump SDK version to ...") carries no
+    # content of its own — every other commit in the range is real work.
+    git -C "$REPO_ROOT" log --reverse --format='- %s' "$PREV_VERSION_SHA..$HEAD_SHA" \
+      | grep -v '^- ship: bump'
+    echo ""
+    echo "Full diff: https://github.com/unofficialbox/box-gantry/compare/$PREV_VERSION_SHA...$HEAD_SHA"
+  else
+    echo "First release of the box-gantry fleet."
+  fi
+  echo ""
+  echo "Generated from the Box OpenAPI specification by"
+  echo "[box-gantry](https://github.com/unofficialbox/box-gantry)."
+  echo ""
+  echo "> Not affiliated with, authorized, or endorsed by Box, Inc."
+  echo "> A community, generated client."
+} >"$NOTES_FILE"
 
 for entry in "${TARGETS[@]}"; do
   name="${entry##*:}"

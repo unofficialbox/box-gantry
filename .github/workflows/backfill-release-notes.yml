@@ -1,0 +1,79 @@
+# One-off backfill: every existing box-open-*-sdk release (v0.1.2 through
+# v0.4.4) carries the same generic boilerplate body — no changelog, because
+# the SDK repos' own commits are all "Release $VERSION, regenerated from
+# box-gantry" with no detail. scripts/release.sh now builds a real changelog
+# from box-gantry's own history for every future release (see its
+# `PREV_VERSION_SHA` walk); this workflow applies the same content,
+# hand-written once in scripts/backfill_release_notes/*.md, to the releases
+# that already shipped without it.
+#
+# The notes are identical across all five repos for a given version — the
+# changelog describes the engine, not the language — so this is a flat
+# 5-repo x 10-version matrix of `gh release edit` calls, not per-repo content.
+#
+# box-open-apex-sdk's v0.4.4 already carries an "## Install (unlocked
+# package)" section appended by release.yml's apex_release_notes job; this
+# workflow preserves it rather than overwriting it.
+#
+# Deliberately not on any trigger but workflow_dispatch — this runs once and
+# is deleted afterward (see AGENTS.md: no cruft left in the repo once a task
+# is done). Uses the same FLEET_APP_ID/FLEET_APP_PRIVATE_KEY installation
+# token release.yml uses to push to the five box-open-*-sdk repos.
+name: Backfill historical release notes (one-off)
+
+on:
+  workflow_dispatch:
+
+env:
+  VERSIONS: v0.1.2 v0.2.0 v0.2.1 v0.3.0 v0.3.1 v0.4.0 v0.4.1 v0.4.2 v0.4.3 v0.4.4
+  REPOS: box-open-go-sdk box-open-rust-sdk box-open-ts-sdk box-open-java-sdk box-open-apex-sdk
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Mint a fleet push token
+        id: fleet_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.FLEET_APP_ID }}
+          private-key: ${{ secrets.FLEET_APP_PRIVATE_KEY }}
+          owner: unofficialbox
+          repositories: >-
+            box-open-go-sdk,box-open-rust-sdk,box-open-ts-sdk,box-open-java-sdk,box-open-apex-sdk
+
+      - name: Edit every release
+        env:
+          GH_TOKEN: ${{ steps.fleet_token.outputs.token }}
+        run: |
+          set -euo pipefail
+          for repo in $REPOS; do
+            for tag in $VERSIONS; do
+              notes_src="scripts/backfill_release_notes/$tag.md"
+              [ -f "$notes_src" ] || { echo "::error::missing $notes_src"; exit 1; }
+
+              if ! gh release view "$tag" --repo "unofficialbox/$repo" >/dev/null 2>&1; then
+                echo "::notice::$repo has no $tag release; skipping."
+                continue
+              fi
+
+              cp "$notes_src" /tmp/notes.md
+
+              # Preserve a hand-appended install section (Apex 0.4.4) rather
+              # than clobbering it.
+              existing="$(gh release view "$tag" --repo "unofficialbox/$repo" --json body -q .body)"
+              if printf '%s' "$existing" | grep -q '## Install (unlocked package)'; then
+                {
+                  echo ""
+                  printf '%s\n' "$existing" | sed -n '/## Install (unlocked package)/,$p'
+                } >> /tmp/notes.md
+              fi
+
+              gh release edit "$tag" --repo "unofficialbox/$repo" --notes-file /tmp/notes.md
+              echo "  $repo $tag updated"
+            done
+          done
