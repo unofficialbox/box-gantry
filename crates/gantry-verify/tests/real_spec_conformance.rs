@@ -64,8 +64,8 @@ fn the_generated_go_sdk_is_conformant() {
             .unwrap_or_else(|| panic!("no {cap} check"))
     };
     assert_eq!(by("managers").expected, 86);
-    assert_eq!(by("operations").expected, 338);
-    assert_eq!(by("operations").actual, 338, "one method per operation");
+    assert_eq!(by("operations").expected, 339);
+    assert_eq!(by("operations").actual, 339, "one method per operation");
     assert_eq!(by("pagination").expected, 64);
     assert_eq!(
         by("pagination").actual,
@@ -106,8 +106,8 @@ fn the_generated_apex_sdk_is_conformant() {
     // Same expected surface as Go — the contract is target-neutral.
     assert_eq!(by("managers").expected, 86);
     assert_eq!(by("managers").actual, 86, "one class per manager");
-    assert_eq!(by("operations").expected, 338);
-    assert_eq!(by("operations").actual, 338, "one method per operation");
+    assert_eq!(by("operations").expected, 339);
+    assert_eq!(by("operations").actual, 339, "one method per operation");
     assert_eq!(by("pagination").expected, 64);
     assert_eq!(
         by("pagination").actual,
@@ -162,8 +162,8 @@ fn the_generated_typescript_sdk_is_conformant() {
     // Same expected surface as Go — the contract is target-neutral.
     assert_eq!(by("managers").expected, 86);
     assert_eq!(by("managers").actual, 86, "one class per manager");
-    assert_eq!(by("operations").expected, 338);
-    assert_eq!(by("operations").actual, 338, "one method per operation");
+    assert_eq!(by("operations").expected, 339);
+    assert_eq!(by("operations").actual, 339, "one method per operation");
     assert_eq!(by("pagination").expected, 64);
     assert_eq!(
         by("pagination").actual,

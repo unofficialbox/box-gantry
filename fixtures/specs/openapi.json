@@ -14,7 +14,7 @@
       "url": "https://www.apache.org/licenses/LICENSE-2.0"
     },
     "version": "2024.0",
-    "x-box-commit-hash": "e1aaef784a"
+    "x-box-commit-hash": "56657ab895"
   },
   "servers": [
     {
@@ -1800,7 +1800,7 @@
           {
             "name": "digest",
             "in": "header",
-            "description": "The [RFC3230][1] message digest of the chunk uploaded.\n\nOnly SHA1 is supported. The SHA1 digest must be base64\nencoded. The format of this header is as\n`sha=BASE64_ENCODED_DIGEST`.\n\nTo get the value for the `SHA` digest, use the\nopenSSL command to encode the file part:\n`openssl sha1 -binary <FILE_PART_NAME> | base64`.\n\n[1]: https://tools.ietf.org/html/rfc3230",
+            "description": "The [RFC3230][1] message digest of the chunk uploaded.\n\n`SHA-1` and `SHA-512` ([RFC5843][2]) are supported. The digest must be base64\nencoded. The format of this header is as\n`sha=BASE64_ENCODED_DIGEST` for `SHA-1`, or\n`sha-512=BASE64_ENCODED_DIGEST` for `SHA-512`.\n\nTo get the value for the digest, use the\nopenSSL command to encode the file part:\n`openssl sha1 -binary <FILE_PART_NAME> | base64` for `SHA-1`, or\n`openssl sha512 -binary <FILE_PART_NAME> | base64` for `SHA-512`.\n\n[1]: https://tools.ietf.org/html/rfc3230\n[2]: https://tools.ietf.org/html/rfc5843",
             "required": true,
             "schema": {
               "type": "string"
@@ -1831,7 +1831,7 @@
         },
         "responses": {
           "200": {
-            "description": "Chunk has been uploaded successfully.",
+            "description": "Chunk has been uploaded successfully.\n\nThe response always includes `sha512`. It also includes\n`sha1` if the `Digest` header used `SHA-1`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1992,11 +1992,88 @@
         ],
         "responses": {
           "200": {
-            "description": "Returns a list of parts that have been uploaded.",
+            "description": "Returns a list of parts that have been uploaded.\n\nEach part includes the hash type used to upload it. Parts\nuploaded with a `SHA-512` `Digest` header don't include `sha1`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/UploadParts"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An unexpected client error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientError"
+                }
+              }
+            }
+          }
+        },
+        "x-box-tag": "chunked_uploads",
+        "servers": [
+          {
+            "url": "https://{box-upload-server}/api/2.0",
+            "description": "Server for file uploads.",
+            "variables": {
+              "box-upload-server": {
+                "description": "The server for the upload session.",
+                "default": "upload.box.com"
+              }
+            }
+          }
+        ],
+        "tags": [
+          "Uploads (Chunked)"
+        ],
+        "x-box-enable-explorer": false
+      }
+    },
+    "/files/upload_sessions/{upload_session_id}/plan": {
+      "post": {
+        "operationId": "post_files_upload_sessions_id_plan",
+        "summary": "Plan upload session",
+        "description": "Plan an upload session by checking which parts already exist on the server.\nThis endpoint allows clients to optimize uploads by skipping parts that\nhave already been uploaded (cache hits) and only uploading missing parts.\n\nThe actual endpoint URL is returned by the [`Create upload session`](https://developer.box.com/reference/post-files-upload-sessions)\nand [`Get upload session`](https://developer.box.com/reference/get-files-upload-sessions-id) endpoints.",
+        "parameters": [
+          {
+            "name": "upload_session_id",
+            "in": "path",
+            "description": "The ID of the upload session.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "D5E3F7A"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadSessionPlanRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Returns information about which parts already exist (hits)\nand which parts need to be uploaded (misses).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadSessionPlanResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Returns an error if the upload session cannot be found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientError"
                 }
               }
             }
@@ -2050,7 +2127,7 @@
           {
             "name": "digest",
             "in": "header",
-            "description": "The [RFC3230][1] message digest of the whole file.\n\nOnly SHA1 is supported. The SHA1 digest must be Base64\nencoded. The format of this header is as\n`sha=BASE64_ENCODED_DIGEST`.\n\n[1]: https://tools.ietf.org/html/rfc3230",
+            "description": "The [RFC3230][1] message digest of the whole file.\n\nOnly SHA1 is supported. The SHA1 digest must be Base64\nencoded. The format of this header is as\n`sha=BASE64_ENCODED_DIGEST`.\n\n`SHA-512` is not supported for the whole-file digest, even if\nthe parts were uploaded with `SHA-512` digests.\n\n[1]: https://tools.ietf.org/html/rfc3230",
             "required": true,
             "schema": {
               "type": "string"
@@ -2085,7 +2162,7 @@
                 "type": "object",
                 "properties": {
                   "parts": {
-                    "description": "The list details for the uploaded parts.",
+                    "description": "The list details for the uploaded parts.\n\nEach entry can include `sha1` or `sha512`. Include `sha512`\non every entry or on none of them. A request where only\nsome entries include `sha512` is rejected.\n\nInclude parts that the server already has, returned as\n`hits` by the [`Plan upload session`](https://developer.box.com/reference/post-files-upload-sessions-id-plan)\nendpoint. Use the `part_id`, `offset`, and `size` from the\nplan response. If the other entries include `sha512`,\ninclude the `sha512` value from the plan response.\nOtherwise, leave the hash out of these entries.",
                     "type": "array",
                     "items": {
                       "$ref": "#/components/schemas/UploadPart"
@@ -2117,6 +2194,16 @@
                 "description": "Indicates the number of seconds the client should wait before\nattempting their commit request again.",
                 "schema": {
                   "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Returns an error if the request body is not valid.\n\n* `invalid_parts_field` - Only some entries in `parts` include\n  `sha512`. Include `sha512` on every entry or on none of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientError"
                 }
               }
             }
@@ -3380,7 +3467,8 @@
         "x-box-tag": "file_classifications",
         "tags": [
           "Classifications on files"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "post": {
         "operationId": "post_files_id_metadata_enterprise_securityClassification-6VMVochwUWo",
@@ -3469,7 +3557,8 @@
         "x-box-tag": "file_classifications",
         "tags": [
           "Classifications on files"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "put": {
         "operationId": "put_files_id_metadata_enterprise_securityClassification-6VMVochwUWo",
@@ -3577,7 +3666,8 @@
         "x-box-tag": "file_classifications",
         "tags": [
           "Classifications on files"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "delete": {
         "operationId": "delete_files_id_metadata_enterprise_securityClassification-6VMVochwUWo",
@@ -3643,7 +3733,8 @@
         "x-box-tag": "file_classifications",
         "tags": [
           "Classifications on files"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/files/{file_id}/metadata/{scope}/{template_key}": {
@@ -4641,7 +4732,8 @@
         "x-box-tag": "file_requests",
         "tags": [
           "File requests"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "put": {
         "operationId": "put_file_requests_id",
@@ -4753,7 +4845,8 @@
         "x-box-tag": "file_requests",
         "tags": [
           "File requests"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "delete": {
         "operationId": "delete_file_requests_id",
@@ -4819,7 +4912,8 @@
         "x-box-tag": "file_requests",
         "tags": [
           "File requests"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/file_requests/{file_request_id}/copy": {
@@ -4913,7 +5007,8 @@
         "x-box-tag": "file_requests",
         "tags": [
           "File requests"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/folders/{folder_id}": {
@@ -6583,7 +6678,8 @@
         "x-box-tag": "folder_classifications",
         "tags": [
           "Classifications on folders"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "post": {
         "operationId": "post_folders_id_metadata_enterprise_securityClassification-6VMVochwUWo",
@@ -6673,7 +6769,8 @@
         "x-box-tag": "folder_classifications",
         "tags": [
           "Classifications on folders"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "put": {
         "operationId": "put_folders_id_metadata_enterprise_securityClassification-6VMVochwUWo",
@@ -6782,7 +6879,8 @@
         "x-box-tag": "folder_classifications",
         "tags": [
           "Classifications on folders"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "delete": {
         "operationId": "delete_folders_id_metadata_enterprise_securityClassification-6VMVochwUWo",
@@ -6849,7 +6947,8 @@
         "x-box-tag": "folder_classifications",
         "tags": [
           "Classifications on folders"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/folders/{folder_id}/metadata/{scope}/{template_key}": {
@@ -7990,7 +8089,8 @@
         "x-box-tag": "classifications",
         "tags": [
           "Classifications"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/metadata_templates/enterprise/securityClassification-6VMVochwUWo/schema#add": {
@@ -8120,7 +8220,8 @@
         "x-box-tag": "classifications",
         "tags": [
           "Classifications"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/metadata_templates/enterprise/securityClassification-6VMVochwUWo/schema#update": {
@@ -8256,7 +8357,8 @@
         "x-box-tag": "classifications",
         "tags": [
           "Classifications"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/metadata_templates/{scope}/{template_key}/schema": {
@@ -9187,7 +9289,8 @@
         "x-box-tag": "classifications",
         "tags": [
           "Classifications"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/metadata_cascade_policies": {
@@ -9578,7 +9681,7 @@
       "post": {
         "operationId": "post_metadata_queries_execute_read",
         "summary": "Query files/folders by metadata",
-        "description": "Create a search using SQL-like syntax to return items that match specific\nmetadata.\n\nBy default, this endpoint returns only the most basic info about the items for\nwhich the query matches. To get additional fields for each item, including any\nof the metadata, use the `fields` attribute in the query.",
+        "description": "For new integrations, use the [v2026.0 Query API](https://developer.box.com/reference/v2026.0/query-resources).\nThis is the latest version of the Query API, with advanced capabilities including multi-template queries and\nQuery Insights, and is the API we will continue to enhance with new Query capabilities.\n\nCreate a search using SQL-like syntax to return items that match specific\nmetadata.\n\nBy default, this endpoint returns only the most basic info about the items for\nwhich the query matches. To get additional fields for each item, including any\nof the metadata, use the `fields` attribute in the query.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -15764,7 +15867,8 @@
         "x-box-tag": "invites",
         "tags": [
           "Invites"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/invites/{invite_id}": {
@@ -15827,7 +15931,8 @@
         "x-box-tag": "invites",
         "tags": [
           "Invites"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/groups": {
@@ -18211,7 +18316,8 @@
         "x-box-tag": "retention_policies",
         "tags": [
           "Retention policies"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "post": {
         "operationId": "post_retention_policies",
@@ -18327,6 +18433,16 @@
               }
             }
           },
+          "403": {
+            "description": "Returns an error if the user does not have the required permissions\nto create a retention policy.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientError"
+                }
+              }
+            }
+          },
           "409": {
             "description": "Returns an error if a retention policy with the given name already exists.",
             "content": {
@@ -18351,7 +18467,8 @@
         "x-box-tag": "retention_policies",
         "tags": [
           "Retention policies"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/retention_policies/{retention_policy_id}": {
@@ -18414,7 +18531,8 @@
         "x-box-tag": "retention_policies",
         "tags": [
           "Retention policies"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "put": {
         "operationId": "put_retention_policies_id",
@@ -18579,7 +18697,8 @@
         "x-box-tag": "retention_policies",
         "tags": [
           "Retention policies"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "delete": {
         "operationId": "delete_retention_policies_id",
@@ -18635,7 +18754,8 @@
         "x-box-tag": "retention_policies",
         "tags": [
           "Retention policies"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/retention_policies/{retention_policy_id}/assignments": {
@@ -18745,7 +18865,8 @@
         "x-box-tag": "retention_policy_assignments",
         "tags": [
           "Retention policy assignments"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/retention_policy_assignments": {
@@ -18877,7 +18998,8 @@
         "x-box-tag": "retention_policy_assignments",
         "tags": [
           "Retention policy assignments"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/retention_policy_assignments/{retention_policy_assignment_id}": {
@@ -18940,7 +19062,8 @@
         "x-box-tag": "retention_policy_assignments",
         "tags": [
           "Retention policy assignments"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "delete": {
         "operationId": "delete_retention_policy_assignments_id",
@@ -18996,7 +19119,8 @@
         "x-box-tag": "retention_policy_assignments",
         "tags": [
           "Retention policy assignments"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/retention_policy_assignments/{retention_policy_assignment_id}/files_under_retention": {
@@ -19073,7 +19197,8 @@
         "x-box-tag": "retention_policy_assignments",
         "tags": [
           "Retention policy assignments"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/retention_policy_assignments/{retention_policy_assignment_id}/file_versions_under_retention": {
@@ -19150,7 +19275,8 @@
         "x-box-tag": "retention_policy_assignments",
         "tags": [
           "Retention policy assignments"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/legal_hold_policies": {
@@ -19235,7 +19361,8 @@
         "x-box-tag": "legal_hold_policies",
         "tags": [
           "Legal hold policies"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "post": {
         "operationId": "post_legal_hold_policies",
@@ -19331,7 +19458,8 @@
         "x-box-tag": "legal_hold_policies",
         "tags": [
           "Legal hold policies"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/legal_hold_policies/{legal_hold_policy_id}": {
@@ -19376,7 +19504,8 @@
         "x-box-tag": "legal_hold_policies",
         "tags": [
           "Legal hold policies"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "put": {
         "operationId": "put_legal_hold_policies_id",
@@ -19458,7 +19587,8 @@
         "x-box-tag": "legal_hold_policies",
         "tags": [
           "Legal hold policies"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "delete": {
         "operationId": "delete_legal_hold_policies_id",
@@ -19494,7 +19624,8 @@
         "x-box-tag": "legal_hold_policies",
         "tags": [
           "Legal hold policies"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/legal_hold_policy_assignments": {
@@ -19605,7 +19736,8 @@
         "x-box-tag": "legal_hold_policy_assignments",
         "tags": [
           "Legal hold policy assignments"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "post": {
         "operationId": "post_legal_hold_policy_assignments",
@@ -19684,7 +19816,8 @@
         "x-box-tag": "legal_hold_policy_assignments",
         "tags": [
           "Legal hold policy assignments"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/legal_hold_policy_assignments/{legal_hold_policy_assignment_id}": {
@@ -19729,7 +19862,8 @@
         "x-box-tag": "legal_hold_policy_assignments",
         "tags": [
           "Legal hold policy assignments"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "delete": {
         "operationId": "delete_legal_hold_policy_assignments_id",
@@ -19765,7 +19899,8 @@
         "x-box-tag": "legal_hold_policy_assignments",
         "tags": [
           "Legal hold policy assignments"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/legal_hold_policy_assignments/{legal_hold_policy_assignment_id}/files_on_hold": {
@@ -19850,7 +19985,8 @@
         "x-box-tag": "legal_hold_policy_assignments",
         "tags": [
           "Legal hold policy assignments"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/file_version_retentions": {
@@ -19971,7 +20107,8 @@
         "x-box-tag": "file_version_retentions",
         "tags": [
           "File version retentions"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/legal_hold_policy_assignments/{legal_hold_policy_assignment_id}/file_versions_on_hold": {
@@ -20056,7 +20193,8 @@
         "x-box-tag": "legal_hold_policy_assignments",
         "tags": [
           "Legal hold policy assignments"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/file_version_retentions/{file_version_retention_id}": {
@@ -20101,7 +20239,8 @@
         "x-box-tag": "file_version_retentions",
         "tags": [
           "File version retentions"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/file_version_legal_holds/{file_version_legal_hold_id}": {
@@ -20146,7 +20285,8 @@
         "x-box-tag": "file_version_legal_holds",
         "tags": [
           "File version legal holds"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/file_version_legal_holds": {
@@ -20213,7 +20353,8 @@
         "x-box-tag": "file_version_legal_holds",
         "tags": [
           "File version legal holds"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/shield_information_barriers/{shield_information_barrier_id}": {
@@ -20268,7 +20409,8 @@
         "x-box-tag": "shield_information_barriers",
         "tags": [
           "Shield information barriers"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/shield_information_barriers/change_status": {
@@ -20350,7 +20492,8 @@
         "x-box-tag": "shield_information_barriers",
         "tags": [
           "Shield information barriers"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/shield_information_barriers": {
@@ -20417,7 +20560,8 @@
         "x-box-tag": "shield_information_barriers",
         "tags": [
           "Shield information barriers"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "post": {
         "operationId": "post_shield_information_barriers",
@@ -20490,7 +20634,8 @@
         "x-box-tag": "shield_information_barriers",
         "tags": [
           "Shield information barriers"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/shield_information_barrier_reports": {
@@ -20567,7 +20712,8 @@
         "x-box-tag": "shield_information_barrier_reports",
         "tags": [
           "Shield information barrier reports"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "post": {
         "operationId": "post_shield_information_barrier_reports",
@@ -20627,7 +20773,8 @@
         "x-box-tag": "shield_information_barrier_reports",
         "tags": [
           "Shield information barrier reports"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/shield_information_barrier_reports/{shield_information_barrier_report_id}": {
@@ -20682,7 +20829,8 @@
         "x-box-tag": "shield_information_barrier_reports",
         "tags": [
           "Shield information barrier reports"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/shield_information_barrier_segments/{shield_information_barrier_segment_id}": {
@@ -20737,7 +20885,8 @@
         "x-box-tag": "shield_information_barrier_segments",
         "tags": [
           "Shield information barrier segments"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "delete": {
         "operationId": "delete_shield_information_barrier_segments_id",
@@ -20783,7 +20932,8 @@
         "x-box-tag": "shield_information_barrier_segments",
         "tags": [
           "Shield information barrier segments"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "put": {
         "operationId": "put_shield_information_barrier_segments_id",
@@ -20870,7 +21020,8 @@
         "x-box-tag": "shield_information_barrier_segments",
         "tags": [
           "Shield information barrier segments"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/shield_information_barrier_segments": {
@@ -20947,7 +21098,8 @@
         "x-box-tag": "shield_information_barrier_segments",
         "tags": [
           "Shield information barrier segments"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "post": {
         "operationId": "post_shield_information_barrier_segments",
@@ -21026,7 +21178,8 @@
         "x-box-tag": "shield_information_barrier_segments",
         "tags": [
           "Shield information barrier segments"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/shield_information_barrier_segment_members/{shield_information_barrier_segment_member_id}": {
@@ -21081,7 +21234,8 @@
         "x-box-tag": "shield_information_barrier_segment_members",
         "tags": [
           "Shield information barrier segment members"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "delete": {
         "operationId": "delete_shield_information_barrier_segment_members_id",
@@ -21127,7 +21281,8 @@
         "x-box-tag": "shield_information_barrier_segment_members",
         "tags": [
           "Shield information barrier segment members"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/shield_information_barrier_segment_members": {
@@ -21194,7 +21349,8 @@
         "x-box-tag": "shield_information_barrier_segment_members",
         "tags": [
           "Shield information barrier segment members"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "post": {
         "operationId": "post_shield_information_barrier_segment_members",
@@ -21288,7 +21444,8 @@
         "x-box-tag": "shield_information_barrier_segment_members",
         "tags": [
           "Shield information barrier segment members"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/shield_information_barrier_segment_restrictions/{shield_information_barrier_segment_restriction_id}": {
@@ -21343,7 +21500,8 @@
         "x-box-tag": "shield_information_barrier_segment_restrictions",
         "tags": [
           "Shield information barrier segment restrictions"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "delete": {
         "operationId": "delete_shield_information_barrier_segment_restrictions_id",
@@ -21389,7 +21547,8 @@
         "x-box-tag": "shield_information_barrier_segment_restrictions",
         "tags": [
           "Shield information barrier segment restrictions"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/shield_information_barrier_segment_restrictions": {
@@ -21456,7 +21615,8 @@
         "x-box-tag": "shield_information_barrier_segment_restrictions",
         "tags": [
           "Shield information barrier segment restrictions"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "post": {
         "operationId": "post_shield_information_barrier_segment_restrictions",
@@ -21562,7 +21722,8 @@
         "x-box-tag": "shield_information_barrier_segment_restrictions",
         "tags": [
           "Shield information barrier segment restrictions"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/device_pinners/{device_pinner_id}": {
@@ -21607,7 +21768,8 @@
         "x-box-tag": "device_pinners",
         "tags": [
           "Device pinners"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "delete": {
         "operationId": "delete_device_pinners_id",
@@ -21643,7 +21805,8 @@
         "x-box-tag": "device_pinners",
         "tags": [
           "Device pinners"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/enterprises/{enterprise_id}/device_pinners": {
@@ -21724,7 +21887,8 @@
         "x-box-tag": "device_pinners",
         "tags": [
           "Device pinners"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/terms_of_services": {
@@ -21773,7 +21937,8 @@
         "x-box-tag": "terms_of_services",
         "tags": [
           "Terms of service"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "post": {
         "operationId": "post_terms_of_services",
@@ -21842,7 +22007,8 @@
         "x-box-tag": "terms_of_services",
         "tags": [
           "Terms of service"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/terms_of_services/{terms_of_service_id}": {
@@ -21887,7 +22053,8 @@
         "x-box-tag": "terms_of_services",
         "tags": [
           "Terms of service"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "put": {
         "operationId": "put_terms_of_services_id",
@@ -21959,7 +22126,8 @@
         "x-box-tag": "terms_of_services",
         "tags": [
           "Terms of service"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/terms_of_service_user_statuses": {
@@ -22014,7 +22182,8 @@
         "x-box-tag": "terms_of_service_user_statuses",
         "tags": [
           "Terms of service user statuses"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "post": {
         "operationId": "post_terms_of_service_user_statuses",
@@ -22112,7 +22281,8 @@
         "x-box-tag": "terms_of_service_user_statuses",
         "tags": [
           "Terms of service user statuses"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/terms_of_service_user_statuses/{terms_of_service_user_status_id}": {
@@ -22176,7 +22346,8 @@
         "x-box-tag": "terms_of_service_user_statuses",
         "tags": [
           "Terms of service user statuses"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/collaboration_whitelist_entries": {
@@ -22233,7 +22404,8 @@
         "x-box-tag": "collaboration_allowlist_entries",
         "tags": [
           "Domain restrictions for collaborations"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "post": {
         "operationId": "post_collaboration_whitelist_entries",
@@ -22294,7 +22466,8 @@
         "x-box-tag": "collaboration_allowlist_entries",
         "tags": [
           "Domain restrictions for collaborations"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/collaboration_whitelist_entries/{collaboration_whitelist_entry_id}": {
@@ -22339,7 +22512,8 @@
         "x-box-tag": "collaboration_allowlist_entries",
         "tags": [
           "Domain restrictions for collaborations"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "delete": {
         "operationId": "delete_collaboration_whitelist_entries_id",
@@ -22375,7 +22549,8 @@
         "x-box-tag": "collaboration_allowlist_entries",
         "tags": [
           "Domain restrictions for collaborations"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/collaboration_whitelist_exempt_targets": {
@@ -22432,7 +22607,8 @@
         "x-box-tag": "collaboration_allowlist_exempt_targets",
         "tags": [
           "Domain restrictions (User exemptions)"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "post": {
         "operationId": "post_collaboration_whitelist_exempt_targets",
@@ -22491,7 +22667,8 @@
         "x-box-tag": "collaboration_allowlist_exempt_targets",
         "tags": [
           "Domain restrictions (User exemptions)"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/collaboration_whitelist_exempt_targets/{collaboration_whitelist_exempt_target_id}": {
@@ -22536,7 +22713,8 @@
         "x-box-tag": "collaboration_allowlist_exempt_targets",
         "tags": [
           "Domain restrictions (User exemptions)"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "delete": {
         "operationId": "delete_collaboration_whitelist_exempt_targets_id",
@@ -22572,7 +22750,8 @@
         "x-box-tag": "collaboration_allowlist_exempt_targets",
         "tags": [
           "Domain restrictions (User exemptions)"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/storage_policies": {
@@ -22647,7 +22826,8 @@
         "x-box-tag": "storage_policies",
         "tags": [
           "Standard and Zones Storage Policies"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/storage_policies/{storage_policy_id}": {
@@ -22692,7 +22872,8 @@
         "x-box-tag": "storage_policies",
         "tags": [
           "Standard and Zones Storage Policies"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/storage_policy_assignments": {
@@ -22761,7 +22942,8 @@
         "x-box-tag": "storage_policy_assignments",
         "tags": [
           "Standard and Zones Storage Policy Assignments"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "post": {
         "operationId": "post_storage_policy_assignments",
@@ -22854,7 +23036,8 @@
         "x-box-tag": "storage_policy_assignments",
         "tags": [
           "Standard and Zones Storage Policy Assignments"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/storage_policy_assignments/{storage_policy_assignment_id}": {
@@ -22899,7 +23082,8 @@
         "x-box-tag": "storage_policy_assignments",
         "tags": [
           "Standard and Zones Storage Policy Assignments"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "put": {
         "operationId": "put_storage_policy_assignments_id",
@@ -22979,7 +23163,8 @@
         "x-box-tag": "storage_policy_assignments",
         "tags": [
           "Standard and Zones Storage Policy Assignments"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "delete": {
         "operationId": "delete_storage_policy_assignments_id",
@@ -23015,7 +23200,8 @@
         "x-box-tag": "storage_policy_assignments",
         "tags": [
           "Standard and Zones Storage Policy Assignments"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/zip_downloads": {
@@ -24797,6 +24983,16 @@
               }
             }
           },
+          "422": {
+            "description": "The extraction request could not be processed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "An unexpected server error.",
             "content": {
@@ -24846,6 +25042,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AiExtractStructuredResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The extraction request could not be processed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientError"
                 }
               }
             }
@@ -25005,7 +25211,8 @@
         "x-box-tag": "ai_studio",
         "tags": [
           "AI Studio"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "post": {
         "operationId": "post_ai_agents",
@@ -25055,7 +25262,8 @@
         "x-box-tag": "ai_studio",
         "tags": [
           "AI Studio"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/ai_agents/{agent_id}": {
@@ -25119,7 +25327,8 @@
         "x-box-tag": "ai_studio",
         "tags": [
           "AI Studio"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "get": {
         "operationId": "get_ai_agents_id",
@@ -25190,7 +25399,8 @@
         "x-box-tag": "ai_studio",
         "tags": [
           "AI Studio"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "delete": {
         "operationId": "delete_ai_agents_id",
@@ -25246,7 +25456,8 @@
         "x-box-tag": "ai_studio",
         "tags": [
           "AI Studio"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/metadata_taxonomies": {
@@ -27560,12 +27771,12 @@
             ]
           },
           "include_confidence_score": {
-            "description": "A flag to indicate whether confidence scores for every extracted field should be returned.",
+            "description": "A flag to indicate whether confidence scores for every extracted field should be returned. Estimates the likelihood that an extracted metadata field value is accurate and correct. Displays a numerical and categorical confidence score to help users and automated systems quickly determine extraction reliability.",
             "type": "boolean",
             "example": true
           },
           "include_reference": {
-            "description": "A flag to indicate whether references for every extracted field should be returned.",
+            "description": "A flag to indicate whether references for every extracted field should be returned. References and bounding boxes show where the agent extracted the metadata from. They help you check for accuracy and fix any mistakes. References are short, exact quotes from the original document used to verify results. Bounding boxes highlight the specific areas on the page where that text is found.",
             "type": "boolean",
             "example": true
           },
@@ -29333,6 +29544,7 @@
               "method_not_allowed",
               "conflict",
               "precondition_failed",
+              "unprocessable_entity",
               "too_many_requests",
               "internal_server_error",
               "unavailable",
@@ -29820,17 +30032,17 @@
         "x-box-tag": "collaboration_allowlist_exempt_targets"
       },
       "CollaborationItem": {
-        "description": "A collaboration item.",
+        "description": "A mini representation of the file, folder, or web link that a\ncollaboration is granted on.",
         "type": "object",
         "oneOf": [
           {
-            "$ref": "#/components/schemas/File"
+            "$ref": "#/components/schemas/File--Mini"
           },
           {
-            "$ref": "#/components/schemas/Folder"
+            "$ref": "#/components/schemas/Folder--Mini"
           },
           {
-            "$ref": "#/components/schemas/WebLink"
+            "$ref": "#/components/schemas/WebLink--Mini"
           }
         ],
         "title": "Collaboration item"
@@ -31247,11 +31459,9 @@
                   },
                   {
                     "description": "The shared link for this file. This value will be\n`null` if no shared link has been created for this\nfile."
-                  },
-                  {
-                    "nullable": true
                   }
-                ]
+                ],
+                "nullable": true
               },
               "parent": {
                 "allOf": [
@@ -31852,11 +32062,9 @@
                   },
                   {
                     "description": "Details about the classification applied to this file."
-                  },
-                  {
-                    "nullable": true
                   }
-                ]
+                ],
+                "nullable": true
               },
               "uploader_display_name": {
                 "allOf": [
@@ -39115,6 +39323,9 @@
             "$ref": "#/components/schemas/SignRequestSignerInputZIP4Validation"
           },
           {
+            "$ref": "#/components/schemas/SignRequestSignerInputZIPJPValidation"
+          },
+          {
             "$ref": "#/components/schemas/SignRequestSignerInputSSNValidation"
           },
           {
@@ -39155,6 +39366,24 @@
           "validation_type"
         ],
         "title": "Sign Request Signer Input ZIP 4 Validation"
+      },
+      "SignRequestSignerInputZIPJPValidation": {
+        "description": "Specifies the validation rules for a text field input by the signer.\nIf set, this validation is mandatory.",
+        "type": "object",
+        "properties": {
+          "validation_type": {
+            "description": "Validates that the text input is a Japanese ZIP code.",
+            "type": "string",
+            "example": "zip_jp",
+            "enum": [
+              "zip_jp"
+            ]
+          }
+        },
+        "required": [
+          "validation_type"
+        ],
+        "title": "Sign Request Signer Input ZIP JP Validation"
       },
       "SignRequestSignerInputZIPValidation": {
         "description": "Specifies the validation rules for a text field input by the signer.\nIf set, this validation is mandatory.",
@@ -42244,6 +42473,11 @@
                 "description": "The SHA1 hash of the chunk.",
                 "type": "string",
                 "example": "134b65991ed521fcfe4724b7d814ab8ded5185dc"
+              },
+              "sha512": {
+                "description": "The `SHA-512` hash of the chunk, as a hex string\nof 128 lower case characters.",
+                "type": "string",
+                "example": "ae78a0ca28abffe70ac9aba830556cd6eb3fcf1501dbd9b2d7a5f45992c00812cb07b51bbd0a9174e2295671c0e86f30354afa91d281d4fbee6a323a483d6383"
               }
             }
           }
@@ -42283,6 +42517,74 @@
           "mini",
           "standard"
         ]
+      },
+      "UploadPartPlan": {
+        "description": "Represents a planned upload part with `SHA-512` hash\nfor upload session planning.",
+        "type": "object",
+        "properties": {
+          "offset": {
+            "description": "The offset of the chunk within the file\nin bytes. The lower bound of the position\nof the chunk within the file.",
+            "type": "integer",
+            "format": "int64",
+            "example": 0
+          },
+          "size": {
+            "description": "The size of the chunk in bytes.",
+            "type": "integer",
+            "format": "int64",
+            "example": 8388608
+          },
+          "sha512": {
+            "description": "The `SHA-512` hash of the chunk, as a hex string\nof 128 lower case characters.",
+            "type": "string",
+            "example": "ae78a0ca28abffe70ac9aba830556cd6eb3fcf1501dbd9b2d7a5f45992c00812cb07b51bbd0a9174e2295671c0e86f30354afa91d281d4fbee6a323a483d6383"
+          }
+        },
+        "required": [
+          "offset",
+          "size",
+          "sha512"
+        ],
+        "title": "Upload part plan",
+        "x-box-resource-id": "upload_part_plan",
+        "x-box-tag": "chunked_uploads"
+      },
+      "UploadPartPlanHit": {
+        "description": "Represents a planned upload part that already exists\non the server (cache hit).",
+        "type": "object",
+        "properties": {
+          "offset": {
+            "description": "The offset of the chunk within the file\nin bytes. The lower bound of the position\nof the chunk within the file.",
+            "type": "integer",
+            "format": "int64",
+            "example": 0
+          },
+          "size": {
+            "description": "The size of the chunk in bytes.",
+            "type": "integer",
+            "format": "int64",
+            "example": 8388608
+          },
+          "sha512": {
+            "description": "The `SHA-512` hash of the chunk, as a hex string\nof 128 lower case characters.",
+            "type": "string",
+            "example": "ae78a0ca28abffe70ac9aba830556cd6eb3fcf1501dbd9b2d7a5f45992c00812cb07b51bbd0a9174e2295671c0e86f30354afa91d281d4fbee6a323a483d6383"
+          },
+          "part_id": {
+            "description": "The unique ID of the chunk.",
+            "type": "string",
+            "example": "BFDF5379"
+          }
+        },
+        "required": [
+          "offset",
+          "size",
+          "sha512",
+          "part_id"
+        ],
+        "title": "Upload part plan hit",
+        "x-box-resource-id": "upload_part_plan_hit",
+        "x-box-tag": "chunked_uploads"
       },
       "UploadParts": {
         "description": "A list of uploaded chunks for an upload\nsession.",
@@ -42400,6 +42702,11 @@
                 "description": "A list of endpoints for a chunked upload session.",
                 "type": "object",
                 "properties": {
+                  "plan": {
+                    "description": "The URL used to plan the upload session by checking which parts\nalready exist on the server.",
+                    "type": "string",
+                    "example": "https://{box-upload-server}/api/2.0/files/upload_sessions/F971964745A5CD0C001BBE4E58196BFD/plan"
+                  },
                   "upload_part": {
                     "description": "The URL to upload parts to.",
                     "type": "string",
@@ -42440,6 +42747,86 @@
         },
         "title": "Upload session",
         "x-box-resource-id": "upload_session",
+        "x-box-tag": "chunked_uploads"
+      },
+      "UploadSessionPlanRequest": {
+        "description": "Request body for planning an upload session.\nThis allows checking which parts already exist\non the server before uploading.",
+        "type": "object",
+        "properties": {
+          "parts": {
+            "description": "The list of parts to check for existence.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UploadPartPlan"
+            },
+            "example": [
+              {
+                "offset": 0,
+                "size": 8388608,
+                "sha512": "ae78a0ca28abffe70ac9aba830556cd6eb3fcf1501dbd9b2d7a5f45992c00812cb07b51bbd0a9174e2295671c0e86f30354afa91d281d4fbee6a323a483d6383"
+              },
+              {
+                "offset": 8388608,
+                "size": 8388608,
+                "sha512": "588fde2156e1d8b23c9ca88ed3bed7bd1270e6ba0bb5b97b294ea1498952d7fd505e406097638514df92e9c5fecd0e73bd872499fcd7ea18eeb18567d0e09020"
+              }
+            ],
+            "minItems": 1
+          }
+        },
+        "required": [
+          "parts"
+        ],
+        "title": "Upload session plan request",
+        "x-box-resource-id": "upload_session_plan_request",
+        "x-box-tag": "chunked_uploads"
+      },
+      "UploadSessionPlanResponse": {
+        "description": "Response from planning an upload session.\nContains information about which parts already\nexist (hits) and which need to be uploaded (misses).",
+        "type": "object",
+        "properties": {
+          "upload_session_id": {
+            "description": "The unique identifier for this upload session.",
+            "type": "string",
+            "example": "F971964745A5CD0C001BBE4E58196BFD"
+          },
+          "hits": {
+            "description": "Parts that already exist on the server and\ndo not need to be uploaded again.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UploadPartPlanHit"
+            },
+            "example": [
+              {
+                "offset": 0,
+                "size": 8388608,
+                "sha512": "ae78a0ca28abffe70ac9aba830556cd6eb3fcf1501dbd9b2d7a5f45992c00812cb07b51bbd0a9174e2295671c0e86f30354afa91d281d4fbee6a323a483d6383",
+                "part_id": "BFDF5379"
+              }
+            ]
+          },
+          "misses": {
+            "description": "Parts that do not exist on the server and\nneed to be uploaded.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UploadPartPlan"
+            },
+            "example": [
+              {
+                "offset": 8388608,
+                "size": 8388608,
+                "sha512": "588fde2156e1d8b23c9ca88ed3bed7bd1270e6ba0bb5b97b294ea1498952d7fd505e406097638514df92e9c5fecd0e73bd872499fcd7ea18eeb18567d0e09020"
+              }
+            ]
+          }
+        },
+        "required": [
+          "upload_session_id",
+          "hits",
+          "misses"
+        ],
+        "title": "Upload session plan response",
+        "x-box-resource-id": "upload_session_plan_response",
         "x-box-tag": "chunked_uploads"
       },
       "UploadUrl": {
@@ -43406,11 +43793,9 @@
                   },
                   {
                     "description": "The shared link object for this item. Will be\n`null` if no shared link has been created."
-                  },
-                  {
-                    "nullable": true
                   }
-                ]
+                ],
+                "nullable": true
               },
               "item_status": {
                 "description": "Whether this item is deleted or not. Values include `active`,\n`trashed` if the file has been moved to the trash, and `deleted` if\nthe file has been permanently deleted.",

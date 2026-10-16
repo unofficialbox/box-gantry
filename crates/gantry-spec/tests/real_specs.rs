@@ -31,8 +31,8 @@ fn the_full_real_spec_set_ingests() {
     // Counts as of the vendored snapshot (see fixtures/specs/README.md).
     // If a spec refresh changes them, updating these numbers is the
     // deliberate, reviewed act the determinism rules want (FR-6.2, VR-6).
-    assert_eq!(base.operations.len(), 296);
-    assert_eq!(base.schemas.len(), 305);
+    assert_eq!(base.operations.len(), 297);
+    assert_eq!(base.schemas.len(), 310);
     assert_eq!(base.managers().len(), 73);
 
     assert_eq!(set.documents[1].operations.len(), 37);
@@ -60,20 +60,22 @@ fn the_full_real_spec_set_ingests() {
     // `QueryResultEntry`'s open metadata bag — a real extra-fields
     // representation instead of a silent drop. The same silent drop applied to
     // `GenericSource`/`AiExtractResponse`, which D-195's fix also caught:
-    // 900 → 879 → 877 → 868 → 884 decls (486 synthesized).
-    assert_eq!(lowering.program.decls.len(), 884);
+    // 900 → 879 → 877 → 868 → 884 decls (486 synthesized). The 2026-10 refresh
+    // adds upload-session planning (4 structs) and the Japanese ZIP sign-input
+    // validation (1 struct + its synthesized type enum): → 890.
+    assert_eq!(lowering.program.decls.len(), 890);
     let stats = &lowering.stats;
     assert_eq!(
         (stats.structs, stats.unions, stats.discriminated_unions),
-        (605, 33, 23)
+        (610, 33, 23)
     );
-    assert_eq!((stats.enums, stats.aliases), (244, 2));
-    assert_eq!(stats.synthesized, 486);
+    assert_eq!((stats.enums, stats.aliases), (245, 2));
+    assert_eq!(stats.synthesized, 487);
     assert_eq!(stats.json_value_sites, 19);
 
     // Operations: every one lowered, with classified success shapes.
-    assert_eq!(lowering.program.operations.len(), 338);
-    assert_eq!(stats.operations, 338);
+    assert_eq!(lowering.program.operations.len(), 339);
+    assert_eq!(stats.operations, 339);
     assert_eq!(
         (
             stats.empty_responses,
@@ -98,7 +100,9 @@ fn the_full_real_spec_set_ingests() {
         .iter()
         .filter(|op| op.base_url != gantry_ir::BaseUrl::Api)
         .count();
-    assert_eq!(non_default, 14);
+    // 15 since the 2026-10 refresh: upload-session planning rides the
+    // upload-session server like the rest of the chunked-upload endpoints.
+    assert_eq!(non_default, 15);
 
     // The semantic pass verifies the whole real program (FR-3): every
     // reference bound, every type well-formed, identities unique.
@@ -106,7 +110,7 @@ fn the_full_real_spec_set_ingests() {
         .expect("the real program must pass semantic analysis");
     assert_eq!(analysis.managers.len(), 86);
     let indexed: usize = analysis.managers.values().map(Vec::len).sum();
-    assert_eq!(indexed, 338);
+    assert_eq!(indexed, 339);
 
     // Every declaration carries a reachability entry, and the split between
     // sole-owned (goes to a per-manager file, D-201), shared/orphaned (stays
@@ -122,7 +126,10 @@ fn the_full_real_spec_set_ingests() {
         .iter()
         .filter(|owners| owners.is_empty())
         .count();
-    assert_eq!((sole, orphan), (655, 37));
+    // The 2026-10 refresh: its 6 new decls are each sole-owned, and
+    // `CollaborationItem` now references `WebLinkMini`, adopting a former
+    // orphan into the shared set.
+    assert_eq!((sole, orphan), (661, 36));
 }
 
 /// Method names never fall through to a meaningless numeric collision suffix,

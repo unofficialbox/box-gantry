@@ -14,7 +14,7 @@
       "url": "https://www.apache.org/licenses/LICENSE-2.0"
     },
     "version": "2025.0",
-    "x-box-commit-hash": "e1aaef784a"
+    "x-box-commit-hash": "56657ab895"
   },
   "servers": [
     {
@@ -2318,7 +2318,8 @@
         "x-box-tag": "shield_lists",
         "tags": [
           "Shield lists"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "post": {
         "operationId": "post_shield_lists_v2025.0",
@@ -2364,7 +2365,8 @@
         "x-box-tag": "shield_lists",
         "tags": [
           "Shield lists"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/shield_lists/{shield_list_id}": {
@@ -2412,7 +2414,8 @@
         "x-box-tag": "shield_lists",
         "tags": [
           "Shield lists"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "delete": {
         "operationId": "delete_shield_lists_id_v2025.0",
@@ -2461,7 +2464,8 @@
         "x-box-tag": "shield_lists",
         "tags": [
           "Shield lists"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "put": {
         "operationId": "put_shield_lists_id_v2025.0",
@@ -2526,7 +2530,8 @@
         "x-box-tag": "shield_lists",
         "tags": [
           "Shield lists"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/archives": {
@@ -2626,7 +2631,8 @@
         "x-box-tag": "archives",
         "tags": [
           "Archives"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "post": {
         "operationId": "post_archives_v2025.0",
@@ -2742,7 +2748,8 @@
         "x-box-tag": "archives",
         "tags": [
           "Archives"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/archives/{archive_id}": {
@@ -2833,7 +2840,8 @@
         "x-box-tag": "archives",
         "tags": [
           "Archives"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       },
       "put": {
         "operationId": "put_archives_id_v2025.0",
@@ -2961,7 +2969,8 @@
         "x-box-tag": "archives",
         "tags": [
           "Archives"
-        ]
+        ],
+        "x-box-unsupported-on-free-developer": true
       }
     },
     "/external_users/submit_delete_job": {
@@ -3421,6 +3430,12 @@
               "name": "Aaron Levie"
             },
             "additionalProperties": {}
+          },
+          "external_id": {
+            "description": "An optional identifier supplied by the caller for this Box Doc Gen job.\nThe value is returned on job responses for correlation only. It is not\na Box resource ID, is not required to be unique, and cannot be used to\nlook up the job.",
+            "type": "string",
+            "example": "111222_externalID",
+            "maxLength": 36
           }
         },
         "required": [
@@ -3438,6 +3453,12 @@
           },
           {
             "properties": {
+              "external_id": {
+                "description": "An optional identifier supplied by the caller when the Box Doc Gen\njob was created. Returned for correlation only. It is not a Box\nresource ID, is not required to be unique, and cannot be used to\nlook up the job.",
+                "type": "string",
+                "example": "111222_externalID",
+                "maxLength": 36
+              },
               "batch": {
                 "allOf": [
                   {
