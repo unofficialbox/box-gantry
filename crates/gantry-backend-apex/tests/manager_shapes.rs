@@ -368,12 +368,12 @@ fn the_real_spec_yields_one_class_per_manager_and_a_method_per_operation() {
         .count();
     assert_eq!(managers, 86, "one class per manager");
 
-    // One request per operation → 338 methods across all managers.
+    // One request per operation → 339 methods across all managers.
     let methods: usize = files
         .iter()
         .map(|f| f.content.matches("new BoxRequest();").count())
         .sum();
-    assert_eq!(methods, 338, "one method per operation");
+    assert_eq!(methods, 339, "one method per operation");
 
     // Every method and class name obeys the 40-char identifier limit.
     let ModuleSystem::Flat { identifier_limit } = apex().modules else {

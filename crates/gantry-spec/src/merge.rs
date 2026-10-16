@@ -9,10 +9,11 @@
 //! merged superset type**:
 //!
 //! - **Struct** — the union of all versions' fields. A field carries its shared
-//!   type when the versions agree (equal, or references to structurally
-//!   equivalent declarations — the same discriminator enum under a different
-//!   name); it becomes optional unless it is present and required in *every*
-//!   version. So a field only some versions declare round-trips as absent
+//!   type when the versions agree (equal, references to the same-named
+//!   declaration — which this pass merges into one — or references to
+//!   structurally equivalent declarations, e.g. the same discriminator enum
+//!   under a different name); it becomes optional unless it is present and
+//!   required in *every* version. So a field only some versions declare round-trips as absent
 //!   elsewhere, and the type's contract is the looser union.
 //! - **Enum** — the union of all values (base order first), open if any is.
 //! - **Union** — the union of variants by discriminator value.
@@ -63,7 +64,7 @@ pub(crate) fn merge_versioned_schemas(program: ir::Program) -> Result<ir::Progra
     // Build one merged declaration per group, then remap its references.
     let mut merged: Vec<ir::Decl> = Vec::with_capacity(groups.len());
     for members in groups.values() {
-        let mut decl = merge_group(&decls, members)?;
+        let mut decl = merge_group(&decls, &old_to_new, members)?;
         remap_decl(&mut decl, &old_to_new);
         // The namespace is unified: everything lands in `schemas`.
         decl.module = ir::ModulePath(vec![schemas_root(&decl.module)]);
@@ -92,7 +93,11 @@ fn schemas_root(module: &ir::ModulePath) -> ir::Identifier {
 
 /// Merge a group of same-named declarations into one. A single-member group is
 /// returned as-is (the common case); a multi-member group is superset-merged.
-fn merge_group(decls: &[ir::Decl], members: &[usize]) -> Result<ir::Decl, IngestError> {
+fn merge_group(
+    decls: &[ir::Decl],
+    group: &[ir::DeclId],
+    members: &[usize],
+) -> Result<ir::Decl, IngestError> {
     let base = decls[members[0]].clone();
     if members.len() == 1 {
         return Ok(base);
@@ -102,13 +107,13 @@ fn merge_group(decls: &[ir::Decl], members: &[usize]) -> Result<ir::Decl, Ingest
 
     let kind = match &base.kind {
         ir::DeclKind::Struct(base_struct) => {
-            ir::DeclKind::Struct(merge_structs(&name, decls, base_struct, rest)?)
+            ir::DeclKind::Struct(merge_structs(&name, decls, group, base_struct, rest)?)
         }
         ir::DeclKind::Enum(base_enum) => {
             ir::DeclKind::Enum(merge_enums(&name, decls, base_enum, rest)?)
         }
         ir::DeclKind::Union(base_union) => {
-            ir::DeclKind::Union(merge_unions(&name, decls, base_union, rest)?)
+            ir::DeclKind::Union(merge_unions(&name, decls, group, base_union, rest)?)
         }
         ir::DeclKind::Alias(base_ty) => {
             for &m in rest {
@@ -118,7 +123,7 @@ fn merge_group(decls: &[ir::Decl], members: &[usize]) -> Result<ir::Decl, Ingest
                         "alias in one version, non-alias in another",
                     ));
                 };
-                if !types_equivalent(base_ty, other, decls, &mut HashSet::new()) {
+                if !types_equivalent(base_ty, other, decls, group, &mut HashSet::new()) {
                     return Err(conflict(&name, "aliases resolve to non-equivalent types"));
                 }
             }
@@ -134,6 +139,7 @@ fn merge_group(decls: &[ir::Decl], members: &[usize]) -> Result<ir::Decl, Ingest
 fn merge_structs(
     name: &str,
     decls: &[ir::Decl],
+    group: &[ir::DeclId],
     base: &ir::StructDecl,
     rest: &[usize],
 ) -> Result<ir::StructDecl, IngestError> {
@@ -178,7 +184,7 @@ fn merge_structs(
             match s.fields.iter().find(|f| &f.wire_name == wire) {
                 Some(f) => {
                     let (required, core) = split_optional(&f.ty);
-                    if !types_equivalent(proto_core, core, decls, &mut HashSet::new()) {
+                    if !types_equivalent(proto_core, core, decls, group, &mut HashSet::new()) {
                         return Err(conflict(
                             name,
                             &format!("field {wire:?} has non-equivalent types across versions"),
@@ -211,7 +217,7 @@ fn merge_structs(
         if let Some(t) = &s.extra {
             match extra {
                 None => extra = Some(t),
-                Some(prev) if types_equivalent(prev, t, decls, &mut HashSet::new()) => {}
+                Some(prev) if types_equivalent(prev, t, decls, group, &mut HashSet::new()) => {}
                 Some(_) => {
                     return Err(conflict(
                         name,
@@ -263,6 +269,7 @@ fn merge_enums(
 fn merge_unions(
     name: &str,
     decls: &[ir::Decl],
+    group: &[ir::DeclId],
     base: &ir::UnionDecl,
     rest: &[usize],
 ) -> Result<ir::UnionDecl, IngestError> {
@@ -286,12 +293,18 @@ fn merge_unions(
                     .find(|v| v.discriminator_value.as_ref() == Some(value)),
                 None => variants.iter().find(|v| {
                     v.discriminator_value.is_none()
-                        && types_equivalent(&v.ty, &variant.ty, decls, &mut HashSet::new())
+                        && types_equivalent(&v.ty, &variant.ty, decls, group, &mut HashSet::new())
                 }),
             };
             match existing {
                 Some(existing) => {
-                    if !types_equivalent(&existing.ty, &variant.ty, decls, &mut HashSet::new()) {
+                    if !types_equivalent(
+                        &existing.ty,
+                        &variant.ty,
+                        decls,
+                        group,
+                        &mut HashSet::new(),
+                    ) {
                         return Err(conflict(
                             name,
                             "a union variant has non-equivalent types across versions",
@@ -329,12 +342,15 @@ fn split_optional(ty: &ir::Type) -> (bool, &ir::Type) {
 
 /// Structural (bisimulation) equivalence of two types, ignoring declaration
 /// *names*: two references are equivalent when the declarations they point at
-/// have equivalent structure. The `seen` set records in-progress declaration
-/// pairs so recursive types terminate (a revisited pair is assumed equivalent).
+/// have equivalent structure, or when they share a merge `group` — they then
+/// collapse onto one merged declaration, whose own merge rejects a genuine
+/// conflict. The `seen` set records in-progress declaration pairs so recursive
+/// types terminate (a revisited pair is assumed equivalent).
 fn types_equivalent(
     a: &ir::Type,
     b: &ir::Type,
     decls: &[ir::Decl],
+    group: &[ir::DeclId],
     seen: &mut HashSet<(u32, u32)>,
 ) -> bool {
     use ir::Type::{
@@ -353,8 +369,8 @@ fn types_equivalent(
         (Optional(x), Optional(y))
         | (Nullable(x), Nullable(y))
         | (List(x), List(y))
-        | (Map(x), Map(y)) => types_equivalent(x, y, decls, seen),
-        (Decl(x), Decl(y)) => decls_equivalent(*x, *y, decls, seen),
+        | (Map(x), Map(y)) => types_equivalent(x, y, decls, group, seen),
+        (Decl(x), Decl(y)) => decls_equivalent(*x, *y, decls, group, seen),
         _ => false,
     }
 }
@@ -364,9 +380,10 @@ fn decls_equivalent(
     x: ir::DeclId,
     y: ir::DeclId,
     decls: &[ir::Decl],
+    group: &[ir::DeclId],
     seen: &mut HashSet<(u32, u32)>,
 ) -> bool {
-    if x == y {
+    if group[x.0 as usize] == group[y.0 as usize] {
         return true;
     }
     let key = (x.0.min(y.0), x.0.max(y.0));
@@ -382,7 +399,7 @@ fn decls_equivalent(
                     b.fields
                         .iter()
                         .find(|fb| fb.wire_name == fa.wire_name)
-                        .is_some_and(|fb| types_equivalent(&fa.ty, &fb.ty, decls, seen))
+                        .is_some_and(|fb| types_equivalent(&fa.ty, &fb.ty, decls, group, seen))
                 })
         }
         (ir::DeclKind::Enum(a), ir::DeclKind::Enum(b)) => {
@@ -398,10 +415,12 @@ fn decls_equivalent(
                     b.variants
                         .iter()
                         .find(|vb| vb.discriminator_value == va.discriminator_value)
-                        .is_some_and(|vb| types_equivalent(&va.ty, &vb.ty, decls, seen))
+                        .is_some_and(|vb| types_equivalent(&va.ty, &vb.ty, decls, group, seen))
                 })
         }
-        (ir::DeclKind::Alias(a), ir::DeclKind::Alias(b)) => types_equivalent(a, b, decls, seen),
+        (ir::DeclKind::Alias(a), ir::DeclKind::Alias(b)) => {
+            types_equivalent(a, b, decls, group, seen)
+        }
         _ => false,
     };
     // The pair only needed pinning while its own subtree was in flight.
@@ -503,8 +522,10 @@ mod tests {
         let ir::DeclKind::Union(base_union) = &decls[0].kind else {
             unreachable!("constructed as a union")
         };
-        let merged =
-            merge_unions("Target", &decls, base_union, &[1]).expect("the versions must merge");
+        // Both versions share the name, so the pass would put them in one group.
+        let group = [ir::DeclId(0), ir::DeclId(0)];
+        let merged = merge_unions("Target", &decls, &group, base_union, &[1])
+            .expect("the versions must merge");
         merged.variants.into_iter().map(|v| v.ty).collect()
     }
 
@@ -527,5 +548,93 @@ mod tests {
     fn a_structural_union_that_only_repeats_variants_gains_none() {
         let merged = merged_variants(&[ir::Type::String, ir::Type::Bool], &[ir::Type::Bool]);
         assert_eq!(merged, [ir::Type::String, ir::Type::Bool]);
+    }
+
+    fn decl(name: &str, version: Option<&str>, kind: ir::DeclKind) -> ir::Decl {
+        let mut module = vec![ident("schemas")];
+        if let Some(v) = version {
+            module.push(ident(v));
+        }
+        ir::Decl {
+            name: ident(name),
+            module: ir::ModulePath(module),
+            api_version: None,
+            kind,
+        }
+    }
+
+    fn closed_enum(values: &[&str]) -> ir::DeclKind {
+        ir::DeclKind::Enum(ir::EnumDecl {
+            values: values.iter().map(|v| v.to_string()).collect(),
+            extensibility: ir::Extensibility::Closed,
+        })
+    }
+
+    fn struct_with_code(code: ir::DeclId) -> ir::DeclKind {
+        ir::DeclKind::Struct(ir::StructDecl {
+            fields: vec![ir::Field {
+                name: ident("code"),
+                wire_name: "code".into(),
+                ty: ir::Type::Decl(code),
+            }],
+            extra: None,
+        })
+    }
+
+    #[test]
+    fn a_field_referencing_a_same_named_enum_that_gained_a_value_merges() {
+        // Box added `unprocessable_entity` to `ClientError.code` in the base
+        // spec only. Both versions' field points at `ClientErrorCode`, which
+        // this pass merges into one superset enum — not a field-type conflict.
+        let program = ir::Program {
+            decls: vec![
+                decl("ClientErrorCode", None, closed_enum(&["not_found", "gone"])),
+                decl("ClientError", None, struct_with_code(ir::DeclId(0))),
+                decl(
+                    "ClientErrorCode",
+                    Some("v2025_0"),
+                    closed_enum(&["not_found"]),
+                ),
+                decl(
+                    "ClientError",
+                    Some("v2025_0"),
+                    struct_with_code(ir::DeclId(2)),
+                ),
+            ],
+            operations: vec![],
+        };
+        let merged = merge_versioned_schemas(program).expect("the versions must merge");
+
+        assert_eq!(merged.decls.len(), 2);
+        let ir::DeclKind::Enum(code) = &merged.decls[0].kind else {
+            panic!("ClientErrorCode stays an enum")
+        };
+        assert_eq!(code.values, ["not_found", "gone"]);
+        let ir::DeclKind::Struct(error) = &merged.decls[1].kind else {
+            panic!("ClientError stays a struct")
+        };
+        assert_eq!(error.fields[0].ty, ir::Type::Decl(ir::DeclId(0)));
+    }
+
+    #[test]
+    fn a_field_referencing_differently_named_non_equivalent_decls_still_conflicts() {
+        let program = ir::Program {
+            decls: vec![
+                decl("ErrorCode", None, closed_enum(&["not_found", "gone"])),
+                decl("ClientError", None, struct_with_code(ir::DeclId(0))),
+                decl("StatusCode", Some("v2025_0"), closed_enum(&["not_found"])),
+                decl(
+                    "ClientError",
+                    Some("v2025_0"),
+                    struct_with_code(ir::DeclId(2)),
+                ),
+            ],
+            operations: vec![],
+        };
+        let err = merge_versioned_schemas(program).expect_err("a genuine conflict stays loud");
+        assert!(
+            matches!(&err, IngestError::SchemaVersionConflict { name, .. } if name == "ClientError"),
+            "{err}"
+        );
     }
 }
