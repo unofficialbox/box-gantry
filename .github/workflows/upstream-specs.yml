@@ -1,0 +1,124 @@
+# Daily watch for new published Box OpenAPI specs.
+#
+# box/box-openapi cuts no GitHub releases: Box publishes by committing
+# regenerated specs to `main`, each stamped with a new `x-box-commit-hash`. So
+# "a new release" here means the three published files no longer match
+# fixtures/specs/checksums.txt.
+#
+# On a change this runs `gantry diff` (vendored → upstream) and files one
+# `upstream-spec-update` issue carrying the verdict, the report, and the
+# upstream commits since the last refresh — updated in place if upstream moves
+# again before the refresh lands. It never refreshes the vendored specs itself:
+# per fixtures/specs/README.md that is a deliberate, reviewed change.
+name: Watch upstream Box OpenAPI specs
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  CARGO_TERM_COLOR: always
+  LABEL: upstream-spec-update
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Fetch the published specs
+        id: fetch
+        run: |
+          set -euo pipefail
+          up="$RUNNER_TEMP/upstream"
+          mkdir -p "$up"
+          for f in openapi.json openapi-v2025.0.json openapi-v2026.0.json; do
+            curl -fsSL --retry 3 \
+              "https://raw.githubusercontent.com/box/box-openapi/main/openapi/$f" -o "$up/$f"
+          done
+          if (cd "$up" && sha256sum --quiet -c "$GITHUB_WORKSPACE/fixtures/specs/checksums.txt"); then
+            echo "::notice::Vendored specs match box/box-openapi main."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          hash="$(jq -r '.info["x-box-commit-hash"] // empty' "$up/openapi.json")"
+          # Untrusted upstream content: only ever let a hex hash through.
+          [[ "$hash" =~ ^[0-9a-f]{7,40}$ ]] || hash="unknown"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+
+      - if: steps.fetch.outputs.changed == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+
+      - name: Diff and file the report
+        if: steps.fetch.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HASH: ${{ steps.fetch.outputs.hash }}
+        run: |
+          set -euo pipefail
+          up="$RUNNER_TEMP/upstream"
+
+          set +e
+          cargo run -q -p gantry-cli -- diff \
+            --from fixtures/specs/openapi.json fixtures/specs/openapi-v2025.0.json fixtures/specs/openapi-v2026.0.json \
+            --to "$up/openapi.json" "$up/openapi-v2025.0.json" "$up/openapi-v2026.0.json" \
+            > "$RUNNER_TEMP/diff.txt" 2>&1
+          code=$?
+          set -e
+          case "$code" in
+            0) verdict="Compatible — a patch or minor refresh." ;;
+            4) verdict="**Breaking** — the refresh needs a minor SDK_VERSION bump (pre-1.0)." ;;
+            *) verdict="**gantry could not load the new specs** (exit $code) — the engine needs a fix before the refresh can land." ;;
+          esac
+
+          since="$(sed -n 's/.*retrieved \([0-9-]*\).*/\1/p' fixtures/specs/README.md)"
+          commits="$(gh api "repos/box/box-openapi/commits?path=openapi&since=${since}T00:00:00Z&per_page=100" \
+            --jq '.[] | "- [`\(.sha[0:7])`](\(.html_url)) \(.commit.message | split("\n")[0])"' || true)"
+
+          {
+            echo "\`box/box-openapi\` \`main\` now publishes specs stamped \`x-box-commit-hash: $HASH\`; the vendored copies in \`fixtures/specs/\` (retrieved $since) no longer match \`checksums.txt\`."
+            echo ""
+            echo "**Verdict:** $verdict"
+            echo ""
+            echo "### \`gantry diff\` (vendored → upstream)"
+            echo ""
+            echo '```text'
+            cat "$RUNNER_TEMP/diff.txt"
+            echo '```'
+            echo ""
+            echo "### Upstream commits touching \`openapi/\` since $since"
+            echo ""
+            echo "${commits:-_(none listed)_}"
+            echo ""
+            echo "Refresh per \`fixtures/specs/README.md\`: copy the three files, regenerate \`checksums.txt\`, bump the retrieval date, and review the counts in the test suite."
+            echo ""
+            echo "<!-- upstream-hash: $HASH -->"
+          } > "$RUNNER_TEMP/body.md"
+          cat "$RUNNER_TEMP/body.md" >> "$GITHUB_STEP_SUMMARY"
+
+          title="Upstream Box OpenAPI specs changed (x-box-commit-hash $HASH)"
+          gh label create "$LABEL" --color 0E8A16 \
+            --description "box/box-openapi published spec changes" --force >/dev/null
+          existing="$(gh issue list --label "$LABEL" --state open --json number --jq '.[0].number // empty')"
+          if [ -z "$existing" ]; then
+            gh issue create --title "$title" --label "$LABEL" --body-file "$RUNNER_TEMP/body.md"
+          elif gh issue view "$existing" --json body --jq .body | grep -qF "upstream-hash: $HASH -->"; then
+            echo "::notice::Issue #$existing already reports $HASH."
+          else
+            gh issue edit "$existing" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+            gh issue comment "$existing" --body "Upstream moved again (now \`$HASH\`); the report above is refreshed."
+          fi
