@@ -201,3 +201,32 @@ fn the_spec_fingerprint_is_deterministic_and_order_sensitive() {
     // Adding a document changes it.
     assert_ne!(load(&base_then_2025), load(&[fixture("openapi.json")]));
 }
+
+/// Synthesized type names never fall through to a numeral collision suffix
+/// where real structure can tell them apart (D-127's fallback chain). The one
+/// honest exception: `Classification.$template` is shadowed by a real
+/// component literally named `ClassificationTemplate`, so no structural
+/// spelling is free. A union's `VariantN` is a position, not a collision
+/// suffix.
+#[test]
+fn synthesized_names_are_not_collision_suffixed() {
+    let set = SpecSet::load(&[
+        fixture("openapi.json"),
+        fixture("openapi-v2025.0.json"),
+        fixture("openapi-v2026.0.json"),
+    ])
+    .unwrap();
+    let lowering = gantry_spec::lower(&set).unwrap();
+    let suffixed: Vec<&str> = lowering
+        .synthesis_log
+        .iter()
+        .map(|(_, name)| name.as_str())
+        .filter(|name| {
+            let stem = name.trim_end_matches(|c: char| c.is_ascii_digit());
+            stem.len() < name.len()
+                && stem.ends_with(|c: char| c.is_ascii_lowercase())
+                && !stem.ends_with("Variant")
+        })
+        .collect();
+    assert_eq!(suffixed, ["ClassificationTemplate2"]);
+}

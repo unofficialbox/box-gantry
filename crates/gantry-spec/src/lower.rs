@@ -391,7 +391,7 @@ impl<'a> DocLowerer<'a> {
                 &format!("{location}.{combinator}[{index}]"),
                 name,
                 &leaf,
-                &leaf,
+                &Lineage::root(&leaf),
                 real,
             )?;
             self.stats.aliases += 1;
@@ -399,7 +399,7 @@ impl<'a> DocLowerer<'a> {
         }
         if !raw.one_of.is_empty() || !raw.any_of.is_empty() {
             return self
-                .lower_union(location, &leaf, &leaf, &leaf, raw)
+                .lower_union(location, &leaf, &leaf, &Lineage::root(&leaf), raw)
                 .map(ir::DeclKind::Union);
         }
         if let Some(values) = &raw.enumeration {
@@ -427,11 +427,11 @@ impl<'a> DocLowerer<'a> {
         }
         if !raw.all_of.is_empty() || is_object(raw) {
             return self
-                .lower_struct(location, name, &leaf, &leaf, raw)
+                .lower_struct(location, name, &leaf, &Lineage::root(&leaf), raw)
                 .map(ir::DeclKind::Struct);
         }
         // A named primitive (or a schema that says nothing).
-        let ty = self.lower_type(location, &leaf, &leaf, &leaf, raw)?;
+        let ty = self.lower_type(location, &leaf, &leaf, &Lineage::root(&leaf), raw)?;
         self.stats.aliases += 1;
         Ok(ir::DeclKind::Alias(ty))
     }
@@ -456,7 +456,7 @@ impl<'a> DocLowerer<'a> {
         location: &str,
         name: &str,
         leaf: &str,
-        ancestor: &str,
+        ancestor: &Lineage,
         raw: &'a RawSchema,
     ) -> Result<ir::Type, IngestError> {
         if let Some(reference) = &raw.reference {
@@ -616,7 +616,7 @@ impl<'a> DocLowerer<'a> {
         location: &str,
         name: &str,
         leaf: &str,
-        ancestor: &str,
+        ancestor: &Lineage,
         raw: &'a RawSchema,
     ) -> Result<ir::StructDecl, IngestError> {
         let mut properties: IndexMap<String, &'a RawSchema> = IndexMap::new();
@@ -633,7 +633,7 @@ impl<'a> DocLowerer<'a> {
             let name = identifier(self.doc, &prop_location, &clean_name(&wire_name))?;
             let child_leaf = pascal(&clean_name(&wire_name));
             let child_name = synth_name(leaf, &wire_name);
-            let child_ancestor = synth_name(ancestor, &wire_name);
+            let child_ancestor = ancestor.field(&wire_name);
             let mut ty = self.lower_type(
                 &prop_location,
                 &child_name,
@@ -734,7 +734,7 @@ impl<'a> DocLowerer<'a> {
         location: &str,
         name: &str,
         leaf: &str,
-        ancestor: &str,
+        ancestor: &Lineage,
         raw: &'a RawSchema,
     ) -> Result<ir::UnionDecl, IngestError> {
         if !raw.one_of.is_empty() && !raw.any_of.is_empty() {
@@ -756,7 +756,7 @@ impl<'a> DocLowerer<'a> {
             } else {
                 let variant_name = format!("{name}Variant{index}");
                 let variant_leaf = format!("{leaf}Variant{index}");
-                let variant_ancestor = format!("{ancestor}Variant{index}");
+                let variant_ancestor = ancestor.suffixed(&format!("Variant{index}"));
                 let ty = self.lower_type(
                     &variant_location,
                     &variant_name,
@@ -865,7 +865,7 @@ impl<'a> DocLowerer<'a> {
         &mut self,
         location: &str,
         base: &str,
-        ancestor: &str,
+        ancestor: &Lineage,
         kind: ir::DeclKind,
     ) -> Result<ir::DeclId, IngestError> {
         // Structural dedupe (D-127): an inline shape identical to one already
@@ -900,12 +900,14 @@ impl<'a> DocLowerer<'a> {
                 overridden.to_string()
             }
             None => {
+                // Real structure before a numeral: the collapsed lineage, then
+                // the literal one — whose kept seam is the very word that
+                // distinguishes `Group.group_type` from `Group.type`.
                 let mut name = base.to_string();
-                if self.used_names.contains(&name)
-                    && ancestor != base
-                    && !self.used_names.contains(ancestor)
-                {
-                    name = ancestor.to_string();
+                for fallback in [&ancestor.collapsed, &ancestor.literal] {
+                    if self.used_names.contains(&name) && !self.used_names.contains(fallback) {
+                        name = fallback.clone();
+                    }
                 }
                 let mut suffix = 2;
                 while self.used_names.contains(&name) {
@@ -1161,7 +1163,7 @@ impl<'a> DocLowerer<'a> {
                 &format!("{param_location}.schema"),
                 &parameter_seed,
                 &pascal(&clean_name(wire_name)),
-                &parameter_seed,
+                &Lineage::root(owner).field(wire_name),
                 schema,
             )?;
             if !resolved.required {
@@ -1330,7 +1332,7 @@ impl<'a> DocLowerer<'a> {
                 &format!("{body_location}.content[{media_key:?}]"),
                 &body_seed,
                 owner,
-                &body_seed,
+                &Lineage::root(&body_seed),
                 schema,
             )?,
             None => {
@@ -1389,7 +1391,7 @@ impl<'a> DocLowerer<'a> {
                                 &format!("{response_location}.content[{media_key:?}]"),
                                 &format!("{owner}Response"),
                                 owner,
-                                &format!("{owner}Response"),
+                                &Lineage::root(&format!("{owner}Response")),
                                 schema,
                             )?,
                             None => {
@@ -1959,6 +1961,41 @@ fn method_name(short_tokens: &[String], keep_all_ids: bool, drop_trailing_id: bo
         out.push("call".to_string());
     }
     out.join("_")
+}
+
+/// A schema position's full, never-reset lineage — the fallback `synthesize`
+/// tries when the short immediate-context name collides (D-127) — in two
+/// spellings: `collapsed` folds [`synth_name`]'s duplicate-word seams like the
+/// short name does; `literal` keeps every seam, because the folded word can be
+/// the only thing distinguishing two fields (`Group.type` vs
+/// `Group.group_type`).
+#[derive(Debug, Clone)]
+struct Lineage {
+    collapsed: String,
+    literal: String,
+}
+
+impl Lineage {
+    fn root(name: &str) -> Self {
+        Self {
+            collapsed: name.to_string(),
+            literal: name.to_string(),
+        }
+    }
+
+    fn field(&self, wire_name: &str) -> Self {
+        Self {
+            collapsed: synth_name(&self.collapsed, wire_name),
+            literal: format!("{}{}", self.literal, pascal(&clean_name(wire_name))),
+        }
+    }
+
+    fn suffixed(&self, suffix: &str) -> Self {
+        Self {
+            collapsed: format!("{}{suffix}", self.collapsed),
+            literal: format!("{}{suffix}", self.literal),
+        }
+    }
 }
 
 /// `Owner` + PascalCase(property): `File` + `shared_link` → `FileSharedLink`.

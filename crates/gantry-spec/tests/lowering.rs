@@ -1127,3 +1127,47 @@ fn component_named_response_is_rejected() {
         "{err}"
     );
 }
+
+/// A field whose duplicate-word seam collapses onto a sibling's name
+/// (`Group.group_type` → `GroupType`, already taken by `Group.type`) falls
+/// back to the literal, uncollapsed spelling — the dropped word is exactly the
+/// structure that tells the two apart — never a numeral (`GroupType2`).
+#[test]
+fn a_seam_collapse_collision_keeps_the_seam_not_a_numeral() {
+    let lowering = lower_schemas(serde_json::json!({
+        "Group": {
+            "type": "object",
+            "properties": {
+                "type": { "type": "string", "enum": ["group"] },
+                "group_type": { "type": "string", "enum": ["managed_group", "all_users_group"] }
+            }
+        },
+        "Watermark": {
+            "type": "object",
+            "properties": {
+                "watermark": { "type": "object", "properties": { "created_at": { "type": "string" } } }
+            }
+        }
+    }))
+    .unwrap();
+    let program = &lowering.program;
+    let field_type = |owner: &str, wire: &str| {
+        let field = struct_decl(find(program, owner))
+            .fields
+            .iter()
+            .find(|f| f.wire_name == wire)
+            .unwrap_or_else(|| panic!("{owner} has no field {wire}"));
+        let ir::Type::Optional(inner) = &field.ty else {
+            panic!("{owner}.{wire} is optional")
+        };
+        let ir::Type::Decl(id) = inner.as_ref() else {
+            panic!("{owner}.{wire} is a synthesized decl")
+        };
+        program.decl(*id).name.as_str().to_string()
+    };
+    assert_eq!(field_type("Group", "type"), "GroupType");
+    assert_eq!(field_type("Group", "group_type"), "GroupGroupType");
+    // The collapse can consume the whole suffix — `Watermark` + `Watermark`
+    // collides with the component itself.
+    assert_eq!(field_type("Watermark", "watermark"), "WatermarkWatermark");
+}
