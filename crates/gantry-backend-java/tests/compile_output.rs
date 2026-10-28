@@ -226,10 +226,11 @@ fn the_generated_model_layer_compiles_under_javac() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut sources = write_all(&dir, &generate());
-    // The core SDK is preview-free: BoxChunkedUpload (structured concurrency, a
-    // preview API) is excluded here and gated separately (D-183), so this gate
-    // proves the rest of the SDK compiles on a plain JDK 26.
-    sources.retain(|p| !p.ends_with("BoxChunkedUpload.java"));
+    // The SDK — virtual-thread chunked upload included — is preview-free; only
+    // the opt-in BoxStructuredChunkedUpload (structured concurrency, a preview
+    // API) is excluded here and gated separately (D-183), so this gate proves
+    // the rest compiles on a plain JDK 26.
+    sources.retain(|p| !p.ends_with("BoxStructuredChunkedUpload.java"));
 
     // A smoke driver that constructs the public `Client` from an auth flow, so
     // the whole manager/client surface (D-173) has to type-check as a callable
@@ -259,7 +260,7 @@ fn the_generated_model_layer_compiles_under_javac() {
     // The README Quickstart is a full `public class` example (FR-7.7): extract
     // its first ```java block and compile it too, so the landing-page example —
     // builders, accessors, the `auth`/manager surface — can never drift from the
-    // generated API. (`BoxChunkedUpload` is excluded above; the example doesn't
+    // generated API. (The preview class is excluded above; the example doesn't
     // use it, so it compiles preview-free.)
     let readme = std::fs::read_to_string(dir.join("README.md")).unwrap();
     let example = {
@@ -327,10 +328,11 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut sources = write_all(&dir, &generate());
-    // The core SDK is preview-free: BoxChunkedUpload (structured concurrency, a
-    // preview API) is excluded here and gated separately (D-183), so this gate
-    // proves the rest of the SDK compiles on a plain JDK 26.
-    sources.retain(|p| !p.ends_with("BoxChunkedUpload.java"));
+    // The SDK — virtual-thread chunked upload included — is preview-free; only
+    // the opt-in BoxStructuredChunkedUpload (structured concurrency, a preview
+    // API) is excluded here and gated separately (D-183), so this gate proves
+    // the rest compiles on a plain JDK 26.
+    sources.retain(|p| !p.ends_with("BoxStructuredChunkedUpload.java"));
 
     // Swap the generated stub for the real runtime (same package + class name).
     let real_runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
@@ -558,8 +560,8 @@ fn the_generated_behavioral_tests_pass_under_java() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut sources = write_all(&dir, &files);
-    // Core SDK is preview-free — exclude the one preview class (D-183).
-    sources.retain(|p| !p.ends_with("BoxChunkedUpload.java"));
+    // The SDK is preview-free — exclude the one opt-in preview class (D-183).
+    sources.retain(|p| !p.ends_with("BoxStructuredChunkedUpload.java"));
 
     let argfile = dir.join("sources.txt");
     let listing: String = sources
@@ -587,9 +589,9 @@ fn the_generated_behavioral_tests_pass_under_java() {
     );
 
     let run = Command::new("java")
-        // The core SDK does NOT require --enable-preview (D-183): BoxChunkedUpload,
-        // the only preview-API class, is excluded from this gate — so the core
-        // compiles and runs on a plain JDK 26.
+        // The SDK does NOT require --enable-preview (D-183): the opt-in
+        // BoxStructuredChunkedUpload, the only preview-API class, is excluded
+        // from this gate — so the rest compiles and runs on a plain JDK 26.
         .arg("-cp")
         .arg(&classes)
         .arg("dev.unofficialbox.GeneratedTests")
@@ -675,14 +677,24 @@ fn the_generated_sdk_packages_for_publish() {
 }
 
 /// D-183: the chunked-upload orchestrator uploads a large file's parts *in
-/// parallel* (structured concurrency, a preview API) and reassembles correctly.
-/// A mock `HttpServer` implements the three-step Box protocol; the driver points
-/// the SDK at it via the `-Dbox.baseUrl.*` override, runs `BoxChunkedUpload`, and
-/// asserts every part arrived, the bytes reassemble, and the peak in-flight PUT
-/// count proves the fan-out (`CHUNKED_OK`). The whole tree compiles/runs under
-/// `--enable-preview`.
+/// parallel* on virtual threads and reassembles correctly — with no preview
+/// flag anywhere. A mock `HttpServer` implements the three-step Box protocol;
+/// the driver points the SDK at it via the `-Dbox.baseUrl.*` override, runs
+/// `BoxChunkedUpload`, and asserts every part arrived, the bytes reassemble,
+/// and the peak in-flight PUT count proves the fan-out (`CHUNKED_OK`).
 #[test]
 fn the_chunked_upload_runs_parts_in_parallel() {
+    run_chunked_smoke("BoxChunkedUpload", false);
+}
+
+/// The opt-in structured-concurrency variant passes the same smoke, compiled
+/// and run under `--enable-preview` (its preview API).
+#[test]
+fn the_structured_chunked_upload_runs_parts_in_parallel() {
+    run_chunked_smoke("BoxStructuredChunkedUpload", true);
+}
+
+fn run_chunked_smoke(class: &str, preview: bool) {
     if !jdk_targets_26() {
         eprintln!("SKIPPED: JDK 26+ not available; CI installs one and runs this gate");
         return;
@@ -691,14 +703,19 @@ fn the_chunked_upload_runs_parts_in_parallel() {
     assert!(
         files
             .iter()
-            .any(|f| f.path == "src/main/java/dev/unofficialbox/BoxChunkedUpload.java"),
-        "the chunked-upload orchestrator should be emitted for the real spec"
+            .any(|f| f.path == format!("src/main/java/dev/unofficialbox/{class}.java")),
+        "{class} should be emitted for the real spec"
     );
 
-    let dir = std::env::temp_dir().join(format!("gantry-java-chunk-{}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("gantry-java-chunk-{class}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut sources = write_all(&dir, &files);
+    if !preview {
+        // Without the flag the preview class can't compile — and mustn't be needed.
+        sources.retain(|p| !p.ends_with("BoxStructuredChunkedUpload.java"));
+    }
 
     // Vendor the real runtime over the stub (the orchestrator needs a live session).
     let real_runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
@@ -711,7 +728,14 @@ fn the_chunked_upload_runs_parts_in_parallel() {
     .unwrap();
 
     let driver = dir.join("ChunkedSmoke.java");
-    std::fs::write(&driver, CHUNKED_SMOKE).unwrap();
+    std::fs::write(
+        &driver,
+        CHUNKED_SMOKE.replace(
+            "dev.unofficialbox.BoxChunkedUpload(",
+            &format!("dev.unofficialbox.{class}("),
+        ),
+    )
+    .unwrap();
     sources.push(driver);
 
     let argfile = dir.join("sources.txt");
@@ -727,10 +751,12 @@ fn the_chunked_upload_runs_parts_in_parallel() {
     let classes = dir.join("classes");
     std::fs::create_dir_all(&classes).unwrap();
 
-    let javac = Command::new("javac")
-        .arg("--release")
-        .arg("26")
-        .arg("--enable-preview")
+    let mut javac = Command::new("javac");
+    javac.arg("--release").arg("26");
+    if preview {
+        javac.arg("--enable-preview");
+    }
+    let javac = javac
         .arg("-d")
         .arg(&classes)
         .arg(format!("@{}", argfile.display()))
@@ -738,13 +764,16 @@ fn the_chunked_upload_runs_parts_in_parallel() {
         .unwrap();
     assert!(
         javac.status.success(),
-        "chunked-upload SDK failed to compile:\n{}{}",
+        "chunked-upload SDK failed to compile ({class}):\n{}{}",
         String::from_utf8_lossy(&javac.stdout),
         String::from_utf8_lossy(&javac.stderr),
     );
 
-    let run = Command::new("java")
-        .arg("--enable-preview")
+    let mut java = Command::new("java");
+    if preview {
+        java.arg("--enable-preview");
+    }
+    let run = java
         .arg("-cp")
         .arg(&classes)
         .arg("ChunkedSmoke")
@@ -756,7 +785,7 @@ fn the_chunked_upload_runs_parts_in_parallel() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(
         ok && stdout.contains("CHUNKED_OK"),
-        "chunked upload did not complete (D-183):\n{stdout}{stderr}"
+        "chunked upload did not complete ({class}, D-183):\n{stdout}{stderr}"
     );
 }
 

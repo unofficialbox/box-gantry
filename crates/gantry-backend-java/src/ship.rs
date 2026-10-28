@@ -105,10 +105,9 @@ fn pom_xml(build: &BuildInfo) -> String {
          \n\
          \x20 <build>\n\
          \x20   <plugins>\n\
-         \x20     <!-- Two-pass compile so the core SDK is a plain JDK-26 artifact and\n\
-         \x20          only BoxChunkedUpload carries the preview flag (D-183): callers\n\
-         \x20          who never touch chunked upload need no preview flag; those who\n\
-         \x20          do add enable-preview at run time to unlock the parallel path. -->\n\
+         \x20     <!-- Two-pass compile so the SDK, parallel chunked upload included, is\n\
+         \x20          a plain JDK-26 artifact and only the opt-in\n\
+         \x20          BoxStructuredChunkedUpload carries the preview flag (D-183). -->\n\
          \x20     <plugin>\n\
          \x20       <groupId>org.apache.maven.plugins</groupId>\n\
          \x20       <artifactId>maven-compiler-plugin</artifactId>\n\
@@ -118,7 +117,7 @@ fn pom_xml(build: &BuildInfo) -> String {
          \x20           <id>default-compile</id>\n\
          \x20           <configuration>\n\
          \x20             <excludes>\n\
-         \x20               <exclude>dev/unofficialbox/BoxChunkedUpload.java</exclude>\n\
+         \x20               <exclude>dev/unofficialbox/BoxStructuredChunkedUpload.java</exclude>\n\
          \x20             </excludes>\n\
          \x20           </configuration>\n\
          \x20         </execution>\n\
@@ -128,7 +127,7 @@ fn pom_xml(build: &BuildInfo) -> String {
          \x20           <goals><goal>compile</goal></goals>\n\
          \x20           <configuration>\n\
          \x20             <includes>\n\
-         \x20               <include>dev/unofficialbox/BoxChunkedUpload.java</include>\n\
+         \x20               <include>dev/unofficialbox/BoxStructuredChunkedUpload.java</include>\n\
          \x20             </includes>\n\
          \x20             <compilerArgs><arg>--enable-preview</arg></compilerArgs>\n\
          \x20           </configuration>\n\
@@ -320,22 +319,23 @@ public final class Quickstart {
 }
 ```
 
-## Parallel chunked upload (opt-in)
+## Parallel chunked upload
 
-The core SDK compiles and runs on a plain JDK 26. `BoxChunkedUpload` uploads a
-large file's parts **in parallel** using structured concurrency, a Java 26
-**preview** API — so it is a preview-marked class, and code that calls it must
-pass `--enable-preview` at **both** compile and run time (with `--release 26` for
-`javac`) to unlock the parallel path:
+`BoxChunkedUpload` uploads a large file's parts **in parallel** on virtual
+threads — no flags needed:
 
 ```java
-// compile: javac --release 26 --enable-preview ...
-// run:     java --enable-preview ...
 var file = new dev.unofficialbox.BoxChunkedUpload(client)
         .upload(bytes, "large.bin", folderId);
 ```
 
-Everything else compiles and runs without the flag.
+### Structured concurrency (opt-in preview)
+
+`BoxStructuredChunkedUpload` does the same with structured concurrency, a Java
+**preview** API. Code that uses it passes `--enable-preview` at **both** compile
+and run time (`javac --release 26 --enable-preview …`, `java --enable-preview …`).
+A preview class only loads on the JDK release it was compiled for (26); the
+default class has no such limit.
 
 ## HTTP versions
 

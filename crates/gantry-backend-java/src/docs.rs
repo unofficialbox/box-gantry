@@ -417,15 +417,10 @@ Client client = new Client(Auth.oauth(oauth, storedRefreshToken));\n\
 
 const CHUNKED_UPLOAD_GUIDE: &str = "# Chunked upload\n\n\
 Large files upload faster through `dev.unofficialbox.BoxChunkedUpload`, which splits the\n\
-content into parts and uploads them **in parallel** (create session → upload each\n\
-part with its `Content-Range` and SHA-1 → commit). It uses structured\n\
-concurrency, a Java 26 **preview** API. `BoxChunkedUpload` is therefore a\n\
-preview-marked class, so code that calls it must pass `--enable-preview` at\n\
-**both** compile and run time (with `--release 26` for `javac`) — the rest of\n\
-the SDK compiles and runs on a plain JDK 26, and only this class needs the flag.\n\n\
+content into parts and uploads them **in parallel** on virtual threads (create\n\
+session → upload each part with its `Content-Range` and SHA-1 → commit). No\n\
+flags are needed.\n\n\
 ```java\n\
-// compile: javac --release 26 --enable-preview ...\n\
-// run:     java --enable-preview ...\n\
 var file = new dev.unofficialbox.BoxChunkedUpload(client)\n\
         .upload(bytes, \"large.bin\", folderId);\n\n\
 // or upload a new version of an existing file:\n\
@@ -434,7 +429,19 @@ var version = new dev.unofficialbox.BoxChunkedUpload(client)\n\
 ```\n\n\
 Both return the uploaded `Files` object. A failure throws\n\
 `dev.unofficialbox.runtime.Runtime.BoxApiException` like every other call (see the\n\
-[errors guide](errors.md)); the first part to fail cancels the rest.\n";
+[errors guide](errors.md)); the first part to fail cancels the rest.\n\n\
+## Structured concurrency (opt-in preview)\n\n\
+`dev.unofficialbox.BoxStructuredChunkedUpload` runs the same protocol with the parts\n\
+fanned out by structured concurrency, a Java **preview** API. Code that uses it\n\
+passes `--enable-preview` at **both** compile and run time (with `--release 26`\n\
+for `javac`). A preview class only loads on the JDK release it was compiled for\n\
+(26); `BoxChunkedUpload` has no such limit.\n\n\
+```java\n\
+// compile: javac --release 26 --enable-preview ...\n\
+// run:     java --enable-preview ...\n\
+var file = new dev.unofficialbox.BoxStructuredChunkedUpload(client)\n\
+        .upload(bytes, \"large.bin\", folderId);\n\
+```\n";
 
 const PAGINATION_GUIDE: &str = "# Pagination\n\n\
 Marker- and offset-paginated list operations return an `Iterable` that threads\n\
