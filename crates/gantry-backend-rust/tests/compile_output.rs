@@ -179,7 +179,12 @@ fn generation_is_deterministic() {
     assert!(
         client
             .content
-            .contains("std::sync::Arc::new(crate::runtime::Client::new(auth))")
+            .contains("Self::from_session(crate::runtime::Client::new(auth))")
+    );
+    assert!(
+        client
+            .content
+            .contains("let session = std::sync::Arc::new(session);")
     );
     // Date/time fields are typed via chrono (not strings), and the crate
     // manifest declares the lean chrono dependency.

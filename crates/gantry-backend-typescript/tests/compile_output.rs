@@ -147,7 +147,7 @@ fn generation_is_deterministic() {
     assert!(
         client
             .content
-            .contains("const session = new Session(auth);")
+            .contains("const session = new Session(auth, options);")
     );
     // Every manager method is `async` and reaches the network only via the
     // `this.session.fetch(...)` contract surface (FR-5.2).
