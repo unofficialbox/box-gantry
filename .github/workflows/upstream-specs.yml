@@ -72,14 +72,8 @@ jobs:
           set -euo pipefail
           up="$RUNNER_TEMP/upstream"
 
-          # Build first so the toolchain install chatter stays in the log, out
-          # of the report.
-          cargo build -q -p gantry-cli
-          # The committed name overrides are part of the spec set; the
-          # upstream side needs them too, or every pin reads as a rename.
-          cp fixtures/specs/name-overrides.json "$up/"
           set +e
-          ./target/debug/gantry diff \
+          cargo run -q -p gantry-cli -- diff \
             --from fixtures/specs/openapi.json fixtures/specs/openapi-v2025.0.json fixtures/specs/openapi-v2026.0.json \
             --to "$up/openapi.json" "$up/openapi-v2025.0.json" "$up/openapi-v2026.0.json" \
             > "$RUNNER_TEMP/diff.txt" 2>&1

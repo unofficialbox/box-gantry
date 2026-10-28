@@ -80,16 +80,16 @@ pub struct LoweringStats {
     pub redirect_responses: usize,
 }
 
-/// Lower every document of the set into one typed [`ir::Program`], applying
-/// only the set's own committed overrides ([`SpecSet::overrides`]) — the
-/// common case. Thin wrapper over [`lower_with_overrides`].
+/// Lower every document of the set into one typed [`ir::Program`], with no
+/// name overrides — the common case. Thin wrapper over
+/// [`lower_with_overrides`].
 pub fn lower(set: &SpecSet) -> Result<Lowering, IngestError> {
     lower_with_overrides(set, &NameOverrides::empty())
 }
 
 /// Lower every document of the set into one typed [`ir::Program`], applying
-/// the set's committed overrides plus `overrides` (a `--overrides` file) to
-/// synthesized names as they're minted (see [`crate::NameOverrides`]).
+/// `overrides` to synthesized names as they're minted (see
+/// [`crate::NameOverrides`]).
 ///
 /// Declarations keep spec order per document, lowered into per-version modules
 /// so nothing collides mid-lowering; the version merge (D-190) then collapses
@@ -98,7 +98,6 @@ pub fn lower_with_overrides(
     set: &SpecSet,
     overrides: &NameOverrides,
 ) -> Result<Lowering, IngestError> {
-    let overrides = &set.overrides.merged(overrides)?;
     let mut arena: Vec<Option<ir::Decl>> = Vec::new();
     let mut operations: Vec<ir::Operation> = Vec::new();
     let mut stats = LoweringStats::default();
@@ -877,61 +876,54 @@ impl<'a> DocLowerer<'a> {
         // decl *name* is not part of the key, so differently-named copies of
         // one shape collapse.
         let key = format!("{:?}", kind);
-        // A location override wins outright — over the base/ancestor/numeral
-        // fallback, same as `curated_method_name`/`curated_body_seed` win over
-        // their derived names, and over structural dedupe too. A shared shape
-        // is named after whichever location lowers first, so a spec refresh
-        // that adds an identical shape earlier would silently rename an
-        // existing public type; pinning the location keeps its name. When the
-        // shape is already shared, the pinned location detaches into its own
-        // declaration and the earlier sharers keep theirs.
-        if let Some(overridden) = self.overrides.location(location) {
-            self.consulted_locations.insert(location.to_string());
-            if self.used_names.contains(overridden) {
-                return Err(IngestError::OverrideCollision {
-                    kind: "location",
-                    key: location.to_string(),
-                    value: overridden.to_string(),
-                });
-            }
-            let id = self.mint(location, overridden.to_string(), kind)?;
-            self.shapes.entry(key).or_insert(id);
-            return Ok(id);
-        }
         if let Some(&existing) = self.shapes.get(&key) {
             return Ok(existing);
         }
-        // Real structure before a numeral: the collapsed lineage, then the
-        // literal one — whose kept seam is the very word that distinguishes
-        // `Group.group_type` from `Group.type`.
-        let mut name = base.to_string();
-        for fallback in [&ancestor.collapsed, &ancestor.literal] {
-            if self.used_names.contains(&name) && !self.used_names.contains(fallback) {
-                name = fallback.clone();
+        // A location override — checked before the base/ancestor/numeral
+        // fallback below runs at all — always wins outright, same as
+        // `curated_method_name`/`curated_body_seed` win over their derived
+        // names. It's checked *after* structural dedupe (D-127) on purpose:
+        // a location whose shape is identical to an earlier one never mints
+        // its own decl to begin with, so an override on it would be
+        // unreachable — the "unused override" check below catches that
+        // honestly rather than silently accepting a key that can't apply.
+        let name = match self.overrides.location(location) {
+            Some(overridden) => {
+                self.consulted_locations.insert(location.to_string());
+                if self.used_names.contains(overridden) {
+                    return Err(IngestError::OverrideCollision {
+                        kind: "location",
+                        key: location.to_string(),
+                        value: overridden.to_string(),
+                    });
+                }
+                overridden.to_string()
             }
-        }
-        let mut suffix = 2;
-        while self.used_names.contains(&name) {
-            name = format!("{base}{suffix}");
-            suffix += 1;
-        }
-        let id = self.mint(location, name, kind)?;
-        self.shapes.insert(key, id);
-        Ok(id)
-    }
-
-    /// Mint a synthesized declaration under `name` (already collision-checked).
-    fn mint(
-        &mut self,
-        location: &str,
-        name: String,
-        kind: ir::DeclKind,
-    ) -> Result<ir::DeclId, IngestError> {
-        let decl = self.decl(location, &name, kind)?;
+            None => {
+                // Real structure before a numeral: the collapsed lineage, then
+                // the literal one — whose kept seam is the very word that
+                // distinguishes `Group.group_type` from `Group.type`.
+                let mut name = base.to_string();
+                for fallback in [&ancestor.collapsed, &ancestor.literal] {
+                    if self.used_names.contains(&name) && !self.used_names.contains(fallback) {
+                        name = fallback.clone();
+                    }
+                }
+                let mut suffix = 2;
+                while self.used_names.contains(&name) {
+                    name = format!("{base}{suffix}");
+                    suffix += 1;
+                }
+                name
+            }
+        };
         self.used_names.insert(name.clone());
-        self.synthesis_log.push((location.to_string(), name));
+        self.synthesis_log
+            .push((location.to_string(), name.clone()));
+        let decl = self.decl(location, &name, kind)?;
         let id = self.next_id();
         self.arena.push(Some(decl));
+        self.shapes.insert(key, id);
         self.stats.synthesized += 1;
         Ok(id)
     }

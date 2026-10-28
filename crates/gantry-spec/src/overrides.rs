@@ -97,40 +97,6 @@ impl NameOverrides {
     pub(crate) fn is_empty(&self) -> bool {
         self.components.is_empty() && self.locations.is_empty()
     }
-
-    /// Combine two override sets — the spec set's committed file and a
-    /// command-line `--overrides`. The same key with two different
-    /// replacements is a loud conflict, never a silent pick.
-    pub(crate) fn merged(&self, other: &Self) -> Result<Self, IngestError> {
-        let mut out = self.clone();
-        for (kind, mine, theirs) in [
-            ("component", &mut out.components, &other.components),
-            ("location", &mut out.locations, &other.locations),
-        ] {
-            for (key, value) in theirs {
-                match mine.get(key) {
-                    Some(existing) if existing != value => {
-                        return Err(IngestError::OverrideConflict {
-                            kind,
-                            key: key.clone(),
-                            first: existing.clone(),
-                            second: value.clone(),
-                        });
-                    }
-                    Some(_) => {}
-                    None => {
-                        mine.insert(key.clone(), value.clone());
-                    }
-                }
-            }
-        }
-        Ok(out)
-    }
-
-    /// How many component and location overrides this set carries.
-    pub fn counts(&self) -> (usize, usize) {
-        (self.components.len(), self.locations.len())
-    }
 }
 
 fn validate_override_value(kind: &'static str, key: &str, value: &str) -> Result<(), IngestError> {

@@ -23,7 +23,7 @@ mod raw;
 mod report;
 
 pub use error::IngestError;
-pub use ingest::{Document, HttpMethod, OVERRIDES_FILE, OperationSummary, SpecSet};
+pub use ingest::{Document, HttpMethod, OperationSummary, SpecSet};
 pub use lower::{Lowering, LoweringStats, lower, lower_with_overrides};
 pub use overrides::NameOverrides;
 pub use raw::RawSchema;

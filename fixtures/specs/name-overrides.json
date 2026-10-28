@@ -1,5 +1,0 @@
-{
-  "locations": {
-    "components.schemas.NotesConvertResponse.properties.type": "NotesConvertResponseType"
-  }
-}
