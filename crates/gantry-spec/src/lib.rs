@@ -16,6 +16,7 @@
 
 mod error;
 mod ingest;
+mod lock;
 mod lower;
 mod merge;
 mod overrides;
@@ -23,7 +24,8 @@ mod raw;
 mod report;
 
 pub use error::IngestError;
-pub use ingest::{Document, HttpMethod, OperationSummary, SpecSet};
+pub use ingest::{Document, HttpMethod, NAMES_LOCK_FILE, OperationSummary, SpecSet};
+pub use lock::{LockDrift, NamesLock};
 pub use lower::{Lowering, LoweringStats, lower, lower_with_overrides};
 pub use overrides::NameOverrides;
 pub use raw::RawSchema;

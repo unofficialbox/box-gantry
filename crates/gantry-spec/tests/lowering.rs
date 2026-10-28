@@ -1171,3 +1171,111 @@ fn a_seam_collapse_collision_keeps_the_seam_not_a_numeral() {
     // collides with the component itself.
     assert_eq!(field_type("Watermark", "watermark"), "WatermarkWatermark");
 }
+
+/// Write a one-document spec (and optionally a `names.lock` beside it) into a
+/// fresh directory and load it.
+fn load_with_lock(tag: &str, schemas: serde_json::Value, lock: Option<&str>) -> SpecSet {
+    let spec = serde_json::json!({
+        "openapi": "3.0.2",
+        "info": { "title": "Box Platform API", "version": "2024.0" },
+        "paths": {},
+        "components": { "schemas": schemas }
+    });
+    let dir = std::env::temp_dir().join(format!("gantry-lock-test-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("spec.json"), spec.to_string()).unwrap();
+    if let Some(lock) = lock {
+        std::fs::write(dir.join(gantry_spec::NAMES_LOCK_FILE), lock).unwrap();
+    }
+    SpecSet::load(&[dir.join("spec.json")]).unwrap()
+}
+
+fn file_type_enum() -> serde_json::Value {
+    serde_json::json!({ "type": "string", "enum": ["file"] })
+}
+
+fn type_decl_name(lowering: &Lowering, owner: &str) -> String {
+    let field = &struct_decl(find(&lowering.program, owner)).fields[0];
+    let ir::Type::Optional(inner) = &field.ty else {
+        panic!("{owner}.type is optional")
+    };
+    let ir::Type::Decl(id) = inner.as_ref() else {
+        panic!("{owner}.type is a synthesized decl")
+    };
+    lowering.program.decl(*id).name.as_str().to_string()
+}
+
+/// The refresh that motivated the lock: an identical inline shape added
+/// *earlier* than an existing one would take over the shared declaration's
+/// name. With the lock, the existing name holds and the newcomer shares it.
+#[test]
+fn the_names_lock_keeps_a_shared_shape_name_when_an_earlier_twin_appears() {
+    let before = serde_json::json!({
+        "NotesConvertResponse": { "type": "object", "properties": { "type": file_type_enum() } }
+    });
+    let lock = gantry_spec::lower(&load_with_lock("before", before, None))
+        .unwrap()
+        .names
+        .to_json();
+    assert!(lock.contains("\"NotesConvertResponseType\""), "{lock}");
+
+    let after = serde_json::json!({
+        "FileReference": { "type": "object", "properties": { "type": file_type_enum() } },
+        "NotesConvertResponse": { "type": "object", "properties": { "type": file_type_enum() } }
+    });
+    let unlocked =
+        gantry_spec::lower(&load_with_lock("after-unlocked", after.clone(), None)).unwrap();
+    assert_eq!(
+        type_decl_name(&unlocked, "NotesConvertResponse"),
+        "FileReferenceType"
+    );
+
+    let set = load_with_lock("after-locked", after, Some(&lock));
+    let locked = gantry_spec::lower(&set).unwrap();
+    assert_eq!(
+        type_decl_name(&locked, "NotesConvertResponse"),
+        "NotesConvertResponseType"
+    );
+    assert_eq!(
+        type_decl_name(&locked, "FileReference"),
+        "NotesConvertResponseType"
+    );
+
+    // The group's minting location moved, so the lock reports drift until
+    // it's regenerated — the name itself didn't change.
+    let drift = set.names_lock.as_ref().unwrap().drift(&locked.names);
+    assert_eq!((drift.added, drift.removed, drift.renamed), (1, 1, 0));
+    let regenerated = set.names_lock.as_ref().unwrap().updated_with(&locked.names);
+    assert!(regenerated.drift(&locked.names).is_clean());
+}
+
+/// A locked name already taken in its document (Box added a component by that
+/// name) is loud, never a silent numeral.
+#[test]
+fn a_locked_name_that_is_taken_is_a_collision() {
+    let lock =
+        r#"{ "2024.0": { "components.schemas.NotesConvertResponse.properties.type": "Taken" } }"#;
+    let set = load_with_lock(
+        "collision",
+        serde_json::json!({
+            "Taken": { "type": "object", "properties": {} },
+            "NotesConvertResponse": { "type": "object", "properties": { "type": file_type_enum() } }
+        }),
+        Some(lock),
+    );
+    let err = gantry_spec::lower(&set).unwrap_err();
+    assert!(matches!(&err, IngestError::LockCollision { .. }), "{err}");
+}
+
+/// The lock is part of the input: it moves the spec fingerprint (NF-7).
+#[test]
+fn the_names_lock_is_part_of_the_fingerprint() {
+    let schemas = serde_json::json!({
+        "NotesConvertResponse": { "type": "object", "properties": { "type": file_type_enum() } }
+    });
+    let plain = load_with_lock("fp-plain", schemas.clone(), None);
+    let locked = load_with_lock("fp-locked", schemas, Some(r#"{ "2024.0": {} }"#));
+    assert!(plain.names_lock.is_none() && locked.names_lock.is_some());
+    assert_ne!(plain.fingerprint(), locked.fingerprint());
+}

@@ -28,6 +28,7 @@ use indexmap::IndexMap;
 
 use crate::error::IngestError;
 use crate::ingest::{Document, SpecSet};
+use crate::lock::{NamesLock, ShapeGroup};
 use crate::overrides::NameOverrides;
 use crate::raw::{RawAdditionalProperties, RawOperation, RawParameter, RawSchema};
 
@@ -51,6 +52,10 @@ pub struct Lowering {
     /// deliberately the raw per-document record, not reconciled against
     /// `program`'s post-merge decls.
     pub synthesis_log: Vec<(String, String)>,
+    /// The name every synthesized declaration was minted under, per API
+    /// version and minting location — what `gantry lock` writes, and what a
+    /// committed lock must equal (see [`crate::NamesLock`]).
+    pub names: NamesLock,
 }
 
 /// What the lowering produced — reported by `gantry check` so growth and
@@ -98,12 +103,42 @@ pub fn lower_with_overrides(
     set: &SpecSet,
     overrides: &NameOverrides,
 ) -> Result<Lowering, IngestError> {
+    // With a names lock, lower twice. Which locations share a synthesized
+    // declaration (D-127) depends only on shapes, never on names, so pass 1's
+    // groups are pass 2's; pass 2 then mints each group under its locked name.
+    let first = lower_pass(set, overrides, &HashMap::new())?;
+    let Some(lock) = &set.names_lock else {
+        return finish(first);
+    };
+    let preferred = lock.preferred(&first.groups);
+    finish(lower_pass(set, overrides, &preferred)?)
+}
+
+/// One lowering pass's raw output, before the version merge.
+struct Pass {
+    arena: Vec<Option<ir::Decl>>,
+    operations: Vec<ir::Operation>,
+    stats: LoweringStats,
+    synthesis_log: Vec<(String, String)>,
+    groups: Vec<ShapeGroup>,
+    names: NamesLock,
+}
+
+/// Lower every document once. `preferred` maps API version → minting
+/// location → the name a names lock assigns that location's group.
+fn lower_pass(
+    set: &SpecSet,
+    overrides: &NameOverrides,
+    preferred: &HashMap<String, HashMap<String, String>>,
+) -> Result<Pass, IngestError> {
     let mut arena: Vec<Option<ir::Decl>> = Vec::new();
     let mut operations: Vec<ir::Operation> = Vec::new();
     let mut stats = LoweringStats::default();
     let mut synthesis_log: Vec<(String, String)> = Vec::new();
     let mut consulted_components: HashSet<String> = HashSet::new();
     let mut consulted_locations: HashSet<String> = HashSet::new();
+    let mut groups: Vec<ShapeGroup> = Vec::new();
+    let mut names = NamesLock::default();
     for (index, doc) in set.documents.iter().enumerate() {
         let module = module_for(doc, index == 0)?;
         DocLowerer {
@@ -121,6 +156,10 @@ pub fn lower_with_overrides(
             synthesis_log: &mut synthesis_log,
             consulted_components: &mut consulted_components,
             consulted_locations: &mut consulted_locations,
+            preferred: preferred.get(&doc.api_version),
+            groups: &mut groups,
+            group_of: HashMap::new(),
+            names: &mut names,
         }
         .lower_document()?;
     }
@@ -147,6 +186,26 @@ pub fn lower_with_overrides(
             }
         }
     }
+    Ok(Pass {
+        arena,
+        operations,
+        stats,
+        synthesis_log,
+        groups,
+        names,
+    })
+}
+
+/// Merge versions and count the final declarations.
+fn finish(pass: Pass) -> Result<Lowering, IngestError> {
+    let Pass {
+        arena,
+        operations,
+        mut stats,
+        synthesis_log,
+        groups: _,
+        names,
+    } = pass;
     let decls: Vec<ir::Decl> = arena
         .into_iter()
         .map(|slot| slot.expect("every predeclared schema is filled by lower_document"))
@@ -176,6 +235,7 @@ pub fn lower_with_overrides(
         program,
         stats,
         synthesis_log,
+        names,
     })
 }
 
@@ -239,6 +299,16 @@ struct DocLowerer<'a> {
     /// half of the unused-override check in `lower_with_overrides`.
     consulted_components: &'a mut HashSet<String>,
     consulted_locations: &'a mut HashSet<String>,
+    /// Names-lock pass 2: the locked name for each group's minting location
+    /// in this document's API version (see [`crate::NamesLock`]).
+    preferred: Option<&'a HashMap<String, String>>,
+    /// Every dedupe group, minting location first — pass 1's input to the
+    /// lock, shared across documents.
+    groups: &'a mut Vec<ShapeGroup>,
+    /// This document's synthesized decl → its index in `groups`.
+    group_of: HashMap<ir::DeclId, usize>,
+    /// The name each synthesized decl was minted under, per version.
+    names: &'a mut NamesLock,
 }
 
 impl<'a> DocLowerer<'a> {
@@ -877,6 +947,9 @@ impl<'a> DocLowerer<'a> {
         // one shape collapse.
         let key = format!("{:?}", kind);
         if let Some(&existing) = self.shapes.get(&key) {
+            if let Some(&group) = self.group_of.get(&existing) {
+                self.groups[group].members.push(location.to_string());
+            }
             return Ok(existing);
         }
         // A location override — checked before the base/ancestor/numeral
@@ -887,8 +960,10 @@ impl<'a> DocLowerer<'a> {
         // its own decl to begin with, so an override on it would be
         // unreachable — the "unused override" check below catches that
         // honestly rather than silently accepting a key that can't apply.
-        let name = match self.overrides.location(location) {
-            Some(overridden) => {
+        // Then a names-lock entry for this group (pass 2), then derivation.
+        let locked = self.preferred.and_then(|p| p.get(location)).cloned();
+        let name = match (self.overrides.location(location), locked) {
+            (Some(overridden), _) => {
                 self.consulted_locations.insert(location.to_string());
                 if self.used_names.contains(overridden) {
                     return Err(IngestError::OverrideCollision {
@@ -899,7 +974,17 @@ impl<'a> DocLowerer<'a> {
                 }
                 overridden.to_string()
             }
-            None => {
+            (None, Some(locked)) => {
+                if self.used_names.contains(&locked) {
+                    return Err(IngestError::LockCollision {
+                        version: self.doc.api_version.clone(),
+                        location: location.to_string(),
+                        name: locked,
+                    });
+                }
+                locked
+            }
+            (None, None) => {
                 // Real structure before a numeral: the collapsed lineage, then
                 // the literal one — whose kept seam is the very word that
                 // distinguishes `Group.group_type` from `Group.type`.
@@ -924,6 +1009,16 @@ impl<'a> DocLowerer<'a> {
         let id = self.next_id();
         self.arena.push(Some(decl));
         self.shapes.insert(key, id);
+        self.group_of.insert(id, self.groups.len());
+        self.groups.push(ShapeGroup {
+            version: self.doc.api_version.clone(),
+            members: vec![location.to_string()],
+        });
+        self.names
+            .versions
+            .entry(self.doc.api_version.clone())
+            .or_default()
+            .insert(location.to_string(), name);
         self.stats.synthesized += 1;
         Ok(id)
     }
