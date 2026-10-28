@@ -14,7 +14,7 @@
       "url": "https://www.apache.org/licenses/LICENSE-2.0"
     },
     "version": "2024.0",
-    "x-box-commit-hash": "56657ab895"
+    "x-box-commit-hash": "0274a35f73"
   },
   "servers": [
     {
@@ -680,6 +680,16 @@
                                 "example": true
                               }
                             }
+                          },
+                          "one_time_passcode": {
+                            "allOf": [
+                              {
+                                "$ref": "#/components/schemas/SharedLinkOtpWritable"
+                              },
+                              {
+                                "description": "One-time-passcode (OTP) settings for the shared link."
+                              }
+                            ]
                           }
                         }
                       },
@@ -5451,6 +5461,16 @@
                                 "example": true
                               }
                             }
+                          },
+                          "one_time_passcode": {
+                            "allOf": [
+                              {
+                                "$ref": "#/components/schemas/SharedLinkOtpWritable"
+                              },
+                              {
+                                "description": "One-time-passcode (OTP) settings for the shared link."
+                              }
+                            ]
                           }
                         }
                       },
@@ -11736,6 +11756,9 @@
                           "can_preview": true,
                           "can_download": true,
                           "can_edit": true
+                        },
+                        "one_time_passcode": {
+                          "mode": "none"
                         }
                       }
                     }
@@ -11875,6 +11898,16 @@
                             "example": true
                           }
                         }
+                      },
+                      "one_time_passcode": {
+                        "allOf": [
+                          {
+                            "$ref": "#/components/schemas/SharedLinkOtpWritable"
+                          },
+                          {
+                            "description": "One-time-passcode (OTP) settings for the shared link."
+                          }
+                        ]
                       }
                     }
                   }
@@ -11913,6 +11946,9 @@
                           "can_preview": true,
                           "can_download": true,
                           "can_edit": true
+                        },
+                        "one_time_passcode": {
+                          "mode": "none"
                         }
                       }
                     }
@@ -12082,6 +12118,16 @@
                             "example": true
                           }
                         }
+                      },
+                      "one_time_passcode": {
+                        "allOf": [
+                          {
+                            "$ref": "#/components/schemas/SharedLinkOtpWritable"
+                          },
+                          {
+                            "description": "One-time-passcode (OTP) settings for the shared link."
+                          }
+                        ]
                       }
                     }
                   }
@@ -12120,6 +12166,9 @@
                           "can_preview": true,
                           "can_download": true,
                           "can_edit": true
+                        },
+                        "one_time_passcode": {
+                          "mode": "none"
                         }
                       }
                     }
@@ -12471,6 +12520,9 @@
                           "can_preview": true,
                           "can_download": true,
                           "can_edit": false
+                        },
+                        "one_time_passcode": {
+                          "mode": "none"
                         }
                       }
                     }
@@ -12611,6 +12663,16 @@
                             "example": false
                           }
                         }
+                      },
+                      "one_time_passcode": {
+                        "allOf": [
+                          {
+                            "$ref": "#/components/schemas/SharedLinkOtpWritable"
+                          },
+                          {
+                            "description": "One-time-passcode (OTP) settings for the shared link."
+                          }
+                        ]
                       }
                     }
                   }
@@ -12649,6 +12711,9 @@
                           "can_preview": true,
                           "can_download": true,
                           "can_edit": false
+                        },
+                        "one_time_passcode": {
+                          "mode": "none"
                         }
                       }
                     }
@@ -12818,6 +12883,16 @@
                             "example": false
                           }
                         }
+                      },
+                      "one_time_passcode": {
+                        "allOf": [
+                          {
+                            "$ref": "#/components/schemas/SharedLinkOtpWritable"
+                          },
+                          {
+                            "description": "One-time-passcode (OTP) settings for the shared link."
+                          }
+                        ]
                       }
                     }
                   }
@@ -12856,6 +12931,9 @@
                           "can_preview": true,
                           "can_download": true,
                           "can_edit": false
+                        },
+                        "one_time_passcode": {
+                          "mode": "none"
                         }
                       }
                     }
@@ -13421,6 +13499,16 @@
                         "type": "string",
                         "format": "date-time",
                         "example": "2012-12-12T10:53:43-08:00"
+                      },
+                      "one_time_passcode": {
+                        "allOf": [
+                          {
+                            "$ref": "#/components/schemas/SharedLinkOtpWritable"
+                          },
+                          {
+                            "description": "One-time-passcode (OTP) settings for the shared link."
+                          }
+                        ]
                       }
                     }
                   }
@@ -13745,6 +13833,9 @@
                           "can_preview": true,
                           "can_download": true,
                           "can_edit": false
+                        },
+                        "one_time_passcode": {
+                          "mode": "none"
                         }
                       }
                     }
@@ -13884,6 +13975,16 @@
                             "example": false
                           }
                         }
+                      },
+                      "one_time_passcode": {
+                        "allOf": [
+                          {
+                            "$ref": "#/components/schemas/SharedLinkOtpWritable"
+                          },
+                          {
+                            "description": "One-time-passcode (OTP) settings for the shared link."
+                          }
+                        ]
                       }
                     }
                   }
@@ -13922,6 +14023,9 @@
                           "can_preview": true,
                           "can_download": true,
                           "can_edit": false
+                        },
+                        "one_time_passcode": {
+                          "mode": "none"
                         }
                       }
                     }
@@ -14091,6 +14195,16 @@
                             "example": true
                           }
                         }
+                      },
+                      "one_time_passcode": {
+                        "allOf": [
+                          {
+                            "$ref": "#/components/schemas/SharedLinkOtpWritable"
+                          },
+                          {
+                            "description": "One-time-passcode (OTP) settings for the shared link."
+                          }
+                        ]
                       }
                     }
                   }
@@ -14129,6 +14243,9 @@
                           "can_preview": true,
                           "can_download": true,
                           "can_edit": false
+                        },
+                        "one_time_passcode": {
+                          "mode": "none"
                         }
                       }
                     }
@@ -15134,7 +15251,7 @@
             }
           },
           "400": {
-            "description": "Returns an error if some of the parameters are missing or\nnot valid.\n\n* `invalid_parameter` when a parameter is formatted incorrectly,\n  for example when the `notification_email` has an incorrectly formatted\n  email address.",
+            "description": "Returns an error if some of the parameters are missing or\nnot valid.\n\n* `invalid_parameter` when a parameter is formatted incorrectly,\n  for example when the `notification_email` has an incorrectly formatted\n  email address.\n* `user_must_not_have_retained_content` when rolling the user out of the enterprise is blocked\n  because they own content and the enterprise has a retention policy or legal hold. Transfer the user's content to\n  another user first. For the steps for resolution, see\n  [User cannot be deleted due to retention policies](https://support.box.com/hc/en-us/articles/33282413279635-API-Content-User-cannot-be-deleted-due-to-retention-policies-Please-transfer-user-content-first).",
             "content": {
               "application/json": {
                 "schema": {
@@ -15172,7 +15289,7 @@
       "delete": {
         "operationId": "delete_users_id",
         "summary": "Delete user",
-        "description": "Deletes a user. By default, this operation fails if the user\nstill owns any content. \nTo proceed, move their owned content first, or use the `force` parameter to delete\nthe user and their files.",
+        "description": "Deletes a user. By default, this operation fails if the user\nstill owns any content. \nTo proceed, move their owned content first, or use the `force` parameter to delete\nthe user and their files.\n\nIf the enterprise has a retention policy, including a retired one, or a\nlegal hold that is not fully released, you can't delete a user who owns\ncontent, even with `force`. Transfer the user's content first by using the\n[Transfer owned folders](https://developer.box.com/reference/put-users-id-folders-0)\nendpoint.",
         "parameters": [
           {
             "name": "user_id",
@@ -15196,7 +15313,7 @@
           {
             "name": "force",
             "in": "query",
-            "description": "Specifies whether to delete the user even if they still own files.",
+            "description": "Specifies whether to delete the user even if they still own files.\n\nIf the user owns content and the enterprise has a retention policy,\nincluding a retired one, or a legal hold that is not fully released,\nsetting `force` to `true` doesn't delete the user. The request returns\na `403` error, and you must transfer the user's content before deleting\nthe user.",
             "schema": {
               "type": "boolean"
             },
@@ -15206,6 +15323,16 @@
         "responses": {
           "204": {
             "description": "Removes the user and returns an empty response."
+          },
+          "403": {
+            "description": "Returns an error if the user can't be deleted.\n\n* `forbidden` with the message\n  `User cannot be deleted due to retention policies. Please transfer user content first`\n  when the user owns content and the enterprise has a retention policy,\n  including a retired one, or a legal hold that is not fully released. This applies\n  even if none of the policies apply to the user's content, and even\n  when `force` is set to `true`. Transfer the user's content by using the\n  [Transfer owned folders](https://developer.box.com/reference/put-users-id-folders-0)\n  endpoint, then try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientError"
+                }
+              }
+            }
           },
           "default": {
             "description": "An unexpected client error.",
@@ -16181,7 +16308,7 @@
             }
           },
           "400": {
-            "description": "Returns an error if some of the parameters are\nnot valid.\n\n* `Groups can not be NULL or EMPTY` when no value is provided.\n* `group id format is string` when the provided group id format\nis incorrect.\n* `Supported payload format is JSON` when the provided payload\nformat is incorrect.",
+            "description": "Returns an error if some of the parameters are\nnot valid.\n\n* `Groups can not be NULL or EMPTY` when no value is provided.\n* `group id format is string` when the provided group id format\nis incorrect.\n* `Supported payload format is JSON` when the provided payload\nformat is incorrect.\n* `Too many users included for this request` when more than 10,000 unique users exist across all specified groups.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17803,14 +17930,18 @@
                   "RENAME",
                   "RETENTION_POLICY_ASSIGNMENT_ADD",
                   "SHARE",
+                  "SHARED_LINK_ONE_TIME_PASSCODE_ACCESS",
+                  "SHARED_LINK_ONE_TIME_PASSCODE_CHALLENGE",
                   "SHARED_LINK_SEND",
                   "SHARE_EXPIRATION",
                   "SHIELD_ALERT",
                   "SHIELD_DOWNLOAD_BLOCKED",
                   "SHIELD_EXTERNAL_COLLAB_ACCESS_BLOCKED",
                   "SHIELD_EXTERNAL_COLLAB_ACCESS_BLOCKED_MISSING_JUSTIFICATION",
+                  "SHIELD_EXTERNAL_COLLAB_ACCESS_JUSTIFIED",
                   "SHIELD_EXTERNAL_COLLAB_INVITE_BLOCKED",
                   "SHIELD_EXTERNAL_COLLAB_INVITE_BLOCKED_MISSING_JUSTIFICATION",
+                  "SHIELD_EXTERNAL_COLLAB_INVITE_JUSTIFIED",
                   "SHIELD_JUSTIFICATION_APPROVAL",
                   "SHIELD_PREVIEW_BLOCKED",
                   "SHIELD_SHARED_LINK_ACCESS_BLOCKED",
@@ -30961,6 +31092,8 @@
                   "RENAME",
                   "RETENTION_POLICY_ASSIGNMENT_ADD",
                   "SHARE",
+                  "SHARED_LINK_ONE_TIME_PASSCODE_ACCESS",
+                  "SHARED_LINK_ONE_TIME_PASSCODE_CHALLENGE",
                   "SHARED_LINK_REDIRECT_OUT_OF_SHARED_CONTEXT",
                   "SHARED_LINK_SEND",
                   "SHARE_EXPIRATION",
@@ -30971,6 +31104,7 @@
                   "SHIELD_DOWNLOAD_BLOCKED",
                   "SHIELD_EXTERNAL_COLLAB_ACCESS_BLOCKED",
                   "SHIELD_EXTERNAL_COLLAB_ACCESS_BLOCKED_MISSING_JUSTIFICATION",
+                  "SHIELD_EXTERNAL_COLLAB_ACCESS_JUSTIFIED",
                   "SHIELD_EXTERNAL_COLLAB_INVITE_BLOCKED",
                   "SHIELD_EXTERNAL_COLLAB_INVITE_BLOCKED_MISSING_JUSTIFICATION",
                   "SHIELD_EXTERNAL_COLLAB_INVITE_JUSTIFIED",
@@ -31336,7 +31470,8 @@
                       "effective_permission",
                       "is_password_enabled",
                       "download_count",
-                      "preview_count"
+                      "preview_count",
+                      "one_time_passcode"
                     ],
                     "properties": {
                       "url": {
@@ -31453,6 +31588,57 @@
                         "description": "The number of times this item has been previewed.",
                         "type": "integer",
                         "example": 3,
+                        "nullable": false
+                      },
+                      "one_time_passcode": {
+                        "allOf": [
+                          {
+                            "title": "Shared link OTP settings",
+                            "description": "One-time-passcode (OTP) settings for a shared link. When OTP enforcement\nis enabled, anonymous users must verify their identity via a\none-time-passcode emailed to them before the shared link will grant\naccess.\n\nOTP can only be used with shared links that have an `access` level of\n`open`. Password protection and OTP cannot be enabled at the same time.",
+                            "type": "object",
+                            "required": [
+                              "mode"
+                            ],
+                            "properties": {
+                              "mode": {
+                                "description": "The current OTP enforcement mode for the shared link.\n\n* `none` - OTP enforcement is turned off. The shared link is accessible\n  without any one-time-passcode verification.\n* `open` - Any anonymous recipient can request a one-time-passcode to\n  any email address and access the shared link after verifying it.\n  Collaborators and registered Box users access the link without\n  being prompted.\n* `allowlist` - Anonymous recipients can request a one-time-passcode\n  only when they enter an email that matches an entry on the\n  `allowlist`.",
+                                "type": "string",
+                                "example": "allowlist"
+                              },
+                              "allowlist": {
+                                "description": "The list of email and domain entries that are permitted to access the\nshared link when `mode` is `allowlist`. Anonymous users whose\nemail matches an entry can request and verify a one-time-passcode.\n\nBecause the entries carry recipient email addresses and the identity\nof the user who added them, this field is only returned to users\nwith owner, co-owner, or editor access on the item. For viewer\ncollaborators and below the field is omitted.\n\nAn allowlist contains at most 1000 entries, matching the limit\nenforced when setting the allowlist on a shared link.",
+                                "type": "array",
+                                "items": {
+                                  "$ref": "#/components/schemas/SharedLinkOtpAllowlistEntry"
+                                },
+                                "example": [
+                                  {
+                                    "type": "email",
+                                    "value": "alice@example.com",
+                                    "created_at": "2026-05-19T12:00:00Z",
+                                    "created_by": {
+                                      "id": "11446498",
+                                      "type": "user"
+                                    }
+                                  },
+                                  {
+                                    "type": "domain",
+                                    "value": "example.com",
+                                    "created_at": "2026-05-19T12:00:00Z",
+                                    "created_by": {
+                                      "id": "11446498",
+                                      "type": "user"
+                                    }
+                                  }
+                                ],
+                                "maxItems": 1000
+                              }
+                            }
+                          },
+                          {
+                            "description": "The one-time-passcode (OTP) settings for this shared link.\n\nThis field is always present. For links where OTP does not\napply (for example, shared links whose `access` is not `open`),\nthe object is returned with `mode` set to `none`."
+                          }
+                        ],
                         "nullable": false
                       }
                     }
@@ -33208,7 +33394,8 @@
                       "effective_permission",
                       "is_password_enabled",
                       "download_count",
-                      "preview_count"
+                      "preview_count",
+                      "one_time_passcode"
                     ],
                     "properties": {
                       "url": {
@@ -33325,6 +33512,57 @@
                         "description": "The number of times this item has been previewed.",
                         "type": "integer",
                         "example": 3,
+                        "nullable": false
+                      },
+                      "one_time_passcode": {
+                        "allOf": [
+                          {
+                            "title": "Shared link OTP settings",
+                            "description": "One-time-passcode (OTP) settings for a shared link. When OTP enforcement\nis enabled, anonymous users must verify their identity via a\none-time-passcode emailed to them before the shared link will grant\naccess.\n\nOTP can only be used with shared links that have an `access` level of\n`open`. Password protection and OTP cannot be enabled at the same time.",
+                            "type": "object",
+                            "required": [
+                              "mode"
+                            ],
+                            "properties": {
+                              "mode": {
+                                "description": "The current OTP enforcement mode for the shared link.\n\n* `none` - OTP enforcement is turned off. The shared link is accessible\n  without any one-time-passcode verification.\n* `open` - Any anonymous recipient can request a one-time-passcode to\n  any email address and access the shared link after verifying it.\n  Collaborators and registered Box users access the link without\n  being prompted.\n* `allowlist` - Anonymous recipients can request a one-time-passcode\n  only when they enter an email that matches an entry on the\n  `allowlist`.",
+                                "type": "string",
+                                "example": "allowlist"
+                              },
+                              "allowlist": {
+                                "description": "The list of email and domain entries that are permitted to access the\nshared link when `mode` is `allowlist`. Anonymous users whose\nemail matches an entry can request and verify a one-time-passcode.\n\nBecause the entries carry recipient email addresses and the identity\nof the user who added them, this field is only returned to users\nwith owner, co-owner, or editor access on the item. For viewer\ncollaborators and below the field is omitted.\n\nAn allowlist contains at most 1000 entries, matching the limit\nenforced when setting the allowlist on a shared link.",
+                                "type": "array",
+                                "items": {
+                                  "$ref": "#/components/schemas/SharedLinkOtpAllowlistEntry"
+                                },
+                                "example": [
+                                  {
+                                    "type": "email",
+                                    "value": "alice@example.com",
+                                    "created_at": "2026-05-19T12:00:00Z",
+                                    "created_by": {
+                                      "id": "11446498",
+                                      "type": "user"
+                                    }
+                                  },
+                                  {
+                                    "type": "domain",
+                                    "value": "example.com",
+                                    "created_at": "2026-05-19T12:00:00Z",
+                                    "created_by": {
+                                      "id": "11446498",
+                                      "type": "user"
+                                    }
+                                  }
+                                ],
+                                "maxItems": 1000
+                              }
+                            }
+                          },
+                          {
+                            "description": "The one-time-passcode (OTP) settings for this shared link.\n\nThis field is always present. For links where OTP does not\napply (for example, shared links whose `access` is not `open`),\nthe object is returned with `mode` set to `none`."
+                          }
+                        ],
                         "nullable": false
                       }
                     }
@@ -35114,7 +35352,7 @@
             ]
           },
           "entries": {
-            "description": "An list of entries in the metadata card.",
+            "description": "A list of entries in the metadata card.",
             "type": "array",
             "items": {
               "type": "object",
@@ -37671,6 +37909,162 @@
         "x-box-resource-id": "session_termination",
         "x-box-tag": "session_termination"
       },
+      "SharedLinkOtpAllowlistEntry": {
+        "description": "An entry on the OTP allowlist for a shared link. The entry can match\neither a specific email address or every email address that belongs to\na domain.",
+        "type": "object",
+        "properties": {
+          "type": {
+            "description": "The kind of allowlist entry.\n\n* `email` - The entry matches a single email address.\n* `domain` - The entry matches every email address under the\n  given domain.",
+            "type": "string",
+            "example": "email",
+            "enum": [
+              "email",
+              "domain"
+            ]
+          },
+          "value": {
+            "description": "The value of the allowlist entry.\n\n* For `email` entries, the full email address (must contain `@`).\n* For `domain` entries, the bare domain (e.g. `example.com`).",
+            "type": "string",
+            "example": "alice@example.com"
+          },
+          "created_at": {
+            "description": "The date and time when the allowlist entry was added.",
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-05-19T12:00:00Z"
+          },
+          "created_by": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/User--Base"
+              },
+              {
+                "description": "User who added this entry."
+              }
+            ]
+          }
+        },
+        "required": [
+          "type",
+          "value",
+          "created_at",
+          "created_by"
+        ],
+        "title": "Shared link OTP allowlist entry"
+      },
+      "SharedLinkOtpAllowlistEntryWritable": {
+        "description": "An entry used to write the OTP allowlist for a shared link. The entry can\nmatch either a specific email address or every email address that\nbelongs to a domain.",
+        "type": "object",
+        "properties": {
+          "type": {
+            "description": "The kind of allowlist entry.\n\n* `email` - The entry matches a single email address.\n* `domain` - The entry matches every email address under the\n  given domain.",
+            "type": "string",
+            "example": "email",
+            "enum": [
+              "email",
+              "domain"
+            ]
+          },
+          "value": {
+            "description": "The value of the allowlist entry.\n\n* For `email` entries, the full email address (must contain `@`).\n* For `domain` entries, the bare domain (e.g. `example.com`).",
+            "type": "string",
+            "example": "alice@example.com"
+          }
+        },
+        "required": [
+          "type",
+          "value"
+        ],
+        "title": "Shared link OTP allowlist entry (Write)"
+      },
+      "SharedLinkOtpWritable": {
+        "description": "One-time-passcode (OTP) settings for a shared link. When OTP enforcement\nis enabled, anonymous users must verify their identity via a\none-time-passcode emailed to them before the shared link will grant\naccess.\n\nOTP can only be used with shared links that have an `access` level of\n`open`. Password protection and OTP cannot be enabled at the same time.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/SharedLinkOtpWritableNone"
+          },
+          {
+            "$ref": "#/components/schemas/SharedLinkOtpWritableOpen"
+          },
+          {
+            "$ref": "#/components/schemas/SharedLinkOtpWritableAllowlist"
+          }
+        ],
+        "title": "Shared link OTP settings (Write)"
+      },
+      "SharedLinkOtpWritableAllowlist": {
+        "description": "Anonymous recipients can request a one-time-passcode only when they\nenter an email that matches an entry on the `allowlist`.",
+        "type": "object",
+        "properties": {
+          "mode": {
+            "description": "Set to `allowlist` to restrict OTP requests to emails matching an\nentry on the `allowlist`.",
+            "type": "string",
+            "example": "allowlist",
+            "enum": [
+              "allowlist"
+            ]
+          },
+          "allowlist": {
+            "description": "The list of email and domain entries that are permitted to access the\nshared link when `mode` is `allowlist`. Anonymous users whose\nemail matches an entry can request and verify a one-time-passcode.\n\nProviding this field replaces the entire existing allowlist; passing\nan empty array clears all entries. Required when `mode` is `allowlist`.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SharedLinkOtpAllowlistEntryWritable"
+            },
+            "example": [
+              {
+                "type": "email",
+                "value": "user@example.com"
+              },
+              {
+                "type": "domain",
+                "value": "example.com"
+              }
+            ],
+            "maxItems": 1000
+          }
+        },
+        "required": [
+          "mode",
+          "allowlist"
+        ],
+        "title": "OTP allowlist"
+      },
+      "SharedLinkOtpWritableNone": {
+        "description": "One-time-passcode (OTP) enforcement is turned off. The shared link is\naccessible without any one-time-passcode verification.",
+        "type": "object",
+        "properties": {
+          "mode": {
+            "description": "Set to `none` to disable OTP enforcement for the shared link.",
+            "type": "string",
+            "example": "none",
+            "enum": [
+              "none"
+            ]
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "OTP turned off"
+      },
+      "SharedLinkOtpWritableOpen": {
+        "description": "Any anonymous recipient can request a one-time-passcode to any email\naddress and access the shared link after verifying it. Collaborators\nand registered Box users access the link without being prompted.",
+        "type": "object",
+        "properties": {
+          "mode": {
+            "description": "Set to `open` to allow any anonymous recipient to request a\none-time-passcode to any email address.",
+            "type": "string",
+            "example": "open",
+            "enum": [
+              "open"
+            ]
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "OTP open"
+      },
       "ShieldInformationBarrier": {
         "description": "A standard representation of a\nshield information barrier object.",
         "type": "object",
@@ -38875,7 +39269,7 @@
             "nullable": true
           },
           "suppress_notifications": {
-            "description": "If true, no emails about the sign request will be sent.",
+            "description": "If true, no emails about the sign request are sent.\nThe `embed_url_external_user_id` parameter is required when using\n`suppress_notifications` for a signer.",
             "type": "boolean",
             "example": false,
             "nullable": true
@@ -41031,7 +41425,7 @@
             "example": 1000
           },
           "entries": {
-            "description": "An list of entries for the card. This represents the individual entries of\nthe transcription.",
+            "description": "A list of entries for the card. This represents the individual entries of\nthe transcription.",
             "type": "array",
             "items": {
               "type": "object",
@@ -42678,7 +43072,7 @@
             "example": "2012-12-12T10:53:43-08:00"
           },
           "part_size": {
-            "description": "The  size in bytes that must be used for all parts of of the\nupload.\n\nOnly the last part is allowed to be of a smaller size.",
+            "description": "The size in bytes that must be used for all parts of the\nupload.\n\nOnly the last part is allowed to be of a smaller size.",
             "type": "integer",
             "format": "int64",
             "example": 1024
@@ -42690,7 +43084,7 @@
             "example": 1000
           },
           "num_parts_processed": {
-            "description": "The number of parts that have been uploaded and processed\nby the server. This starts at `0`.\n\nWhen committing a file files, inspecting this property can\nprovide insight if all parts have been uploaded correctly.",
+            "description": "The number of parts that have been uploaded and processed\nby the server. This starts at `0`.\n\nWhen committing a file, inspecting this property can\nprovide insight if all parts have been uploaded correctly.",
             "type": "integer",
             "format": "int32",
             "example": 455
@@ -43670,7 +44064,8 @@
                       "effective_permission",
                       "is_password_enabled",
                       "download_count",
-                      "preview_count"
+                      "preview_count",
+                      "one_time_passcode"
                     ],
                     "properties": {
                       "url": {
@@ -43787,6 +44182,57 @@
                         "description": "The number of times this item has been previewed.",
                         "type": "integer",
                         "example": 3,
+                        "nullable": false
+                      },
+                      "one_time_passcode": {
+                        "allOf": [
+                          {
+                            "title": "Shared link OTP settings",
+                            "description": "One-time-passcode (OTP) settings for a shared link. When OTP enforcement\nis enabled, anonymous users must verify their identity via a\none-time-passcode emailed to them before the shared link will grant\naccess.\n\nOTP can only be used with shared links that have an `access` level of\n`open`. Password protection and OTP cannot be enabled at the same time.",
+                            "type": "object",
+                            "required": [
+                              "mode"
+                            ],
+                            "properties": {
+                              "mode": {
+                                "description": "The current OTP enforcement mode for the shared link.\n\n* `none` - OTP enforcement is turned off. The shared link is accessible\n  without any one-time-passcode verification.\n* `open` - Any anonymous recipient can request a one-time-passcode to\n  any email address and access the shared link after verifying it.\n  Collaborators and registered Box users access the link without\n  being prompted.\n* `allowlist` - Anonymous recipients can request a one-time-passcode\n  only when they enter an email that matches an entry on the\n  `allowlist`.",
+                                "type": "string",
+                                "example": "allowlist"
+                              },
+                              "allowlist": {
+                                "description": "The list of email and domain entries that are permitted to access the\nshared link when `mode` is `allowlist`. Anonymous users whose\nemail matches an entry can request and verify a one-time-passcode.\n\nBecause the entries carry recipient email addresses and the identity\nof the user who added them, this field is only returned to users\nwith owner, co-owner, or editor access on the item. For viewer\ncollaborators and below the field is omitted.\n\nAn allowlist contains at most 1000 entries, matching the limit\nenforced when setting the allowlist on a shared link.",
+                                "type": "array",
+                                "items": {
+                                  "$ref": "#/components/schemas/SharedLinkOtpAllowlistEntry"
+                                },
+                                "example": [
+                                  {
+                                    "type": "email",
+                                    "value": "alice@example.com",
+                                    "created_at": "2026-05-19T12:00:00Z",
+                                    "created_by": {
+                                      "id": "11446498",
+                                      "type": "user"
+                                    }
+                                  },
+                                  {
+                                    "type": "domain",
+                                    "value": "example.com",
+                                    "created_at": "2026-05-19T12:00:00Z",
+                                    "created_by": {
+                                      "id": "11446498",
+                                      "type": "user"
+                                    }
+                                  }
+                                ],
+                                "maxItems": 1000
+                              }
+                            }
+                          },
+                          {
+                            "description": "The one-time-passcode (OTP) settings for this shared link.\n\nThis field is always present. For links where OTP does not\napply (for example, shared links whose `access` is not `open`),\nthe object is returned with `mode` set to `none`."
+                          }
+                        ],
                         "nullable": false
                       }
                     }
@@ -44498,6 +44944,11 @@
       "x-box-tag": "sign_requests"
     },
     {
+      "name": "Box Sign templates",
+      "description": "Sign templates allow you to use a predefined Box Sign\ntemplate when creating a signature request.\nThe template includes placeholders that\nare automatically populated with data when creating the request.",
+      "x-box-tag": "sign_templates"
+    },
+    {
       "name": "Classifications",
       "description": "Classification labels are\nused for content that is\nsensitive or under security\nrestrictions.",
       "x-box-tag": "classifications"
@@ -44598,11 +45049,6 @@
       "x-box-tag": "folders"
     },
     {
-      "name": "Integration mappings",
-      "description": "Integration Mappings allow the users\nto manage where content from partner apps is stored in Box.",
-      "x-box-tag": "integration_mappings"
-    },
-    {
       "name": "Group memberships",
       "description": "Group memberships signify that\na user is a part of the group.",
       "x-box-tag": "memberships"
@@ -44611,6 +45057,11 @@
       "name": "Groups",
       "description": "Groups created in an enterprise.",
       "x-box-tag": "groups"
+    },
+    {
+      "name": "Integration mappings",
+      "description": "Integration Mappings allow the users\nto manage where content from partner apps is stored in Box.",
+      "x-box-tag": "integration_mappings"
     },
     {
       "name": "Invites",
@@ -44678,6 +45129,11 @@
       "x-box-tag": "session_termination"
     },
     {
+      "name": "Shared links (App Items)",
+      "description": "URLs generated for app items stored in Box,\nwhich provide direct, read-only access to the resource.",
+      "x-box-tag": "shared_links_app_items"
+    },
+    {
       "name": "Shared links (Files)",
       "description": "Files shared links are URLs that are generated for files stored in Box,\nwhich provide direct, read-only access to the resource.",
       "x-box-tag": "shared_links_files"
@@ -44693,19 +45149,9 @@
       "x-box-tag": "shared_links_web_links"
     },
     {
-      "name": "Shared links (App Items)",
-      "description": "URLs generated for app items stored in Box,\nwhich provide direct, read-only access to the resource.",
-      "x-box-tag": "shared_links_app_items"
-    },
-    {
-      "name": "Shield information barriers",
-      "description": "Shield information barrier in Box defines an ethical wall.\nAn ethical wall is a mechanism that prevents exchanges or communication that\ncould lead to conflicts of interest and therefore result in\nbusiness activities ethically or legally questionable.",
-      "x-box-tag": "shield_information_barriers"
-    },
-    {
-      "name": "Shield information barrier segments",
-      "description": "Shield information barrier segment represents\na defined group of users. A user can be a member\nof only one segment, which makes segments\ndifferent from groups.",
-      "x-box-tag": "shield_information_barrier_segments"
+      "name": "Shield information barrier reports",
+      "description": "Shield information barrier reports\ncontain information on what existing collaborations\nwill be removed permanently when the information barrier is enabled.",
+      "x-box-tag": "shield_information_barrier_reports"
     },
     {
       "name": "Shield information barrier segment members",
@@ -44713,19 +45159,19 @@
       "x-box-tag": "shield_information_barrier_segment_members"
     },
     {
-      "name": "Shield information barrier reports",
-      "description": "Shield information barrier reports\ncontain information on what existing collaborations\nwill be removed permanently when the information barrier is enabled.",
-      "x-box-tag": "shield_information_barrier_reports"
-    },
-    {
       "name": "Shield information barrier segment restrictions",
       "description": "Shield information barrier segment restriction is\nan access restriction based on the content (file or folder) owner.",
       "x-box-tag": "shield_information_barrier_segment_restrictions"
     },
     {
-      "name": "Box Sign templates",
-      "description": "Sign templates allow you to use a predefined Box Sign\ntemplate when creating a signature request.\nThe template includes placeholders that\nare automatically populated with data when creating the request.",
-      "x-box-tag": "sign_templates"
+      "name": "Shield information barrier segments",
+      "description": "Shield information barrier segment represents\na defined group of users. A user can be a member\nof only one segment, which makes segments\ndifferent from groups.",
+      "x-box-tag": "shield_information_barrier_segments"
+    },
+    {
+      "name": "Shield information barriers",
+      "description": "Shield information barrier in Box defines an ethical wall.\nAn ethical wall is a mechanism that prevents exchanges or communication that\ncould lead to conflicts of interest and therefore result in\nbusiness activities ethically or legally questionable.",
+      "x-box-tag": "shield_information_barriers"
     },
     {
       "name": "Skills",

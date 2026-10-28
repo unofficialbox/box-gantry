@@ -32,11 +32,11 @@ fn the_full_real_spec_set_ingests() {
     // If a spec refresh changes them, updating these numbers is the
     // deliberate, reviewed act the determinism rules want (FR-6.2, VR-6).
     assert_eq!(base.operations.len(), 297);
-    assert_eq!(base.schemas.len(), 310);
+    assert_eq!(base.schemas.len(), 316);
     assert_eq!(base.managers().len(), 73);
 
     assert_eq!(set.documents[1].operations.len(), 37);
-    assert_eq!(set.documents[2].operations.len(), 5);
+    assert_eq!(set.documents[2].operations.len(), 47);
 
     // Every operation everywhere is grouped and identified.
     for doc in &set.documents {
@@ -49,6 +49,19 @@ fn the_full_real_spec_set_ingests() {
     // pinned so growth and free-form holes only change deliberately (NF-1,
     // VR-6 lineage).
     let lowering = gantry_spec::lower(&set).expect("the vendored Box specs must lower");
+    // The committed names lock matches what lowering produces — a refresh that
+    // adds or moves a synthesized name regenerates it (`gantry lock`) in the
+    // same, reviewed change (fixtures/specs/README.md).
+    let lock = set
+        .names_lock
+        .as_ref()
+        .expect("fixtures/specs/names.lock is committed");
+    let versions = set.documents.iter().map(|d| d.api_version.as_str());
+    let drift = lock.restricted_to(versions).drift(&lowering.names);
+    assert!(
+        drift.is_clean(),
+        "names.lock is out of date: {drift:?}; run `gantry lock`"
+    );
     // After structural dedupe (D-127) identical inline shapes collapse, the
     // version merge (D-190) collapses 21 same-named cross-version schemas (16
     // structs + 5 enums) into one superset each, stripping the auto-set
@@ -62,20 +75,22 @@ fn the_full_real_spec_set_ingests() {
     // `GenericSource`/`AiExtractResponse`, which D-195's fix also caught:
     // 900 → 879 → 877 → 868 → 884 decls (486 synthesized). The 2026-10 refresh
     // adds upload-session planning (4 structs) and the Japanese ZIP sign-input
-    // validation (1 struct + its synthesized type enum): → 890.
-    assert_eq!(lowering.program.decls.len(), 890);
+    // validation (1 struct + its synthesized type enum): → 890. The 2026-10-28
+    // refresh adds Shuttle (content migration) and Document Split to v2026.0
+    // and one-time passcodes on shared links: → 1017.
+    assert_eq!(lowering.program.decls.len(), 1017);
     let stats = &lowering.stats;
     assert_eq!(
         (stats.structs, stats.unions, stats.discriminated_unions),
-        (610, 33, 23)
+        (685, 41, 29)
     );
-    assert_eq!((stats.enums, stats.aliases), (245, 2));
-    assert_eq!(stats.synthesized, 487);
+    assert_eq!((stats.enums, stats.aliases), (287, 4));
+    assert_eq!(stats.synthesized, 534);
     assert_eq!(stats.json_value_sites, 19);
 
     // Operations: every one lowered, with classified success shapes.
-    assert_eq!(lowering.program.operations.len(), 339);
-    assert_eq!(stats.operations, 339);
+    assert_eq!(lowering.program.operations.len(), 381);
+    assert_eq!(stats.operations, 381);
     assert_eq!(
         (
             stats.empty_responses,
@@ -83,7 +98,7 @@ fn the_full_real_spec_set_ingests() {
             stats.text_responses,
             stats.redirect_responses
         ),
-        (56, 4, 1, 0)
+        (66, 4, 1, 0)
     );
     // Nineteen `#variation` ids became structured variations (D-104).
     let variations = lowering
@@ -108,9 +123,9 @@ fn the_full_real_spec_set_ingests() {
     // reference bound, every type well-formed, identities unique.
     let analysis = gantry_sema::analyze(&lowering.program)
         .expect("the real program must pass semantic analysis");
-    assert_eq!(analysis.managers.len(), 86);
+    assert_eq!(analysis.managers.len(), 88);
     let indexed: usize = analysis.managers.values().map(Vec::len).sum();
-    assert_eq!(indexed, 339);
+    assert_eq!(indexed, 381);
 
     // Every declaration carries a reachability entry, and the split between
     // sole-owned (goes to a per-manager file, D-201), shared/orphaned (stays
@@ -128,8 +143,9 @@ fn the_full_real_spec_set_ingests() {
         .count();
     // The 2026-10 refresh: its 6 new decls are each sole-owned, and
     // `CollaborationItem` now references `WebLinkMini`, adopting a former
-    // orphan into the shared set.
-    assert_eq!((sole, orphan), (661, 36));
+    // orphan into the shared set. The 2026-10-28 refresh adds 127 decls: 117
+    // sole-owned, 10 shared, no new orphans.
+    assert_eq!((sole, orphan), (778, 36));
 }
 
 /// Method names never fall through to a meaningless numeric collision suffix,
@@ -200,4 +216,33 @@ fn the_spec_fingerprint_is_deterministic_and_order_sensitive() {
     assert_ne!(load(&base_then_2025), load(&reversed));
     // Adding a document changes it.
     assert_ne!(load(&base_then_2025), load(&[fixture("openapi.json")]));
+}
+
+/// Synthesized type names never fall through to a numeral collision suffix
+/// where real structure can tell them apart (D-127's fallback chain). The one
+/// honest exception: `Classification.$template` is shadowed by a real
+/// component literally named `ClassificationTemplate`, so no structural
+/// spelling is free. A union's `VariantN` is a position, not a collision
+/// suffix.
+#[test]
+fn synthesized_names_are_not_collision_suffixed() {
+    let set = SpecSet::load(&[
+        fixture("openapi.json"),
+        fixture("openapi-v2025.0.json"),
+        fixture("openapi-v2026.0.json"),
+    ])
+    .unwrap();
+    let lowering = gantry_spec::lower(&set).unwrap();
+    let suffixed: Vec<&str> = lowering
+        .synthesis_log
+        .iter()
+        .map(|(_, name)| name.as_str())
+        .filter(|name| {
+            let stem = name.trim_end_matches(|c: char| c.is_ascii_digit());
+            stem.len() < name.len()
+                && stem.ends_with(|c: char| c.is_ascii_lowercase())
+                && !stem.ends_with("Variant")
+        })
+        .collect();
+    assert_eq!(suffixed, ["ClassificationTemplate2"]);
 }

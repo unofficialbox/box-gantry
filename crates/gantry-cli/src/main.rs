@@ -75,6 +75,15 @@ enum Command {
         #[arg(long, default_value_t = 40)]
         min_length: usize,
     },
+    /// Write the names lock (`names.lock` beside the first spec) from what
+    /// lowering produces now. Locked names are kept, new synthesized names are
+    /// added, and a group whose minting location moved keeps its name under
+    /// the new location. Versions not given are left as they are. Review the
+    /// diff like any generated-name change.
+    Lock {
+        #[arg(required = true, value_name = "SPEC")]
+        specs: Vec<PathBuf>,
+    },
     /// Generate, then compile the output with the target's real toolchain
     /// (`go` → VR-1.1; `rust` → VR-1.2). Exits 4 when the generated code fails
     /// verification.
@@ -125,6 +134,7 @@ fn main() -> ExitCode {
         Command::Conform { specs, target } => conform(&specs, &target),
         Command::Diff { from, to } => diff(&from, &to),
         Command::Names { specs, min_length } => names(&specs, min_length),
+        Command::Lock { specs } => lock(&specs),
     }
 }
 
@@ -162,6 +172,49 @@ fn names(specs: &[PathBuf], min_length: usize) -> ExitCode {
     };
     let report = gantry_spec::long_names(&lowering.synthesis_log, min_length);
     print!("{}", report.report());
+    ExitCode::SUCCESS
+}
+
+/// Write the names lock from the current lowering (see `Command::Lock`).
+fn lock(specs: &[PathBuf]) -> ExitCode {
+    let set = match gantry_spec::SpecSet::load(specs) {
+        Ok(set) => set,
+        Err(err) => {
+            eprintln!("error: {err}");
+            return ExitCode::from(exit_codes::SPEC_ERROR);
+        }
+    };
+    let lowering = match gantry_spec::lower(&set) {
+        Ok(lowering) => lowering,
+        Err(err) => {
+            eprintln!("error: {err}");
+            return ExitCode::from(exit_codes::SPEC_ERROR);
+        }
+    };
+    let previous = set.names_lock.clone().unwrap_or_default();
+    let versions: Vec<&str> = set
+        .documents
+        .iter()
+        .map(|d| d.api_version.as_str())
+        .collect();
+    let drift = previous.restricted_to(versions).drift(&lowering.names);
+    let updated = previous.updated_with(&lowering.names);
+    let path = specs[0]
+        .parent()
+        .unwrap_or(std::path::Path::new(""))
+        .join(gantry_spec::NAMES_LOCK_FILE);
+    if let Err(err) = std::fs::write(&path, updated.to_json()) {
+        eprintln!("error: {}: {err}", path.display());
+        return ExitCode::from(exit_codes::SPEC_ERROR);
+    }
+    println!(
+        "ok  {}: {} names (+{} added, -{} removed, ~{} renamed)",
+        path.display(),
+        updated.len(),
+        drift.added,
+        drift.removed,
+        drift.renamed,
+    );
     ExitCode::SUCCESS
 }
 
@@ -777,6 +830,26 @@ fn check(specs: &[PathBuf]) -> ExitCode {
             return ExitCode::from(exit_codes::SPEC_ERROR);
         }
     };
+    if let (Some(lock), Some(file)) = (&set.names_lock, &set.names_lock_file) {
+        let versions = set.documents.iter().map(|d| d.api_version.as_str());
+        let drift = lock.restricted_to(versions).drift(&lowering.names);
+        if drift.is_clean() {
+            println!(
+                "ok  {}  names lock: {} names, up to date",
+                file.display(),
+                lowering.names.len()
+            );
+        } else {
+            println!(
+                "warn  {}  names lock is out of date (+{} added, -{} removed, ~{} renamed); \
+                 run `gantry lock` with these specs and review the diff",
+                file.display(),
+                drift.added,
+                drift.removed,
+                drift.renamed,
+            );
+        }
+    }
     let stats = &lowering.stats;
     println!(
         "ok  IR: {decls} declarations — {structs} structs, {unions} unions ({disc} discriminated), \

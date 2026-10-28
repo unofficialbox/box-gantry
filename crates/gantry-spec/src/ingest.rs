@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use indexmap::IndexMap;
 
 use crate::error::IngestError;
+use crate::lock::NamesLock;
 use crate::raw::{RawDocument, RawParameter, RawPathItem, RawSchema};
 
 /// The version-aware model of one ingestion run: every document loaded,
@@ -14,7 +15,17 @@ pub struct SpecSet {
     /// In load order: base spec first by convention (the caller passes it
     /// first), versioned overlays after.
     pub documents: Vec<Document>,
+    /// The names lock committed beside the base spec ([`NAMES_LOCK_FILE`]) —
+    /// part of the input set, so every lowering of these specs (`generate`,
+    /// `check`, `diff`, `verify`, the test suite) keeps the same names.
+    pub names_lock: Option<NamesLock>,
+    /// Where [`Self::names_lock`] was loaded from.
+    pub names_lock_file: Option<PathBuf>,
+    names_lock_fnv: Option<u64>,
 }
+
+/// The names lock [`SpecSet::load`] picks up beside the base spec.
+pub const NAMES_LOCK_FILE: &str = "names.lock";
 
 /// One ingested OpenAPI document.
 #[derive(Debug)]
@@ -116,17 +127,42 @@ impl SpecSet {
             }
             documents.push(doc);
         }
-        Ok(Self { documents })
+        let candidate = files[0]
+            .parent()
+            .unwrap_or(Path::new(""))
+            .join(NAMES_LOCK_FILE);
+        let (names_lock, names_lock_file, names_lock_fnv) = if candidate.is_file() {
+            let bytes = std::fs::read(&candidate).map_err(|source| IngestError::NamesLockIo {
+                file: candidate.clone(),
+                source,
+            })?;
+            let lock = NamesLock::load(&candidate)?;
+            (Some(lock), Some(candidate), Some(fnv1a_64(&bytes)))
+        } else {
+            (None, None, None)
+        };
+        Ok(Self {
+            documents,
+            names_lock,
+            names_lock_file,
+            names_lock_fnv,
+        })
     }
 
     /// A deterministic fingerprint of the whole input set (NF-7): the
     /// documents' content hashes folded in load order, so the same specs in
     /// the same order always produce the same value and any change to any
-    /// input moves it. Rendered as 16 lowercase hex digits.
+    /// input moves it. Rendered as 16 lowercase hex digits. The names lock is
+    /// an input too — it decides generated names.
     pub fn fingerprint(&self) -> String {
         let mut acc = FNV_OFFSET;
-        for doc in &self.documents {
-            for byte in doc.content_fnv.to_le_bytes() {
+        let hashes = self
+            .documents
+            .iter()
+            .map(|doc| doc.content_fnv)
+            .chain(self.names_lock_fnv);
+        for hash in hashes {
+            for byte in hash.to_le_bytes() {
                 acc = fnv_step(acc, byte);
             }
         }
