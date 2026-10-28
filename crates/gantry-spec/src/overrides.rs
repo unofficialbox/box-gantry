@@ -94,10 +94,6 @@ impl NameOverrides {
         self.locations.get(key).map(String::as_str)
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.components.is_empty() && self.locations.is_empty()
-    }
-
     /// Combine two override sets — the spec set's committed file and a
     /// command-line `--overrides`. The same key with two different
     /// replacements is a loud conflict, never a silent pick.

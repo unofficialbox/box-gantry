@@ -51,6 +51,11 @@ pub struct Lowering {
     /// deliberately the raw per-document record, not reconciled against
     /// `program`'s post-merge decls.
     pub synthesis_log: Vec<(String, String)>,
+    /// `(kind, key)` of each committed override ([`SpecSet::overrides`]) that
+    /// matched nothing. Not an error: a pin can belong to a document this run
+    /// didn't load (a subset of the spec set). `gantry check` reports them,
+    /// and the full-set test fails on any — that's where a stale pin is loud.
+    pub unused_overrides: Vec<(&'static str, String)>,
 }
 
 /// What the lowering produced — reported by `gantry check` so growth and
@@ -98,7 +103,8 @@ pub fn lower_with_overrides(
     set: &SpecSet,
     overrides: &NameOverrides,
 ) -> Result<Lowering, IngestError> {
-    let overrides = &set.overrides.merged(overrides)?;
+    let extra = overrides;
+    let overrides = &set.overrides.merged(extra)?;
     let mut arena: Vec<Option<ir::Decl>> = Vec::new();
     let mut operations: Vec<ir::Operation> = Vec::new();
     let mut stats = LoweringStats::default();
@@ -129,23 +135,33 @@ pub fn lower_with_overrides(
     // — a typo, or the spec changed shape since the override was written —
     // looks identical to a working override until someone goes looking for
     // the shorter name and it isn't there. Checked once, after every
-    // document has had a chance to consult it.
-    if !overrides.is_empty() {
-        for key in overrides.components.keys() {
-            if !consulted_components.contains(key) {
-                return Err(IngestError::UnusedOverride {
-                    kind: "component",
-                    key: key.clone(),
-                });
-            }
+    // document has had a chance to consult it. An explicit `--overrides` key
+    // is an error outright; a committed pin is only reported, since it may
+    // belong to a document outside this subset (see `unused_overrides`).
+    let mut unused_overrides: Vec<(&'static str, String)> = Vec::new();
+    let mut unused = |kind: &'static str, key: &String, explicit: bool| {
+        if explicit {
+            Err(IngestError::UnusedOverride {
+                kind,
+                key: key.clone(),
+            })
+        } else {
+            unused_overrides.push((kind, key.clone()));
+            Ok(())
         }
-        for key in overrides.locations.keys() {
-            if !consulted_locations.contains(key) {
-                return Err(IngestError::UnusedOverride {
-                    kind: "location",
-                    key: key.clone(),
-                });
-            }
+    };
+    let mut component_keys: Vec<&String> = overrides.components.keys().collect();
+    component_keys.sort();
+    for key in component_keys {
+        if !consulted_components.contains(key) {
+            unused("component", key, extra.components.contains_key(key))?;
+        }
+    }
+    let mut location_keys: Vec<&String> = overrides.locations.keys().collect();
+    location_keys.sort();
+    for key in location_keys {
+        if !consulted_locations.contains(key) {
+            unused("location", key, extra.locations.contains_key(key))?;
         }
     }
     let decls: Vec<ir::Decl> = arena
@@ -177,6 +193,7 @@ pub fn lower_with_overrides(
         program,
         stats,
         synthesis_log,
+        unused_overrides,
     })
 }
 
