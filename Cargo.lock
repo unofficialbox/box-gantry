@@ -191,6 +191,7 @@ name = "gantry-contract"
 version = "0.1.0"
 dependencies = [
  "gantry-manifest",
+ "gantry-verify",
 ]
 
 [[package]]
@@ -215,6 +216,7 @@ version = "0.1.0"
 dependencies = [
  "gantry-ir",
  "gantry-sema",
+ "gantry-verify",
  "indexmap",
  "serde",
  "serde_json",

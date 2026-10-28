@@ -15,6 +15,7 @@ use gantry_ir::{
     Decl, DeclKind, EnumDecl, Extensibility, Field, Identifier, ModulePath, Program, StructDecl,
     Type, UnionDecl, UnionVariant,
 };
+use gantry_verify::scratch::ScratchDir;
 
 fn ident(s: &str) -> Identifier {
     Identifier::new(s).unwrap()
@@ -223,9 +224,7 @@ fn the_generated_codec_round_trips_under_java() {
     let build = gantry_backend_java::BuildInfo::new("roundtripfp");
     let files = gantry_backend_java::generate(&analysis, &gantry_manifest::java(), &build);
 
-    let dir = std::env::temp_dir().join(format!("gantry-java-rt-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-java-rt");
     let mut sources = write_all(&dir, &files);
     let main = dir.join("Main.java");
     std::fs::write(&main, DRIVER).unwrap();
@@ -266,7 +265,6 @@ fn the_generated_codec_round_trips_under_java() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&run.stdout);
     let stderr = String::from_utf8_lossy(&run.stderr);
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         run.status.success() && stdout.contains("ROUNDTRIP_OK"),
         "round-trip driver failed:\nstdout: {stdout}\nstderr: {stderr}"

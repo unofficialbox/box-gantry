@@ -4,6 +4,8 @@
 
 use std::process::Command;
 
+use gantry_verify::scratch::ScratchDir;
+
 #[test]
 fn typescript_stubs_render_deterministically() {
     let manifest = gantry_manifest::typescript();
@@ -39,8 +41,7 @@ fn typescript_stubs_type_check() {
         eprintln!("SKIPPED: tsc not available; CI runs this gate");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("gantry-ts-stubs-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = ScratchDir::new("gantry-ts-stubs");
     std::fs::create_dir_all(dir.join("src")).unwrap();
     let source =
         gantry_contract::typescript_stubs(&gantry_contract::V1, &gantry_manifest::typescript());

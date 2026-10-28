@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 
 use gantry_spec::SpecSet;
+use gantry_verify::scratch::ScratchDir;
 
 fn lower(schemas: serde_json::Value) -> gantry_spec::Lowering {
     let spec = serde_json::json!({
@@ -23,12 +24,7 @@ fn lower(schemas: serde_json::Value) -> gantry_spec::Lowering {
         },
         "components": { "schemas": schemas }
     });
-    let dir = std::env::temp_dir().join(format!(
-        "gantry-report-test-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-report-test");
     let file: PathBuf = dir.join("spec.json");
     std::fs::write(&file, serde_json::to_string_pretty(&spec).unwrap()).unwrap();
     let set = SpecSet::load(&[file]).unwrap();

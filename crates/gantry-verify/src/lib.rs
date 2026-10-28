@@ -3,7 +3,8 @@
 //! The conformance checklist (VR-3), determinism double-generate diff
 //! (VR-5), skip-summary allowlist (VR-6), round-trip fixtures (VR-4), and
 //! the spec-diff/breaking-change report (FR-9), and the [`shipping`]
-//! check that no generated artifact ships the runtime stub (D-192).
+//! check that no generated artifact ships the runtime stub (D-192), and the
+//! [`scratch`] directories verification builds and tests work in.
 //!
 //! Grows alongside the Go backend in M3; this crate is the
 //! seam. Shipped so far: the FR-9 [`diff`] module and the VR-3
@@ -11,6 +12,7 @@
 
 pub mod conformance;
 pub mod diff;
+pub mod scratch;
 pub mod shipping;
 
 pub use conformance::{

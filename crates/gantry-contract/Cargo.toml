@@ -9,5 +9,8 @@ repository.workspace = true
 [dependencies]
 gantry-manifest.workspace = true
 
+[dev-dependencies]
+gantry-verify.workspace = true
+
 [lints]
 workspace = true

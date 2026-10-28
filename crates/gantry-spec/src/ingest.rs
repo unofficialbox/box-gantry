@@ -283,6 +283,7 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gantry_verify::scratch::ScratchDir;
 
     fn write_spec(dir: &Path, name: &str, json: &serde_json::Value) -> PathBuf {
         let path = dir.join(name);
@@ -388,13 +389,7 @@ mod tests {
         );
     }
 
-    fn tempdir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "gantry-spec-test-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn tempdir() -> ScratchDir {
+        ScratchDir::new("gantry-spec-test")
     }
 }

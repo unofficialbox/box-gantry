@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use gantry_spec::SpecSet;
+use gantry_verify::scratch::ScratchDir;
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -349,9 +350,7 @@ fn the_generated_tests_pass_under_node() {
         eprintln!("SKIPPED locally: node {version} < 22.18 lacks default TS type-stripping");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("gantry-ts-nodetest-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-ts-nodetest");
     write_all(&dir, &generate());
 
     let run = Command::new("node")
@@ -359,12 +358,9 @@ fn the_generated_tests_pass_under_node() {
         .current_dir(&dir)
         .output()
         .unwrap();
-    // Read the outcome, then clean the temp dir before asserting, so a failure
-    // leaves no artifacts behind.
     let passed = run.status.success();
     let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         passed,
         "generated behavioral tests failed under `node --test` (VR-4):\n{stdout}\n{stderr}"
@@ -390,9 +386,7 @@ fn the_real_spec_models_type_check() {
     if !require_tools(&["tsc"], "VR-1.5 tsc gate") {
         return;
     }
-    let dir = std::env::temp_dir().join(format!("gantry-ts-models-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-ts-models");
     let files = generate();
     write_all(&dir, &files);
 
@@ -435,9 +429,7 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
     if !require_tools(&["tsc"], "FR-5.2 runtime-swap gate") {
         return;
     }
-    let dir = std::env::temp_dir().join(format!("gantry-ts-runtime-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-ts-runtime");
     write_all(&dir, &generate());
 
     // Replace the compile-time stub with the real runtime: drop the generated
@@ -499,9 +491,7 @@ fn the_generated_sdk_packs_and_loads_dual_format() {
     if !require_tools(&["tsc", "npm", "node"], "NF-8 pack gate") {
         return;
     }
-    let dir = std::env::temp_dir().join(format!("gantry-ts-pack-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-ts-pack");
     write_all(&dir, &generate());
 
     // The release pipeline vendors the real runtime into the tree before
@@ -584,9 +574,7 @@ fn the_generated_sdk_packs_and_loads_dual_format() {
         .to_string();
     let tarball = dir.join(&tgz);
 
-    let consumer = std::env::temp_dir().join(format!("gantry-ts-consumer-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&consumer);
-    std::fs::create_dir_all(&consumer).unwrap();
+    let consumer = ScratchDir::new("gantry-ts-consumer");
     run_ok(
         Command::new("npm")
             .args(["init", "-y"])
@@ -631,9 +619,6 @@ fn the_generated_sdk_packs_and_loads_dual_format() {
         Command::new("node").arg("cjs.cjs").current_dir(&consumer),
         "CJS require smoke",
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&consumer);
 }
 
 /// Ensure the named tools are on `PATH` for a release gate. Returns `true` when

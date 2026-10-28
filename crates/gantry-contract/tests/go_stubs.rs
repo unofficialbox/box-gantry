@@ -3,6 +3,8 @@
 
 use std::process::Command;
 
+use gantry_verify::scratch::ScratchDir;
+
 #[test]
 fn go_stubs_render_deterministically() {
     let manifest = gantry_manifest::go();
@@ -32,8 +34,7 @@ fn go_stubs_compile_and_are_gofmt_clean() {
         eprintln!("SKIPPED: go toolchain not available; CI runs this gate");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("gantry-stubs-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-stubs");
     let source = gantry_contract::go_stubs(&gantry_contract::V1, &gantry_manifest::go());
     std::fs::write(dir.join("runtime.go"), &source).unwrap();
     std::fs::write(dir.join("go.mod"), gantry_contract::GO_MOD).unwrap();

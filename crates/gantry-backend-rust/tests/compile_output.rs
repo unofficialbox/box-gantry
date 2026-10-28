@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use gantry_spec::SpecSet;
+use gantry_verify::scratch::ScratchDir;
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -228,9 +229,7 @@ fn the_real_spec_models_compile() {
         eprintln!("SKIPPED: cargo toolchain not available; CI runs this gate");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("gantry-rust-models-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-rust-models");
     write_all(&dir, &generate());
 
     // rustfmt-clean by construction (TR-Rust.4, G-17).
@@ -292,9 +291,7 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
         eprintln!("SKIPPED: cargo toolchain not available; CI runs this gate");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("gantry-rust-runtime-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-rust-runtime");
     write_all(&dir, &generate());
 
     // A smoke example proving the public API composes: construct the client
@@ -334,9 +331,7 @@ fn the_generated_sdk_packages_for_publish() {
         eprintln!("SKIPPED: cargo toolchain not available; CI runs this gate");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("gantry-rust-pack-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-rust-pack");
     write_all(&dir, &generate());
 
     let mut cmd = Command::new("cargo");
@@ -359,7 +354,6 @@ fn the_generated_sdk_packages_for_publish() {
         String::from_utf8_lossy(&publish.stdout),
         String::from_utf8_lossy(&publish.stderr)
     );
-    let _ = std::fs::remove_dir_all(&dir);
     // Reaching the (intentionally aborted) upload is the real acceptance signal:
     // cargo prints "Uploading <crate>" only after packaging *and* the verify
     // build both succeed — a bad manifest, a verify-build error, or an

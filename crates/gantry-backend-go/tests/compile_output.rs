@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use gantry_spec::SpecSet;
+use gantry_verify::scratch::ScratchDir;
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -184,9 +185,7 @@ fn the_real_spec_models_compile() {
         eprintln!("SKIPPED: go toolchain not available; CI runs this gate");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("gantry-go-models-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-go-models");
     write_all(&dir, &generate());
 
     let build = Command::new("go")
@@ -243,9 +242,7 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
         eprintln!("SKIPPED: go toolchain not available; CI runs this gate");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("gantry-go-runtime-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-go-runtime");
     write_all(&dir, &generate());
 
     // Replace the generated stub package with the real runtime files.
