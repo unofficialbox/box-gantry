@@ -461,6 +461,24 @@ store), and **JWT** (server auth). See [`docs/auth.md`](./docs/auth.md).
 List endpoints return an auto-paging stream — advancing the cursor and fetching
 the next page is handled for you. See [`docs/pagination.md`](./docs/pagination.md).
 
+## HTTP versions
+
+API requests negotiate HTTP/2 over TLS and fall back to HTTP/1.1. Configure the
+runtime session — HTTP version, retries, default headers, or your own
+`reqwest::Client` — and build the client from it:
+
+```rust,ignore
+use box_open_sdk::client::Client;
+use box_open_sdk::runtime::{self, HttpVersion};
+
+let session = runtime::Client::new(auth).with_http_version(HttpVersion::Http1);
+let client = Client::from_session(session);
+```
+
+`with_http_version` and `with_http_client` replace each other — the last one
+wins. HTTP/3 is not offered yet (reqwest's support is unstable). Token requests
+keep their own client.
+
 ## Documentation
 
 API reference on [docs.rs](https://docs.rs/box-open-sdk); the [`docs/`](./docs)

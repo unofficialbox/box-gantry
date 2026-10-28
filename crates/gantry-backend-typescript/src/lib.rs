@@ -589,6 +589,19 @@ credentials (CCG)**, **OAuth 2.0** (with a pluggable refresh-token store), and
 **JWT** (server auth, exposed as the Node-only `./jwt` subpath). See
 [`docs/auth.md`](./docs/auth.md).
 
+## HTTP versions
+
+Requests go through the platform `fetch`, so the platform picks the protocol:
+browsers, Deno, and Bun negotiate HTTP/2 or HTTP/3, while Node's built-in
+`fetch` uses HTTP/1.1. For HTTP/2 from Node, pass a `fetch` that dispatches
+through an undici `Agent` with `allowH2: true`:
+
+```ts
+const client = new Client(auth.developerToken('DEVELOPER_TOKEN'), { fetch: h2Fetch });
+```
+
+The same options set `maxRetries`, default `headers`, and `baseUrls`.
+
 ## Documentation
 
 The [`docs/`](./docs/README.md) tree carries the per-manager reference and the
