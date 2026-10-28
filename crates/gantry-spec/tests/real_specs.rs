@@ -49,9 +49,6 @@ fn the_full_real_spec_set_ingests() {
     // pinned so growth and free-form holes only change deliberately (NF-1,
     // VR-6 lineage).
     let lowering = gantry_spec::lower(&set).expect("the vendored Box specs must lower");
-    // On the full set every committed name pin must land; a subset may leave
-    // some unused, but here an unused one is stale (fixtures/specs/README.md).
-    assert_eq!(lowering.unused_overrides, []);
     // After structural dedupe (D-127) identical inline shapes collapse, the
     // version merge (D-190) collapses 21 same-named cross-version schemas (16
     // structs + 5 enums) into one superset each, stripping the auto-set

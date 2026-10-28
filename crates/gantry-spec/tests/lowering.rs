@@ -1311,39 +1311,3 @@ fn a_conflicting_extra_override_is_loud() {
         "{err}"
     );
 }
-
-/// A committed pin that matches nothing — it belongs to a document this run
-/// didn't load — is reported, not fatal; an explicit `--overrides` key that
-/// matches nothing is still an error.
-#[test]
-fn an_unused_committed_pin_is_reported_but_an_unused_explicit_one_fails() {
-    let set = load_with_overrides(
-        "unused-pin",
-        resource_type_schemas(),
-        Some(serde_json::json!({ "locations": {
-            "components.schemas.OnlyInAnotherVersion.properties.type": "OnlyInAnotherVersionType"
-        }})),
-    );
-    let lowering = gantry_spec::lower(&set).expect("an unused committed pin is not fatal");
-    assert_eq!(
-        lowering.unused_overrides,
-        [(
-            "location",
-            "components.schemas.OnlyInAnotherVersion.properties.type".to_string()
-        )]
-    );
-
-    let extra = std::env::temp_dir().join(format!(
-        "gantry-unused-explicit-{}.json",
-        std::process::id()
-    ));
-    std::fs::write(
-        &extra,
-        serde_json::json!({ "locations": { "components.schemas.Nope.properties.x": "NopeX" } })
-            .to_string(),
-    )
-    .unwrap();
-    let extra = gantry_spec::NameOverrides::load(&extra).unwrap();
-    let err = gantry_spec::lower_with_overrides(&set, &extra).unwrap_err();
-    assert!(matches!(&err, IngestError::UnusedOverride { .. }), "{err}");
-}

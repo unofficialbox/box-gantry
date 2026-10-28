@@ -786,9 +786,6 @@ fn check(specs: &[PathBuf]) -> ExitCode {
             return ExitCode::from(exit_codes::SPEC_ERROR);
         }
     };
-    for (kind, key) in &lowering.unused_overrides {
-        println!("warn  {kind} override {key:?} matched nothing in this spec set");
-    }
     let stats = &lowering.stats;
     println!(
         "ok  IR: {decls} declarations — {structs} structs, {unions} unions ({disc} discriminated), \
