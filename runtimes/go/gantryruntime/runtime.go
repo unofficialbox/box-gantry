@@ -13,6 +13,7 @@ package gantryruntime
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"io"
 	"math/rand"
 	"mime/multipart"
@@ -62,6 +63,42 @@ type Option func(*Client)
 // WithHTTPClient overrides the HTTP client (timeouts, transport, proxies).
 func WithHTTPClient(h *http.Client) Option { return func(c *Client) { c.http = h } }
 
+// HTTPVersion selects the HTTP protocol the built-in client uses for API
+// requests (see WithHTTPVersion). The standard library has no HTTP/3.
+type HTTPVersion int
+
+const (
+	// HTTP2 negotiates HTTP/2 over TLS when the server offers it, else
+	// HTTP/1.1. The default.
+	HTTP2 HTTPVersion = iota
+	// HTTP1 uses HTTP/1.1 only.
+	HTTP1
+)
+
+// WithHTTPVersion chooses the HTTP protocol for API requests. It replaces the
+// HTTP client with a fresh built-in one for that version, so it and
+// WithHTTPClient are alternatives: whichever option comes last wins. To pick
+// the protocol of an injected client, configure its Transport directly. Token
+// requests keep their own client.
+func WithHTTPVersion(v HTTPVersion) Option { return func(c *Client) { c.http = apiHTTPClient(v) } }
+
+// apiHTTPClient is the built-in API client: a 60s timeout and the requested
+// protocol. HTTP2 keeps the shared DefaultTransport, which already negotiates
+// HTTP/2.
+func apiHTTPClient(v HTTPVersion) *http.Client {
+	client := &http.Client{Timeout: 60 * time.Second}
+	switch v {
+	case HTTP1:
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		// A non-nil, empty TLSNextProto disables HTTP/2 (net/http docs).
+		transport.ForceAttemptHTTP2 = false
+		transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+		client.Transport = transport
+	case HTTP2:
+	}
+	return client
+}
+
 // WithMaxRetries sets how many times a retriable failure is retried.
 func WithMaxRetries(n int) Option { return func(c *Client) { c.maxRetries = n } }
 
@@ -82,7 +119,7 @@ func WithDefaultHeader(name, value string) Option {
 func New(ts TokenSource, opts ...Option) *Client {
 	c := &Client{
 		ts:             ts,
-		http:           &http.Client{Timeout: 60 * time.Second},
+		http:           apiHTTPClient(HTTP2),
 		maxRetries:     5,
 		defaultHeaders: http.Header{},
 		baseURLs: map[string]string{

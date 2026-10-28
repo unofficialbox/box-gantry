@@ -114,6 +114,29 @@ pub struct Response {
     body: Vec<u8>,
 }
 
+/// Which HTTP protocol the built-in client uses for API requests (see
+/// [`Client::with_http_version`]). Non-exhaustive so HTTP/3 can join once
+/// reqwest's support is stable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HttpVersion {
+    /// HTTP/1.1 only.
+    Http1,
+    /// HTTP/2 when the server offers it over TLS (ALPN), else HTTP/1.1. The
+    /// default.
+    Http2,
+}
+
+/// The built-in API client: a 60s timeout and the requested protocol.
+fn api_http_client(version: HttpVersion) -> reqwest::Client {
+    let builder = reqwest::Client::builder().timeout(Duration::from_secs(60));
+    let builder = match version {
+        HttpVersion::Http1 => builder.http1_only(),
+        HttpVersion::Http2 => builder,
+    };
+    builder.build().unwrap_or_default()
+}
+
 /// The runtime session: it holds the auth flow, HTTP client, base-URL
 /// configuration, and retry policy shared by every manager.
 pub struct Client {
@@ -128,13 +151,9 @@ impl Client {
     /// Build a runtime session for an authentication flow, with the default
     /// Box base URLs, a 60s HTTP timeout, and five retries.
     pub fn new(auth: Auth) -> Client {
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(60))
-            .build()
-            .unwrap_or_default();
         Client {
             auth,
-            http,
+            http: api_http_client(HttpVersion::Http2),
             max_retries: 5,
             base_urls: default_base_urls(),
             default_headers: Vec::new(),
@@ -151,6 +170,16 @@ impl Client {
     /// inject an instrumented transport instead of the internally built default.
     pub fn with_http_client(mut self, http: reqwest::Client) -> Client {
         self.http = http;
+        self
+    }
+
+    /// Choose the HTTP protocol for API requests (fluent). Replaces the HTTP
+    /// client with a freshly built default for `version`, so it and
+    /// [`Client::with_http_client`] are alternatives — whichever is called
+    /// last wins. To pick the protocol of an injected client, configure that
+    /// client directly. Token requests keep their own client.
+    pub fn with_http_version(mut self, version: HttpVersion) -> Client {
+        self.http = api_http_client(version);
         self
     }
 
@@ -726,6 +755,49 @@ mod tests {
             std::future::pending::<()>().await;
         });
         format!("http://{addr}/hang")
+    }
+
+    #[test]
+    fn reqwest_is_built_with_http2() {
+        // `http2_prior_knowledge` only exists with reqwest's `http2` feature;
+        // without that feature ALPN never offers h2 and the SDK silently
+        // speaks HTTP/1.1 only. This stops compiling if the feature is lost.
+        let _ = reqwest::Client::builder().http2_prior_knowledge();
+    }
+
+    #[tokio::test]
+    async fn with_http_version_http1_sends_http11() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let mut read = 0;
+            while !buf[..read].windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = socket.read(&mut buf[read..]).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                read += n;
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}")
+                .await
+                .unwrap();
+            let head = String::from_utf8_lossy(&buf[..read]).to_string();
+            head.lines().next().unwrap_or_default().to_string()
+        });
+        let client = Client::new(Auth::developer_token("t"))
+            .with_http_version(HttpVersion::Http1)
+            .with_max_retries(0);
+        let request = client.new_request("GET", &format!("http://{addr}/ping"));
+        client
+            .fetch(request)
+            .await
+            .expect("the local server answers");
+        let request_line = server.await.unwrap();
+        assert_eq!(request_line, "GET /ping HTTP/1.1");
     }
 
     #[tokio::test]

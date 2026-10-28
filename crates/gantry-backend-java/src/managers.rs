@@ -222,7 +222,14 @@ fn client_file(plans: &[ManagerPlan], build: &BuildInfo) -> String {
     out.push('\n');
     out.push_str("    /** Build a client for an authentication flow. */\n");
     let _ = writeln!(out, "    public Client({AUTH} auth) {{");
-    let _ = writeln!(out, "        {SESSION} session = new {SESSION}(auth);");
+    let _ = writeln!(out, "        this(new {SESSION}(auth));");
+    out.push_str("    }\n\n");
+    out.push_str(
+        "    /** Build a client over a configured runtime session — retries, an\n     \
+         * injected HTTP client or HTTP version, default headers, base URLs\n     \
+         * ({@code Session.builder(auth)}). */\n",
+    );
+    let _ = writeln!(out, "    public Client({SESSION} session) {{");
     for plan in plans {
         let _ = writeln!(
             out,
@@ -1719,9 +1726,12 @@ mod tests {
             "{out}"
         );
         assert!(
-            out.contains(
-                "dev.unofficialbox.runtime.Runtime.Session session = new dev.unofficialbox.runtime.Runtime.Session(auth);"
-            ),
+            out.contains("this(new dev.unofficialbox.runtime.Runtime.Session(auth));"),
+            "{out}"
+        );
+        // A configured session (Session.builder) reaches the client too.
+        assert!(
+            out.contains("public Client(dev.unofficialbox.runtime.Runtime.Session session) {"),
             "{out}"
         );
         assert!(

@@ -347,6 +347,10 @@ System.debug(results);
 See [`docs/`](docs/README.md) for a reference page — with its own snippet — for
 every endpoint.
 
+## HTTP versions
+
+Salesforce's callout layer chooses the protocol; Apex can't configure it.
+
 ## Deploy
 
 ```bash

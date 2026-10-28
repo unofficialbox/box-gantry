@@ -156,7 +156,14 @@ fn client_file(named: &[(&String, &Vec<usize>, ManagerName)]) -> String {
     out.push_str("impl Client {\n");
     out.push_str("    /// Build a client for an authentication flow.\n");
     out.push_str("    pub fn new(auth: crate::runtime::Auth) -> Self {\n");
-    out.push_str("        let session = std::sync::Arc::new(crate::runtime::Client::new(auth));\n");
+    out.push_str("        Self::from_session(crate::runtime::Client::new(auth))\n");
+    out.push_str("    }\n\n");
+    out.push_str(
+        "    /// Build a client over a configured runtime session — retries, an\n    \
+         /// injected HTTP client or HTTP version, default headers, base URLs.\n",
+    );
+    out.push_str("    pub fn from_session(session: crate::runtime::Client) -> Self {\n");
+    out.push_str("        let session = std::sync::Arc::new(session);\n");
     out.push_str("        Self {\n");
     for (_, _, name) in named {
         let _ = writeln!(
@@ -1674,5 +1681,11 @@ mod tests {
         );
         assert!(out.contains("crate::runtime::Client::new(auth)"));
         assert!(out.contains("FilesManager::new(session.clone())"));
+        // A configured runtime session (retries, HTTP version, headers…)
+        // reaches the client too.
+        assert!(
+            out.contains("pub fn from_session(session: crate::runtime::Client) -> Self {"),
+            "{out}"
+        );
     }
 }

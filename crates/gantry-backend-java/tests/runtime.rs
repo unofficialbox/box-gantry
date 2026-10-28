@@ -252,6 +252,25 @@ public final class RuntimeSmoke {
         check(!avatarBody.contains("application/json"), "avatar: expected no JSON part, got: " + avatarBody);
         check(avatarBody.contains("name=\"pic\"; filename=\"pic\""), "avatar: expected pic file part, got: " + avatarBody);
 
+        // httpVersion picks the built-in client's protocol; this server speaks
+        // HTTP/1.1, so a pinned HTTP_1_1 session must still round-trip.
+        Runtime.Session h1 = Runtime.Session.builder(Runtime.developerToken("devtok"))
+            .httpVersion(java.net.http.HttpClient.Version.HTTP_1_1)
+            .build();
+        Runtime.Response rh1 = h1.fetch(h1.newRequest("GET", base + "/me"));
+        check(Runtime.statusCode(rh1) == 200, "HTTP_1_1 session should succeed, got " + Runtime.statusCode(rh1));
+        // An injected client carries its own version: setting both is loud.
+        boolean conflicted = false;
+        try {
+            Runtime.Session.builder(Runtime.developerToken("devtok"))
+                .httpClient(java.net.http.HttpClient.newHttpClient())
+                .httpVersion(java.net.http.HttpClient.Version.HTTP_2)
+                .build();
+        } catch (IllegalStateException expected) {
+            conflicted = true;
+        }
+        check(conflicted, "httpClient + httpVersion should be rejected at build()");
+
         server.stop(0);
         System.out.println("RUNTIME_OK");
     }

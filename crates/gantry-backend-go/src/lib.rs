@@ -495,6 +495,18 @@ Box's four auth flows all live in the `auth` package — **developer token**,
 **client credentials (CCG)**, **OAuth 2.0** (with a pluggable refresh-token
 store), and **JWT** (server auth). See [`docs/auth.md`](./docs/auth.md).
 
+## HTTP versions
+
+API requests negotiate HTTP/2 over TLS and fall back to HTTP/1.1. Pin HTTP/1.1
+with `WithHTTPVersion`, or pass your own `*http.Client` with `WithHTTPClient` —
+e.g. one with an HTTP/3 transport; the standard library has none built in:
+
+```go
+c := client.NewClient(tokenSource, gantryruntime.WithHTTPVersion(gantryruntime.HTTP1))
+```
+
+`gantryruntime` is `@MODULE@/gantryruntime`. Token requests keep their own client.
+
 ## Documentation
 
 API reference on [pkg.go.dev](https://pkg.go.dev/@MODULE@); the [`docs/`](./docs)

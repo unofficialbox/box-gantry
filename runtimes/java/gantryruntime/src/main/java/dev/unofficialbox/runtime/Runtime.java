@@ -150,7 +150,9 @@ public final class Runtime {
 
         private Session(Builder builder) {
             this.auth = builder.auth;
-            this.http = builder.http != null ? builder.http : defaultHttpClient();
+            this.http = builder.http != null
+                    ? builder.http
+                    : defaultHttpClient(builder.httpVersion != null ? builder.httpVersion : HttpClient.Version.HTTP_3);
             this.maxRetries = builder.maxRetries;
             this.baseUrls = defaultBaseUrls();
             this.baseUrlOverrides = Map.copyOf(builder.baseUrlOverrides);
@@ -304,11 +306,12 @@ public final class Runtime {
          * first request negotiates over HTTP/2 and upgrades to HTTP/3 for
          * subsequent requests once the origin advertises it via Alt-Svc (Box
          * does), transparently falling back to HTTP/2 or HTTP/1.1 when it
-         * doesn't — so no request ever fails for lack of HTTP/3.
+         * doesn't — so no request ever fails for lack of HTTP/3. {@link
+         * Builder#httpVersion} picks another preference.
          */
-        private static HttpClient defaultHttpClient() {
+        private static HttpClient defaultHttpClient(HttpClient.Version version) {
             return HttpClient.newBuilder()
-                    .version(HttpClient.Version.HTTP_3)
+                    .version(version)
                     .connectTimeout(API_TIMEOUT)
                     .build();
         }
@@ -323,6 +326,7 @@ public final class Runtime {
         public static final class Builder {
             private final Auth auth;
             private HttpClient http;
+            private HttpClient.Version httpVersion;
             private int maxRetries = DEFAULT_MAX_RETRIES;
             private final Map<String, String> baseUrlOverrides = new LinkedHashMap<>();
             private final Map<String, String> defaultHeaders = new LinkedHashMap<>();
@@ -335,6 +339,16 @@ public final class Runtime {
              * HTTP/3-preferring {@link HttpClient} built internally. */
             public Builder httpClient(HttpClient http) {
                 this.http = http;
+                return this;
+            }
+
+            /** The preferred HTTP version of the built-in client (default
+             * {@link HttpClient.Version#HTTP_3}, which falls back to HTTP/2 or
+             * HTTP/1.1). An injected {@link #httpClient} carries its own
+             * version, so setting both is an error at {@link #build()}. Token
+             * requests keep their own client. */
+            public Builder httpVersion(HttpClient.Version version) {
+                this.httpVersion = java.util.Objects.requireNonNull(version, "version");
                 return this;
             }
 
@@ -370,6 +384,11 @@ public final class Runtime {
 
             /** Build the configured session. */
             public Session build() {
+                if (http != null && httpVersion != null) {
+                    throw new IllegalStateException(
+                            "gantryruntime: httpVersion applies to the built-in client; "
+                                    + "set the version on the injected HttpClient instead");
+                }
                 return new Session(this);
             }
         }

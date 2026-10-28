@@ -6,9 +6,11 @@ package gantryruntime
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -125,5 +127,42 @@ func TestWithMultipartBodyOmitsAnAbsentJSONPart(t *testing.T) {
 
 	if hadJSONPart {
 		t.Fatal("expected no JSON part for a body with no JSON field")
+	}
+}
+
+// WithHTTPVersion picks the protocol actually negotiated with a TLS server that
+// offers HTTP/2: HTTP2 (the default) gets it, HTTP1 stays on HTTP/1.1.
+func TestWithHTTPVersionSelectsTheNegotiatedProtocol(t *testing.T) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Proto-Major", strconv.Itoa(r.ProtoMajor))
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	defer server.Close()
+	trusted := server.Client().Transport.(*http.Transport).TLSClientConfig
+
+	for _, tc := range []struct {
+		name    string
+		version HTTPVersion
+		want    string
+	}{{"HTTP2", HTTP2, "2"}, {"HTTP1", HTTP1, "1"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := New(fixedToken("t"), WithHTTPVersion(tc.version), WithMaxRetries(0))
+			// Trust the test server's certificate without touching how the
+			// option configured the protocol.
+			transport, ok := client.http.Transport.(*http.Transport)
+			if !ok {
+				transport = http.DefaultTransport.(*http.Transport).Clone()
+				client.http.Transport = transport
+			}
+			transport.TLSClientConfig = &tls.Config{RootCAs: trusted.RootCAs}
+			response, err := client.Fetch(context.Background(), client.NewRequest("GET", server.URL))
+			if err != nil {
+				t.Fatalf("fetch: %v", err)
+			}
+			if got := response.header.Get("X-Proto-Major"); got != tc.want {
+				t.Fatalf("negotiated HTTP/%s, want HTTP/%s", got, tc.want)
+			}
+		})
 	}
 }

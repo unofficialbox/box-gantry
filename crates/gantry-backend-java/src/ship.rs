@@ -337,6 +337,23 @@ var file = new dev.unofficialbox.BoxChunkedUpload(client)
 
 Everything else compiles and runs without the flag.
 
+## HTTP versions
+
+API requests prefer HTTP/3: the first request goes over HTTP/2 and later ones
+upgrade once Box advertises HTTP/3 (`Alt-Svc`), falling back to HTTP/2 or
+HTTP/1.1. Pick another preference on a configured session:
+
+```java
+var session = Runtime.Session.builder(auth)
+    .httpVersion(java.net.http.HttpClient.Version.HTTP_2)
+    .build();
+var client = new Client(session);
+```
+
+The builder also takes `maxRetries`, default headers, base URLs, or your own
+`HttpClient` (which carries its own version — set one or the other). Token
+requests keep their own client.
+
 ## Documentation
 
 The [`docs/`](./docs) tree carries the per-manager reference — a call snippet for
