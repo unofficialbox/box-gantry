@@ -18,6 +18,8 @@
 # Usage:
 #   scripts/release.sh              # cut the release
 #   scripts/release.sh --dry-run    # generate + run every guard, change nothing
+#   scripts/release.sh --notes-only # rewrite $TAG's release notes on all five
+#                                   # repos; no generation, tags, or pushes
 #
 # The fleet lives beside this checkout by default; override with FLEET_ROOT.
 # Requires `gh` authenticated against the unofficialbox org.
@@ -25,14 +27,30 @@
 set -euo pipefail
 
 DRY_RUN=false
-[ "${1:-}" = "--dry-run" ] && DRY_RUN=true
+NOTES_ONLY=false
+case "${1:-}" in
+  "") ;;
+  --dry-run) DRY_RUN=true ;;
+  --notes-only) NOTES_ONLY=true ;;
+  *) echo "error: unknown option ${1}" >&2; exit 1 ;;
+esac
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# The release notes are box-gantry's own history since the previous release,
+# so they need that history. A shallow clone (actions/checkout's default)
+# silently has none, and 0.5.0 shipped "First release of the box-gantry
+# fleet." because of it. Refuse rather than publish a wrong changelog.
+if [ "$(git -C "$REPO_ROOT" rev-parse --is-shallow-repository)" = "true" ]; then
+  echo "error: $REPO_ROOT is a shallow clone; the release notes need full history." >&2
+  echo "       Run 'git fetch --unshallow', or check out with fetch-depth: 0." >&2
+  exit 1
+fi
 
 # The fleet checkout usually sits beside this one, but how far "beside" depends
 # on how deeply box-gantry is nested. Probe the plausible spots rather than
 # hard-coding one layout; FLEET_ROOT overrides the search entirely.
-if [ -z "${FLEET_ROOT:-}" ]; then
+if [ -z "${FLEET_ROOT:-}" ] && ! $NOTES_ONLY; then
   for candidate in \
     "$(dirname "$REPO_ROOT")/unofficialbox" \
     "$(dirname "$(dirname "$REPO_ROOT")")/unofficialbox" \
@@ -43,7 +61,7 @@ if [ -z "${FLEET_ROOT:-}" ]; then
     fi
   done
 fi
-if [ -z "${FLEET_ROOT:-}" ] || [ ! -d "$FLEET_ROOT" ]; then
+if ! $NOTES_ONLY && { [ -z "${FLEET_ROOT:-}" ] || [ ! -d "$FLEET_ROOT" ]; }; then
   echo "error: cannot find the fleet checkout; set FLEET_ROOT to the directory" >&2
   echo "       holding box-open-go-sdk, box-open-rust-sdk, and friends." >&2
   exit 1
@@ -123,6 +141,85 @@ EOF
   fi
 }
 
+# The generated repos' own commits are all "Release $VERSION, regenerated
+# from box-gantry" — no detail lives there. The real changelog is box-gantry's
+# own history between this version's bump commit and the previous one. Walk
+# the commits that touched SDK_VERSION and take the nearest one where the
+# constant read something other than $VERSION — that is the previous
+# release's cut point.
+# The walk also yields the commit that bumped the constant *to* $VERSION: the
+# last one before that cut point.
+read -r PREV_VERSION_SHA BUMP_SHA < <(
+  git -C "$REPO_ROOT" log --format=%H -- crates/gantry-manifest/src/lib.rs \
+    | { bump=""
+        while read -r sha; do
+          v="$(git -C "$REPO_ROOT" show "$sha:crates/gantry-manifest/src/lib.rs" \
+            | sed -n 's/^pub const SDK_VERSION: &str = "\(.*\)";$/\1/p')"
+          if [ "$v" != "$VERSION" ]; then
+            echo "$sha $bump"
+            exit 0
+          fi
+          bump="$sha"
+        done
+        echo " $bump"; }
+) || true
+# A release describes everything up to what it ships (HEAD). A notes-only
+# rewrite runs later, on a main that may have moved on, so it stops at the
+# bump to $VERSION instead.
+if $NOTES_ONLY; then
+  HEAD_SHA="$BUMP_SHA"
+else
+  HEAD_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+fi
+
+build_notes() {
+  echo "## box-open-sdk $VERSION"
+  echo ""
+  if [ -n "$PREV_VERSION_SHA" ]; then
+    echo "Changes in box-gantry since the previous release:"
+    echo ""
+    # The bump commit itself ("ship: bump SDK version to ...") carries no
+    # content of its own — every other commit in the range is real work.
+    git -C "$REPO_ROOT" log --reverse --format='- %s' "$PREV_VERSION_SHA..$HEAD_SHA" \
+      | grep -v '^- ship: bump'
+    echo ""
+    echo "Full diff: https://github.com/unofficialbox/box-gantry/compare/$PREV_VERSION_SHA...$HEAD_SHA"
+  else
+    echo "First release of the box-gantry fleet."
+  fi
+  echo ""
+  echo "Generated from the Box OpenAPI specification by"
+  echo "[box-gantry](https://github.com/unofficialbox/box-gantry)."
+  echo ""
+  echo "> Not affiliated with, authorized, or endorsed by Box, Inc."
+  echo "> A community, generated client."
+}
+
+NOTES_FILE="$(mktemp)"
+trap 'rm -f "$NOTES_FILE"' EXIT
+build_notes >"$NOTES_FILE"
+
+# --notes-only: rewrite $TAG's notes in place, and nothing else. The Apex
+# release carries an install section that release.yml's apex_release_notes job
+# appends after the release is cut; keep it.
+if $NOTES_ONLY; then
+  say "Rewriting the $TAG release notes"
+  for entry in "${TARGETS[@]}"; do
+    name="${entry##*:}"
+    body="$(gh release view "$TAG" --repo "unofficialbox/$name" --json body -q .body)" \
+      || fail "$name: no $TAG release to rewrite"
+    notes="$(mktemp)"
+    cp "$NOTES_FILE" "$notes"
+    if printf '%s\n' "$body" | grep -q '^## Install (unlocked package)'; then
+      { echo ""; printf '%s\n' "$body" | sed -n '/^## Install (unlocked package)/,$p'; } >>"$notes"
+    fi
+    gh release edit "$TAG" --repo "unofficialbox/$name" --notes-file "$notes" >/dev/null
+    rm -f "$notes"
+    printf '  %-22s notes rewritten\n' "$name"
+  done
+  exit 0
+fi
+
 # ---------------------------------------------------------------------------
 # Phase 1 — prechecks. Every repo is validated before any of them is touched,
 # so a bad fifth repo can't leave the first four half-released.
@@ -166,49 +263,6 @@ fi
 # ---------------------------------------------------------------------------
 say "Committing, tagging, and pushing"
 
-# The generated repos' own commits are all "Release $VERSION, regenerated
-# from box-gantry" — no detail lives there. The real changelog is box-gantry's
-# own history between this version's bump commit and the previous one. Walk
-# the commits that touched SDK_VERSION and take the nearest one where the
-# constant read something other than $VERSION — that is the previous
-# release's cut point.
-PREV_VERSION_SHA="$(
-  git -C "$REPO_ROOT" log --format=%H -- crates/gantry-manifest/src/lib.rs \
-    | while read -r sha; do
-        v="$(git -C "$REPO_ROOT" show "$sha:crates/gantry-manifest/src/lib.rs" \
-          | sed -n 's/^pub const SDK_VERSION: &str = "\(.*\)";$/\1/p')"
-        if [ "$v" != "$VERSION" ]; then
-          echo "$sha"
-          break
-        fi
-      done
-)"
-HEAD_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-
-NOTES_FILE="$(mktemp)"
-trap 'rm -f "$NOTES_FILE"' EXIT
-{
-  echo "## box-open-sdk $VERSION"
-  echo ""
-  if [ -n "$PREV_VERSION_SHA" ]; then
-    echo "Changes in box-gantry since the previous release:"
-    echo ""
-    # The bump commit itself ("ship: bump SDK version to ...") carries no
-    # content of its own — every other commit in the range is real work.
-    git -C "$REPO_ROOT" log --reverse --format='- %s' "$PREV_VERSION_SHA..$HEAD_SHA" \
-      | grep -v '^- ship: bump'
-    echo ""
-    echo "Full diff: https://github.com/unofficialbox/box-gantry/compare/$PREV_VERSION_SHA...$HEAD_SHA"
-  else
-    echo "First release of the box-gantry fleet."
-  fi
-  echo ""
-  echo "Generated from the Box OpenAPI specification by"
-  echo "[box-gantry](https://github.com/unofficialbox/box-gantry)."
-  echo ""
-  echo "> Not affiliated with, authorized, or endorsed by Box, Inc."
-  echo "> A community, generated client."
-} >"$NOTES_FILE"
 
 for entry in "${TARGETS[@]}"; do
   name="${entry##*:}"
