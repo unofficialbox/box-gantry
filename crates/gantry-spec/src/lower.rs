@@ -392,6 +392,7 @@ impl<'a> DocLowerer<'a> {
                 name,
                 &leaf,
                 &leaf,
+                name,
                 real,
             )?;
             self.stats.aliases += 1;
@@ -399,7 +400,7 @@ impl<'a> DocLowerer<'a> {
         }
         if !raw.one_of.is_empty() || !raw.any_of.is_empty() {
             return self
-                .lower_union(location, &leaf, &leaf, &leaf, raw)
+                .lower_union(location, &leaf, &leaf, &leaf, &leaf, raw)
                 .map(ir::DeclKind::Union);
         }
         if let Some(values) = &raw.enumeration {
@@ -427,11 +428,11 @@ impl<'a> DocLowerer<'a> {
         }
         if !raw.all_of.is_empty() || is_object(raw) {
             return self
-                .lower_struct(location, name, &leaf, &leaf, raw)
+                .lower_struct(location, name, &leaf, &leaf, name, raw)
                 .map(ir::DeclKind::Struct);
         }
         // A named primitive (or a schema that says nothing).
-        let ty = self.lower_type(location, &leaf, &leaf, &leaf, raw)?;
+        let ty = self.lower_type(location, &leaf, &leaf, &leaf, &leaf, raw)?;
         self.stats.aliases += 1;
         Ok(ir::DeclKind::Alias(ty))
     }
@@ -449,14 +450,17 @@ impl<'a> DocLowerer<'a> {
     /// back to — instead of a bare numeral — when two unrelated schemas'
     /// immediate-context names coincide (D-127 collision, not a structural
     /// dupe): real structure the short name dropped, not an invented word.
-    /// An array item or map value shares its container's `(name, leaf,
-    /// ancestor)` — it is the same position.
+    /// `unabridged` is `name` without the duplicate-word seam collapse — the
+    /// next fallback after `ancestor` (see `synthesize`). An array item or
+    /// map value shares its container's `(name, leaf, ancestor, unabridged)`
+    /// — it is the same position.
     fn lower_type(
         &mut self,
         location: &str,
         name: &str,
         leaf: &str,
         ancestor: &str,
+        unabridged: &str,
         raw: &'a RawSchema,
     ) -> Result<ir::Type, IngestError> {
         if let Some(reference) = &raw.reference {
@@ -489,13 +493,20 @@ impl<'a> DocLowerer<'a> {
                 name,
                 leaf,
                 ancestor,
+                unabridged,
                 real,
             )?;
             return Ok(nullable(ty));
         }
         if !raw.one_of.is_empty() || !raw.any_of.is_empty() {
-            let union = self.lower_union(location, name, leaf, ancestor, raw)?;
-            let id = self.synthesize(location, name, ancestor, ir::DeclKind::Union(union))?;
+            let union = self.lower_union(location, name, leaf, ancestor, unabridged, raw)?;
+            let id = self.synthesize(
+                location,
+                name,
+                ancestor,
+                unabridged,
+                ir::DeclKind::Union(union),
+            )?;
             return Ok(ir::Type::Decl(id));
         }
         if let Some(values) = &raw.enumeration {
@@ -506,7 +517,13 @@ impl<'a> DocLowerer<'a> {
             }
             let has_null = values.iter().any(serde_json::Value::is_null);
             let decl = self.lower_enum(location, values)?;
-            let id = self.synthesize(location, name, ancestor, ir::DeclKind::Enum(decl))?;
+            let id = self.synthesize(
+                location,
+                name,
+                ancestor,
+                unabridged,
+                ir::DeclKind::Enum(decl),
+            )?;
             // A `null` entry in the value list is the spec's way of
             // saying the field may be explicitly null (D-105, D-110).
             let ty = ir::Type::Decl(id);
@@ -522,7 +539,14 @@ impl<'a> DocLowerer<'a> {
                 .filter(|part| !is_annotation_only(part))
                 .collect();
             if let [part] = structural.as_slice() {
-                return self.lower_type(&format!("{location}.allOf"), name, leaf, ancestor, part);
+                return self.lower_type(
+                    &format!("{location}.allOf"),
+                    name,
+                    leaf,
+                    ancestor,
+                    unabridged,
+                    part,
+                );
             }
             if structural.is_empty() {
                 self.stats.json_value_sites += 1;
@@ -530,8 +554,14 @@ impl<'a> DocLowerer<'a> {
             }
         }
         if !raw.all_of.is_empty() {
-            let decl = self.lower_struct(location, name, leaf, ancestor, raw)?;
-            let id = self.synthesize(location, name, ancestor, ir::DeclKind::Struct(decl))?;
+            let decl = self.lower_struct(location, name, leaf, ancestor, unabridged, raw)?;
+            let id = self.synthesize(
+                location,
+                name,
+                ancestor,
+                unabridged,
+                ir::DeclKind::Struct(decl),
+            )?;
             return Ok(ir::Type::Decl(id));
         }
         match raw.schema_type.as_deref() {
@@ -539,13 +569,25 @@ impl<'a> DocLowerer<'a> {
                 let Some(items) = &raw.items else {
                     return Err(self.unsupported(location, "array schema has no `items`"));
                 };
-                let inner =
-                    self.lower_type(&format!("{location}.items"), name, leaf, ancestor, items)?;
+                let inner = self.lower_type(
+                    &format!("{location}.items"),
+                    name,
+                    leaf,
+                    ancestor,
+                    unabridged,
+                    items,
+                )?;
                 Ok(ir::Type::List(Box::new(inner)))
             }
             Some("object") if !raw.properties.is_empty() => {
-                let decl = self.lower_struct(location, name, leaf, ancestor, raw)?;
-                let id = self.synthesize(location, name, ancestor, ir::DeclKind::Struct(decl))?;
+                let decl = self.lower_struct(location, name, leaf, ancestor, unabridged, raw)?;
+                let id = self.synthesize(
+                    location,
+                    name,
+                    ancestor,
+                    unabridged,
+                    ir::DeclKind::Struct(decl),
+                )?;
                 Ok(ir::Type::Decl(id))
             }
             Some("object") => match raw.additional_properties.as_ref() {
@@ -555,6 +597,7 @@ impl<'a> DocLowerer<'a> {
                         name,
                         leaf,
                         ancestor,
+                        unabridged,
                         value,
                     )?;
                     Ok(ir::Type::Map(Box::new(inner)))
@@ -570,8 +613,14 @@ impl<'a> DocLowerer<'a> {
                 Err(self.unsupported(location, &format!("unknown schema type {other:?}")))
             }
             None if !raw.properties.is_empty() => {
-                let decl = self.lower_struct(location, name, leaf, ancestor, raw)?;
-                let id = self.synthesize(location, name, ancestor, ir::DeclKind::Struct(decl))?;
+                let decl = self.lower_struct(location, name, leaf, ancestor, unabridged, raw)?;
+                let id = self.synthesize(
+                    location,
+                    name,
+                    ancestor,
+                    unabridged,
+                    ir::DeclKind::Struct(decl),
+                )?;
                 Ok(ir::Type::Decl(id))
             }
             None => {
@@ -610,13 +659,16 @@ impl<'a> DocLowerer<'a> {
     /// is the same idea one layer up: unlike `leaf`, it is never reset — each
     /// field appends to it — so it always names the schema's true lineage,
     /// for `synthesize` to fall back on when the short `leaf`-based name
-    /// collides with an unrelated schema's.
+    /// collides with an unrelated schema's. Each field's `unabridged` name is
+    /// `leaf + FieldName` concatenated verbatim, before `synth_name` collapses
+    /// a duplicate word at the seam.
     fn lower_struct(
         &mut self,
         location: &str,
         name: &str,
         leaf: &str,
         ancestor: &str,
+        unabridged: &str,
         raw: &'a RawSchema,
     ) -> Result<ir::StructDecl, IngestError> {
         let mut properties: IndexMap<String, &'a RawSchema> = IndexMap::new();
@@ -634,11 +686,13 @@ impl<'a> DocLowerer<'a> {
             let child_leaf = pascal(&clean_name(&wire_name));
             let child_name = synth_name(leaf, &wire_name);
             let child_ancestor = synth_name(ancestor, &wire_name);
+            let child_unabridged = format!("{leaf}{child_leaf}");
             let mut ty = self.lower_type(
                 &prop_location,
                 &child_name,
                 &child_leaf,
                 &child_ancestor,
+                &child_unabridged,
                 prop,
             )?;
             // The tri-state is structural (FR-2.3, D-110): `nullable`
@@ -674,6 +728,7 @@ impl<'a> DocLowerer<'a> {
                 name,
                 leaf,
                 ancestor,
+                unabridged,
                 schema,
             )?),
         };
@@ -735,6 +790,7 @@ impl<'a> DocLowerer<'a> {
         name: &str,
         leaf: &str,
         ancestor: &str,
+        unabridged: &str,
         raw: &'a RawSchema,
     ) -> Result<ir::UnionDecl, IngestError> {
         if !raw.one_of.is_empty() && !raw.any_of.is_empty() {
@@ -757,11 +813,13 @@ impl<'a> DocLowerer<'a> {
                 let variant_name = format!("{name}Variant{index}");
                 let variant_leaf = format!("{leaf}Variant{index}");
                 let variant_ancestor = format!("{ancestor}Variant{index}");
+                let variant_unabridged = format!("{unabridged}Variant{index}");
                 let ty = self.lower_type(
                     &variant_location,
                     &variant_name,
                     &variant_leaf,
                     &variant_ancestor,
+                    &variant_unabridged,
                     variant,
                 )?;
                 (ty, self.type_const(variant, 0))
@@ -857,15 +915,25 @@ impl<'a> DocLowerer<'a> {
     /// `lower_struct`) — real structure the short `base` name dropped by
     /// design. When `base` is already taken by an unrelated schema (D-127: a
     /// genuine name coincidence, not a structural dupe — that's caught above),
-    /// retry with `ancestor` before falling back to a numeral. `ancestor`
-    /// equals `base` exactly at the shallowest synthesis depth (a component's
-    /// own direct field, or a top-level request/response body) — there is no
-    /// deeper lineage to fall back to, so a numeral is the honest name there.
+    /// retry with `ancestor`, then with `unabridged`, before falling back to
+    /// a numeral. `ancestor` equals `base` exactly at the shallowest synthesis
+    /// depth (a component's own direct field, or a top-level request/response
+    /// body) — there is no deeper lineage to fall back to there.
+    ///
+    /// `unabridged` is `base` *without* `synth_name`'s duplicate-word seam
+    /// collapse (`Group` + `group_type` → `GroupGroupType`, not `GroupType`).
+    /// The collapse is a readability nicety that can make a field's name
+    /// coincide with a sibling's (`Group.type` also seeds `GroupType`) or
+    /// with its owner's (`Watermark.watermark` → `Watermark`); the
+    /// unabridged concatenation is the structure the collapse dropped, so it
+    /// outranks a numeral. Where no collapse happened it equals `base`, and a
+    /// numeral really is the honest name.
     fn synthesize(
         &mut self,
         location: &str,
         base: &str,
         ancestor: &str,
+        unabridged: &str,
         kind: ir::DeclKind,
     ) -> Result<ir::DeclId, IngestError> {
         // Structural dedupe (D-127): an inline shape identical to one already
@@ -879,7 +947,7 @@ impl<'a> DocLowerer<'a> {
         if let Some(&existing) = self.shapes.get(&key) {
             return Ok(existing);
         }
-        // A location override — checked before the base/ancestor/numeral
+        // A location override — checked before the base/ancestor/unabridged/numeral
         // fallback below runs at all — always wins outright, same as
         // `curated_method_name`/`curated_body_seed` win over their derived
         // names. It's checked *after* structural dedupe (D-127) on purpose:
@@ -901,11 +969,13 @@ impl<'a> DocLowerer<'a> {
             }
             None => {
                 let mut name = base.to_string();
-                if self.used_names.contains(&name)
-                    && ancestor != base
-                    && !self.used_names.contains(ancestor)
-                {
-                    name = ancestor.to_string();
+                for fallback in [ancestor, unabridged] {
+                    if !self.used_names.contains(&name) {
+                        break;
+                    }
+                    if !self.used_names.contains(fallback) {
+                        name = fallback.to_string();
+                    }
                 }
                 let mut suffix = 2;
                 while self.used_names.contains(&name) {
@@ -1156,12 +1226,14 @@ impl<'a> DocLowerer<'a> {
             let Some(schema) = &resolved.schema else {
                 return Err(self.unsupported(&param_location, "parameter has no schema"));
             };
+            let parameter_leaf = pascal(&clean_name(wire_name));
             let parameter_seed = synth_name(owner, wire_name);
             let mut ty = self.lower_type(
                 &format!("{param_location}.schema"),
                 &parameter_seed,
-                &pascal(&clean_name(wire_name)),
+                &parameter_leaf,
                 &parameter_seed,
+                &format!("{owner}{parameter_leaf}"),
                 schema,
             )?;
             if !resolved.required {
@@ -1331,6 +1403,7 @@ impl<'a> DocLowerer<'a> {
                 &body_seed,
                 owner,
                 &body_seed,
+                &body_seed,
                 schema,
             )?,
             None => {
@@ -1389,6 +1462,7 @@ impl<'a> DocLowerer<'a> {
                                 &format!("{response_location}.content[{media_key:?}]"),
                                 &format!("{owner}Response"),
                                 owner,
+                                &format!("{owner}Response"),
                                 &format!("{owner}Response"),
                                 schema,
                             )?,

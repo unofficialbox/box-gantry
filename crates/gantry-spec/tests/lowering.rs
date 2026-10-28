@@ -446,6 +446,70 @@ fn synthesized_names_disambiguate_deterministically() {
 }
 
 #[test]
+fn seam_collapse_collisions_fall_back_to_the_unabridged_name_not_a_numeral() {
+    // `ShuttleJob.job_type` seeds `ShuttleJobJobType`, which the duplicate-word
+    // seam collapse shortens to `ShuttleJobType` — the same name `ShuttleJob.type`
+    // seeds. A component's own field has no deeper ancestor to fall back to,
+    // so the uncollapsed concatenation is the structural name, not
+    // `ShuttleJobType2`. Same for a field named after its owner
+    // (`Watermark.watermark` collapses to `Watermark`, the owner itself).
+    let lowering = lower_schemas(serde_json::json!({
+        "ShuttleJob": {
+            "type": "object",
+            "properties": {
+                "type": { "type": "string", "enum": ["shuttle_job"] },
+                "job_type": { "type": "string", "enum": ["transfer", "analysis"] }
+            }
+        },
+        "ShuttleJobCreateRequest": {
+            "type": "object",
+            "properties": {
+                "job_type": { "type": "string", "enum": ["transfer", "analysis"] }
+            }
+        },
+        "Watermark": {
+            "type": "object",
+            "properties": {
+                "watermark": { "type": "object", "properties": { "created_at": { "type": "string" } } }
+            }
+        }
+    }))
+    .unwrap();
+    let names: Vec<&str> = lowering
+        .program
+        .decls
+        .iter()
+        .map(|d| d.name.as_str())
+        .collect();
+    for numeral in ["ShuttleJobType2", "Watermark2"] {
+        assert!(
+            !names.contains(&numeral),
+            "an unabridged name was available; {numeral} must not be minted"
+        );
+    }
+    let enum_values = |name: &str| {
+        let ir::DeclKind::Enum(decl) = &find(&lowering.program, name).kind else {
+            panic!("{name} must be an enum")
+        };
+        decl.values.clone()
+    };
+    assert_eq!(enum_values("ShuttleJobType"), ["shuttle_job"]);
+    assert_eq!(enum_values("ShuttleJobJobType"), ["transfer", "analysis"]);
+    // The request's identical `job_type` enum still dedupes onto the
+    // meaningful one (D-127).
+    let request = struct_decl(find(&lowering.program, "ShuttleJobCreateRequest"));
+    let ir::Type::Optional(inner) = &request.fields[0].ty else {
+        panic!("job_type must be optional: {:?}", request.fields[0].ty)
+    };
+    let ir::Type::Decl(id) = **inner else {
+        panic!("job_type must reference a declaration: {inner:?}")
+    };
+    assert_eq!(lowering.program.decl(id).name.as_str(), "ShuttleJobJobType");
+    let watermark = struct_decl(find(&lowering.program, "WatermarkWatermark"));
+    assert_eq!(watermark.fields[0].wire_name, "created_at");
+}
+
+#[test]
 fn deep_collisions_fall_back_to_the_real_ancestor_not_a_numeral() {
     // Two unrelated schemas each have a `fields.options` shape two levels
     // deep. Immediate-context naming reduces both to the same short name

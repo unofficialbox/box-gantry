@@ -1,6 +1,7 @@
 //! The vendored real Box specs must always ingest cleanly — the earliest
 //! form of the "generate the real spec" primary CI signal (VR-1.1 lineage).
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use gantry_spec::SpecSet;
@@ -181,6 +182,99 @@ fn method_names_are_curated_not_collision_suffixed() {
             name
         );
     }
+}
+
+/// Synthesized type names fall back to real structure — the deeper ancestor,
+/// then the name before the duplicate-word seam collapse — before a numeric
+/// collision suffix, the type-name counterpart of the method-name guard above.
+#[test]
+fn type_names_fall_back_to_structure_not_collision_suffixed() {
+    let set = SpecSet::load(&[
+        fixture("openapi.json"),
+        fixture("openapi-v2025.0.json"),
+        fixture("openapi-v2026.0.json"),
+    ])
+    .unwrap();
+    let lowering = gantry_spec::lower(&set).unwrap();
+
+    let named_at = |location: &str| {
+        lowering
+            .synthesis_log
+            .iter()
+            .find(|(at, _)| at == location)
+            .map(|(_, name)| name.as_str())
+            .unwrap_or_else(|| panic!("nothing synthesized at {location}"))
+    };
+    // A field named `<owner>_type` beside the owner's own `type` used to lose
+    // the seam-collapsed `<Owner>Type` to its sibling and fall to `…Type2`; a
+    // field named after its owner collapsed onto the owner itself.
+    for (location, name) in [
+        ("components.schemas.Group.properties.type", "GroupType"),
+        (
+            "components.schemas.Group.properties.group_type",
+            "GroupGroupType",
+        ),
+        (
+            "components.schemas.Collection.properties.collection_type",
+            "CollectionCollectionType",
+        ),
+        (
+            "components.schemas.RetentionPolicy.properties.policy_type",
+            "RetentionPolicyPolicyType",
+        ),
+        (
+            "components.schemas.KeywordSkillCard.properties.skill_card_type",
+            "KeywordSkillCardSkillCardType",
+        ),
+        (
+            "components.schemas.CollaboratorVariable.properties.variable_type",
+            "CollaboratorVariableVariableType",
+        ),
+        (
+            "components.schemas.AutomateWorkflowAction.properties.action_type",
+            "AutomateWorkflowActionActionType",
+        ),
+        (
+            "components.schemas.Watermark.properties.watermark",
+            "WatermarkWatermark",
+        ),
+        (
+            "components.schemas.ResourceScope.properties.scope",
+            "ResourceScopeScope",
+        ),
+        (
+            "components.schemas.ShieldInformationBarrierReportDetails.properties.details",
+            "ShieldInformationBarrierReportDetailsDetails",
+        ),
+    ] {
+        assert_eq!(named_at(location), name, "name synthesized at {location}");
+    }
+
+    // The collision signature: `<Name><digits>` where `<Name>` itself is
+    // also taken. A structural name that merely ends in a digit (`…Variant0`,
+    // an `OAuth2` segment) has no such twin, so it doesn't trip this.
+    // `ClassificationTemplate2` is a different pattern — `$template` names a
+    // whole other component (`ClassificationTemplate`), with no collapse to
+    // undo and no deeper ancestor — and stays the one known numeral.
+    let names: HashSet<&str> = lowering
+        .synthesis_log
+        .iter()
+        .map(|(_, name)| name.as_str())
+        .collect();
+    let mut suffixed: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|name| {
+            let stem = name.trim_end_matches(|c: char| c.is_ascii_digit());
+            stem.len() < name.len() && names.contains(stem)
+        })
+        .collect();
+    suffixed.sort_unstable();
+    assert_eq!(
+        suffixed,
+        ["ClassificationTemplate2"],
+        "a synthesized type name fell through to a numeric collision suffix"
+    );
 }
 
 #[test]
