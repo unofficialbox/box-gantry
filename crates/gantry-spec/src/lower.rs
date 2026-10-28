@@ -28,6 +28,7 @@ use indexmap::IndexMap;
 
 use crate::error::IngestError;
 use crate::ingest::{Document, SpecSet};
+use crate::lock::{NamesLock, ShapeGroup};
 use crate::overrides::NameOverrides;
 use crate::raw::{RawAdditionalProperties, RawOperation, RawParameter, RawSchema};
 
@@ -51,6 +52,10 @@ pub struct Lowering {
     /// deliberately the raw per-document record, not reconciled against
     /// `program`'s post-merge decls.
     pub synthesis_log: Vec<(String, String)>,
+    /// The name every synthesized declaration was minted under, per API
+    /// version and minting location — what `gantry lock` writes, and what a
+    /// committed lock must equal (see [`crate::NamesLock`]).
+    pub names: NamesLock,
 }
 
 /// What the lowering produced — reported by `gantry check` so growth and
@@ -98,12 +103,42 @@ pub fn lower_with_overrides(
     set: &SpecSet,
     overrides: &NameOverrides,
 ) -> Result<Lowering, IngestError> {
+    // With a names lock, lower twice. Which locations share a synthesized
+    // declaration (D-127) depends only on shapes, never on names, so pass 1's
+    // groups are pass 2's; pass 2 then mints each group under its locked name.
+    let first = lower_pass(set, overrides, &HashMap::new())?;
+    let Some(lock) = &set.names_lock else {
+        return finish(first);
+    };
+    let preferred = lock.preferred(&first.groups);
+    finish(lower_pass(set, overrides, &preferred)?)
+}
+
+/// One lowering pass's raw output, before the version merge.
+struct Pass {
+    arena: Vec<Option<ir::Decl>>,
+    operations: Vec<ir::Operation>,
+    stats: LoweringStats,
+    synthesis_log: Vec<(String, String)>,
+    groups: Vec<ShapeGroup>,
+    names: NamesLock,
+}
+
+/// Lower every document once. `preferred` maps API version → minting
+/// location → the name a names lock assigns that location's group.
+fn lower_pass(
+    set: &SpecSet,
+    overrides: &NameOverrides,
+    preferred: &HashMap<String, HashMap<String, String>>,
+) -> Result<Pass, IngestError> {
     let mut arena: Vec<Option<ir::Decl>> = Vec::new();
     let mut operations: Vec<ir::Operation> = Vec::new();
     let mut stats = LoweringStats::default();
     let mut synthesis_log: Vec<(String, String)> = Vec::new();
     let mut consulted_components: HashSet<String> = HashSet::new();
     let mut consulted_locations: HashSet<String> = HashSet::new();
+    let mut groups: Vec<ShapeGroup> = Vec::new();
+    let mut names = NamesLock::default();
     for (index, doc) in set.documents.iter().enumerate() {
         let module = module_for(doc, index == 0)?;
         DocLowerer {
@@ -121,6 +156,10 @@ pub fn lower_with_overrides(
             synthesis_log: &mut synthesis_log,
             consulted_components: &mut consulted_components,
             consulted_locations: &mut consulted_locations,
+            preferred: preferred.get(&doc.api_version),
+            groups: &mut groups,
+            group_of: HashMap::new(),
+            names: &mut names,
         }
         .lower_document()?;
     }
@@ -147,6 +186,26 @@ pub fn lower_with_overrides(
             }
         }
     }
+    Ok(Pass {
+        arena,
+        operations,
+        stats,
+        synthesis_log,
+        groups,
+        names,
+    })
+}
+
+/// Merge versions and count the final declarations.
+fn finish(pass: Pass) -> Result<Lowering, IngestError> {
+    let Pass {
+        arena,
+        operations,
+        mut stats,
+        synthesis_log,
+        groups: _,
+        names,
+    } = pass;
     let decls: Vec<ir::Decl> = arena
         .into_iter()
         .map(|slot| slot.expect("every predeclared schema is filled by lower_document"))
@@ -176,6 +235,7 @@ pub fn lower_with_overrides(
         program,
         stats,
         synthesis_log,
+        names,
     })
 }
 
@@ -239,6 +299,16 @@ struct DocLowerer<'a> {
     /// half of the unused-override check in `lower_with_overrides`.
     consulted_components: &'a mut HashSet<String>,
     consulted_locations: &'a mut HashSet<String>,
+    /// Names-lock pass 2: the locked name for each group's minting location
+    /// in this document's API version (see [`crate::NamesLock`]).
+    preferred: Option<&'a HashMap<String, String>>,
+    /// Every dedupe group, minting location first — pass 1's input to the
+    /// lock, shared across documents.
+    groups: &'a mut Vec<ShapeGroup>,
+    /// This document's synthesized decl → its index in `groups`.
+    group_of: HashMap<ir::DeclId, usize>,
+    /// The name each synthesized decl was minted under, per version.
+    names: &'a mut NamesLock,
 }
 
 impl<'a> DocLowerer<'a> {
@@ -391,7 +461,7 @@ impl<'a> DocLowerer<'a> {
                 &format!("{location}.{combinator}[{index}]"),
                 name,
                 &leaf,
-                &leaf,
+                &Lineage::root(&leaf),
                 real,
             )?;
             self.stats.aliases += 1;
@@ -399,7 +469,7 @@ impl<'a> DocLowerer<'a> {
         }
         if !raw.one_of.is_empty() || !raw.any_of.is_empty() {
             return self
-                .lower_union(location, &leaf, &leaf, &leaf, raw)
+                .lower_union(location, &leaf, &leaf, &Lineage::root(&leaf), raw)
                 .map(ir::DeclKind::Union);
         }
         if let Some(values) = &raw.enumeration {
@@ -427,11 +497,11 @@ impl<'a> DocLowerer<'a> {
         }
         if !raw.all_of.is_empty() || is_object(raw) {
             return self
-                .lower_struct(location, name, &leaf, &leaf, raw)
+                .lower_struct(location, name, &leaf, &Lineage::root(&leaf), raw)
                 .map(ir::DeclKind::Struct);
         }
         // A named primitive (or a schema that says nothing).
-        let ty = self.lower_type(location, &leaf, &leaf, &leaf, raw)?;
+        let ty = self.lower_type(location, &leaf, &leaf, &Lineage::root(&leaf), raw)?;
         self.stats.aliases += 1;
         Ok(ir::DeclKind::Alias(ty))
     }
@@ -456,7 +526,7 @@ impl<'a> DocLowerer<'a> {
         location: &str,
         name: &str,
         leaf: &str,
-        ancestor: &str,
+        ancestor: &Lineage,
         raw: &'a RawSchema,
     ) -> Result<ir::Type, IngestError> {
         if let Some(reference) = &raw.reference {
@@ -616,7 +686,7 @@ impl<'a> DocLowerer<'a> {
         location: &str,
         name: &str,
         leaf: &str,
-        ancestor: &str,
+        ancestor: &Lineage,
         raw: &'a RawSchema,
     ) -> Result<ir::StructDecl, IngestError> {
         let mut properties: IndexMap<String, &'a RawSchema> = IndexMap::new();
@@ -633,7 +703,7 @@ impl<'a> DocLowerer<'a> {
             let name = identifier(self.doc, &prop_location, &clean_name(&wire_name))?;
             let child_leaf = pascal(&clean_name(&wire_name));
             let child_name = synth_name(leaf, &wire_name);
-            let child_ancestor = synth_name(ancestor, &wire_name);
+            let child_ancestor = ancestor.field(&wire_name);
             let mut ty = self.lower_type(
                 &prop_location,
                 &child_name,
@@ -734,7 +804,7 @@ impl<'a> DocLowerer<'a> {
         location: &str,
         name: &str,
         leaf: &str,
-        ancestor: &str,
+        ancestor: &Lineage,
         raw: &'a RawSchema,
     ) -> Result<ir::UnionDecl, IngestError> {
         if !raw.one_of.is_empty() && !raw.any_of.is_empty() {
@@ -756,7 +826,7 @@ impl<'a> DocLowerer<'a> {
             } else {
                 let variant_name = format!("{name}Variant{index}");
                 let variant_leaf = format!("{leaf}Variant{index}");
-                let variant_ancestor = format!("{ancestor}Variant{index}");
+                let variant_ancestor = ancestor.suffixed(&format!("Variant{index}"));
                 let ty = self.lower_type(
                     &variant_location,
                     &variant_name,
@@ -865,7 +935,7 @@ impl<'a> DocLowerer<'a> {
         &mut self,
         location: &str,
         base: &str,
-        ancestor: &str,
+        ancestor: &Lineage,
         kind: ir::DeclKind,
     ) -> Result<ir::DeclId, IngestError> {
         // Structural dedupe (D-127): an inline shape identical to one already
@@ -877,6 +947,9 @@ impl<'a> DocLowerer<'a> {
         // one shape collapse.
         let key = format!("{:?}", kind);
         if let Some(&existing) = self.shapes.get(&key) {
+            if let Some(&group) = self.group_of.get(&existing) {
+                self.groups[group].members.push(location.to_string());
+            }
             return Ok(existing);
         }
         // A location override — checked before the base/ancestor/numeral
@@ -887,8 +960,10 @@ impl<'a> DocLowerer<'a> {
         // its own decl to begin with, so an override on it would be
         // unreachable — the "unused override" check below catches that
         // honestly rather than silently accepting a key that can't apply.
-        let name = match self.overrides.location(location) {
-            Some(overridden) => {
+        // Then a names-lock entry for this group (pass 2), then derivation.
+        let locked = self.preferred.and_then(|p| p.get(location)).cloned();
+        let name = match (self.overrides.location(location), locked) {
+            (Some(overridden), _) => {
                 self.consulted_locations.insert(location.to_string());
                 if self.used_names.contains(overridden) {
                     return Err(IngestError::OverrideCollision {
@@ -899,13 +974,25 @@ impl<'a> DocLowerer<'a> {
                 }
                 overridden.to_string()
             }
-            None => {
+            (None, Some(locked)) => {
+                if self.used_names.contains(&locked) {
+                    return Err(IngestError::LockCollision {
+                        version: self.doc.api_version.clone(),
+                        location: location.to_string(),
+                        name: locked,
+                    });
+                }
+                locked
+            }
+            (None, None) => {
+                // Real structure before a numeral: the collapsed lineage, then
+                // the literal one — whose kept seam is the very word that
+                // distinguishes `Group.group_type` from `Group.type`.
                 let mut name = base.to_string();
-                if self.used_names.contains(&name)
-                    && ancestor != base
-                    && !self.used_names.contains(ancestor)
-                {
-                    name = ancestor.to_string();
+                for fallback in [&ancestor.collapsed, &ancestor.literal] {
+                    if self.used_names.contains(&name) && !self.used_names.contains(fallback) {
+                        name = fallback.clone();
+                    }
                 }
                 let mut suffix = 2;
                 while self.used_names.contains(&name) {
@@ -922,6 +1009,16 @@ impl<'a> DocLowerer<'a> {
         let id = self.next_id();
         self.arena.push(Some(decl));
         self.shapes.insert(key, id);
+        self.group_of.insert(id, self.groups.len());
+        self.groups.push(ShapeGroup {
+            version: self.doc.api_version.clone(),
+            members: vec![location.to_string()],
+        });
+        self.names
+            .versions
+            .entry(self.doc.api_version.clone())
+            .or_default()
+            .insert(location.to_string(), name);
         self.stats.synthesized += 1;
         Ok(id)
     }
@@ -1161,7 +1258,7 @@ impl<'a> DocLowerer<'a> {
                 &format!("{param_location}.schema"),
                 &parameter_seed,
                 &pascal(&clean_name(wire_name)),
-                &parameter_seed,
+                &Lineage::root(owner).field(wire_name),
                 schema,
             )?;
             if !resolved.required {
@@ -1330,7 +1427,7 @@ impl<'a> DocLowerer<'a> {
                 &format!("{body_location}.content[{media_key:?}]"),
                 &body_seed,
                 owner,
-                &body_seed,
+                &Lineage::root(&body_seed),
                 schema,
             )?,
             None => {
@@ -1389,7 +1486,7 @@ impl<'a> DocLowerer<'a> {
                                 &format!("{response_location}.content[{media_key:?}]"),
                                 &format!("{owner}Response"),
                                 owner,
-                                &format!("{owner}Response"),
+                                &Lineage::root(&format!("{owner}Response")),
                                 schema,
                             )?,
                             None => {
@@ -1959,6 +2056,41 @@ fn method_name(short_tokens: &[String], keep_all_ids: bool, drop_trailing_id: bo
         out.push("call".to_string());
     }
     out.join("_")
+}
+
+/// A schema position's full, never-reset lineage — the fallback `synthesize`
+/// tries when the short immediate-context name collides (D-127) — in two
+/// spellings: `collapsed` folds [`synth_name`]'s duplicate-word seams like the
+/// short name does; `literal` keeps every seam, because the folded word can be
+/// the only thing distinguishing two fields (`Group.type` vs
+/// `Group.group_type`).
+#[derive(Debug, Clone)]
+struct Lineage {
+    collapsed: String,
+    literal: String,
+}
+
+impl Lineage {
+    fn root(name: &str) -> Self {
+        Self {
+            collapsed: name.to_string(),
+            literal: name.to_string(),
+        }
+    }
+
+    fn field(&self, wire_name: &str) -> Self {
+        Self {
+            collapsed: synth_name(&self.collapsed, wire_name),
+            literal: format!("{}{}", self.literal, pascal(&clean_name(wire_name))),
+        }
+    }
+
+    fn suffixed(&self, suffix: &str) -> Self {
+        Self {
+            collapsed: format!("{}{suffix}", self.collapsed),
+            literal: format!("{}{suffix}", self.literal),
+        }
+    }
 }
 
 /// `Owner` + PascalCase(property): `File` + `shared_link` → `FileSharedLink`.

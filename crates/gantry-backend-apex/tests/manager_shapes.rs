@@ -355,9 +355,9 @@ fn real_spec_managers() -> Vec<GeneratedFile> {
 fn the_real_spec_yields_one_class_per_manager_and_a_method_per_operation() {
     let files = real_spec_managers();
 
-    // 86 managers + the Box client + 3 runtime stubs. Pagination adds no
+    // 88 managers + the Box client + 3 runtime stubs. Pagination adds no
     // classes — the base method's envelope is the page (D-131).
-    assert_eq!(files.len(), 86 + 1 + 3);
+    assert_eq!(files.len(), 88 + 1 + 3);
     let managers = files
         .iter()
         .filter(|f| {
@@ -366,14 +366,14 @@ fn the_real_spec_yields_one_class_per_manager_and_a_method_per_operation() {
         })
         .filter(|f| f.content.contains("with sharing class"))
         .count();
-    assert_eq!(managers, 86, "one class per manager");
+    assert_eq!(managers, 88, "one class per manager");
 
-    // One request per operation → 339 methods across all managers.
+    // One request per operation → 381 methods across all managers.
     let methods: usize = files
         .iter()
         .map(|f| f.content.matches("new BoxRequest();").count())
         .sum();
-    assert_eq!(methods, 339, "one method per operation");
+    assert_eq!(methods, 381, "one method per operation");
 
     // Every method and class name obeys the 40-char identifier limit.
     let ModuleSystem::Flat { identifier_limit } = apex().modules else {

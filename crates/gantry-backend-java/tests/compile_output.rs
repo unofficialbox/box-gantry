@@ -419,7 +419,7 @@ fn paginators_are_generated() {
         .collect();
     assert_eq!(
         paginators.len(),
-        64,
+        75,
         "expected one paginator per paged operation on the real spec"
     );
     for file in &paginators {
