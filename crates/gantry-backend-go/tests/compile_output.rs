@@ -56,7 +56,7 @@ fn generation_is_deterministic() {
         }
     }
     // Pagination iterators are synthesized for the paged operations
-    // (FR-7.3, TR-Go.4): 54 marker + 10 offset. Pinned so the count only
+    // (FR-7.3, TR-Go.4): 65 marker + 10 offset. Pinned so the count only
     // moves deliberately with the spec (VR-6 lineage). Option A: the exported
     // list method *is* the iterator (returns `iter.Seq2[*T, error]`), so count
     // that return type rather than a `Paginate` suffix.
@@ -65,7 +65,7 @@ fn generation_is_deterministic() {
         .filter(|f| f.path.starts_with("managers/"))
         .map(|f| f.content.matches(") iter.Seq2[*").count())
         .sum();
-    assert_eq!(paginators, 64, "expected 64 pagination iterators");
+    assert_eq!(paginators, 75, "expected 75 pagination iterators");
     let offset_iters: usize = once
         .iter()
         .filter(|f| f.path.starts_with("managers/"))
