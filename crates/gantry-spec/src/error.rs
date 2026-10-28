@@ -151,4 +151,31 @@ pub enum IngestError {
         key: String,
         value: String,
     },
+
+    #[error("{file}: cannot read the names lock: {source}")]
+    NamesLockIo {
+        file: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("{file}: malformed names lock: {source}")]
+    NamesLockParse {
+        file: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+
+    /// A locked name is already taken in its document — e.g. Box added a
+    /// component with that exact name. Loud: regenerate the lock (`gantry
+    /// lock`) and review the rename, rather than fall back to a numeral.
+    #[error(
+        "names lock: {location:?} (API {version}) is locked as {name:?}, which is already taken; \
+         run `gantry lock` and review the rename"
+    )]
+    LockCollision {
+        version: String,
+        location: String,
+        name: String,
+    },
 }

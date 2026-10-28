@@ -72,8 +72,15 @@ jobs:
           set -euo pipefail
           up="$RUNNER_TEMP/upstream"
 
+          # Build first so the toolchain install chatter stays in the log, out
+          # of the report.
+          cargo build -q -p gantry-cli
+          # The names lock is part of the spec set; the upstream side needs it
+          # too, or every locked name an upstream addition would steal shows
+          # up as a rename.
+          cp fixtures/specs/names.lock "$up/"
           set +e
-          cargo run -q -p gantry-cli -- diff \
+          ./target/debug/gantry diff \
             --from fixtures/specs/openapi.json fixtures/specs/openapi-v2025.0.json fixtures/specs/openapi-v2026.0.json \
             --to "$up/openapi.json" "$up/openapi-v2025.0.json" "$up/openapi-v2026.0.json" \
             > "$RUNNER_TEMP/diff.txt" 2>&1

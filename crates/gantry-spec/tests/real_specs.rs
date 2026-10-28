@@ -49,6 +49,19 @@ fn the_full_real_spec_set_ingests() {
     // pinned so growth and free-form holes only change deliberately (NF-1,
     // VR-6 lineage).
     let lowering = gantry_spec::lower(&set).expect("the vendored Box specs must lower");
+    // The committed names lock matches what lowering produces — a refresh that
+    // adds or moves a synthesized name regenerates it (`gantry lock`) in the
+    // same, reviewed change (fixtures/specs/README.md).
+    let lock = set
+        .names_lock
+        .as_ref()
+        .expect("fixtures/specs/names.lock is committed");
+    let versions = set.documents.iter().map(|d| d.api_version.as_str());
+    let drift = lock.restricted_to(versions).drift(&lowering.names);
+    assert!(
+        drift.is_clean(),
+        "names.lock is out of date: {drift:?}; run `gantry lock`"
+    );
     // After structural dedupe (D-127) identical inline shapes collapse, the
     // version merge (D-190) collapses 21 same-named cross-version schemas (16
     // structs + 5 enums) into one superset each, stripping the auto-set
@@ -200,4 +213,33 @@ fn the_spec_fingerprint_is_deterministic_and_order_sensitive() {
     assert_ne!(load(&base_then_2025), load(&reversed));
     // Adding a document changes it.
     assert_ne!(load(&base_then_2025), load(&[fixture("openapi.json")]));
+}
+
+/// Synthesized type names never fall through to a numeral collision suffix
+/// where real structure can tell them apart (D-127's fallback chain). The one
+/// honest exception: `Classification.$template` is shadowed by a real
+/// component literally named `ClassificationTemplate`, so no structural
+/// spelling is free. A union's `VariantN` is a position, not a collision
+/// suffix.
+#[test]
+fn synthesized_names_are_not_collision_suffixed() {
+    let set = SpecSet::load(&[
+        fixture("openapi.json"),
+        fixture("openapi-v2025.0.json"),
+        fixture("openapi-v2026.0.json"),
+    ])
+    .unwrap();
+    let lowering = gantry_spec::lower(&set).unwrap();
+    let suffixed: Vec<&str> = lowering
+        .synthesis_log
+        .iter()
+        .map(|(_, name)| name.as_str())
+        .filter(|name| {
+            let stem = name.trim_end_matches(|c: char| c.is_ascii_digit());
+            stem.len() < name.len()
+                && stem.ends_with(|c: char| c.is_ascii_lowercase())
+                && !stem.ends_with("Variant")
+        })
+        .collect();
+    assert_eq!(suffixed, ["ClassificationTemplate2"]);
 }
