@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use gantry_spec::SpecSet;
+use gantry_verify::scratch::ScratchDir;
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -222,9 +223,7 @@ fn the_generated_model_layer_compiles_under_javac() {
         eprintln!("SKIPPED: JDK 26+ not available; CI installs one and runs this gate");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("gantry-java-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-java");
     let mut sources = write_all(&dir, &generate());
     // The SDK — virtual-thread chunked upload included — is preview-free; only
     // the opt-in BoxStructuredChunkedUpload (structured concurrency, a preview
@@ -303,7 +302,6 @@ fn the_generated_model_layer_compiles_under_javac() {
         String::from_utf8_lossy(&javac.stdout),
         String::from_utf8_lossy(&javac.stderr)
     );
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         ok,
         "javac --release 26 -Xlint:all -Werror failed (VR-1.6):\n{log}"
@@ -324,9 +322,7 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
         eprintln!("SKIPPED: JDK 26+ not available; CI installs one and runs this gate");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("gantry-java-swap-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-java-swap");
     let mut sources = write_all(&dir, &generate());
     // The SDK — virtual-thread chunked upload included — is preview-free; only
     // the opt-in BoxStructuredChunkedUpload (structured concurrency, a preview
@@ -399,7 +395,6 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
         String::from_utf8_lossy(&javac.stdout),
         String::from_utf8_lossy(&javac.stderr)
     );
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         ok,
         "the generated SDK failed to compile against the real runtime (FR-5.2):\n{log}"
@@ -556,9 +551,7 @@ fn the_generated_behavioral_tests_pass_under_java() {
         "the generated behavioral-test class should be emitted"
     );
 
-    let dir = std::env::temp_dir().join(format!("gantry-java-bt-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-java-bt");
     let mut sources = write_all(&dir, &files);
     // The SDK is preview-free — exclude the one opt-in preview class (D-183).
     sources.retain(|p| !p.ends_with("BoxStructuredChunkedUpload.java"));
@@ -600,7 +593,6 @@ fn the_generated_behavioral_tests_pass_under_java() {
     let stdout = String::from_utf8_lossy(&run.stdout);
     let stderr = String::from_utf8_lossy(&run.stderr);
     let ok = run.status.success();
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         ok && stdout.contains("OK:"),
         "generated behavioral tests failed (FR-7.8, VR-4):\n{stdout}{stderr}"
@@ -620,9 +612,7 @@ fn the_generated_sdk_packages_for_publish() {
         eprintln!("SKIPPED: Maven or JDK 26 not available; CI installs both and runs this gate");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("gantry-java-pkg-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-java-pkg");
     // Write the whole tree (Java + docs + pom.xml + README.md).
     for file in &generate() {
         let path = dir.join(&file.path);
@@ -669,7 +659,6 @@ fn the_generated_sdk_packages_for_publish() {
         .map(String::as_str)
         .filter(|j| !target.join(j).exists())
         .collect();
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         ok && missing.is_empty(),
         "mvn package failed to produce a publishable artifact (NF-8); missing {missing:?}:\n{log}"
@@ -707,10 +696,7 @@ fn run_chunked_smoke(class: &str, preview: bool) {
         "{class} should be emitted for the real spec"
     );
 
-    let dir =
-        std::env::temp_dir().join(format!("gantry-java-chunk-{class}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new(&format!("gantry-java-chunk-{class}"));
     let mut sources = write_all(&dir, &files);
     if !preview {
         // Without the flag the preview class can't compile — and mustn't be needed.
@@ -782,7 +768,6 @@ fn run_chunked_smoke(class: &str, preview: bool) {
     let stdout = String::from_utf8_lossy(&run.stdout);
     let stderr = String::from_utf8_lossy(&run.stderr);
     let ok = run.status.success();
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         ok && stdout.contains("CHUNKED_OK"),
         "chunked upload did not complete ({class}, D-183):\n{stdout}{stderr}"

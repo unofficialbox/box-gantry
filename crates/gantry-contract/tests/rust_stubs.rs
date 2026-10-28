@@ -4,6 +4,8 @@
 
 use std::process::Command;
 
+use gantry_verify::scratch::ScratchDir;
+
 #[test]
 fn rust_stubs_render_deterministically() {
     let manifest = gantry_manifest::rust();
@@ -40,8 +42,7 @@ fn rust_stubs_compile_and_are_rustfmt_clean() {
         eprintln!("SKIPPED: cargo/rustfmt not available; CI runs this gate");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("gantry-rust-stubs-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = ScratchDir::new("gantry-rust-stubs");
     std::fs::create_dir_all(dir.join("src")).unwrap();
     let source = gantry_contract::rust_stubs(&gantry_contract::V1, &gantry_manifest::rust());
     std::fs::write(dir.join("src/runtime.rs"), &source).unwrap();

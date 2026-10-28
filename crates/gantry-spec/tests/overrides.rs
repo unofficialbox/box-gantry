@@ -2,12 +2,15 @@
 //! into every field synthesized under it; a location override replaces
 //! exactly one site; a stale or colliding override fails loudly (NF-1).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gantry_ir as ir;
 use gantry_spec::{IngestError, Lowering, NameOverrides, SpecSet};
+use gantry_verify::scratch::ScratchDir;
 
-fn write_spec(schemas: serde_json::Value) -> PathBuf {
+const SCRATCH: &str = "gantry-overrides-test";
+
+fn write_spec(dir: &Path, schemas: serde_json::Value) -> PathBuf {
     let spec = serde_json::json!({
         "openapi": "3.0.2",
         "info": { "title": "Box Platform API", "version": "2024.0" },
@@ -25,25 +28,20 @@ fn write_spec(schemas: serde_json::Value) -> PathBuf {
         },
         "components": { "schemas": schemas }
     });
-    let dir = std::env::temp_dir().join(format!(
-        "gantry-overrides-test-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("spec.json");
     std::fs::write(&file, serde_json::to_string_pretty(&spec).unwrap()).unwrap();
     file
 }
 
-fn write_overrides(dir_hint: &std::path::Path, overrides: serde_json::Value) -> PathBuf {
-    let file = dir_hint.with_file_name("overrides.json");
+fn write_overrides(dir: &Path, overrides: serde_json::Value) -> PathBuf {
+    let file = dir.join("overrides.json");
     std::fs::write(&file, serde_json::to_string_pretty(&overrides).unwrap()).unwrap();
     file
 }
 
 fn lower(schemas: serde_json::Value, overrides: &NameOverrides) -> Result<Lowering, IngestError> {
-    let spec_file = write_spec(schemas);
+    let dir = ScratchDir::new(SCRATCH);
+    let spec_file = write_spec(&dir, schemas);
     let set = SpecSet::load(&[spec_file]).unwrap();
     gantry_spec::lower_with_overrides(&set, overrides)
 }
@@ -89,9 +87,10 @@ fn widget_schemas() -> serde_json::Value {
 
 #[test]
 fn a_component_override_cascades_to_every_field_synthesized_under_it() {
-    let spec_file = write_spec(widget_schemas());
+    let dir = ScratchDir::new(SCRATCH);
+    let spec_file = write_spec(&dir, widget_schemas());
     let overrides_file = write_overrides(
-        &spec_file,
+        &dir,
         serde_json::json!({ "components": { "Widget": "Wdg" } }),
     );
     let overrides = NameOverrides::load(&overrides_file).unwrap();
@@ -118,9 +117,10 @@ fn a_component_override_cascades_to_every_field_synthesized_under_it() {
 
 #[test]
 fn a_location_override_replaces_exactly_one_site() {
-    let spec_file = write_spec(widget_schemas());
+    let dir = ScratchDir::new(SCRATCH);
+    let spec_file = write_spec(&dir, widget_schemas());
     let overrides_file = write_overrides(
-        &spec_file,
+        &dir,
         serde_json::json!({
             "locations": {
                 "components.schemas.Widget.properties.budget_report": "Report"
@@ -139,8 +139,9 @@ fn a_location_override_replaces_exactly_one_site() {
 
 #[test]
 fn an_override_key_that_matches_nothing_is_a_loud_error() {
+    let dir = ScratchDir::new(SCRATCH);
     let overrides_file = write_overrides(
-        &write_spec(widget_schemas()),
+        &dir,
         serde_json::json!({ "components": { "NoSuchSchema": "Whatever" } }),
     );
     let overrides = NameOverrides::load(&overrides_file).unwrap();
@@ -162,8 +163,9 @@ fn an_override_value_colliding_with_an_existing_name_is_a_loud_error() {
         "type": "object",
         "properties": { "x": { "type": "string" } }
     });
+    let dir = ScratchDir::new(SCRATCH);
     let overrides_file = write_overrides(
-        &write_spec(schemas.clone()),
+        &dir,
         serde_json::json!({
             "locations": {
                 "components.schemas.Widget.properties.budget_report": "Taken"
@@ -180,8 +182,9 @@ fn an_override_value_colliding_with_an_existing_name_is_a_loud_error() {
 
 #[test]
 fn an_invalid_override_value_fails_at_load_time() {
+    let dir = ScratchDir::new(SCRATCH);
     let overrides_file = write_overrides(
-        &write_spec(widget_schemas()),
+        &dir,
         serde_json::json!({ "components": { "Widget": "not a valid identifier" } }),
     );
     let err = NameOverrides::load(&overrides_file).unwrap_err();
@@ -195,7 +198,8 @@ fn an_invalid_override_value_fails_at_load_time() {
 fn empty_overrides_behaves_identically_to_no_overrides_flag() {
     let with_empty = lower(widget_schemas(), &NameOverrides::empty()).unwrap();
     let plain = {
-        let spec_file = write_spec(widget_schemas());
+        let dir = ScratchDir::new(SCRATCH);
+        let spec_file = write_spec(&dir, widget_schemas());
         let set = SpecSet::load(&[spec_file]).unwrap();
         gantry_spec::lower(&set).unwrap()
     };

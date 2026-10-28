@@ -701,11 +701,25 @@ fn verify(specs: &[PathBuf], target: &str) -> ExitCode {
         Ok(files) => files,
         Err(code) => return code,
     };
-    let dir = std::env::temp_dir().join(format!("gantry-verify-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    if let Err(err) = write_pairs(&dir, &files) {
+    // Removed when verification passes; a failure keeps the generated tree
+    // to inspect.
+    let dir = gantry_verify::scratch::ScratchDir::new("gantry-verify");
+    if let Err(code) = verify_in(&dir, target, &files) {
+        eprintln!("note: generated output kept in {}", dir.keep().display());
+        return code;
+    }
+    println!(
+        "ok  verified: {count} generated file(s) compile clean",
+        count = files.len()
+    );
+    ExitCode::SUCCESS
+}
+
+/// Write `files` into `dir` and run the target's toolchain over them.
+fn verify_in(dir: &Path, target: &str, files: &[(String, String)]) -> Result<(), ExitCode> {
+    if let Err(err) = write_pairs(dir, files) {
         eprintln!("error: cannot write output: {err}");
-        return ExitCode::from(exit_codes::ENGINE_BUG);
+        return Err(ExitCode::from(exit_codes::ENGINE_BUG));
     }
 
     // The compile loop: the target's real toolchain is the oracle (Go → VR-1.1;
@@ -737,13 +751,13 @@ fn verify(specs: &[PathBuf], target: &str) -> ExitCode {
     for (label, program, args) in steps {
         let output = match std::process::Command::new(program)
             .args(*args)
-            .current_dir(&dir)
+            .current_dir(dir)
             .output()
         {
             Ok(output) => output,
             Err(err) => {
                 eprintln!("error: cannot run {label}: {err}");
-                return ExitCode::from(exit_codes::VERIFICATION_FAILURE);
+                return Err(ExitCode::from(exit_codes::VERIFICATION_FAILURE));
             }
         };
         if !output.status.success() {
@@ -752,7 +766,7 @@ fn verify(specs: &[PathBuf], target: &str) -> ExitCode {
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
-            return ExitCode::from(exit_codes::VERIFICATION_FAILURE);
+            return Err(ExitCode::from(exit_codes::VERIFICATION_FAILURE));
         }
         println!("ok  {label} clean");
     }
@@ -761,7 +775,7 @@ fn verify(specs: &[PathBuf], target: &str) -> ExitCode {
     if target == "go" {
         match std::process::Command::new("gofmt")
             .arg("-l")
-            .arg(&dir)
+            .arg(dir)
             .output()
         {
             Ok(output) if output.status.success() && output.stdout.is_empty() => {
@@ -772,19 +786,15 @@ fn verify(specs: &[PathBuf], target: &str) -> ExitCode {
                     "error: gofmt wants changes (G-17) in:\n{}",
                     String::from_utf8_lossy(&output.stdout)
                 );
-                return ExitCode::from(exit_codes::VERIFICATION_FAILURE);
+                return Err(ExitCode::from(exit_codes::VERIFICATION_FAILURE));
             }
             Err(err) => {
                 eprintln!("error: cannot run gofmt: {err}");
-                return ExitCode::from(exit_codes::VERIFICATION_FAILURE);
+                return Err(ExitCode::from(exit_codes::VERIFICATION_FAILURE));
             }
         }
     }
-    println!(
-        "ok  verified: {count} generated file(s) compile clean",
-        count = files.len()
-    );
-    ExitCode::SUCCESS
+    Ok(())
 }
 
 fn check(specs: &[PathBuf]) -> ExitCode {

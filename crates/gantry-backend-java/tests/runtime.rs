@@ -13,6 +13,8 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use gantry_verify::scratch::ScratchDir;
+
 fn runtime_src() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
         "../../runtimes/java/gantryruntime/src/main/java/dev/unofficialbox/runtime/Runtime.java",
@@ -60,9 +62,7 @@ fn the_runtime_compiles_standalone() {
         eprintln!("SKIPPED: JDK 26+ not available; CI installs one and runs this gate");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("gantry-java-rt-std-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-java-rt-std");
     let javac = Command::new("javac")
         .arg("--release")
         .arg("26")
@@ -75,7 +75,6 @@ fn the_runtime_compiles_standalone() {
         .unwrap();
     let ok = javac.status.success();
     let log = String::from_utf8_lossy(&javac.stderr).into_owned();
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(ok, "the runtime failed the strict javac gate:\n{log}");
 }
 
@@ -285,9 +284,7 @@ fn the_runtime_retries_and_authenticates() {
         eprintln!("SKIPPED: JDK 26+ not available; CI installs one and runs this gate");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("gantry-java-rt-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-java-rt");
     let driver = dir.join("RuntimeSmoke.java");
     std::fs::write(&driver, DRIVER).unwrap();
     let classes = dir.join("classes");
@@ -318,7 +315,6 @@ fn the_runtime_retries_and_authenticates() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&run.stdout);
     let stderr = String::from_utf8_lossy(&run.stderr);
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         run.status.success() && stdout.contains("RUNTIME_OK"),
         "runtime behavior check failed:\nstdout: {stdout}\nstderr: {stderr}"
@@ -391,9 +387,7 @@ fn the_live_smoke_compiles_and_runs_when_credentialed() {
         eprintln!("SKIPPED: JDK 26+ not available; CI installs one and runs this gate");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("gantry-java-live-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-java-live");
     let smoke = dir.join("LiveSmoke.java");
     std::fs::write(&smoke, LIVE_SMOKE).unwrap();
     let classes = dir.join("classes");
@@ -420,7 +414,6 @@ fn the_live_smoke_compiles_and_runs_when_credentialed() {
         .iter()
         .any(|var| std::env::var(var).is_ok_and(|v| !v.is_empty()));
     if !credentialed {
-        let _ = std::fs::remove_dir_all(&dir);
         eprintln!("SKIPPED live run: no BOX_* credentials in the environment (compiled clean)");
         return;
     }
@@ -433,7 +426,6 @@ fn the_live_smoke_compiles_and_runs_when_credentialed() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&run.stdout);
     let stderr = String::from_utf8_lossy(&run.stderr);
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         run.status.success() && stdout.contains("LIVESMOKE_OK"),
         "live smoke failed:\nstdout: {stdout}\nstderr: {stderr}"

@@ -10,6 +10,7 @@ use gantry_ir::{
     Decl, DeclId, DeclKind, Extensibility, Field, Identifier, ModulePath, Program, StructDecl,
     Type, UnionDecl, UnionVariant,
 };
+use gantry_verify::scratch::ScratchDir;
 
 fn ident(s: &str) -> Identifier {
     Identifier::new(s).unwrap()
@@ -124,9 +125,7 @@ fn generated_unions_roundtrip() {
     let build = gantry_backend_rust::BuildInfo::new("synthetic");
     let files = gantry_backend_rust::generate(&analysis, &gantry_manifest::rust(), &build);
 
-    let dir = std::env::temp_dir().join(format!("gantry-rust-union-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-rust-union");
     for file in &files {
         let path = dir.join(&file.path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use gantry_ir as ir;
 use gantry_spec::{IngestError, Lowering, SpecSet};
+use gantry_verify::scratch::ScratchDir;
 
 /// Wrap `schemas` in a minimal valid document, write it, load it, lower it.
 fn lower_schemas(schemas: serde_json::Value) -> Result<Lowering, IngestError> {
@@ -24,12 +25,7 @@ fn lower_schemas(schemas: serde_json::Value) -> Result<Lowering, IngestError> {
         },
         "components": { "schemas": schemas }
     });
-    let dir = std::env::temp_dir().join(format!(
-        "gantry-lowering-test-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-lowering-test");
     let file = dir.join("spec.json");
     std::fs::write(&file, serde_json::to_string_pretty(&spec).unwrap()).unwrap();
     let set = SpecSet::load(&[file])?;
@@ -547,12 +543,7 @@ fn parameter_ancestor_includes_the_parameter_itself() {
             }
         }
     });
-    let dir = std::env::temp_dir().join(format!(
-        "gantry-param-ancestor-test-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-param-ancestor-test");
     let file = dir.join("spec.json");
     std::fs::write(&file, serde_json::to_string_pretty(&spec).unwrap()).unwrap();
     let lowering = gantry_spec::lower(&SpecSet::load(&[file]).unwrap()).unwrap();
@@ -661,12 +652,7 @@ fn versioned_schemas_merge_into_one_namespace() {
     // `schemas` namespace as one superset type — there is no `schemas::v2025_0`
     // module, and a field only some versions declare becomes optional so both
     // versions' payloads round-trip.
-    let dir = std::env::temp_dir().join(format!(
-        "gantry-lowering-versioned-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-lowering-versioned");
     let mut files: Vec<PathBuf> = Vec::new();
     // Base (2024.0) requires just `id`; 2025.0 also requires `name`.
     let widgets = [
@@ -735,12 +721,7 @@ fn incompatible_versioned_schemas_are_a_loud_error() {
     // D-190 / NF-1: when a shared field carries genuinely different types across
     // versions the superset cannot be formed, so the merge fails loudly rather
     // than silently picking one version's shape.
-    let dir = std::env::temp_dir().join(format!(
-        "gantry-lowering-conflict-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-lowering-conflict");
     let mut files: Vec<PathBuf> = Vec::new();
     let widgets = [
         (
@@ -783,12 +764,7 @@ fn lower_paths(
         "paths": paths,
         "components": { "schemas": {}, "parameters": parameters }
     });
-    let dir = std::env::temp_dir().join(format!(
-        "gantry-op-test-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("gantry-op-test");
     let file = dir.join("spec.json");
     std::fs::write(&file, serde_json::to_string_pretty(&spec).unwrap()).unwrap();
     gantry_spec::lower(&SpecSet::load(&[file])?)
@@ -1181,9 +1157,7 @@ fn load_with_lock(tag: &str, schemas: serde_json::Value, lock: Option<&str>) -> 
         "paths": {},
         "components": { "schemas": schemas }
     });
-    let dir = std::env::temp_dir().join(format!("gantry-lock-test-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new(&format!("gantry-lock-test-{tag}"));
     std::fs::write(dir.join("spec.json"), spec.to_string()).unwrap();
     if let Some(lock) = lock {
         std::fs::write(dir.join(gantry_spec::NAMES_LOCK_FILE), lock).unwrap();

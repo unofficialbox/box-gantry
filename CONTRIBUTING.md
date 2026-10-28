@@ -34,6 +34,12 @@ additionally need those toolchains installed (the same versions CI uses):
 A gate that can't find its toolchain skips cleanly, so you can work on one backend
 without installing all five.
 
+Each gate builds its SDK in a scratch directory under the system temp dir and
+removes it when the test ends, pass or fail. To inspect what a gate generated, set
+`GANTRY_KEEP_SCRATCH=1`; every kept path is printed to stderr (`cargo test -- --nocapture`
+shows it). `gantry verify` keeps its directory, and prints the path, whenever
+verification fails.
+
 ## Build, test, and lint
 
 Run these before opening a PR — they are exactly what CI runs:
