@@ -1009,10 +1009,11 @@ fn the_real_spec_lowers_to_apex_classes() {
     // the OpenAPI 3.0 nullable-`$ref` idiom instead of synthesizing an
     // opaque union for it (D-195), and the v2026.0 Box Query / Query
     // Insights release (16 new decls), and the 2026-10 refresh (6 new decls:
-    // upload-session planning + Japanese ZIP validation), the spec lowers to
-    // 890 decls − 2 aliases = 888 classes. Pinned so the count only moves
-    // deliberately with the spec (VR-6 lineage).
-    assert_eq!(files.len(), 888, "expected one class per non-alias decl");
+    // upload-session planning + Japanese ZIP validation), and the 2026-10-28
+    // refresh (Shuttle, Document Split, shared-link one-time passcodes), the
+    // spec lowers to 1017 decls − 4 aliases = 1013 classes. Pinned so the count
+    // only moves deliberately with the spec (VR-6 lineage).
+    assert_eq!(files.len(), 1013, "expected one class per non-alias decl");
 
     // Every class name obeys the platform identifier limit (TR-Apex.1) and
     // is globally unique (flat namespace), and every file carries the
@@ -1040,7 +1041,7 @@ fn the_real_spec_lowers_to_apex_classes() {
     }
 
     // The generated deserializeUntyped dispatch appears for every
-    // discriminated union (23 in the real spec — matches the IR stats).
+    // discriminated union (29 in the real spec — matches the IR stats).
     let dispatch = files
         .iter()
         .filter(|f| {
@@ -1049,7 +1050,7 @@ fn the_real_spec_lowers_to_apex_classes() {
         })
         .count();
     assert_eq!(
-        dispatch, 23,
+        dispatch, 29,
         "expected one dispatch per discriminated union"
     );
 }
@@ -1199,8 +1200,10 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     // compiled-size limit (the count grew by 3 — every extra-bearing struct,
     // D-196, needs the `deserialize` builder too — without crossing a chunk
     // boundary). The version merge (D-190) drops 21 model classes and the
-    // box-version strip (D-191) drops 2 more; the 2026-10 spec refresh adds
-    // 6 model classes. 992 + 88 + 1 + 4 = 1085 total.
+    // box-version strip (D-191) drops 2 more. The 2026-10-28 spec refresh
+    // brings 1013 model classes and 88 managers (Shuttle, Document Split):
+    // 1013 + 88 + 1 + 3 + 14 = 1119, an @isTest suite of 88 + 2 = 90, and a
+    // fifth wire-hook chunk. 1119 + 90 + 1 + 5 = 1215 total.
     let classes: Vec<&str> = files
         .iter()
         .filter(|f| f.path.ends_with(".cls"))
@@ -1208,7 +1211,7 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         .collect();
     assert_eq!(
         classes.len(),
-        992 + 88 + 1 + 4,
+        1119 + 90 + 1 + 5,
         "models + managers + client + stubs + runtime + @isTest suite + BoxBuildInfo + wire-hook suite"
     );
     // The generated test suite ships with the deployable tree.
@@ -1294,17 +1297,17 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         docs.iter().all(|d| d.ends_with(".md")),
         "docs must be Markdown only"
     );
-    // 339 endpoint pages + 86 manager indexes + 1 top index + 3 topic guides
-    // (auth/pagination/errors) = 429.
+    // 381 endpoint pages + 88 manager indexes + 1 top index + 3 topic guides
+    // (auth/pagination/errors) = 473.
     assert_eq!(
         docs.len(),
-        429,
+        473,
         "endpoint + manager + top-index + guide docs"
     );
     // 7 base scaffolding (sfdx-project, scratch-def, .forceignore, package.xml,
-    // README, LICENSE, assets/banner.svg) + 4 Remote Site Settings + 1085
-    // classes + 1085 metas + 429 docs.
-    assert_eq!(files.len(), 7 + 4 + (992 + 88 + 1 + 4) * 2 + 429);
+    // README, LICENSE, assets/banner.svg) + 4 Remote Site Settings + 1215
+    // classes + 1215 metas + 473 docs.
+    assert_eq!(files.len(), 7 + 4 + (1119 + 90 + 1 + 5) * 2 + 473);
 
     // Deterministic and path-sorted.
     let sorted: Vec<&String> = {
