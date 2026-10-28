@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use indexmap::IndexMap;
 
 use crate::error::IngestError;
+use crate::overrides::NameOverrides;
 use crate::raw::{RawDocument, RawParameter, RawPathItem, RawSchema};
 
 /// The version-aware model of one ingestion run: every document loaded,
@@ -14,7 +15,18 @@ pub struct SpecSet {
     /// In load order: base spec first by convention (the caller passes it
     /// first), versioned overlays after.
     pub documents: Vec<Document>,
+    /// Name overrides committed beside the base spec as [`OVERRIDES_FILE`]
+    /// — part of the input set, not a per-command flag, so every lowering of
+    /// these specs (`generate`, `check`, `diff`, `verify`, the test suite)
+    /// names the same program. Empty when there is no such file.
+    pub overrides: NameOverrides,
+    /// Where [`Self::overrides`] was loaded from, for `gantry check` to report.
+    pub overrides_file: Option<PathBuf>,
+    overrides_fnv: Option<u64>,
 }
+
+/// The name-overrides file [`SpecSet::load`] picks up beside the base spec.
+pub const OVERRIDES_FILE: &str = "name-overrides.json";
 
 /// One ingested OpenAPI document.
 #[derive(Debug)]
@@ -116,17 +128,42 @@ impl SpecSet {
             }
             documents.push(doc);
         }
-        Ok(Self { documents })
+        let candidate = files[0]
+            .parent()
+            .unwrap_or(Path::new(""))
+            .join(OVERRIDES_FILE);
+        let (overrides, overrides_file, overrides_fnv) = if candidate.is_file() {
+            let bytes = std::fs::read(&candidate).map_err(|source| IngestError::OverridesIo {
+                file: candidate.clone(),
+                source,
+            })?;
+            let overrides = NameOverrides::load(&candidate)?;
+            (overrides, Some(candidate), Some(fnv1a_64(&bytes)))
+        } else {
+            (NameOverrides::empty(), None, None)
+        };
+        Ok(Self {
+            documents,
+            overrides,
+            overrides_file,
+            overrides_fnv,
+        })
     }
 
     /// A deterministic fingerprint of the whole input set (NF-7): the
     /// documents' content hashes folded in load order, so the same specs in
     /// the same order always produce the same value and any change to any
-    /// input moves it. Rendered as 16 lowercase hex digits.
+    /// input moves it. Rendered as 16 lowercase hex digits. The committed
+    /// overrides file is an input too — it changes generated names.
     pub fn fingerprint(&self) -> String {
         let mut acc = FNV_OFFSET;
-        for doc in &self.documents {
-            for byte in doc.content_fnv.to_le_bytes() {
+        let hashes = self
+            .documents
+            .iter()
+            .map(|doc| doc.content_fnv)
+            .chain(self.overrides_fnv);
+        for hash in hashes {
+            for byte in hash.to_le_bytes() {
                 acc = fnv_step(acc, byte);
             }
         }

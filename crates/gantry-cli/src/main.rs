@@ -60,7 +60,9 @@ enum Command {
         /// top-level maps: `components` (keyed by a top-level schema's own
         /// name — cascades to every field synthesized under it) and
         /// `locations` (keyed by the exact synthesis site `gantry names`
-        /// reports — replaces just that one name).
+        /// reports — replaces just that one name). Applied on top of a
+        /// `name-overrides.json` beside the first spec, which every command
+        /// picks up on its own.
         #[arg(long)]
         overrides: Option<PathBuf>,
     },
@@ -767,6 +769,13 @@ fn check(specs: &[PathBuf]) -> ExitCode {
             ops = doc.operations.len(),
             managers = doc.managers().len(),
             schemas = doc.schemas.len(),
+        );
+    }
+    if let Some(file) = &set.overrides_file {
+        let (components, locations) = set.overrides.counts();
+        println!(
+            "ok  {file}  name overrides: {components} component(s), {locations} location(s)",
+            file = file.display(),
         );
     }
 

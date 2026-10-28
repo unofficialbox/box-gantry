@@ -151,4 +151,14 @@ pub enum IngestError {
         key: String,
         value: String,
     },
+
+    /// The committed overrides file and a `--overrides` file give the same
+    /// key two different replacements.
+    #[error("{kind} override {key:?} is given twice: {first:?} and {second:?}")]
+    OverrideConflict {
+        kind: &'static str,
+        key: String,
+        first: String,
+        second: String,
+    },
 }
