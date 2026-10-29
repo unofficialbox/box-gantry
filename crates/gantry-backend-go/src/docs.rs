@@ -403,16 +403,45 @@ The iterator threads the cursor for you and stops when the last page is\n\
 reached. It copies the options you pass, so your struct is never\n\
 mutated.\n";
 
-const ERRORS_GUIDE: &str = "# Errors\n\n\
+const ERRORS_GUIDE: &str = "# Errors\n\
+\n\
 Every I/O method returns `(T, error)` (Go's idiomatic error model). A\n\
 non-nil error is either a transport failure or a non-2xx response after\n\
 the network layer's retries (exponential backoff + jitter, `401`\n\
 refresh, `Retry-After`). A non-2xx response is a\n\
 `*gantryruntime.APIError` carrying the HTTP `Status`, Box's error `Code`,\n\
-`Message`, and `RequestID`, the response `Header`, and the raw `Body`:\n\n\
+`Message`, and `RequestID`, the response `Header`, and the raw `Body`:\n\
+\n\
 ```go\n\
 var apiErr *gantryruntime.APIError\n\
 if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {\n\
 \t// apiErr.Code == \"not_found\"; quote apiErr.RequestID to Box support\n\
+}\n\
+```\n\
+\n\
+## Etags: `If-None-Match` and `If-Match`\n\
+\n\
+Files and folders carry an `etag`. Send it back to stay in sync with Box\n\
+(Box's [Ensure consistency](https://developer.box.com/guides/api-calls/ensure-consistency/)\n\
+guide):\n\
+\n\
+- **Reads** — pass the stored etag as `if-none-match` on a file or folder\n\
+\x20\x20`get` (or a shared-item lookup). Box answers `304 Not Modified` when\n\
+\x20\x20nothing changed, and the SDK raises it as the error above with status\n\
+\x20\x20`304`: keep your cached copy.\n\
+- **Writes** — pass it as `if-match` on a file or folder update or delete,\n\
+\x20\x20or a new file version upload. Box answers `412 Precondition Failed`\n\
+\x20\x20(code `precondition_failed`) when the item changed since you read it:\n\
+\x20\x20read it again, reapply your change, retry. `If-Match` can't block a move.\n\
+\n\
+```go\n\
+file, err := client.Files.Get(ctx, fileID, &managers.FilesGetOptions{IfNoneMatch: &etag})\n\
+var apiErr *gantryruntime.APIError\n\
+if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotModified {\n\
+\t// unchanged since etag\n\
+}\n\
+_, err = client.Files.Update(ctx, fileID, body, &managers.FilesUpdateOptions{IfMatch: &etag})\n\
+if errors.As(err, &apiErr) && apiErr.Status == http.StatusPreconditionFailed {\n\
+\t// changed since etag: re-read and retry\n\
 }\n\
 ```\n";

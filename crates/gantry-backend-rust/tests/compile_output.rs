@@ -267,6 +267,19 @@ fn the_real_spec_models_compile() {
         String::from_utf8_lossy(&clippy.stderr)
     );
 
+    // Box's consistency outcomes through the generated methods
+    // (CONSISTENCY_TEST). Its async test needs a tokio executor, which the SDK
+    // itself doesn't depend on, so this copy gains it as a dev-dependency.
+    std::fs::create_dir_all(dir.join("tests")).unwrap();
+    std::fs::write(dir.join("tests/consistency.rs"), CONSISTENCY_TEST).unwrap();
+    let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
+    assert!(!manifest.contains("[dev-dependencies]"));
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        format!("{manifest}\n[dev-dependencies]\ntokio = {{ version = \"1\", features = [\"macros\", \"rt\"] }}\n"),
+    )
+    .unwrap();
+
     // The generated round-trip / behavioral tests compile *and pass* (FR-7.8,
     // VR-4): the tri-state, typed date/time, and union discriminator dispatch.
     let test = Command::new("cargo")
@@ -281,6 +294,133 @@ fn the_real_spec_models_compile() {
         String::from_utf8_lossy(&test.stderr)
     );
 }
+
+/// The etag flow from Box's "Ensure consistency" guide, through the generated
+/// `files` methods and the real runtime: `If-None-Match` on a GET answers 304
+/// when the item is unchanged, `If-Match` on a write answers 412 when it
+/// changed since, and a missing item answers 404 — each a non-2xx that must
+/// come back as an `Err` carrying its status and Box code, never as a decoded
+/// "result".
+const CONSISTENCY_TEST: &str = r##"use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
+
+use box_open_sdk::client::Client;
+use box_open_sdk::managers::files::{FilesGetOptions, FilesUpdateOptions};
+use box_open_sdk::models::schemas::UpdateFileRequest;
+use box_open_sdk::runtime::{self, Auth};
+
+/// A Box error body, as Box sends with a 4xx.
+fn box_error(status: u16, code: &str) -> String {
+    format!(
+        r#"{{"type":"error","status":{status},"code":"{code}","message":"{code}","request_id":"req-{code}"}}"#
+    )
+}
+
+/// Serve Box-shaped responses on a local port: GET /files/1 honors
+/// If-None-Match "etag-1" with a 304, PUT /files/1 requires If-Match "etag-1"
+/// (else 412), and anything else is a 404.
+fn serve() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).unwrap();
+            let mut headers = HashMap::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let Some((name, value)) = line.trim_end().split_once(':') else {
+                    break;
+                };
+                headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+            }
+            let length = headers
+                .get("content-length")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            reader.read_exact(&mut vec![0; length]).unwrap();
+            let header = |name: &str| headers.get(name).map(String::as_str);
+            let target: Vec<&str> = request_line.split_whitespace().take(2).collect();
+            let (status, body) = match target[..] {
+                ["GET", "/files/1"] if header("if-none-match") == Some("etag-1") => {
+                    ("304 Not Modified", String::new())
+                }
+                ["GET", "/files/1"] => ("200 OK", r#"{"id":"1","type":"file","etag":"etag-1"}"#.into()),
+                ["PUT", "/files/1"] if header("if-match") == Some("etag-1") => {
+                    ("200 OK", r#"{"id":"1","type":"file","etag":"etag-2"}"#.into())
+                }
+                ["PUT", "/files/1"] => ("412 Precondition Failed", box_error(412, "precondition_failed")),
+                _ => ("404 Not Found", box_error(404, "not_found")),
+            };
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+    });
+    url
+}
+
+fn assert_api_error(err: &runtime::Error, status: i64, code: Option<&str>) {
+    let api = err.api().unwrap_or_else(|| panic!("{err}: not an API error"));
+    assert_eq!((api.status, api.code.as_deref()), (status, code), "{err}");
+    if let Some(code) = code {
+        assert_eq!(api.request_id.as_deref(), Some(format!("req-{code}").as_str()));
+    }
+}
+
+#[tokio::test]
+async fn generated_methods_surface_consistency_outcomes_as_api_errors() {
+    let session = runtime::Client::new(Auth::developer_token("t")).with_base_url("api", &serve());
+    let client = Client::from_session(session);
+
+    // A plain read succeeds and yields the etag to send back.
+    let file = client.files.get("1".into(), None).await.expect("a plain read succeeds");
+    let etag = file.etag.flatten().expect("the read yields an etag");
+
+    // If-None-Match with the current etag: 304, as an error, no body decoded.
+    let unchanged = FilesGetOptions {
+        if_none_match: Some(etag.clone()),
+        ..Default::default()
+    };
+    let err = client.files.get("1".into(), Some(unchanged)).await.expect_err("304 is an error");
+    assert_api_error(&err, 304, None);
+
+    // If-Match with a stale etag: 412 precondition_failed.
+    let stale = FilesUpdateOptions {
+        if_match: Some("etag-0".into()),
+        ..Default::default()
+    };
+    let err = client
+        .files
+        .update("1".into(), UpdateFileRequest::default(), Some(stale))
+        .await
+        .expect_err("a stale If-Match is refused");
+    assert_api_error(&err, 412, Some("precondition_failed"));
+
+    // If-Match with the current etag: the write goes through.
+    let current = FilesUpdateOptions {
+        if_match: Some(etag),
+        ..Default::default()
+    };
+    let updated = client
+        .files
+        .update("1".into(), UpdateFileRequest::default(), Some(current))
+        .await
+        .expect("the current If-Match goes through");
+    assert_eq!(updated.etag.flatten().as_deref(), Some("etag-2"));
+
+    // A missing item: 404 not_found, also from a method with no response body.
+    let err = client.files.delete("2".into(), None).await.expect_err("404 is an error");
+    assert_api_error(&err, 404, Some("not_found"));
+}
+"##;
 
 /// FR-5.2/TR-Rust.5: the generated SDK must compile against the real
 /// hand-written runtime, not only the stubs — proving the `reqwest`/`tokio`
