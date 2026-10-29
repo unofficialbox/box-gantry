@@ -1,11 +1,15 @@
-# VR-7 live smoke (release-blocking, on demand). NOT part of the per-commit
-# gate: it needs real Box credentials and touches a live account, so it is
-# manual (workflow_dispatch). Credentials come from repo secrets — never
-# from the repository. Absent secrets → the test t.Skip()s, so a dry run
-# still passes.
+# VR-7 live smoke (release-blocking). NOT part of the per-commit gate: it
+# needs real Box credentials and touches a live account (one small file,
+# uploaded and deleted per runtime). It runs weekly, so runtime drift, a Box
+# API change, or an expired credential surfaces within a week rather than at
+# the next release, and on demand (workflow_dispatch). Credentials come from
+# repo secrets — never from the repository. Absent secrets → each smoke
+# skips, so a dry run still passes.
 name: Live smoke (VR-7)
 
 on:
+  schedule:
+    - cron: '37 4 * * 1'
   workflow_dispatch:
 
 jobs:

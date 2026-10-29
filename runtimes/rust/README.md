@@ -59,5 +59,5 @@ runs, copy the repo-root `.env.sample` to `.env` (gitignored) and fill in the
 flows you want — the test loads it automatically (real env vars still win). The
 recognized variables are the same as the Go runtime's (see
 [`runtimes/go/README.md`](../go/README.md)); `BOX_JWT_CONFIG` points at a Box
-`box_config.json`. In CI it runs only via the manual **Live smoke (VR-7)**
-workflow (`livesmoke.yml`), reading credentials from repo secrets.
+`box_config.json`. In CI it runs only via the **Live smoke (VR-7)** workflow
+(`livesmoke.yml`, weekly and on demand), reading credentials from repo secrets.

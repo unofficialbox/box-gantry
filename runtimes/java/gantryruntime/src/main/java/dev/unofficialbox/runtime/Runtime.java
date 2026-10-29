@@ -308,10 +308,16 @@ public final class Runtime {
          * does), transparently falling back to HTTP/2 or HTTP/1.1 when it
          * doesn't — so no request ever fails for lack of HTTP/3. {@link
          * Builder#httpVersion} picks another preference.
+         *
+         * <p>Follows redirects, as the Go, Rust, and TypeScript runtimes do:
+         * Box answers a file download with a 302 to its download host, and
+         * {@link HttpClient}'s default ({@code NEVER}) would hand back that
+         * redirect's empty body as the file.
          */
         private static HttpClient defaultHttpClient(HttpClient.Version version) {
             return HttpClient.newBuilder()
                     .version(version)
+                    .followRedirects(HttpClient.Redirect.NORMAL)
                     .connectTimeout(API_TIMEOUT)
                     .build();
         }
@@ -336,7 +342,9 @@ public final class Runtime {
             }
 
             /** Inject the HTTP client used for API requests. Defaults to an
-             * HTTP/3-preferring {@link HttpClient} built internally. */
+             * HTTP/3-preferring {@link HttpClient} built internally. An injected
+             * client should follow redirects ({@code Redirect.NORMAL}): file
+             * downloads arrive as a 302 to Box's download host. */
             public Builder httpClient(HttpClient http) {
                 this.http = http;
                 return this;
