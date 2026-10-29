@@ -22,7 +22,7 @@
 use std::fmt::Write as _;
 
 use gantry_sema::Analysis;
-use gantry_synth::detect_pagination;
+use gantry_synth::{detect_event_streams, detect_pagination};
 
 /// One generated file, decoupled from the backend's own type so the
 /// checklist depends only on the IR crates.
@@ -82,6 +82,7 @@ pub struct TargetShape {
     pub count_manager_docs: fn(&[GeneratedView]) -> usize,
     pub count_operations: fn(&[GeneratedView]) -> usize,
     pub count_conditional_reads: fn(&[GeneratedView]) -> usize,
+    pub count_event_streams: fn(&[GeneratedView]) -> usize,
     pub count_pagination: fn(&[GeneratedView]) -> usize,
     pub count_serialization: fn(&[GeneratedView]) -> usize,
     pub count_round_trip_tests: fn(&[GeneratedView]) -> usize,
@@ -193,6 +194,13 @@ pub fn conformance(
                 .count(),
             (shape.count_conditional_reads)(files),
             "304-declaring If-None-Match reads → not-modified variants",
+        ),
+        capability(
+            shape,
+            "event-stream",
+            detect_event_streams(analysis).len(),
+            (shape.count_event_streams)(files),
+            "long-poll event streams → stream methods",
         ),
         capability(
             shape,
@@ -308,6 +316,7 @@ pub fn go_shape() -> TargetShape {
         count_manager_docs: go_manager_docs,
         count_operations: go_operations,
         count_conditional_reads: go_conditional_reads,
+        count_event_streams: go_event_streams,
         count_pagination: go_pagination,
         count_serialization: go_serialization,
         count_round_trip_tests: go_round_trip_tests,
@@ -339,7 +348,16 @@ fn go_operations(files: &[GeneratedView]) -> usize {
     // `(ctx context.Context`; subtract the paginators and variants to isolate
     // the plain per-operation methods.
     let ctx = count_marker(files, go_is_manager_file, "(ctx context.Context");
-    ctx.saturating_sub(go_pagination(files) + go_conditional_reads(files))
+    ctx.saturating_sub(go_pagination(files) + go_conditional_reads(files) + go_event_streams(files))
+}
+
+fn go_event_streams(files: &[GeneratedView]) -> usize {
+    // Each `Stream` method's doc comment.
+    count_marker(
+        files,
+        go_is_manager_file,
+        "follows Box's long-poll event stream from opts.",
+    )
 }
 
 fn go_conditional_reads(files: &[GeneratedView]) -> usize {
@@ -355,7 +373,8 @@ fn go_pagination(files: &[GeneratedView]) -> usize {
     // Option A: the exported list method *is* the paginator — it returns
     // `iter.Seq2[*T, error]`, so count that return type (the `Paginate` suffix
     // is gone). The single-page fetch it drives is the unexported `<method>Page`.
-    count_marker(files, go_is_manager_file, ") iter.Seq2[*")
+    // The event stream's `Stream` is an `iter.Seq2` too.
+    count_marker(files, go_is_manager_file, ") iter.Seq2[*").saturating_sub(go_event_streams(files))
 }
 
 fn go_serialization(files: &[GeneratedView]) -> usize {
@@ -430,6 +449,7 @@ pub fn apex_shape() -> TargetShape {
         count_manager_docs: apex_manager_docs,
         count_operations: apex_operations,
         count_conditional_reads: apex_conditional_reads,
+        count_event_streams: apex_event_streams,
         count_pagination: apex_pagination,
         count_serialization: apex_serialization,
         count_round_trip_tests: apex_round_trip_tests,
@@ -524,6 +544,15 @@ fn apex_is_endpoint_doc(path: &str) -> bool {
         && path["docs/".len()..].contains('/')
 }
 
+fn apex_event_streams(files: &[GeneratedView]) -> usize {
+    // Each polled `stream` method's ApexDoc.
+    files
+        .iter()
+        .filter(|f| apex_is_manager_class(f))
+        .map(|f| f.content.matches("* Box's event stream from `").count())
+        .sum()
+}
+
 fn apex_pagination(files: &[GeneratedView]) -> usize {
     // Paginated endpoints document the cursor loop under a `## Pagination`
     // heading (D-131: no page classes — the envelope is the page).
@@ -610,6 +639,7 @@ pub fn rust_shape() -> TargetShape {
         count_manager_docs: rust_manager_docs,
         count_operations: rust_operations,
         count_conditional_reads: rust_conditional_reads,
+        count_event_streams: rust_event_streams,
         count_pagination: rust_pagination,
         count_serialization: rust_serialization,
         count_round_trip_tests: rust_round_trip_tests,
@@ -664,7 +694,18 @@ fn rust_operations(files: &[GeneratedView]) -> usize {
     // (no `pub`), so count all `async fn ` and subtract the paginators' own
     // `pub async fn next` to isolate the per-operation methods.
     let async_fns = count_marker(files, rust_is_manager_file, "async fn ");
-    async_fns.saturating_sub(rust_pagination(files) + rust_conditional_reads(files))
+    async_fns.saturating_sub(
+        rust_pagination(files) + rust_conditional_reads(files) + 2 * rust_event_streams(files),
+    )
+}
+
+fn rust_event_streams(files: &[GeneratedView]) -> usize {
+    // Each `stream` method's doc comment.
+    count_marker(
+        files,
+        rust_is_manager_file,
+        "/// Box's long-poll event stream from `opts.",
+    )
 }
 
 fn rust_conditional_reads(files: &[GeneratedView]) -> usize {
@@ -761,6 +802,7 @@ pub fn typescript_shape() -> TargetShape {
         count_manager_docs: ts_manager_docs,
         count_operations: ts_operations,
         count_conditional_reads: ts_conditional_reads,
+        count_event_streams: ts_event_streams,
         count_pagination: ts_pagination,
         count_serialization: ts_serialization,
         count_round_trip_tests: ts_round_trip_tests,
@@ -819,6 +861,15 @@ fn ts_conditional_reads(files: &[GeneratedView]) -> usize {
         files,
         ts_is_manager_file,
         "with `If-None-Match` set to `etag`: resolves `undefined`",
+    )
+}
+
+fn ts_event_streams(files: &[GeneratedView]) -> usize {
+    // Each `stream` method's doc comment.
+    count_marker(
+        files,
+        ts_is_manager_file,
+        "/** Box's long-poll event stream from `opts.",
     )
 }
 

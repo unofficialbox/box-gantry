@@ -396,7 +396,21 @@ while let Some(item) = pages.next().await {\n\
 }\n\
 ```\n\n\
 The paginator stops when the last page is reached. It owns a copy of the\n\
-options you pass, so your value is never mutated.\n";
+options you pass, so your value is never mutated.\n\n\
+## Events\n\n\
+`client.events.stream` follows Box's long-poll event stream: `.next().await`\n\
+yields the events after `stream_position` (`\"now\"` when unset), each once — Box\n\
+may deliver an event twice — then waits on a real-time server until Box reports\n\
+a change. It lists a fresh server when Box asks it to reconnect, and retries a\n\
+long poll that times out. A failed call is yielded once and ends the stream;\n\
+drop the stream to stop it:\n\n\
+```rust\n\
+let mut events = client.events.stream(None);\n\
+while let Some(event) = events.next().await {\n\
+\x20   let event = event?;\n\
+\x20   // use event\n\
+}\n\
+```\n";
 
 const ERRORS_GUIDE: &str = "# Errors\n\
 \n\

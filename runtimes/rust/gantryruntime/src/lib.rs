@@ -15,10 +15,12 @@
 //! dropping a `fetch` future cancels the in-flight request.
 
 mod auth;
+mod events;
 mod jwt;
 mod webhooks;
 
 pub use auth::{Auth, CcgConfig, OAuthConfig, RefreshTokenStore, TokenSource};
+pub use events::{stream_position, EventSource, EventStream, LongPollServer};
 pub use jwt::JwtConfig;
 pub use webhooks::{WebhookVerifier, DEFAULT_WEBHOOK_MAX_AGE};
 
@@ -179,6 +181,7 @@ pub struct Request {
     headers: Vec<(String, String)>,
     query: Vec<(String, String)>,
     body: Option<Body>,
+    timeout: Option<Duration>,
 }
 
 /// The runtime-owned HTTP response envelope. The body is read fully so it can
@@ -296,6 +299,7 @@ impl Client {
             headers: Vec::new(),
             query: Vec::new(),
             body: None,
+            timeout: None,
         }
     }
 
@@ -336,6 +340,9 @@ impl Client {
                 builder = builder.header(name, value);
             }
             builder = apply_body(builder, request.body.as_ref());
+            if let Some(timeout) = request.timeout {
+                builder = builder.timeout(timeout);
+            }
 
             let response = match builder.send().await {
                 Ok(response) => response,
@@ -588,6 +595,13 @@ pub fn with_header(mut request: Request, name: &str, value: &str) -> Request {
         .headers
         .retain(|(key, _)| !key.eq_ignore_ascii_case(name));
     request.headers.push((name.to_string(), value.to_string()));
+    request
+}
+
+/// Return the request with its own timeout, in place of the client's, for a
+/// call meant to wait longer (a long poll).
+pub fn with_timeout(mut request: Request, timeout: Duration) -> Request {
+    request.timeout = Some(timeout);
     request
 }
 

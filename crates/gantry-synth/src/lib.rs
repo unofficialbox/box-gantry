@@ -7,9 +7,12 @@
 //! re-deriving them (the FR-4.2 discipline: shared structure, per-target
 //! lowering).
 //!
-//! Current surface: pagination detection (FR-7.3, D-013). Auth flows,
+//! Current surface: pagination detection (FR-7.3, D-013) and Box's
+//! long-poll event stream. Auth flows,
 //! upload synthesis, tests, and docs follow.
 
+mod event_stream;
 mod pagination;
 
+pub use event_stream::{EventStream, PositionShape, detect_event_streams};
 pub use pagination::{PageStyle, PagedOperation, detect_pagination};

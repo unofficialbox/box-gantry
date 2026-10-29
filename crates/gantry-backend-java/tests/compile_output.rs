@@ -372,6 +372,9 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
     let consistency = dir.join("Consistency.java");
     std::fs::write(&consistency, CONSISTENCY_DRIVER).unwrap();
     sources.push(consistency);
+    let events = dir.join("Events.java");
+    std::fs::write(&events, EVENT_STREAM_DRIVER).unwrap();
+    sources.push(events);
     let (empty_builders, swept) = empty_builders_driver(&files);
     let empty_builders_path = dir.join("EmptyBuilders.java");
     std::fs::write(&empty_builders_path, empty_builders).unwrap();
@@ -435,7 +438,153 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
         "generated methods mishandled an error status:\n{stdout}{}",
         String::from_utf8_lossy(&run.stderr)
     );
+
+    // Box's long-poll event stream through the generated `events.stream`.
+    let run = Command::new("java")
+        .arg("-cp")
+        .arg(&out)
+        .arg("Events")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success() && stdout.contains("EVENT_STREAM_OK"),
+        "the generated event stream misbehaved:\n{stdout}{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
 }
+
+/// Box's long-poll event stream through the generated `events.stream` and the
+/// real runtime, against a local server that answers like Box: `OPTIONS
+/// /events` lists a real-time server on the same host, `GET /events` pages from
+/// a stream position (numeric and string positions both), and the real-time
+/// server answers `reconnect` (re-list a server) then `new_change`. A repeated
+/// event is yielded once, and `close()` from another thread wakes a blocked
+/// `hasNext()`, which then answers false.
+const EVENT_STREAM_DRIVER: &str = r#"import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+import dev.unofficialbox.Client;
+import dev.unofficialbox.model.schemas.Event;
+import dev.unofficialbox.runtime.Runtime;
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.List;
+import java.util.Map;
+
+public final class Events {
+    private static void respond(HttpExchange ex, String body) throws IOException {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        ex.getResponseHeaders().add("Content-Type", "application/json");
+        ex.sendResponseHeaders(200, bytes.length);
+        ex.getResponseBody().write(bytes);
+        ex.close();
+    }
+
+    private static String position(HttpExchange ex) {
+        String query = ex.getRequestURI().getQuery();
+        if (query == null) {
+            return "";
+        }
+        for (String pair : query.split("&")) {
+            if (pair.startsWith("stream_position=")) {
+                return pair.substring("stream_position=".length());
+            }
+        }
+        return "";
+    }
+
+    private static void check(boolean ok, String what) {
+        if (!ok) {
+            throw new AssertionError(what);
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        Map<String, String> pages = Map.of(
+            "now", "{\"entries\":[],\"next_stream_position\":1}",
+            "1", "{\"entries\":[{\"event_id\":\"a\"},{\"event_id\":\"b\"}],\"next_stream_position\":\"2\"}",
+            "2", "{\"entries\":[{\"event_id\":\"b\"},{\"event_id\":\"c\"}],\"next_stream_position\":3}");
+        Deque<String> answers = new ArrayDeque<>(List.of("reconnect", "new_change", "new_change"));
+        List<String> polls = new ArrayList<>();
+        int[] listed = {0};
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        String base = "http://127.0.0.1:" + server.getAddress().getPort();
+        server.createContext("/", ex -> {
+            String path = ex.getRequestURI().getPath();
+            String method = ex.getRequestMethod();
+            synchronized (polls) {
+                if (method.equals("OPTIONS") && path.equals("/events")) {
+                    listed[0]++;
+                    respond(ex, "{\"chunk_size\":1,\"entries\":[{\"type\":\"realtime_server\",\"url\":\""
+                        + base + "/subscribe?channel=c\",\"ttl\":\"10\",\"max_retries\":\"10\",\"retry_timeout\":610}]}");
+                } else if (method.equals("GET") && path.equals("/subscribe")) {
+                    polls.add(position(ex));
+                    String answer = answers.isEmpty() ? "hang" : answers.poll();
+                    if (answer.equals("hang")) {
+                        // Hold the long poll open until close() wakes the reader.
+                        try {
+                            polls.wait(5000);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                        answer = "reconnect";
+                    }
+                    respond(ex, "{\"version\":1,\"message\":\"" + answer + "\"}");
+                } else if (method.equals("GET") && path.equals("/events")) {
+                    respond(ex, pages.getOrDefault(position(ex), "{\"entries\":[],\"next_stream_position\":4}"));
+                } else {
+                    ex.sendResponseHeaders(404, -1);
+                    ex.close();
+                }
+            }
+        });
+        server.setExecutor(java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor());
+        server.start();
+        try {
+            Runtime.Session session = Runtime.Session.builder(Runtime.developerToken("t"))
+                .baseUrl("api", base)
+                .maxRetries(0)
+                .build();
+            Client c = new Client(session);
+            List<String> got = new ArrayList<>();
+            Runtime.EventStream<Event> stream = c.events.stream(null);
+            try {
+                while (got.size() < 3 && stream.hasNext()) {
+                    got.add(stream.next().eventId().orElseThrow());
+                }
+                check(got.equals(List.of("a", "b", "c")), "events " + got + ", want a,b,c (the repeated b dropped)");
+                synchronized (polls) {
+                    check(listed[0] == 2, "listed " + listed[0] + " real-time servers, want 2 (a reconnect re-lists)");
+                    check(polls.equals(List.of("1", "1", "2")), "long polls from " + polls + ", want 1,1,2");
+                }
+                // The next long poll hangs; close() from another thread ends it.
+                Thread closer = Thread.ofVirtual().start(() -> {
+                    try {
+                        Thread.sleep(200);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    stream.close();
+                });
+                check(!stream.hasNext(), "a closed stream has no next event");
+                closer.join();
+            } finally {
+                stream.close();
+            }
+        } finally {
+            synchronized (polls) {
+                polls.notifyAll();
+            }
+            server.stop(0);
+        }
+        System.out.println("EVENT_STREAM_OK");
+    }
+}
+"#;
 
 /// A driver calling `builder().build().toJson()` on every generated record
 /// whose components are all optional (`Optional`), optional and nullable
@@ -448,11 +597,16 @@ fn empty_builders_driver(files: &[gantry_backend_java::GeneratedFile]) -> (Strin
     let mut records: Vec<String> = files
         .iter()
         .filter_map(|file| {
+            // Generated model records only: the vendored runtime has builders
+            // of its own (`Session.Builder`) that this text scan misreads.
             let class = file
                 .path
                 .strip_prefix("src/main/java/")?
                 .strip_suffix(".java")?
                 .replace('/', ".");
+            if !class.starts_with("dev.unofficialbox.model.") {
+                return None;
+            }
             let builder = file
                 .content
                 .split_once("public static final class Builder {")?

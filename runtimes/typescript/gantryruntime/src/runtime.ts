@@ -357,3 +357,152 @@ export function responseHeader(response: Response, name: string): string {
 export function statusCode(response: Response): number {
   return response.status;
 }
+
+/** One of Box's real-time servers, as `OPTIONS /events` lists them. An absent
+ * `maxRetries` or `retryTimeoutSeconds` takes Box's documented default. */
+export interface LongPollServer {
+  url: string;
+  maxRetries?: number;
+  retryTimeoutSeconds?: number;
+}
+
+/** What `eventStream` drives: the typed calls a generated events manager
+ * supplies. `server` lists a real-time server; `page` fetches the events after
+ * a stream position and the position to wait from next; `id` names an event
+ * so a repeat can be dropped. */
+export interface EventSource<E> {
+  server(): Promise<LongPollServer>;
+  page(position: string): Promise<{ events: E[]; next?: string }>;
+  id(event: E): string | undefined;
+}
+
+const DEFAULT_LONG_POLL_RETRIES = 10;
+const DEFAULT_LONG_POLL_TIMEOUT_SECONDS = 610;
+/** Box may deliver an event twice; this many recent event ids are kept to drop
+ * the repeats (the bound Box's own SDKs use). */
+const MAX_SEEN_EVENTS = 1000;
+
+/**
+ * Follow Box's long-poll protocol from `position` (`'now'` for events from
+ * here on): yield the events after it, each once, then wait on a real-time
+ * server until Box reports a change and yield those. A `reconnect` answer, or
+ * exhausting the server's retries, lists a fresh server. A long poll that times
+ * out or fails in transit is retried; an error response from Box ends the
+ * stream by throwing it, and aborting `signal` throws the abort.
+ */
+export async function* eventStream<E>(
+  client: Client,
+  position: string,
+  source: EventSource<E>,
+  signal?: AbortSignal,
+): AsyncGenerator<E, void, undefined> {
+  let seen = new Set<string>();
+  let server: Required<LongPollServer> | undefined;
+  let retries = 0;
+  for (;;) {
+    const { events, next } = await source.page(position);
+    for (const event of events) {
+      const id = source.id(event);
+      if (id !== undefined) {
+        if (seen.has(id)) {
+          continue;
+        }
+        seen.add(id);
+      }
+      yield event;
+    }
+    if (seen.size >= MAX_SEEN_EVENTS) {
+      // Repeats arrive close together: keep only this page's ids.
+      seen = new Set();
+      for (const event of events) {
+        const id = source.id(event);
+        if (id !== undefined) {
+          seen.add(id);
+        }
+      }
+    }
+    if (next !== undefined && next !== '') {
+      position = next;
+    }
+
+    // Wait for Box to report a change after `position`.
+    for (let changed = false; !changed; ) {
+      if (server === undefined || retries >= server.maxRetries) {
+        const listed = await source.server();
+        server = {
+          url: listed.url,
+          maxRetries: positiveOr(listed.maxRetries, DEFAULT_LONG_POLL_RETRIES),
+          retryTimeoutSeconds: positiveOr(
+            listed.retryTimeoutSeconds,
+            DEFAULT_LONG_POLL_TIMEOUT_SECONDS,
+          ),
+        };
+        retries = 0;
+      }
+      retries++;
+      let message: string | undefined;
+      try {
+        message = await longPoll(client, server, position, signal);
+      } catch (err) {
+        if (signal?.aborted || (err instanceof BoxApiError && err.status !== undefined)) {
+          throw err;
+        }
+        // Timed out or failed in transit: poll again.
+        continue;
+      }
+      if (message === 'new_change') {
+        changed = true;
+      } else if (message === 'reconnect' || message === 'max_retries') {
+        server = undefined;
+      }
+    }
+  }
+}
+
+function positiveOr(value: number | undefined, fallback: number): number {
+  return value !== undefined && value > 0 ? value : fallback;
+}
+
+/** Wait on a real-time server for Box's next message about the stream after
+ * `position`: `new_change`, `reconnect`, or `max_retries`. */
+async function longPoll(
+  client: Client,
+  server: Required<LongPollServer>,
+  position: string,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  const separator = server.url.includes('?') ? '&' : '?';
+  const url = `${server.url}${separator}stream_position=${encodeURIComponent(position)}`;
+  const timeout = AbortSignal.timeout(server.retryTimeoutSeconds * 1000);
+  const response = await client.fetch(
+    client.newRequest('GET', url),
+    signal === undefined ? timeout : AbortSignal.any([signal, timeout]),
+  );
+  const answer: unknown = JSON.parse(new TextDecoder().decode(response.bodyBytes));
+  if (typeof answer === 'object' && answer !== null && 'message' in answer) {
+    return typeof answer.message === 'string' ? answer.message : undefined;
+  }
+  return undefined;
+}
+
+/** A stream position Box sent as a JSON string or number, as the string to
+ * send back. */
+export function streamPosition(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return value;
+  }
+  return typeof value === 'number' || typeof value === 'bigint' ? String(value) : undefined;
+}
+
+/** `JSON.parse`, except an integer too large for a `number` keeps its exact
+ * digits as a string — a stream position must round-trip unchanged. */
+export function parseJsonExact(text: string): unknown {
+  const reviver = (_key: string, value: unknown, context?: { source?: string }): unknown =>
+    typeof value === 'number' &&
+    !Number.isSafeInteger(value) &&
+    context?.source !== undefined &&
+    /^-?\d+$/.test(context.source)
+      ? context.source
+      : value;
+  return JSON.parse(text, reviver);
+}

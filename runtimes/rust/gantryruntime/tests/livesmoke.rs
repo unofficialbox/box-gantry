@@ -17,10 +17,13 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use gantryruntime::{
-    response_bytes, status_code, with_header, with_json_body, with_multipart_body, with_query,
-    Auth, CcgConfig, Client, JwtConfig, OAuthConfig, Stream,
+    response_bytes, status_code, stream_position, with_header, with_json_body, with_multipart_body,
+    with_query, Auth, CcgConfig, Client, Error, EventSource, EventStream, JwtConfig,
+    LongPollServer, OAuthConfig, Stream,
 };
 
 /// The process environment, with any `.env` file filling gaps (real env vars
@@ -160,8 +163,9 @@ async fn live_smoke() {
         }
     }
 
-    let client =
-        primary.unwrap_or_else(|| panic!("no auth flow yielded a usable token: {failed:?}"));
+    let client = Arc::new(
+        primary.unwrap_or_else(|| panic!("no auth flow yielded a usable token: {failed:?}")),
+    );
     smoke_paginate(&client).await;
     smoke_upload_download_delete(&client).await;
     assert!(failed.is_empty(), "auth flow(s) failed: {failed:?}");
@@ -212,7 +216,7 @@ async fn smoke_paginate(client: &Client) {
 
 /// Upload a small file to the root folder, download it back byte-for-byte, then
 /// delete it.
-async fn smoke_upload_download_delete(client: &Client) {
+async fn smoke_upload_download_delete(client: &Arc<Client>) {
     let content = b"box-gantry live smoke".to_vec();
     // Unique per run: Box rejects a duplicate name in the same folder (409), so
     // a leftover from a prior run would otherwise wedge the smoke.
@@ -250,6 +254,7 @@ async fn smoke_upload_download_delete(client: &Client) {
     let dl_url = format!("{}/files/{file_id}/content", client.base_url("api"));
     let download = client.fetch(client.new_request("GET", &dl_url)).await;
     let etags = smoke_etags(client, &file_id).await;
+    let events = smoke_events(client, &file_id).await;
 
     // Delete unconditionally now that we hold the id.
     let del_url = format!("{}/files/{file_id}", client.base_url("api"));
@@ -271,10 +276,109 @@ async fn smoke_upload_download_delete(client: &Client) {
 
     etags.unwrap_or_else(|err| panic!("etag: {err}"));
     eprintln!("etag: 304 for the current etag, 412 for a stale If-Match, the current one writes");
+    events.unwrap_or_else(|err| panic!("events: {err}"));
+    eprintln!("events: the long poll reported ITEM_RENAME for file {file_id}");
 
     let resp = deleted.expect("delete request");
     assert_eq!(status_code(&resp), 204, "delete: expected 204");
     eprintln!("delete: cleaned up file {file_id}");
+}
+
+/// Box's event stream over raw requests: `OPTIONS /events` for a real-time
+/// server, `GET /events` for a page.
+struct RawEvents {
+    client: Arc<Client>,
+}
+
+impl EventSource for RawEvents {
+    type Event = serde_json::Value;
+
+    async fn server(&self) -> Result<Option<LongPollServer>, Error> {
+        let url = format!("{}/events", self.client.base_url("api"));
+        let resp = self
+            .client
+            .fetch(self.client.new_request("OPTIONS", &url))
+            .await?;
+        let listed: serde_json::Value = serde_json::from_slice(&response_bytes(&resp)?)?;
+        let server = &listed["entries"][0];
+        Ok(server["url"].as_str().map(|url| LongPollServer {
+            url: url.to_string(),
+            max_retries: None,
+            retry_timeout: server["retry_timeout"].as_u64().map(Duration::from_secs),
+        }))
+    }
+
+    async fn page(
+        &self,
+        position: &str,
+    ) -> Result<(Vec<serde_json::Value>, Option<String>), Error> {
+        let url = format!("{}/events", self.client.base_url("api"));
+        let req = with_query(
+            self.client.new_request("GET", &url),
+            "stream_position",
+            position,
+        );
+        let resp = self.client.fetch(req).await?;
+        let page: serde_json::Value = serde_json::from_slice(&response_bytes(&resp)?)?;
+        let entries = page["entries"].as_array().cloned().unwrap_or_default();
+        Ok((entries, stream_position(&page["next_stream_position"])))
+    }
+
+    fn id(event: &serde_json::Value) -> Option<&str> {
+        event["event_id"].as_str()
+    }
+}
+
+/// Follow Box's long-poll event stream from "now" while the uploaded file is
+/// renamed, and see that rename (`ITEM_RENAME`) within a minute: the long poll
+/// reports the change, and the page after it carries it. Returns why it didn't,
+/// so the caller can still clean up first.
+async fn smoke_events(client: &Arc<Client>, file_id: &str) -> Result<(), String> {
+    // Rename the file once the stream is waiting, so the long poll reports it.
+    let renamer = {
+        let client = client.clone();
+        let url = format!("{}/files/{file_id}", client.base_url("api"));
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let name = serde_json::to_vec(&serde_json::json!({
+                "name": format!("box-gantry-smoke-renamed-{nanos}.txt"),
+            }))
+            .unwrap();
+            client
+                .fetch(with_json_body(client.new_request("PUT", &url), &name))
+                .await
+                .map(|_| ())
+        })
+    };
+    let source = RawEvents {
+        client: client.clone(),
+    };
+    let mut stream = EventStream::new(client.clone(), "now", source);
+    let found = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            match stream.next().await {
+                Some(Ok(event))
+                    if event["event_type"] == "ITEM_RENAME" && event["source"]["id"] == file_id =>
+                {
+                    return Ok(());
+                }
+                Some(Ok(_)) => {}
+                Some(Err(err)) => return Err(format!("the stream failed: {err}")),
+                None => return Err("the stream ended".to_string()),
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| Err(format!("no ITEM_RENAME for file {file_id} within a minute")));
+    renamer
+        .await
+        .map_err(|err| format!("the rename task: {err}"))?
+        .map_err(|err| format!("renaming the file: {err}"))?;
+    found
 }
 
 /// Drive Box's etag flow on the uploaded file, as the generated

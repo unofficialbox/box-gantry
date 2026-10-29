@@ -60,13 +60,17 @@ fn generation_is_deterministic() {
     // (FR-7.3, TR-Go.4): 65 marker + 10 offset. Pinned so the count only
     // moves deliberately with the spec (VR-6 lineage). Option A: the exported
     // list method *is* the iterator (returns `iter.Seq2[*T, error]`), so count
-    // that return type rather than a `Paginate` suffix.
+    // that return type rather than a `Paginate` suffix. The events manager's
+    // `Stream` (Box's long-poll event stream) is an `iter.Seq2` too: 76.
     let paginators: usize = once
         .iter()
         .filter(|f| f.path.starts_with("managers/"))
         .map(|f| f.content.matches(") iter.Seq2[*").count())
         .sum();
-    assert_eq!(paginators, 75, "expected 75 pagination iterators");
+    assert_eq!(
+        paginators, 76,
+        "expected 75 pagination iterators + 1 event stream"
+    );
     let offset_iters: usize = once
         .iter()
         .filter(|f| f.path.starts_with("managers/"))
@@ -315,6 +319,7 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
     // Generated methods surface Box's documented consistency outcomes as
     // typed errors, end to end through the real runtime.
     std::fs::create_dir_all(dir.join("consistency")).unwrap();
+    std::fs::write(dir.join("consistency/events_test.go"), EVENT_STREAM_TEST).unwrap();
     std::fs::write(
         dir.join("consistency/consistency_test.go"),
         CONSISTENCY_TEST,
@@ -332,6 +337,91 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
         String::from_utf8_lossy(&test.stderr)
     );
 }
+
+/// Box's long-poll event stream through the generated `Events.Stream` and the
+/// real runtime, against a local server that answers like Box: `OPTIONS
+/// /events` lists a real-time server on the same host, `GET /events` pages from
+/// a stream position (numeric and string positions both), and the real-time
+/// server answers `reconnect` (re-list a server) then `new_change`. A repeated
+/// event is yielded once, and breaking the loop ends the stream.
+const EVENT_STREAM_TEST: &str = r#"package consistency
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/unofficialbox/box-open-go-sdk/auth"
+	"github.com/unofficialbox/box-open-go-sdk/client"
+	"github.com/unofficialbox/box-open-go-sdk/gantryruntime"
+)
+
+func TestGeneratedStreamFollowsTheLongPollProtocol(t *testing.T) {
+	var mu sync.Mutex
+	var listed int
+	var polls []string
+	answers := []string{"reconnect", "new_change", "new_change"}
+	pages := map[string]string{
+		"now": `{"entries":[],"next_stream_position":1}`,
+		"1":   `{"entries":[{"event_id":"a"},{"event_id":"b"}],"next_stream_position":"2"}`,
+		"2":   `{"entries":[{"event_id":"b"},{"event_id":"c"}],"next_stream_position":3}`,
+	}
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		position := r.URL.Query().Get("stream_position")
+		switch {
+		case r.Method == http.MethodOptions && r.URL.Path == "/events":
+			listed++
+			fmt.Fprintf(w, `{"chunk_size":1,"entries":[{"type":"realtime_server","url":"%s/subscribe?channel=c","ttl":"10","max_retries":"10","retry_timeout":610}]}`, server.URL)
+		case r.Method == http.MethodGet && r.URL.Path == "/subscribe":
+			polls = append(polls, position)
+			answer := "reconnect"
+			if len(answers) > 0 {
+				answer, answers = answers[0], answers[1:]
+			}
+			fmt.Fprintf(w, `{"version":1,"message":%q}`, answer)
+		case r.Method == http.MethodGet && r.URL.Path == "/events":
+			page, ok := pages[position]
+			if !ok {
+				page = `{"entries":[],"next_stream_position":4}`
+			}
+			w.Write([]byte(page))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	c := client.NewClient(auth.DeveloperToken("t"), gantryruntime.WithBaseURL("api", server.URL))
+
+	var got []string
+	for event, err := range c.Events.Stream(context.Background(), nil) {
+		if err != nil {
+			t.Fatalf("Stream: %v", err)
+		}
+		got = append(got, *event.EventId)
+		if len(got) == 3 {
+			break
+		}
+	}
+	if strings.Join(got, ",") != "a,b,c" {
+		t.Fatalf("events %v, want a,b,c (the repeated b dropped)", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if listed != 2 {
+		t.Fatalf("listed %d real-time servers, want 2 (a reconnect re-lists)", listed)
+	}
+	if strings.Join(polls, ",") != "1,1,2" {
+		t.Fatalf("long polls from %v, want 1,1,2 (numeric and string positions)", polls)
+	}
+}
+"#;
 
 /// The etag flow from Box's "Ensure consistency" guide, through the generated
 /// `Files` methods and the real runtime: `GetIfModified` answers nil, nil for

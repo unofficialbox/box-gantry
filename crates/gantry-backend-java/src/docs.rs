@@ -456,7 +456,20 @@ for (var item : client.folders.listItems(folderId, null)) {\n\
 Pass an options object (or `null`) as the final argument. The paginator stops\n\
 when the last page is reached. It is re-iterable: each `iterator()` runs an\n\
 independent pass over a private copy of your options, so your options object is\n\
-never mutated.\n";
+never mutated.\n\n\
+## Events\n\n\
+`client.events.stream` follows Box's long-poll event stream: iterating yields the\n\
+events after `streamPosition` (`\"now\"` when null), each once — Box may deliver\n\
+an event twice — blocking on a real-time server until Box reports a change. It\n\
+lists a fresh server when Box asks it to reconnect, and retries a long poll that\n\
+times out; a failed call throws. `close()`, from any thread, stops it:\n\n\
+```java\n\
+var events = client.events.stream(null);\n\
+while (events.hasNext()) {\n\
+\x20   var event = events.next();\n\
+\x20   // use event; events.close() (from any thread) to stop\n\
+}\n\
+```\n";
 
 const ERRORS_GUIDE: &str = "# Errors\n\
 \n\

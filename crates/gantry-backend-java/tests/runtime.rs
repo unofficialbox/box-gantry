@@ -613,6 +613,7 @@ void uploadDownloadDelete(Runtime.Session session) {
         }
         System.out.println("download: content round-tripped");
         etags(session, fileUrl);
+        events(session, fileUrl, fileId);
     } finally {
         long code = Runtime.statusCode(session.fetch(session.newRequest("DELETE", fileUrl)));
         if (code != 204) {
@@ -644,6 +645,79 @@ void etags(Runtime.Session session, String fileUrl) {
     fetchOk(session, Runtime.withHeader(
         Runtime.withJsonBody(session.newRequest("PUT", fileUrl), description), "If-Match", etag));
     System.out.println("etag: 304 for the current etag, 412 for a stale If-Match, the current one writes");
+}
+
+// Follow Box's long-poll event stream from "now" while the uploaded file is
+// renamed, and see that rename (ITEM_RENAME) within a minute: the long poll
+// reports the change, and the page after it carries it.
+void events(Runtime.Session session, String fileUrl, String fileId) {
+    String api = session.baseUrl("api");
+    Runtime.EventStream<Object> stream = new Runtime.EventStream<>(session, "now", new Runtime.EventSource<Object>() {
+        @Override
+        public Runtime.LongPollServer server() {
+            Object listed = parseJson(fetchOk(session, session.newRequest("OPTIONS", api + "/events")));
+            if (field(listed, "entries") instanceof java.util.List<?> entries && !entries.isEmpty()
+                    && field(entries.get(0), "url") instanceof String url) {
+                Object timeout = field(entries.get(0), "retry_timeout");
+                return Runtime.LongPollServer.of(url, null, timeout == null ? null : Long.valueOf(timeout.toString()));
+            }
+            return null;
+        }
+
+        @Override
+        public Runtime.EventPage<Object> page(String position) {
+            Object page = parseJson(fetchOk(session, Runtime.withQuery(
+                session.newRequest("GET", api + "/events"), "stream_position", position)));
+            java.util.List<Object> events = field(page, "entries") instanceof java.util.List<?> entries
+                ? new java.util.ArrayList<>(entries)
+                : java.util.List.of();
+            Object next = field(page, "next_stream_position");
+            return new Runtime.EventPage<>(events, next == null ? null : next.toString());
+        }
+
+        @Override
+        public String id(Object event) {
+            return field(event, "event_id") instanceof String id ? id : null;
+        }
+    });
+    // Rename the file once the stream is waiting, so the long poll reports it;
+    // close the stream if a minute passes first.
+    Thread renamer = Thread.ofVirtual().start(() -> {
+        try {
+            Thread.sleep(3000);
+        } catch (InterruptedException stopped) {
+            return;
+        }
+        byte[] name = ("{\"name\":\"box-gantry-smoke-renamed-" + java.util.UUID.randomUUID() + ".txt\"}")
+            .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        session.fetch(Runtime.withJsonBody(session.newRequest("PUT", fileUrl), name));
+    });
+    Thread deadline = Thread.ofVirtual().start(() -> {
+        try {
+            Thread.sleep(60_000);
+            stream.close();
+        } catch (InterruptedException found) {
+            // The rename arrived in time.
+        }
+    });
+    try {
+        while (stream.hasNext()) {
+            Object event = stream.next();
+            if ("ITEM_RENAME".equals(field(event, "event_type")) && fileId.equals(field(field(event, "source"), "id"))) {
+                System.out.println("events: the long poll reported ITEM_RENAME for file " + fileId);
+                return;
+            }
+        }
+        throw new IllegalStateException("events: no ITEM_RENAME for file " + fileId + " within a minute");
+    } finally {
+        deadline.interrupt();
+        stream.close();
+        try {
+            renamer.join();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
 }
 
 // Run a call that must throw the runtime's error for `status`.

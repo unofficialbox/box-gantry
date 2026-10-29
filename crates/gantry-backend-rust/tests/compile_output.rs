@@ -272,6 +272,7 @@ fn the_real_spec_models_compile() {
     // itself doesn't depend on, so this copy gains it as a dev-dependency.
     std::fs::create_dir_all(dir.join("tests")).unwrap();
     std::fs::write(dir.join("tests/consistency.rs"), CONSISTENCY_TEST).unwrap();
+    std::fs::write(dir.join("tests/events.rs"), EVENT_STREAM_TEST).unwrap();
     let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
     assert!(!manifest.contains("[dev-dependencies]"));
     std::fs::write(
@@ -294,6 +295,103 @@ fn the_real_spec_models_compile() {
         String::from_utf8_lossy(&test.stderr)
     );
 }
+
+/// Box's long-poll event stream through the generated `events.stream` and the
+/// real runtime, against a local server that answers like Box: `OPTIONS
+/// /events` lists a real-time server on the same host, `GET /events` pages from
+/// a stream position (numeric and string positions both), and the real-time
+/// server answers `reconnect` (re-list a server) then `new_change`. A repeated
+/// event is yielded once.
+const EVENT_STREAM_TEST: &str = r##"use std::collections::VecDeque;
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
+use std::sync::{Arc, Mutex};
+
+use box_open_sdk::client::Client;
+use box_open_sdk::runtime::{self, Auth};
+
+#[derive(Default)]
+struct Seen {
+    listed: usize,
+    polls: Vec<String>,
+}
+
+fn serve(seen: Arc<Mutex<Seen>>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let base = url.clone();
+    std::thread::spawn(move || {
+        let mut answers = VecDeque::from(["reconnect", "new_change", "new_change"]);
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).unwrap();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line.trim_end().is_empty() {
+                    break;
+                }
+            }
+            let target: Vec<&str> = request_line.split_whitespace().take(2).collect();
+            let (path, query) = target[1].split_once('?').unwrap_or((target[1], ""));
+            let position = query
+                .split('&')
+                .find_map(|pair| pair.strip_prefix("stream_position="))
+                .unwrap_or_default()
+                .to_string();
+            let mut seen = seen.lock().unwrap();
+            let body = match (target[0], path) {
+                ("OPTIONS", "/events") => {
+                    seen.listed += 1;
+                    format!(
+                        r#"{{"chunk_size":1,"entries":[{{"type":"realtime_server","url":"{base}/subscribe?channel=c","ttl":"10","max_retries":"10","retry_timeout":610}}]}}"#
+                    )
+                }
+                ("GET", "/subscribe") => {
+                    seen.polls.push(position);
+                    let answer = answers.pop_front().unwrap_or("reconnect");
+                    format!(r#"{{"version":1,"message":"{answer}"}}"#)
+                }
+                ("GET", "/events") => match position.as_str() {
+                    "now" => r#"{"entries":[],"next_stream_position":1}"#.to_string(),
+                    "1" => r#"{"entries":[{"event_id":"a"},{"event_id":"b"}],"next_stream_position":"2"}"#.to_string(),
+                    "2" => r#"{"entries":[{"event_id":"b"},{"event_id":"c"}],"next_stream_position":3}"#.to_string(),
+                    _ => r#"{"entries":[],"next_stream_position":4}"#.to_string(),
+                },
+                _ => String::new(),
+            };
+            drop(seen);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+    });
+    url
+}
+
+#[tokio::test]
+async fn the_generated_stream_follows_the_long_poll_protocol() {
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let session = runtime::Client::new(Auth::developer_token("t")).with_base_url("api", &serve(seen.clone()));
+    let client = Client::from_session(session);
+
+    let mut stream = client.events.stream(None);
+    let mut got = Vec::new();
+    while got.len() < 3 {
+        let event = stream.next().await.expect("the stream continues").expect("no error");
+        got.push(event.event_id.expect("an event id"));
+    }
+    assert_eq!(got, ["a", "b", "c"], "the repeated b is dropped");
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.listed, 2, "a reconnect re-lists a real-time server");
+    assert_eq!(seen.polls, ["1", "1", "2"], "numeric and string positions");
+}
+"##;
 
 /// The etag flow from Box's "Ensure consistency" guide, through the generated
 /// `files` methods and the real runtime: `get_if_modified` answers `Ok(None)`

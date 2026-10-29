@@ -71,7 +71,7 @@ jobs:
           # Settings must be live for the callouts to be permitted.
           sf project deploy start --wait 30 --ignore-conflicts --target-org target
       - if: steps.guard.outputs.skip != 'true'
-        name: Run the live smoke (CCG auth + getMe + folder items + etags)
+        name: Run the live smoke (CCG auth + getMe + folder items + etags + events)
         working-directory: apex-sdk
         run: |
           set -euo pipefail

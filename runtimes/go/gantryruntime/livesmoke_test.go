@@ -266,6 +266,82 @@ func smokeUploadDownloadDelete(ctx context.Context, t *testing.T, client *gantry
 	t.Logf("download: content round-tripped")
 
 	smokeEtags(ctx, t, client, fileID)
+	smokeEvents(t, client, fileID)
+}
+
+// smokeEvents follows Box's long-poll event stream from "now" while the
+// uploaded file is renamed, and must see that rename (ITEM_RENAME) within a
+// minute: the long poll reports the change, and the page after it carries it.
+func smokeEvents(t *testing.T, client *gantryruntime.Client, fileID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	api := client.BaseUrl("api")
+	type event struct {
+		ID     string `json:"event_id"`
+		Type   string `json:"event_type"`
+		Source struct {
+			ID string `json:"id"`
+		} `json:"source"`
+	}
+	source := gantryruntime.EventSource[event]{
+		Server: func(ctx context.Context) (gantryruntime.LongPollServer, error) {
+			resp, err := client.Fetch(ctx, client.NewRequest("OPTIONS", api+"/events"))
+			if err != nil {
+				return gantryruntime.LongPollServer{}, err
+			}
+			var listed struct {
+				Entries []struct {
+					URL          string `json:"url"`
+					RetryTimeout int64  `json:"retry_timeout"`
+				} `json:"entries"`
+			}
+			body, _ := gantryruntime.ResponseBytes(resp)
+			if err := json.Unmarshal(body, &listed); err != nil || len(listed.Entries) == 0 {
+				return gantryruntime.LongPollServer{}, fmt.Errorf("no real-time server in %s", body)
+			}
+			return gantryruntime.LongPollServer{
+				URL:          listed.Entries[0].URL,
+				RetryTimeout: time.Duration(listed.Entries[0].RetryTimeout) * time.Second,
+			}, nil
+		},
+		Page: func(ctx context.Context, position string) ([]event, string, error) {
+			req := gantryruntime.WithQuery(client.NewRequest("GET", api+"/events"), "stream_position", position)
+			resp, err := client.Fetch(ctx, req)
+			if err != nil {
+				return nil, "", err
+			}
+			var page struct {
+				Entries []event         `json:"entries"`
+				Next    json.RawMessage `json:"next_stream_position"`
+			}
+			body, _ := gantryruntime.ResponseBytes(resp)
+			if err := json.Unmarshal(body, &page); err != nil {
+				return nil, "", err
+			}
+			return page.Entries, gantryruntime.StreamPosition(page.Next), nil
+		},
+		ID: func(e event) string { return e.ID },
+	}
+
+	// Rename the file once the stream is waiting, so the long poll is what
+	// reports it.
+	rename := time.AfterFunc(3*time.Second, func() {
+		name, _ := json.Marshal(map[string]string{"name": fmt.Sprintf("box-gantry-smoke-renamed-%d.txt", time.Now().UnixNano())})
+		req := gantryruntime.WithJsonBody(client.NewRequest("PUT", api+"/files/"+fileID), name)
+		if _, err := client.Fetch(ctx, req); err != nil {
+			t.Errorf("events: renaming the file: %v", err)
+		}
+	})
+	defer rename.Stop()
+	for e, err := range gantryruntime.EventStream(ctx, client, "now", source) {
+		if err != nil {
+			t.Fatalf("events: no ITEM_RENAME for file %s from the long poll: %v", fileID, err)
+		}
+		if e.Type == "ITEM_RENAME" && e.Source.ID == fileID {
+			t.Logf("events: the long poll reported %s for file %s", e.Type, fileID)
+			return
+		}
+	}
 }
 
 // smokeEtags drives Box's etag flow on the uploaded file, as the generated

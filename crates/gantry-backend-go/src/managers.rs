@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 use gantry_ir as ir;
 use gantry_ir::naming::{append_without_repeating, camel, pascal};
 use gantry_sema::Analysis;
-use gantry_synth::{PageStyle, PagedOperation};
+use gantry_synth::{EventStream, PageStyle, PagedOperation, PositionShape};
 
 use crate::models::GeneratedFile;
 use crate::{MODULE, RUNTIME_IMPORT, SERIALIZATION_IMPORT};
@@ -47,12 +47,14 @@ pub fn generate_managers(
     let base_version = analysis.program.base_api_version().cloned();
     let paged_by_op: HashMap<usize, &PagedOperation> =
         paged.iter().map(|p| (p.operation, p)).collect();
+    let streams = gantry_synth::detect_event_streams(analysis);
     let mut files = Vec::new();
     for (manager, op_indices) in &analysis.managers {
         let mut printer = ManagerPrinter {
             analysis,
             base_version: base_version.clone(),
             paged: &paged_by_op,
+            streams: &streams,
             body: String::new(),
             imports: BTreeSet::new(),
         };
@@ -109,6 +111,7 @@ struct ManagerPrinter<'a> {
     analysis: &'a Analysis<'a>,
     base_version: Option<ir::ApiVersion>,
     paged: &'a HashMap<usize, &'a PagedOperation>,
+    streams: &'a [EventStream],
     body: String,
     imports: BTreeSet<String>,
 }
@@ -190,6 +193,93 @@ impl ManagerPrinter<'_> {
                 }
             }
         }
+        for stream in self.streams.iter().filter(|s| op_indices.contains(&s.list)) {
+            if used.iter().any(|name| name == "Stream") {
+                return Err(BackendError {
+                    context: format!("event stream of {manager}"),
+                    detail: "the manager already has a `Stream` method".to_string(),
+                });
+            }
+            self.event_stream(&type_name, stream)?;
+        }
+        Ok(())
+    }
+
+    /// `Stream`: Box's long-poll event stream (`gantryruntime.EventStream`)
+    /// over this manager's typed page and server methods, as an `iter.Seq2`.
+    fn event_stream(
+        &mut self,
+        manager_type: &str,
+        stream: &EventStream,
+    ) -> Result<(), BackendError> {
+        let program = &self.analysis.program;
+        let list = &program.operations[stream.list];
+        let list_method = self.method_name(list);
+        let options_method = self.method_name(&program.operations[stream.options]);
+        let options_type = append_without_repeating(
+            &format!("{}{list_method}", pascal(list.manager.as_str())),
+            "Options",
+        );
+        let event = self.go_type(&ir::Type::Decl(stream.event))?;
+        let field = |field: &ir::Field| pascal(field.name.as_str());
+        let (position, url, retries, timeout, servers, entries, next, id) = (
+            pascal(stream.position_param.name.as_str()),
+            field(&stream.url),
+            field(&stream.max_retries),
+            field(&stream.retry_timeout),
+            field(&stream.servers),
+            field(&stream.entries),
+            field(&stream.next_position),
+            field(&stream.event_id),
+        );
+        let next_value = match stream.position {
+            PositionShape::String => format!("*page.{next}"),
+            PositionShape::StringOrInteger => {
+                format!("gantryruntime.StreamPosition(page.{next}.Raw)")
+            }
+        };
+        for import in ["context", "iter", "strconv", "time"] {
+            self.imports.insert(import.to_string());
+        }
+        let _ = writeln!(
+            self.body,
+            "// Stream follows Box's long-poll event stream from opts.{position} (\"now\"\n\
+             // when unset): it yields each event once, then waits on a real-time server\n\
+             // for the next change. It ends when ctx does or a call fails, with the error.\n\
+             func (m *{manager_type}) Stream(ctx context.Context, opts *{options_type}) iter.Seq2[*{event}, error] {{\n\
+             \tvar o {options_type}\n\
+             \tif opts != nil {{\n\t\to = *opts\n\t}}\n\
+             \tposition := \"now\"\n\
+             \tif o.{position} != nil {{\n\t\tposition = *o.{position}\n\t}}\n\
+             \treturn gantryruntime.EventStream(ctx, m.session, position, gantryruntime.EventSource[*{event}]{{\n\
+             \t\tServer: func(c context.Context) (gantryruntime.LongPollServer, error) {{\n\
+             \t\t\tlisted, err := m.{options_method}(c)\n\
+             \t\t\tif err != nil {{\n\t\t\t\treturn gantryruntime.LongPollServer{{}}, err\n\t\t\t}}\n\
+             \t\t\tfor _, s := range listed.{servers} {{\n\
+             \t\t\t\tif s.{url} == nil {{\n\t\t\t\t\tcontinue\n\t\t\t\t}}\n\
+             \t\t\t\tserver := gantryruntime.LongPollServer{{URL: *s.{url}}}\n\
+             \t\t\t\tif s.{retries} != nil {{\n\t\t\t\t\tserver.MaxRetries, _ = strconv.Atoi(*s.{retries})\n\t\t\t\t}}\n\
+             \t\t\t\tif s.{timeout} != nil {{\n\t\t\t\t\tserver.RetryTimeout = time.Duration(*s.{timeout}) * time.Second\n\t\t\t\t}}\n\
+             \t\t\t\treturn server, nil\n\
+             \t\t\t}}\n\
+             \t\t\treturn gantryruntime.LongPollServer{{}}, gantryruntime.ErrNoLongPollServer\n\
+             \t\t}},\n\
+             \t\tPage: func(c context.Context, position string) ([]*{event}, string, error) {{\n\
+             \t\t\to.{position} = &position\n\
+             \t\t\tpage, err := m.{list_method}(c, &o)\n\
+             \t\t\tif err != nil {{\n\t\t\t\treturn nil, \"\", err\n\t\t\t}}\n\
+             \t\t\tevents := make([]*{event}, len(page.{entries}))\n\
+             \t\t\tfor i := range page.{entries} {{\n\t\t\t\tevents[i] = &page.{entries}[i]\n\t\t\t}}\n\
+             \t\t\tif page.{next} == nil {{\n\t\t\t\treturn events, \"\", nil\n\t\t\t}}\n\
+             \t\t\treturn events, {next_value}, nil\n\
+             \t\t}},\n\
+             \t\tID: func(event *{event}) string {{\n\
+             \t\t\tif event.{id} == nil {{\n\t\t\t\treturn \"\"\n\t\t\t}}\n\
+             \t\t\treturn *event.{id}\n\
+             \t\t}},\n\
+             \t}})\n\
+             }}\n"
+        );
         Ok(())
     }
 
@@ -1371,6 +1461,7 @@ mod tests {
             analysis: &analysis,
             base_version: None,
             paged: &paged,
+            streams: &[],
             body: String::new(),
             imports: BTreeSet::new(),
         };

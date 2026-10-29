@@ -133,6 +133,15 @@ pub fn generate(
             ),
         },
         GeneratedFile {
+            path: "src/runtime/events.rs".to_string(),
+            content: vendored(
+                "runtimes/rust/gantryruntime/src/events.rs",
+                nest_submodule(include_str!(
+                    "../../../runtimes/rust/gantryruntime/src/events.rs"
+                )),
+            ),
+        },
+        GeneratedFile {
             path: "src/runtime/jwt.rs".to_string(),
             content: vendored(
                 "runtimes/rust/gantryruntime/src/jwt.rs",

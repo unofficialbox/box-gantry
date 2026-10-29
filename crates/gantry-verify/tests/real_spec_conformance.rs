@@ -78,6 +78,8 @@ fn the_generated_go_sdk_is_conformant() {
         75,
         "one iterator per paged surface"
     );
+    assert_eq!(by("event-stream").expected, 1);
+    assert_eq!(by("event-stream").actual, 1, "the events manager's Stream");
     assert_eq!(by("auth-flows").actual, 4);
     assert_eq!(by("docs-guides").actual, 5, "index + 4 topic guides");
     assert_eq!(

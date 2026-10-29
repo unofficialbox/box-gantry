@@ -396,7 +396,20 @@ for await (const item of client.folders.listItems(folderId)) {\n\
 It walks every page until the response has no next cursor (or an empty page, for\n\
 offset pagination), and owns a private copy of the options you pass, so your\n\
 value is never mutated. The wire cursor (`next_marker` / `offset`, verbatim per\n\
-TR-TS.2) is threaded through the options for you.\n";
+TR-TS.2) is threaded through the options for you.\n\n\
+## Events\n\n\
+`client.events.stream` follows Box's long-poll event stream: it yields the events\n\
+after `stream_position` (`'now'` when unset), each once — Box may deliver an\n\
+event twice — then waits on a real-time server until Box reports a change. It\n\
+lists a fresh server when Box asks it to reconnect, and retries a long poll that\n\
+times out. It rejects when a call fails; `break` or an `AbortSignal` stops it.\n\
+Stream positions keep every digit, even past `Number.MAX_SAFE_INTEGER`:\n\n\
+```ts\n\
+const controller = new AbortController();\n\
+for await (const event of client.events.stream({}, controller.signal)) {\n\
+\x20 // use event\n\
+}\n\
+```\n";
 
 const ERRORS_GUIDE: &str = "# Errors\n\
 \n\

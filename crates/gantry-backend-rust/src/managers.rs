@@ -16,7 +16,9 @@ use std::fmt::Write as _;
 use gantry_ir as ir;
 use gantry_ir::naming::{append_without_repeating, pascal, snake};
 use gantry_sema::Analysis;
-use gantry_synth::{PageStyle, PagedOperation, detect_pagination};
+use gantry_synth::{
+    EventStream, PageStyle, PagedOperation, PositionShape, detect_event_streams, detect_pagination,
+};
 
 use crate::models::type_name;
 use crate::{BuildInfo, GeneratedFile};
@@ -72,6 +74,8 @@ pub fn generate_managers(analysis: &Analysis<'_>, _build: &BuildInfo) -> Vec<Gen
         .map(|p| (p.operation, p))
         .collect();
 
+    let streams = detect_event_streams(analysis);
+
     let named = plan_managers(analysis);
 
     let mut files = Vec::new();
@@ -91,6 +95,7 @@ pub fn generate_managers(analysis: &Analysis<'_>, _build: &BuildInfo) -> Vec<Gen
             base_version: base_version.clone(),
             modules: &modules,
             paged: &paged,
+            streams: &streams,
             body: String::new(),
             uses_path_escape: false,
         };
@@ -185,6 +190,8 @@ struct Printer<'p> {
     modules: &'p std::collections::BTreeMap<ir::ModulePath, String>,
     /// Paginated operations by index (FR-7.3).
     paged: &'p HashMap<usize, PagedOperation>,
+    /// Event streams, so a stream's manager gains `stream`.
+    streams: &'p [EventStream],
     body: String,
     /// Whether any method escaped a path parameter, so the file imports
     /// `path_escape`.
@@ -274,7 +281,131 @@ impl Printer<'_> {
                 }
             }
         }
+        let streams: Vec<&EventStream> = self
+            .streams
+            .iter()
+            .filter(|s| indices.contains(&s.list))
+            .collect();
+        let method_of = |op: usize| {
+            let pos = indices.iter().position(|&i| i == op).expect("same manager");
+            methods[pos].clone()
+        };
+        for stream in &streams {
+            assert!(
+                !used.iter().any(|m| m == "stream"),
+                "{key}: the manager already has a `stream` method for the event stream"
+            );
+            self.stream_method(stream, ty, &method_of(stream.list));
+        }
         self.body.push_str("}\n");
+        for stream in &streams {
+            self.stream_source(
+                stream,
+                ty,
+                &method_of(stream.list),
+                &method_of(stream.options),
+            );
+        }
+    }
+
+    /// `stream`: Box's long-poll event stream ([`runtime::EventStream`]) over
+    /// this manager's typed page and server methods. Emitted rustfmt-clean.
+    fn stream_method(&mut self, stream: &EventStream, ty: &str, list: &str) {
+        let list_op = &self.program.operations[stream.list];
+        let options_ty = options_type(list_op.manager.as_str(), list);
+        let position = field_ident(stream.position_param.name.as_str());
+        let _ = writeln!(
+            self.body,
+            "\n    /// Box's long-poll event stream from `opts.{position}` (`\"now\"` when\n\
+             \x20   /// unset): [`{RUNTIME}::EventStream::next`] yields each event once, then\n\
+             \x20   /// waits on a real-time server for the next change. Drop the stream to\n\
+             \x20   /// stop it."
+        );
+        // A named source type (not `impl EventSource`) keeps the signature short
+        // and lets callers name the stream's type.
+        let ret = format!("{RUNTIME}::EventStream<{ty}StreamSource>");
+        let one_line = format!("    pub fn stream(&self, opts: Option<{options_ty}>) -> {ret} {{");
+        if one_line.len() <= 100 {
+            let _ = writeln!(self.body, "{one_line}");
+        } else {
+            let _ = writeln!(
+                self.body,
+                "    pub fn stream(\n        &self,\n        opts: Option<{options_ty}>,\n    ) -> {ret} {{"
+            );
+        }
+        let _ = writeln!(
+            self.body,
+            "        let opts = opts.unwrap_or_default();\n\
+             \x20       let position = match &opts.{position} {{\n\
+             \x20           Some(position) => position.clone(),\n\
+             \x20           None => \"now\".to_string(),\n\
+             \x20       }};\n\
+             \x20       let source = {ty}StreamSource {{\n\
+             \x20           manager: Self::new(self.session.clone()),\n\
+             \x20           opts,\n\
+             \x20       }};\n\
+             \x20       {RUNTIME}::EventStream::new(self.session.clone(), position, source)\n\
+             \x20   }}"
+        );
+    }
+
+    /// The [`runtime::EventSource`] `stream` drives. Emitted rustfmt-clean.
+    fn stream_source(&mut self, stream: &EventStream, ty: &str, list: &str, options: &str) {
+        let list_op = &self.program.operations[stream.list];
+        let options_ty = options_type(list_op.manager.as_str(), list);
+        let event = self.rust_type(&ir::Type::Decl(stream.event));
+        let field = |f: &ir::Field| field_ident(f.name.as_str());
+        let next = field(&stream.next_position);
+        let next_value = match stream.position {
+            PositionShape::String => format!("page.{next}"),
+            PositionShape::StringOrInteger => {
+                // Vertical: rustfmt's chain width is exceeded either way.
+                format!(
+                    "page\n            .{next}\n            .and_then(|p| {RUNTIME}::stream_position(&p.0))"
+                )
+            }
+        };
+        let _ = writeln!(
+            self.body,
+            "\n/// The typed calls [`{ty}::stream`] drives: an [`{RUNTIME}::EventSource`]\n\
+             /// over the manager's page and server methods.\n\
+             pub struct {ty}StreamSource {{\n\
+             \x20   manager: {ty},\n\
+             \x20   opts: {options_ty},\n\
+             }}\n\n\
+             impl {RUNTIME}::EventSource for {ty}StreamSource {{\n\
+             \x20   type Event = {event};\n\n\
+             \x20   async fn server(&self) -> Result<Option<{RUNTIME}::LongPollServer>, Error> {{\n\
+             \x20       let listed = self.manager.{options}().await?;\n\
+             \x20       let servers = listed.{servers}.unwrap_or_default();\n\
+             \x20       Ok(servers.into_iter().find_map(|s| {{\n\
+             \x20           let timeout = s.{timeout}.and_then(|t| u64::try_from(t).ok());\n\
+             \x20           Some({RUNTIME}::LongPollServer {{\n\
+             \x20               url: s.{url}?,\n\
+             \x20               max_retries: s.{retries}.and_then(|n| n.parse().ok()),\n\
+             \x20               retry_timeout: timeout.map(std::time::Duration::from_secs),\n\
+             \x20           }})\n\
+             \x20       }}))\n\
+             \x20   }}\n\n\
+             \x20   async fn page(&self, position: &str) -> Result<(Vec<Self::Event>, Option<String>), Error> {{\n\
+             \x20       let mut opts = self.opts.clone();\n\
+             \x20       opts.{position} = Some(position.to_string());\n\
+             \x20       let page = self.manager.{list}(Some(opts)).await?;\n\
+             \x20       let next = {next_value};\n\
+             \x20       Ok((page.{entries}.unwrap_or_default(), next))\n\
+             \x20   }}\n\n\
+             \x20   fn id(event: &Self::Event) -> Option<&str> {{\n\
+             \x20       event.{id}.as_deref()\n\
+             \x20   }}\n\
+             }}",
+            position = field_ident(stream.position_param.name.as_str()),
+            servers = field(&stream.servers),
+            url = field(&stream.url),
+            retries = field(&stream.max_retries),
+            timeout = field(&stream.retry_timeout),
+            entries = field(&stream.entries),
+            id = field(&stream.event_id),
+        );
     }
 
     /// Resolve everything needed to synthesize a paginator for `op`, or `None`
@@ -1565,6 +1696,7 @@ mod tests {
             base_version: None,
             modules: &modules,
             paged: &paged,
+            streams: &[],
             body: String::new(),
             uses_path_escape: false,
         };
@@ -1696,6 +1828,7 @@ mod tests {
             base_version: None,
             modules: &modules,
             paged: &paged,
+            streams: &[],
             body: String::new(),
             uses_path_escape: false,
         };
@@ -1749,6 +1882,7 @@ mod tests {
             base_version: None,
             modules: &modules,
             paged: &paged,
+            streams: &[],
             body: String::new(),
             uses_path_escape: false,
         };

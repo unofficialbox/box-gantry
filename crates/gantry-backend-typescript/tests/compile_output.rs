@@ -627,7 +627,74 @@ fn the_generated_sdk_packs_and_loads_dual_format() {
             .current_dir(&consumer),
         "consistency smoke",
     );
+    // Box's long-poll event stream through the built package's `events.stream`.
+    std::fs::write(consumer.join("events.mjs"), EVENT_STREAM_SMOKE).unwrap();
+    run_ok(
+        Command::new("node")
+            .arg("events.mjs")
+            .current_dir(&consumer),
+        "event stream smoke",
+    );
 }
+
+/// Box's long-poll event stream through the built package's `events.stream`
+/// and the real runtime, against a local server that answers like Box:
+/// `OPTIONS /events` lists a real-time server on the same host, `GET /events`
+/// pages from a stream position — a numeric one beyond `Number`'s exact range
+/// must round-trip digit for digit — and the real-time server answers
+/// `reconnect` (re-list a server) then `new_change`. A repeated event is
+/// yielded once, and breaking the loop ends the stream.
+const EVENT_STREAM_SMOKE: &str = r#"import http from 'node:http';
+import { Client, runtime } from '@unofficialbox/box-open-sdk';
+
+const big = '1152922976252290886';
+const pages = {
+  now: `{"entries":[],"next_stream_position":${big}}`,
+  [big]: '{"entries":[{"event_id":"a"},{"event_id":"b"}],"next_stream_position":"2"}',
+  '2': '{"entries":[{"event_id":"b"},{"event_id":"c"}],"next_stream_position":3}',
+};
+const answers = ['reconnect', 'new_change', 'new_change'];
+const polls = [];
+let listed = 0;
+let base = '';
+
+const server = http.createServer((req, res) => {
+  const url = new URL(req.url, 'http://local');
+  const position = url.searchParams.get('stream_position') ?? '';
+  res.setHeader('Content-Type', 'application/json');
+  if (req.method === 'OPTIONS' && url.pathname === '/events') {
+    listed++;
+    res.end(JSON.stringify({ chunk_size: 1, entries: [{ type: 'realtime_server', url: `${base}/subscribe?channel=c`, ttl: '10', max_retries: '10', retry_timeout: 610 }] }));
+  } else if (req.method === 'GET' && url.pathname === '/subscribe') {
+    polls.push(position);
+    res.end(JSON.stringify({ version: 1, message: answers.shift() ?? 'reconnect' }));
+  } else if (req.method === 'GET' && url.pathname === '/events') {
+    res.end(pages[position] ?? '{"entries":[],"next_stream_position":4}');
+  } else {
+    res.writeHead(404);
+    res.end();
+  }
+});
+await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+try {
+  base = `http://127.0.0.1:${server.address().port}`;
+  const c = new Client(runtime.developerToken('t'), { baseUrls: { api: base } });
+  const got = [];
+  for await (const event of c.events.stream()) {
+    got.push(event.event_id);
+    if (got.length === 3) {
+      break;
+    }
+  }
+  if (got.join(',') !== 'a,b,c') throw new Error(`events ${got}, want a,b,c (the repeated b dropped)`);
+  if (listed !== 2) throw new Error(`listed ${listed} real-time servers, want 2 (a reconnect re-lists)`);
+  if (polls.join(',') !== `${big},${big},2`) throw new Error(`long polls from ${polls}, want the exact positions`);
+} finally {
+  server.closeAllConnections();
+  server.close();
+}
+"#;
 
 /// The etag flow from Box's "Ensure consistency" guide, through the built
 /// package's generated `files` methods and the real runtime: `getIfModified`

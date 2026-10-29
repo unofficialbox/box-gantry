@@ -30,6 +30,9 @@ import {
   statusCode,
   Stream,
   BoxApiError,
+  eventStream,
+  parseJsonExact,
+  streamPosition,
   isPreconditionFailed,
   withHeader,
   withJsonBody,
@@ -207,6 +210,10 @@ async function smokeUploadDownloadDelete(client: Client): Promise<void> {
   const download = await client.fetch(
     client.newRequest('GET', `${client.baseUrl('api')}/files/${fileId}/content`),
   );
+  const events = await smokeEvents(client, fileId).then(
+    () => undefined,
+    (err: unknown) => err,
+  );
   const etags = await smokeEtags(client, fileId).then(
     () => undefined,
     (err: unknown) => err,
@@ -226,6 +233,10 @@ async function smokeUploadDownloadDelete(client: Client): Promise<void> {
     throw etags;
   }
   console.error('etag: 304 for the current etag, 412 for a stale If-Match, the current one writes');
+  if (events !== undefined) {
+    throw events;
+  }
+  console.error(`events: the long poll reported ITEM_RENAME for file ${fileId}`);
 
   assert.equal(statusCode(deleted), 204, 'delete: expected 204');
   console.error(`delete: cleaned up file ${fileId}`);
@@ -282,4 +293,55 @@ async function fetchOk(client: Client, request: BoxRequest): Promise<Uint8Array>
     `unexpected status ${code}: ${new TextDecoder().decode(body)}`,
   );
   return body;
+}
+
+/// Follow Box's long-poll event stream from "now" while the uploaded file is
+/// renamed, and see that rename (`ITEM_RENAME`) within a minute: the long poll
+/// reports the change, and the page after it carries it.
+async function smokeEvents(client: Client, fileId: string): Promise<void> {
+  const api = client.baseUrl('api');
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(new Error('no ITEM_RENAME within a minute')), 60_000);
+  // Rename the file once the stream is waiting, so the long poll reports it.
+  const renamed = new Promise<void>((resolve, reject) => {
+    setTimeout(() => {
+      const name = new TextEncoder().encode(JSON.stringify({ name: `box-gantry-smoke-renamed-${Date.now()}.txt` }));
+      client
+        .fetch(withJsonBody(client.newRequest('PUT', `${api}/files/${fileId}`), name))
+        .then(() => resolve(), reject);
+    }, 3_000);
+  });
+  // Awaited below; handled here so a failure isn't an unhandled rejection meanwhile.
+  renamed.catch(() => undefined);
+  type RawEvent = { event_id?: string; event_type?: string; source?: { id?: string } };
+  const source = {
+    server: async () => {
+      const body = await fetchOk(client, client.newRequest('OPTIONS', `${api}/events`));
+      const listed = JSON.parse(new TextDecoder().decode(body)) as {
+        entries?: Array<{ url?: string; retry_timeout?: number }>;
+      };
+      const server = listed.entries?.[0];
+      assert.ok(server?.url !== undefined, 'events: no real-time server');
+      return { url: server.url, retryTimeoutSeconds: server.retry_timeout };
+    },
+    page: async (position: string) => {
+      const req = withQuery(client.newRequest('GET', `${api}/events`), 'stream_position', position);
+      const page = parseJsonExact(new TextDecoder().decode(await fetchOk(client, req))) as {
+        entries?: RawEvent[];
+        next_stream_position?: unknown;
+      };
+      return { events: page.entries ?? [], next: streamPosition(page.next_stream_position) };
+    },
+    id: (event: RawEvent) => event.event_id,
+  };
+  try {
+    for await (const event of eventStream(client, 'now', source, controller.signal)) {
+      if (event.event_type === 'ITEM_RENAME' && event.source?.id === fileId) {
+        break;
+      }
+    }
+  } finally {
+    clearTimeout(deadline);
+    await renamed;
+  }
 }
