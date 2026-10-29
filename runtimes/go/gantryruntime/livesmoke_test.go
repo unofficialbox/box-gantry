@@ -338,3 +338,51 @@ func fetchOK(ctx context.Context, t *testing.T, client *gantryruntime.Client, re
 	}
 	return body
 }
+
+// TEMPORARY PROBE (not for merge): how Box answers etag headers on web links.
+func TestProbeWebLinkEtags(t *testing.T) {
+	sources := authSources(t)
+	if len(sources) == 0 {
+		t.Skip("no creds")
+	}
+	ctx := context.Background()
+	var client *gantryruntime.Client
+	for _, name := range []string{"ccg", "jwt", "developer", "oauth"} {
+		if s, ok := sources[name]; ok {
+			client = gantryruntime.New(s)
+			break
+		}
+	}
+	api := client.BaseUrl("api")
+	body, _ := json.Marshal(map[string]any{"url": "https://example.com/", "name": fmt.Sprintf("gantry-probe-%d", time.Now().UnixNano()), "parent": map[string]string{"id": "0"}})
+	created := fetchOK(ctx, t, client, gantryruntime.WithJsonBody(client.NewRequest("POST", api+"/web_links"), body))
+	var link struct {
+		ID   string `json:"id"`
+		Etag string `json:"etag"`
+	}
+	json.Unmarshal(created, &link)
+	t.Logf("PROBE created web link %s etag=%q", link.ID, link.Etag)
+	url := api + "/web_links/" + link.ID
+	status := func(what string, req *gantryruntime.Request) {
+		resp, err := client.Fetch(ctx, req)
+		if err != nil {
+			t.Logf("PROBE %s -> %v", what, err)
+			return
+		}
+		b, _ := gantryruntime.ResponseBytes(resp)
+		var got struct {
+			Etag string `json:"etag"`
+		}
+		json.Unmarshal(b, &got)
+		t.Logf("PROBE %s -> %d etag=%q", what, gantryruntime.StatusCode(resp), got.Etag)
+	}
+	status("GET plain", client.NewRequest("GET", url))
+	status("GET If-None-Match current", gantryruntime.WithHeader(client.NewRequest("GET", url), "If-None-Match", link.Etag))
+	status("GET If-None-Match stale", gantryruntime.WithHeader(client.NewRequest("GET", url), "If-None-Match", "9"+link.Etag))
+	upd, _ := json.Marshal(map[string]string{"description": "probe"})
+	status("PUT If-Match stale", gantryruntime.WithHeader(gantryruntime.WithJsonBody(client.NewRequest("PUT", url), upd), "If-Match", "9"+link.Etag))
+	status("PUT If-Match current", gantryruntime.WithHeader(gantryruntime.WithJsonBody(client.NewRequest("PUT", url), upd), "If-Match", link.Etag))
+	status("GET after update", client.NewRequest("GET", url))
+	status("DELETE If-Match stale", gantryruntime.WithHeader(client.NewRequest("DELETE", url), "If-Match", "9"+link.Etag))
+	status("DELETE plain", client.NewRequest("DELETE", url))
+}
