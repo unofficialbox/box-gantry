@@ -121,19 +121,30 @@ test('VR-7 live smoke: per-flow auth + paginate + upload/download/delete', async
   }
 
   // One authenticated call per auth flow: GET /users/me must return the current
-  // user, proving the flow yields a usable token.
+  // user, proving the flow yields a usable token. Every flow runs before any
+  // failure is raised, so one bad credential (an expired developer token)
+  // doesn't hide the others' results.
   let primary: Client | undefined;
+  const failed: string[] = [];
   for (const [name, auth] of sources) {
     const client = new Client(auth);
-    const me = await getJson(client, `${client.baseUrl('api')}/users/me`);
-    assert.ok(me.id, `${name}: /users/me returned no id`);
-    console.error(`${name} auth: authenticated as user ${me.id}`);
-    primary ??= client;
+    try {
+      const me = await getJson(client, `${client.baseUrl('api')}/users/me`);
+      assert.ok(me.id, '/users/me returned no id');
+      console.error(`${name} auth: authenticated as user ${me.id}`);
+      primary ??= client;
+    } catch (err) {
+      console.error(`${name} auth: FAILED: ${err instanceof Error ? err.message : err}`);
+      failed.push(name);
+    }
   }
 
-  const client = primary as Client;
-  await smokePaginate(client);
-  await smokeUploadDownloadDelete(client);
+  if (primary === undefined) {
+    throw new Error(`no auth flow yielded a usable token: ${failed.join(', ')}`);
+  }
+  await smokePaginate(primary);
+  await smokeUploadDownloadDelete(primary);
+  assert.deepEqual(failed, [], `auth flow(s) failed: ${failed.join(', ')}`);
 });
 
 /// Walk the root folder's items, following the marker cursor across pages just

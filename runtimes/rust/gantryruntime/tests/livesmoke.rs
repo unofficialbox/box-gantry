@@ -140,22 +140,51 @@ async fn live_smoke() {
     }
 
     // One authenticated call per auth flow: GET /users/me must return the
-    // current user, proving the flow yields a usable token.
+    // current user, proving the flow yields a usable token. Every flow runs
+    // before any failure is raised, so one bad credential (an expired
+    // developer token) doesn't hide the others' results.
     let mut primary: Option<Client> = None;
+    let mut failed = Vec::new();
     for (name, auth) in sources {
         let client = Client::new(auth);
-        let me = get_json(&client, &format!("{}/users/me", client.base_url("api"))).await;
-        assert!(
-            !me["id"].is_null(),
-            "{name}: /users/me returned no id: {me}"
-        );
-        eprintln!("{name} auth: authenticated as user {}", me["id"]);
-        primary.get_or_insert(client);
+        match whoami(&client).await {
+            Ok(id) => {
+                eprintln!("{name} auth: authenticated as user {id}");
+                primary.get_or_insert(client);
+            }
+            Err(err) => {
+                eprintln!("{name} auth: FAILED: {err}");
+                failed.push(name);
+            }
+        }
     }
 
-    let client = primary.expect("at least one flow");
+    let client =
+        primary.unwrap_or_else(|| panic!("no auth flow yielded a usable token: {failed:?}"));
     smoke_paginate(&client).await;
     smoke_upload_download_delete(&client).await;
+    assert!(failed.is_empty(), "auth flow(s) failed: {failed:?}");
+}
+
+/// `GET /users/me`: the current user's id, or why the flow yielded no usable
+/// token.
+async fn whoami(client: &Client) -> Result<String, String> {
+    let url = format!("{}/users/me", client.base_url("api"));
+    let resp = client
+        .fetch(client.new_request("GET", &url))
+        .await
+        .map_err(|err| format!("request failed: {err}"))?;
+    let code = status_code(&resp);
+    let body = response_bytes(&resp).map_err(|err| format!("reading body: {err}"))?;
+    if !(200..300).contains(&code) {
+        return Err(format!("status {code}: {}", String::from_utf8_lossy(&body)));
+    }
+    let me: serde_json::Value =
+        serde_json::from_slice(&body).map_err(|err| format!("decoding: {err}"))?;
+    if me["id"].is_null() {
+        return Err(format!("no id in {me}"));
+    }
+    Ok(me["id"].to_string())
 }
 
 /// Walk the root folder's items, following the marker cursor across pages just
@@ -241,12 +270,6 @@ async fn smoke_upload_download_delete(client: &Client) {
     let resp = deleted.expect("delete request");
     assert_eq!(status_code(&resp), 204, "delete: expected 204");
     eprintln!("delete: cleaned up file {file_id}");
-}
-
-/// Fetch a URL and decode a JSON object, failing on non-2xx.
-async fn get_json(client: &Client, url: &str) -> serde_json::Value {
-    let body = fetch_ok(client, client.new_request("GET", url)).await;
-    serde_json::from_slice(&body).expect("decoding JSON")
 }
 
 /// Run a request and return the body, failing on transport error or non-2xx.

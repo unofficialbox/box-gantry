@@ -2,8 +2,9 @@
 
 // VR-7 live smoke: exercise the runtime against a real Box account — one
 // call per configured auth flow, plus paginate + upload + download +
-// delete. Build-tagged `live` so the standard CI gate never compiles or
-// runs it (no credentials there); run it on demand with credentials:
+// delete. Build-tagged `live` so the standard CI gate never runs it (no
+// credentials there) — CI only vets it (`go vet -tags live`) so it can't rot.
+// Run it on demand with credentials:
 //
 //	go test -tags live -run TestLiveSmoke ./gantryruntime/...
 //
@@ -17,12 +18,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"boxgantry.invalid/boxsdk/auth"
 	"boxgantry.invalid/boxsdk/gantryruntime"
 )
 
@@ -83,18 +87,18 @@ func authSources(t *testing.T) map[string]gantryruntime.TokenSource {
 	sources := map[string]gantryruntime.TokenSource{}
 
 	if token := os.Getenv("BOX_DEVELOPER_TOKEN"); token != "" {
-		sources["developer"] = gantryruntime.DeveloperToken(token)
+		sources["developer"] = auth.DeveloperToken(token)
 	}
 	if id := os.Getenv("BOX_CLIENT_ID"); id != "" && os.Getenv("BOX_CLIENT_SECRET") != "" {
 		if ent := os.Getenv("BOX_ENTERPRISE_ID"); ent != "" {
-			sources["ccg"] = gantryruntime.ClientCredentials(gantryruntime.CCGConfig{
+			sources["ccg"] = auth.ClientCredentials(auth.CCGConfig{
 				ClientID:     id,
 				ClientSecret: os.Getenv("BOX_CLIENT_SECRET"),
 				EnterpriseID: ent,
 			})
 		}
 		if rt := os.Getenv("BOX_OAUTH_REFRESH_TOKEN"); rt != "" {
-			sources["oauth"] = gantryruntime.OAuth(gantryruntime.OAuthConfig{
+			sources["oauth"] = auth.OAuth(auth.OAuthConfig{
 				ClientID:     id,
 				ClientSecret: os.Getenv("BOX_CLIENT_SECRET"),
 			}, rt)
@@ -128,7 +132,7 @@ func jwtSource(t *testing.T, path string) gantryruntime.TokenSource {
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		t.Fatalf("parsing BOX_JWT_CONFIG: %v", err)
 	}
-	src, err := gantryruntime.JWTAuth(gantryruntime.JWTConfig{
+	src, err := auth.JWTAuth(auth.JWTConfig{
 		ClientID:      cfg.BoxAppSettings.ClientID,
 		ClientSecret:  cfg.BoxAppSettings.ClientSecret,
 		PublicKeyID:   cfg.BoxAppSettings.AppAuth.PublicKeyID,
@@ -151,18 +155,30 @@ func TestLiveSmoke(t *testing.T) {
 	defer cancel()
 
 	// One authenticated call per auth flow: GET /users/me must return the
-	// current user (proving the flow yields a usable token).
+	// current user (proving the flow yields a usable token). Each flow is its
+	// own subtest, so one bad credential (an expired developer token) fails
+	// that flow without hiding the others' results.
 	var primary *gantryruntime.Client
-	for name, source := range sources {
-		client := gantryruntime.New(source)
-		me := getJSON(ctx, t, client, client.BaseUrl("api")+"/users/me")
-		if me["id"] == nil {
-			t.Fatalf("%s: /users/me returned no id: %v", name, me)
-		}
-		t.Logf("%s auth: authenticated as user %v", name, me["id"])
-		if primary == nil {
-			primary = client
-		}
+	names := make([]string, 0, len(sources))
+	for name := range sources {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		client := gantryruntime.New(sources[name])
+		t.Run(name, func(t *testing.T) {
+			me := getJSON(ctx, t, client, client.BaseUrl("api")+"/users/me")
+			if me["id"] == nil {
+				t.Fatalf("/users/me returned no id: %v", me)
+			}
+			t.Logf("authenticated as user %v", me["id"])
+			if primary == nil {
+				primary = client
+			}
+		})
+	}
+	if primary == nil {
+		t.Fatal("no auth flow produced a usable token")
 	}
 
 	// The remaining flows exercise one shared client end to end.
@@ -201,8 +217,10 @@ func smokePaginate(ctx context.Context, t *testing.T, client *gantryruntime.Clie
 // smokeUploadDownloadDelete uploads a small file to the root folder,
 // downloads it back byte-for-byte, then deletes it.
 func smokeUploadDownloadDelete(ctx context.Context, t *testing.T, client *gantryruntime.Client) {
-	content := []byte("box-gantry live smoke " + time.Now().UTC().Format(time.RFC3339Nano))
-	name := "box-gantry-smoke.txt"
+	content := []byte("box-gantry live smoke")
+	// Unique per run: Box rejects a duplicate name in the same folder (409), so
+	// a leftover from a prior run would otherwise wedge the smoke.
+	name := fmt.Sprintf("box-gantry-smoke-%d.txt", time.Now().UnixNano())
 	attributes, _ := json.Marshal(map[string]any{
 		"name":   name,
 		"parent": map[string]string{"id": "0"},
@@ -210,7 +228,7 @@ func smokeUploadDownloadDelete(ctx context.Context, t *testing.T, client *gantry
 
 	// Upload (multipart to the upload host).
 	upURL := client.BaseUrl("upload") + "/files/content"
-	upReq := gantryruntime.WithMultipartBody(client.NewRequest("POST", upURL), attributes, name, bytes.NewReader(content))
+	upReq := gantryruntime.WithMultipartBody(client.NewRequest("POST", upURL), "attributes", attributes, "file", bytes.NewReader(content))
 	upBody := fetchOK(ctx, t, client, upReq)
 	var uploaded struct {
 		Entries []struct {
@@ -223,6 +241,21 @@ func smokeUploadDownloadDelete(ctx context.Context, t *testing.T, client *gantry
 	fileID := uploaded.Entries[0].ID
 	t.Logf("upload: created file %s", fileID)
 
+	// Delete unconditionally once we hold the id, even if the download below
+	// fails, so a smoke run never leaves an artifact in the account.
+	defer func() {
+		delResp, err := client.Fetch(ctx, client.NewRequest("DELETE", client.BaseUrl("api")+"/files/"+fileID))
+		if err != nil {
+			t.Errorf("delete: %v", err)
+			return
+		}
+		if code := gantryruntime.StatusCode(delResp); code != 204 {
+			t.Errorf("delete: expected 204, got %d", code)
+			return
+		}
+		t.Logf("delete: cleaned up file %s", fileID)
+	}()
+
 	// Download and compare.
 	dlURL := client.BaseUrl("api") + "/files/" + fileID + "/content"
 	dlBody := fetchOK(ctx, t, client, client.NewRequest("GET", dlURL))
@@ -230,16 +263,6 @@ func smokeUploadDownloadDelete(ctx context.Context, t *testing.T, client *gantry
 		t.Fatalf("download: content mismatch (got %d bytes, want %d)", len(dlBody), len(content))
 	}
 	t.Logf("download: content round-tripped")
-
-	// Delete (best effort — always attempted so smoke runs leave no trail).
-	delResp, err := client.Fetch(ctx, client.NewRequest("DELETE", client.BaseUrl("api")+"/files/"+fileID))
-	if err != nil {
-		t.Fatalf("delete: %v", err)
-	}
-	if code := gantryruntime.StatusCode(delResp); code != 204 {
-		t.Fatalf("delete: expected 204, got %d", code)
-	}
-	t.Logf("delete: cleaned up file %s", fileID)
 }
 
 // getJSON fetches a URL and decodes a JSON object, failing on non-2xx.
