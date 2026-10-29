@@ -354,9 +354,9 @@ to act as a managed user:\n\n\
 ```ts\n\
 import { auth } from '@unofficialbox/box-open-sdk';\n\
 const client = new Client(auth.clientCredentials({\n\
-  clientId: 'CLIENT_ID',\n\
-  clientSecret: 'CLIENT_SECRET',\n\
-  enterpriseId: 'ENTERPRISE_ID',\n\
+\x20\x20clientId: 'CLIENT_ID',\n\
+\x20\x20clientSecret: 'CLIENT_SECRET',\n\
+\x20\x20enterpriseId: 'ENTERPRISE_ID',\n\
 }));\n\
 ```\n\n\
 ## JWT (server auth with a signing key)\n\n\
@@ -366,11 +366,11 @@ imported from the runtime's `./jwt` entry point and returns a promise:\n\n\
 ```ts\n\
 import { jwtAuth } from '@unofficialbox/box-open-sdk/jwt';\n\
 const auth = await jwtAuth({\n\
-  clientId: 'CLIENT_ID',\n\
-  clientSecret: 'CLIENT_SECRET',\n\
-  publicKeyId: 'PUBLIC_KEY_ID',\n\
-  privateKeyPem: privateKeyPem, // optionally encrypted; set passphrase\n\
-  enterpriseId: 'ENTERPRISE_ID',\n\
+\x20\x20clientId: 'CLIENT_ID',\n\
+\x20\x20clientSecret: 'CLIENT_SECRET',\n\
+\x20\x20publicKeyId: 'PUBLIC_KEY_ID',\n\
+\x20\x20privateKeyPem: privateKeyPem, // optionally encrypted; set passphrase\n\
+\x20\x20enterpriseId: 'ENTERPRISE_ID',\n\
 });\n\
 const client = new Client(auth);\n\
 ```\n\n\
@@ -390,7 +390,7 @@ that yields one entry at a time, threading the cursor for you — the list metho
 *is* the paginator, so drive it directly with `for await ... of`:\n\n\
 ```ts\n\
 for await (const item of client.folders.listItems(folderId)) {\n\
-  // use item\n\
+\x20\x20// use item\n\
 }\n\
 ```\n\n\
 It walks every page until the response has no next cursor (or an empty page, for\n\

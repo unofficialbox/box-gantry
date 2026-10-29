@@ -697,3 +697,23 @@ fn no_generated_file_ships_the_runtime_stub() {
         "expected the vendored runtime at src/runtime/mod.rs"
     );
 }
+
+/// Every generated markdown file's code examples keep their indentation: a
+/// guide string's `\` line continuation strips leading spaces unless escaped.
+#[test]
+fn generated_docs_keep_code_example_indentation() {
+    let flush_left: Vec<String> = generate()
+        .iter()
+        .filter(|f| f.path.ends_with(".md"))
+        .flat_map(|f| {
+            gantry_verify::docs::unindented_block_bodies(&f.content)
+                .into_iter()
+                .map(|line| format!("{} {line}", f.path))
+        })
+        .collect();
+    assert!(
+        flush_left.is_empty(),
+        "unindented code-example lines:\n{}",
+        flush_left.join("\n")
+    );
+}
