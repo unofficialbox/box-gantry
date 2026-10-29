@@ -323,7 +323,8 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
         return;
     }
     let dir = ScratchDir::new("gantry-java-swap");
-    let mut sources = write_all(&dir, &generate());
+    let files = generate();
+    let mut sources = write_all(&dir, &files);
     // The SDK — virtual-thread chunked upload included — is preview-free; only
     // the opt-in BoxStructuredChunkedUpload (structured concurrency, a preview
     // API) is excluded here and gated separately (D-183), so this gate proves
@@ -371,6 +372,10 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
     let consistency = dir.join("Consistency.java");
     std::fs::write(&consistency, CONSISTENCY_DRIVER).unwrap();
     sources.push(consistency);
+    let (empty_builders, swept) = empty_builders_driver(&files);
+    let empty_builders_path = dir.join("EmptyBuilders.java");
+    std::fs::write(&empty_builders_path, empty_builders).unwrap();
+    sources.push(empty_builders_path);
 
     let argfile = dir.join("sources.txt");
     let listing: String = sources
@@ -403,6 +408,20 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
         "the generated SDK failed to compile against the real runtime (FR-5.2):\n{log}"
     );
 
+    // Every all-optional record builds empty and serializes.
+    let run = Command::new("java")
+        .arg("-cp")
+        .arg(&out)
+        .arg("EmptyBuilders")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success() && stdout.contains(&format!("EMPTY_BUILDERS_OK {swept}")),
+        "an empty builder failed to build or serialize:\n{stdout}{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
     // Box's consistency outcomes through the generated methods.
     let run = Command::new("java")
         .arg("-cp")
@@ -418,12 +437,73 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
     );
 }
 
+/// A driver calling `builder().build().toJson()` on every generated record
+/// whose components are all optional (`Optional`), optional and nullable
+/// (`Tristate`), or the extra-properties bag — so an empty build is valid
+/// input and must serialize. A builder that
+/// left one `null` shipped a `NullPointerException` from `toJson()` for any
+/// body built without setting every such field (#153). Returns the driver and
+/// how many records it sweeps.
+fn empty_builders_driver(files: &[gantry_backend_java::GeneratedFile]) -> (String, usize) {
+    let mut records: Vec<String> = files
+        .iter()
+        .filter_map(|file| {
+            let class = file
+                .path
+                .strip_prefix("src/main/java/")?
+                .strip_suffix(".java")?
+                .replace('/', ".");
+            let builder = file
+                .content
+                .split_once("public static final class Builder {")?
+                .1;
+            // The builder's fields: its `private` lines, before the setters.
+            // Selected by component *type*, not by initializer — a missing
+            // initializer is exactly the bug this sweep exists to catch.
+            let fields = builder.split("\n        public ").next()?;
+            let all_optional = fields
+                .lines()
+                .filter_map(|line| line.strip_prefix("        private "))
+                .all(|field| {
+                    field.starts_with("Optional<")
+                        || field.starts_with("Tristate<")
+                        || field.contains(" extra = ")
+                });
+            all_optional.then_some(class)
+        })
+        .collect();
+    records.sort();
+    assert!(
+        records.len() > 300,
+        "the sweep should cover the all-optional records, found {}",
+        records.len()
+    );
+    let mut driver = String::from(
+        "public final class EmptyBuilders {\n\
+         \x20   public static void main(String[] args) {\n\
+         \x20       java.util.List<String> failed = new java.util.ArrayList<>();\n",
+    );
+    for class in &records {
+        driver.push_str(&format!(
+            "        try {{\n            {class}.builder().build().toJson();\n        }} \
+             catch (RuntimeException e) {{\n            failed.add(\"{class}: \" + e);\n        }}\n"
+        ));
+    }
+    driver.push_str(&format!(
+        "        failed.forEach(System.out::println);\n\
+         \x20       if (!failed.isEmpty()) {{\n            System.exit(1);\n        }}\n\
+         \x20       System.out.println(\"EMPTY_BUILDERS_OK {}\");\n    }}\n}}\n",
+        records.len()
+    ));
+    (driver, records.len())
+}
+
 /// The etag flow from Box's "Ensure consistency" guide, through the generated
-/// `FilesManager` and the real runtime: `If-None-Match` on a GET answers 304
-/// when the item is unchanged, `If-Match` on a write answers 412 when it
-/// changed since, and a missing item answers 404 — each a non-2xx that must
-/// throw `BoxApiException` carrying its status and Box code, never return a
-/// decoded "result".
+/// `FilesManager` and the real runtime: `getIfModified` returns empty for the
+/// 304 that means "unchanged" and the file for a stale etag; otherwise
+/// `If-None-Match` on a plain GET (304), `If-Match` on a write that changed
+/// since (412), and a missing item (404) each throw `BoxApiException` carrying
+/// its status and Box code, never return a decoded "result".
 const CONSISTENCY_DRIVER: &str = r#"import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import dev.unofficialbox.Client;
@@ -507,7 +587,15 @@ public final class Consistency {
             String etag = c.files.get("1", null).etag().value();
             check("etag-1".equals(etag), "get: etag " + etag);
 
-            // If-None-Match with the current etag: 304, as an error, no body decoded.
+            // getIfModified with the current etag: Box's 304 is "unchanged", empty.
+            check(c.files.getIfModified("1", etag, null).isEmpty(),
+                "getIfModified with the current etag should be empty");
+            // With a stale etag: the current file.
+            String fresh = c.files.getIfModified("1", "etag-0", null).orElseThrow().etag().value();
+            check("etag-1".equals(fresh), "getIfModified stale etag: " + fresh);
+
+            // The plain get with If-None-Match set by hand still throws the 304 —
+            // no body is decoded.
             FilesManager.GetOptions unchanged = new FilesManager.GetOptions();
             unchanged.ifNoneMatch = etag;
             expectApiError("get If-None-Match", () -> c.files.get("1", unchanged), 304, null);

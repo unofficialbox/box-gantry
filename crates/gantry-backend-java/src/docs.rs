@@ -94,7 +94,7 @@ fn manager_page(
         class = plan.class,
         field = plan.field,
     );
-    for (index, method, _) in deduped_methods(program, &plan.ops, paged) {
+    for (index, method, _, _) in deduped_methods(program, &plan.ops, paged) {
         let op = &program.operations[index];
         let _ = writeln!(body, "## {method}\n");
         if op.deprecated {
@@ -480,22 +480,20 @@ Files and folders carry an `etag`. Send it back to stay in sync with Box\n\
 (Box's [Ensure consistency](https://developer.box.com/guides/api-calls/ensure-consistency/)\n\
 guide):\n\
 \n\
-- **Reads** — pass the stored etag as `if-none-match` on a file or folder\n\
-\x20\x20`get` (or a shared-item lookup). Box answers `304 Not Modified` when\n\
-\x20\x20nothing changed, and the SDK raises it as the error above with status\n\
-\x20\x20`304`: keep your cached copy.\n\
-- **Writes** — pass it as `if-match` on a file or folder update or delete,\n\
-\x20\x20or a new file version upload. Box answers `412 Precondition Failed`\n\
-\x20\x20(code `precondition_failed`) when the item changed since you read it:\n\
-\x20\x20read it again, reapply your change, retry. `If-Match` can't block a move.\n\
+- **Reads** — a file or folder `get`, and each shared-item lookup, has an\n\
+\x20\x20`…IfModified` variant that takes the stored etag, sends it as\n\
+\x20\x20`If-None-Match`, and returns `Optional.empty()` when Box answers `304 Not Modified`:\n\
+\x20\x20keep your cached copy. (The plain method surfaces that 304 as the error\n\
+\x20\x20above if you set `if-none-match` on it yourself.)\n\
+- **Writes** — pass the etag as `ifMatch` on a file or folder update or\n\
+\x20\x20delete, or a new file version upload. Box answers `412 Precondition\n\
+\x20\x20Failed` (code `precondition_failed`) when the item changed since you read\n\
+\x20\x20it: read it again, reapply your change, retry. `If-Match` can't block a move.\n\
 \n\
 ```java\n\
-var unchanged = new FilesManager.GetOptions();\n\
-unchanged.ifNoneMatch = etag;\n\
-try {\n\
-\x20\x20\x20\x20var file = client.files.get(fileId, unchanged);\n\
-} catch (dev.unofficialbox.runtime.Runtime.BoxApiException e) {\n\
-\x20\x20\x20\x20if (e.statusCode() != 304) throw e; // 304: unchanged since etag\n\
+var file = client.files.getIfModified(fileId, etag, null);\n\
+if (file.isEmpty()) {\n\
+\x20\x20\x20\x20// unchanged since etag\n\
 }\n\
 var guarded = new FilesManager.UpdateOptions();\n\
 guarded.ifMatch = etag;\n\

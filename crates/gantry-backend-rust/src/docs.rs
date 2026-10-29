@@ -420,20 +420,20 @@ Files and folders carry an `etag`. Send it back to stay in sync with Box\n\
 (Box's [Ensure consistency](https://developer.box.com/guides/api-calls/ensure-consistency/)\n\
 guide):\n\
 \n\
-- **Reads** — pass the stored etag as `if-none-match` on a file or folder\n\
-\x20\x20`get` (or a shared-item lookup). Box answers `304 Not Modified` when\n\
-\x20\x20nothing changed, and the SDK raises it as the error above with status\n\
-\x20\x20`304`: keep your cached copy.\n\
-- **Writes** — pass it as `if-match` on a file or folder update or delete,\n\
-\x20\x20or a new file version upload. Box answers `412 Precondition Failed`\n\
-\x20\x20(code `precondition_failed`) when the item changed since you read it:\n\
-\x20\x20read it again, reapply your change, retry. `If-Match` can't block a move.\n\
+- **Reads** — a file or folder `get`, and each shared-item lookup, has an\n\
+\x20\x20`…_if_modified` variant that takes the stored etag, sends it as\n\
+\x20\x20`If-None-Match`, and returns `Ok(None)` when Box answers `304 Not Modified`:\n\
+\x20\x20keep your cached copy. (The plain method surfaces that 304 as the error\n\
+\x20\x20above if you set `if-none-match` on it yourself.)\n\
+- **Writes** — pass the etag as `if_match` on a file or folder update or\n\
+\x20\x20delete, or a new file version upload. Box answers `412 Precondition\n\
+\x20\x20Failed` (code `precondition_failed`) when the item changed since you read\n\
+\x20\x20it: read it again, reapply your change, retry. `If-Match` can't block a move.\n\
 \n\
 ```rust,ignore\n\
-let unchanged = FilesGetOptions { if_none_match: Some(etag.clone()), ..Default::default() };\n\
-match client.files.get(file_id.clone(), Some(unchanged)).await {\n\
-\x20\x20\x20\x20Err(err) if err.status() == Some(304) => { /* unchanged since etag */ }\n\
-\x20\x20\x20\x20other => { /* … */ }\n\
+match client.files.get_if_modified(file_id.clone(), etag.clone(), None).await? {\n\
+\x20\x20\x20\x20None => { /* unchanged since etag */ }\n\
+\x20\x20\x20\x20Some(file) => { /* changed: the current file */ }\n\
 }\n\
 let guarded = FilesUpdateOptions { if_match: Some(etag), ..Default::default() };\n\
 if let Err(err) = client.files.update(file_id, body, Some(guarded)).await {\n\

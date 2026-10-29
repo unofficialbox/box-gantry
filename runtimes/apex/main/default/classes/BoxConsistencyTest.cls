@@ -2,11 +2,12 @@
 // consistency" guide, through the generated `BoxFiles` manager and the real
 // `BoxHttpClient`.
 //
-// `If-None-Match` on a GET answers 304 when the item is unchanged, `If-Match`
-// on a write answers 412 when it changed since, and a missing item answers 404.
-// Each is a non-2xx that must throw `BoxApiException` carrying its status and
-// Box code, never come back as a decoded "result". The other four SDKs gate
-// the same flow in their compile gates.
+// `getIfModified` returns `null` for the 304 that means "unchanged" and the
+// file for a stale etag. Otherwise `If-None-Match` on a plain GET (304),
+// `If-Match` on a write that changed since (412), and a missing item (404) are
+// each a non-2xx that must throw `BoxApiException` carrying its status and Box
+// code, never come back as a decoded "result". The other four SDKs gate the
+// same flow in their compile gates.
 @isTest
 private class BoxConsistencyTest {
     // Answers like Box: GET /files/1 honors If-None-Match "etag-1" with a 304,
@@ -60,7 +61,17 @@ private class BoxConsistencyTest {
         FileFull file = client.files.get('1', null, null, null, null);
         System.assertEquals('etag-1', file.etag, 'the read yields the etag');
 
-        // If-None-Match with the current etag: 304, as an exception.
+        // getIfModified with the current etag: Box's 304 is "unchanged", null.
+        System.assertEquals(
+            null,
+            client.files.getIfModified('1', file.etag, null, null, null),
+            'the current etag means unchanged'
+        );
+        // With a stale etag: the current file.
+        FileFull fresh = client.files.getIfModified('1', 'etag-0', null, null, null);
+        System.assertEquals('etag-1', fresh.etag, 'a stale etag reads the file');
+
+        // The plain get with If-None-Match set by hand still throws the 304.
         try {
             client.files.get('1', null, file.etag, null, null);
             System.assert(false, 'a 304 must throw');

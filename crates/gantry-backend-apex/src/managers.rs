@@ -142,7 +142,12 @@ fn manager_class(
     for &index in op_indices {
         let op = &program.operations[index];
         out.push('\n');
-        render_operation(&mut out, program, names, wire, op, &mut used);
+        let sig = render_operation(&mut out, program, names, wire, op, &mut used);
+        if let Some(variant) = conditional_variant(op) {
+            let name = unique_method_name(&variant, &mut used);
+            out.push('\n');
+            render_conditional(&mut out, op, &sig, name);
+        }
     }
 
     let _ = writeln!(out, "}}");
@@ -150,6 +155,7 @@ fn manager_class(
 }
 
 /// One parameter of a generated method, in call order.
+#[derive(Clone)]
 pub(crate) struct OpParam {
     pub name: String,
     pub apex_type: String,
@@ -299,7 +305,7 @@ fn render_operation(
     wire: &crate::wire::Wire<'_>,
     op: &ir::Operation,
     used: &mut HashSet<String>,
-) {
+) -> OpSignature {
     let method_name = unique_method_name(op, used);
     let sig = op_signature(program, names, op, method_name);
 
@@ -411,6 +417,111 @@ fn render_operation(
     let _ = writeln!(out, "        BoxResponse response = client.send(request);");
     emit_return(out, program, names, wire, &op.response);
     let _ = writeln!(out, "    }}");
+    sig
+}
+
+/// A conditional read's variant operation (its reserved IR name swapped in).
+/// Callers reserve its method name right after the base method's, so the
+/// manager, its docs, and its test suite allocate identical names.
+pub(crate) fn conditional_variant(op: &ir::Operation) -> Option<ir::Operation> {
+    let read = op.conditional.as_ref()?;
+    Some(ir::Operation {
+        name: read.name.clone(),
+        ..op.clone()
+    })
+}
+
+/// A conditional read's variant signature: the base method's, with the
+/// `If-None-Match` parameter lifted out as a required `String etag` right
+/// after the path parameters. Also returns the base call's argument list, the
+/// etag in its parameter's place.
+pub(crate) fn conditional_signature(
+    op: &ir::Operation,
+    base: &OpSignature,
+    method_name: String,
+) -> (OpSignature, String) {
+    let read = op
+        .conditional
+        .as_ref()
+        .expect("conditional_signature on a conditional read");
+    let etag = op
+        .params
+        .iter()
+        .find(|p| p.name == read.etag)
+        .map(arg_name)
+        .expect("sema: the etag is an operation parameter");
+    let mut params: Vec<OpParam> = base
+        .params
+        .iter()
+        .filter(|p| p.location == ir::ParamLocation::Path)
+        .cloned()
+        .collect();
+    params.push(OpParam {
+        name: "etag".to_string(),
+        apex_type: "String".to_string(),
+        location: ir::ParamLocation::Header,
+        optional: false,
+    });
+    params.extend(
+        base.params
+            .iter()
+            .filter(|p| p.location != ir::ParamLocation::Path && p.name != etag)
+            .cloned(),
+    );
+    let mut call: Vec<String> = base
+        .params
+        .iter()
+        .map(|p| {
+            if p.name == etag {
+                "etag".to_string()
+            } else {
+                p.name.clone()
+            }
+        })
+        .collect();
+    if base.body_type.is_some() {
+        call.push("body".to_string());
+    }
+    let sig = OpSignature {
+        method_name,
+        http: base.http,
+        path_display: base.path_display.clone(),
+        return_ty: base.return_ty.clone(),
+        params,
+        body_type: base.body_type.clone(),
+        deprecated: base.deprecated,
+    };
+    (sig, call.join(", "))
+}
+
+/// A conditional read's `<method>IfModified` (Box's etag flow): `<method>`
+/// with `If-None-Match` set to `etag`, returning `null` for the 304 Not
+/// Modified that means "unchanged since etag" instead of throwing.
+fn render_conditional(out: &mut String, op: &ir::Operation, base: &OpSignature, name: String) {
+    let (sig, call) = conditional_signature(op, base, name);
+    let _ = writeln!(
+        out,
+        "    /**\n     * `{base}` with `If-None-Match` set to `etag`: `null` when the item is\n\
+         \x20    * unchanged since `etag` (Box answers 304 Not Modified).\n     */",
+        base = base.method_name
+    );
+    let _ = writeln!(
+        out,
+        "    public {ret} {method}({args}) {{\n\
+         \x20       try {{\n\
+         \x20           return {base}({call});\n\
+         \x20       }} catch (BoxApiException e) {{\n\
+         \x20           if (e.statusCode == 304) {{\n\
+         \x20               return null;\n\
+         \x20           }}\n\
+         \x20           throw e;\n\
+         \x20       }}\n\
+         \x20   }}",
+        ret = sig.return_ty,
+        method = sig.method_name,
+        args = sig.arg_list(),
+        base = base.method_name,
+    );
 }
 
 /// Emit the response handling: `void` returns nothing; a JSON response whose

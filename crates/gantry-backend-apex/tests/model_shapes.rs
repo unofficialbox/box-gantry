@@ -207,6 +207,7 @@ fn struct_with_optional_body(fields: Vec<ir::Field>, as_body: bool) -> String {
             }),
             response: ir::ResponseShape::None,
             deprecated: false,
+            conditional: None,
         });
     }
     let program = Box::leak(Box::new(program));
@@ -435,6 +436,7 @@ fn struct_with_extra_and_optional_body(
             }),
             response: ir::ResponseShape::None,
             deprecated: false,
+            conditional: None,
         });
     }
     let program = Box::leak(Box::new(program));
@@ -697,6 +699,7 @@ fn an_extra_bag_of_a_write_affected_struct_denormalizes_before_flatten() {
         }),
         response: ir::ResponseShape::None,
         deprecated: false,
+        conditional: None,
     });
     let program = Box::leak(Box::new(program));
     let analysis = gantry_sema::analyze(program).expect("fixture must analyze");

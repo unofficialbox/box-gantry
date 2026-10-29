@@ -81,6 +81,7 @@ pub struct TargetShape {
     pub count_managers: fn(&[GeneratedView]) -> usize,
     pub count_manager_docs: fn(&[GeneratedView]) -> usize,
     pub count_operations: fn(&[GeneratedView]) -> usize,
+    pub count_conditional_reads: fn(&[GeneratedView]) -> usize,
     pub count_pagination: fn(&[GeneratedView]) -> usize,
     pub count_serialization: fn(&[GeneratedView]) -> usize,
     pub count_round_trip_tests: fn(&[GeneratedView]) -> usize,
@@ -180,6 +181,17 @@ pub fn conformance(
             program.operations.len(),
             (shape.count_operations)(files),
             "operations → generated methods",
+        ),
+        capability(
+            shape,
+            "conditional-reads",
+            program
+                .operations
+                .iter()
+                .filter(|op| op.conditional.is_some())
+                .count(),
+            (shape.count_conditional_reads)(files),
+            "304-declaring If-None-Match reads → not-modified variants",
         ),
         capability(
             shape,
@@ -287,6 +299,7 @@ pub fn go_shape() -> TargetShape {
         count_managers: go_managers,
         count_manager_docs: go_manager_docs,
         count_operations: go_operations,
+        count_conditional_reads: go_conditional_reads,
         count_pagination: go_pagination,
         count_serialization: go_serialization,
         count_round_trip_tests: go_round_trip_tests,
@@ -313,10 +326,20 @@ fn go_manager_docs(files: &[GeneratedView]) -> usize {
 }
 
 fn go_operations(files: &[GeneratedView]) -> usize {
-    // Operation and pagination methods both take `(ctx context.Context`;
-    // subtract the paginators to isolate the plain per-operation methods.
+    // Operation, pagination, and conditional-read variant methods all take
+    // `(ctx context.Context`; subtract the paginators and variants to isolate
+    // the plain per-operation methods.
     let ctx = count_marker(files, go_is_manager_file, "(ctx context.Context");
-    ctx.saturating_sub(go_pagination(files))
+    ctx.saturating_sub(go_pagination(files) + go_conditional_reads(files))
+}
+
+fn go_conditional_reads(files: &[GeneratedView]) -> usize {
+    // Each `<Method>IfModified` variant's doc comment.
+    count_marker(
+        files,
+        go_is_manager_file,
+        "with If-None-Match set to etag. It returns nil, nil",
+    )
 }
 
 fn go_pagination(files: &[GeneratedView]) -> usize {
@@ -389,6 +412,7 @@ pub fn apex_shape() -> TargetShape {
         count_managers: apex_managers,
         count_manager_docs: apex_manager_docs,
         count_operations: apex_operations,
+        count_conditional_reads: apex_conditional_reads,
         count_pagination: apex_pagination,
         count_serialization: apex_serialization,
         count_round_trip_tests: apex_round_trip_tests,
@@ -455,6 +479,20 @@ fn apex_operations(files: &[GeneratedView]) -> usize {
                 .iter()
                 .map(|verb| f.content.matches(&format!("* `{verb} ")).count())
                 .sum::<usize>()
+        })
+        .sum()
+}
+
+fn apex_conditional_reads(files: &[GeneratedView]) -> usize {
+    // Each `<method>IfModified` variant's ApexDoc (which opens with prose, not
+    // an HTTP verb, so `apex_operations` never counts it).
+    files
+        .iter()
+        .filter(|f| apex_is_manager_class(f))
+        .map(|f| {
+            f.content
+                .matches("with `If-None-Match` set to `etag`: `null`")
+                .count()
         })
         .sum()
 }
@@ -545,6 +583,7 @@ pub fn rust_shape() -> TargetShape {
         count_managers: rust_managers,
         count_manager_docs: rust_manager_docs,
         count_operations: rust_operations,
+        count_conditional_reads: rust_conditional_reads,
         count_pagination: rust_pagination,
         count_serialization: rust_serialization,
         count_round_trip_tests: rust_round_trip_tests,
@@ -598,7 +637,16 @@ fn rust_operations(files: &[GeneratedView]) -> usize {
     // (no `pub`), so count all `async fn ` and subtract the paginators' own
     // `pub async fn next` to isolate the per-operation methods.
     let async_fns = count_marker(files, rust_is_manager_file, "async fn ");
-    async_fns.saturating_sub(rust_pagination(files))
+    async_fns.saturating_sub(rust_pagination(files) + rust_conditional_reads(files))
+}
+
+fn rust_conditional_reads(files: &[GeneratedView]) -> usize {
+    // Each `<method>_if_modified` variant's doc comment.
+    count_marker(
+        files,
+        rust_is_manager_file,
+        "with `If-None-Match` set to `etag`: `Ok(None)`",
+    )
 }
 
 fn rust_pagination(files: &[GeneratedView]) -> usize {
@@ -677,6 +725,7 @@ pub fn typescript_shape() -> TargetShape {
         count_managers: ts_managers,
         count_manager_docs: ts_manager_docs,
         count_operations: ts_operations,
+        count_conditional_reads: ts_conditional_reads,
         count_pagination: ts_pagination,
         count_serialization: ts_serialization,
         count_round_trip_tests: ts_round_trip_tests,
@@ -725,7 +774,16 @@ fn ts_operations(files: &[GeneratedView]) -> usize {
     // which `  async ` doesn't match, so add those back.
     let public_async = count_marker(files, ts_is_manager_file, "  async ");
     let private_page = count_marker(files, ts_is_manager_file, "  private async ");
-    (public_async + private_page).saturating_sub(ts_pagination(files))
+    (public_async + private_page).saturating_sub(ts_pagination(files) + ts_conditional_reads(files))
+}
+
+fn ts_conditional_reads(files: &[GeneratedView]) -> usize {
+    // Each `<method>IfModified` variant's doc comment.
+    count_marker(
+        files,
+        ts_is_manager_file,
+        "with `If-None-Match` set to `etag`: resolves `undefined`",
+    )
 }
 
 fn ts_pagination(files: &[GeneratedView]) -> usize {
@@ -825,6 +883,7 @@ mod tests {
             request: None,
             response: ir::ResponseShape::None,
             deprecated: false,
+            conditional: None,
         }
     }
 

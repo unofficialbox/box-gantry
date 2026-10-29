@@ -31,7 +31,9 @@ use gantry_ir as ir;
 use gantry_manifest::{CapabilityManifest, ModuleSystem};
 use gantry_sema::Analysis;
 
-use crate::managers::{manager_infos, op_signature, unique_method_name};
+use crate::managers::{
+    conditional_signature, conditional_variant, manager_infos, op_signature, unique_method_name,
+};
 use crate::models::{ClassNames, mint_unique};
 use crate::runtime::RUNTIME_CLASS_NAMES;
 use crate::wire::Wire;
@@ -229,20 +231,28 @@ fn manager_test(
             let _ = writeln!(out, "        mock.body = '{{}}';");
         }
 
-        let mut args: Vec<String> = sig
-            .params
-            .iter()
-            .map(|p| placeholder(&p.apex_type))
-            .collect();
-        if let Some(body) = &sig.body_type {
-            args.push(placeholder(body));
+        // A conditional read's variant is exercised too, after the base (the
+        // same reservation order as the manager).
+        let variant = conditional_variant(op).map(|variant| {
+            let name = unique_method_name(&variant, &mut used_methods);
+            conditional_signature(op, &sig, name).0
+        });
+        for sig in std::iter::once(&sig).chain(variant.as_ref()) {
+            let mut args: Vec<String> = sig
+                .params
+                .iter()
+                .map(|p| placeholder(&p.apex_type))
+                .collect();
+            if let Some(body) = &sig.body_type {
+                args.push(placeholder(body));
+            }
+            let _ = writeln!(
+                out,
+                "        svc.{method}({args});",
+                method = sig.method_name,
+                args = args.join(", "),
+            );
         }
-        let _ = writeln!(
-            out,
-            "        svc.{method}({args});",
-            method = sig.method_name,
-            args = args.join(", "),
-        );
     }
 
     out.push_str("        Test.stopTest();\n");

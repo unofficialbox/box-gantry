@@ -630,11 +630,12 @@ fn the_generated_sdk_packs_and_loads_dual_format() {
 }
 
 /// The etag flow from Box's "Ensure consistency" guide, through the built
-/// package's generated `files` methods and the real runtime: `If-None-Match` on
-/// a GET answers 304 when the item is unchanged, `If-Match` on a write answers
-/// 412 when it changed since, and a missing item answers 404 — each a non-2xx
-/// that must reject with a `BoxApiError` carrying its status and Box code,
-/// never resolve as a decoded "result".
+/// package's generated `files` methods and the real runtime: `getIfModified`
+/// resolves `undefined` for the 304 that means "unchanged" and the file for a
+/// stale etag; otherwise `If-None-Match` on a plain GET (304), `If-Match` on a
+/// write that changed since (412), and a missing item (404) each reject with a
+/// `BoxApiError` carrying its status and Box code, never resolve as a decoded
+/// "result".
 const CONSISTENCY_SMOKE: &str = r#"import http from 'node:http';
 import { Client, runtime } from '@unofficialbox/box-open-sdk';
 
@@ -689,7 +690,15 @@ try {
   const file = await c.files.get('1');
   if (file.etag !== 'etag-1') throw new Error(`get: etag ${file.etag}`);
 
-  // If-None-Match with the current etag: 304, as an error, no body decoded.
+  // getIfModified with the current etag: Box's 304 is "unchanged", undefined.
+  const unchanged = await c.files.getIfModified('1', file.etag);
+  if (unchanged !== undefined) throw new Error(`getIfModified current etag: ${JSON.stringify(unchanged)}`);
+  // With a stale etag: the current file.
+  const fresh = await c.files.getIfModified('1', 'etag-0');
+  if (fresh?.etag !== 'etag-1') throw new Error(`getIfModified stale etag: ${JSON.stringify(fresh)}`);
+
+  // The plain get with If-None-Match set by hand still rejects with the 304 —
+  // no body is decoded.
   await expectApiError('get If-None-Match', c.files.get('1', { 'if-none-match': file.etag }), 304, undefined);
 
   // If-Match with a stale etag: 412 precondition_failed.

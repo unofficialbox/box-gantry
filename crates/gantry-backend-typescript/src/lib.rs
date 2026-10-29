@@ -239,8 +239,8 @@ fn emits_chunked_upload(analysis: &gantry_sema::Analysis<'_>) -> bool {
             .collect();
     let mut methods: HashSet<String> = HashSet::new();
     for indices in analysis.managers.values() {
-        for (base, _) in managers::method_bases(program, indices, &paged) {
-            methods.insert(managers::camel(&base));
+        for bases in managers::method_bases(program, indices, &paged) {
+            methods.insert(managers::camel(&bases.base));
         }
     }
     const REQUIRED_METHODS: [&str; 4] = [

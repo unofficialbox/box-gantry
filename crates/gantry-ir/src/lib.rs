@@ -312,6 +312,20 @@ pub enum ResponseShape {
     Redirect,
 }
 
+/// A conditional read (Box's "Ensure consistency" etag flow): the spec
+/// declares a `304 Not Modified` response for an `If-None-Match` header
+/// parameter. Backends emit a variant method that sends the etag and answers
+/// "unchanged" for the 304 instead of raising it — classified at ingestion,
+/// never re-derived from status codes by backends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConditionalRead {
+    /// The variant method's name, reserved alongside the manager's other
+    /// method names so it can't collide.
+    pub name: Identifier,
+    /// The `If-None-Match` header parameter the etag fills.
+    pub etag: Identifier,
+}
+
 /// One API operation, fully resolved (FR-2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Operation {
@@ -330,6 +344,8 @@ pub struct Operation {
     pub request: Option<RequestBody>,
     pub response: ResponseShape,
     pub deprecated: bool,
+    /// Set when the operation is a conditional read ([`ConditionalRead`]).
+    pub conditional: Option<ConditionalRead>,
 }
 
 /// A verified program: the only thing a backend ever receives (FR-3.2).

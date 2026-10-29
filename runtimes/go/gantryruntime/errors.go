@@ -2,6 +2,7 @@ package gantryruntime
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -52,4 +53,11 @@ func newAPIError(resp *Response) *APIError {
 		apiErr.Code, apiErr.Message, apiErr.RequestID = payload.Code, payload.Message, payload.RequestID
 	}
 	return apiErr
+}
+
+// IsNotModified reports whether err is Box's 304 Not Modified: the answer to
+// an If-None-Match read whose etag still matches the item.
+func IsNotModified(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.Status == http.StatusNotModified
 }
