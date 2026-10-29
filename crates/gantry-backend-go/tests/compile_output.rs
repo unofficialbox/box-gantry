@@ -415,11 +415,35 @@ func TestGeneratedMethodsSurfaceConsistencyOutcomesAsAPIErrors(t *testing.T) {
 	stale := "etag-0"
 	_, err = c.Files.Update(ctx, "1", nil, &managers.FilesUpdateOptions{IfMatch: &stale})
 	wantAPIError(t, "Update If-Match", err, http.StatusPreconditionFailed, "precondition_failed")
+	if !gantryruntime.IsPreconditionFailed(err) {
+		t.Fatalf("IsPreconditionFailed(%v) = false", err)
+	}
 
 	// If-Match with the current etag: the write goes through.
 	updated, err := c.Files.Update(ctx, "1", nil, &managers.FilesUpdateOptions{IfMatch: &etag})
 	if err != nil || updated.Etag == nil || updated.Etag.Value != "etag-2" {
 		t.Fatalf("Update with the current etag: file=%+v err=%v", updated, err)
+	}
+
+	// The errors guide's re-read-and-retry loop, from a stale etag: the 412
+	// is IsPreconditionFailed, the re-read yields the current etag, and the
+	// retry lands.
+	etag = "etag-0"
+	attempts := 0
+	for {
+		attempts++
+		updated, err = c.Files.Update(ctx, "1", nil, &managers.FilesUpdateOptions{IfMatch: &etag})
+		if !gantryruntime.IsPreconditionFailed(err) || attempts == 3 {
+			break
+		}
+		current, getErr := c.Files.Get(ctx, "1", nil)
+		if getErr != nil {
+			t.Fatalf("re-read: %v", getErr)
+		}
+		etag = current.Etag.Value
+	}
+	if err != nil || attempts != 2 || updated.Etag == nil || updated.Etag.Value != "etag-2" {
+		t.Fatalf("re-read and retry: file=%+v err=%v after %d attempt(s), want it to land on the 2nd", updated, err, attempts)
 	}
 
 	// A missing item: 404 not_found, also from a method with no response body.

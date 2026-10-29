@@ -463,6 +463,7 @@ void uploadDownloadDelete(Runtime.Session session) {
                 + " bytes, want " + content.length + ")");
         }
         System.out.println("download: content round-tripped");
+        etags(session, fileUrl);
     } finally {
         long code = Runtime.statusCode(session.fetch(session.newRequest("DELETE", fileUrl)));
         if (code != 204) {
@@ -470,6 +471,43 @@ void uploadDownloadDelete(Runtime.Session session) {
         }
         System.out.println("delete: cleaned up file " + fileId);
     }
+}
+
+// Drive Box's etag flow on the uploaded file, as the generated `…IfModified`
+// variants and the errors guide's re-read-and-retry loop expect it:
+// If-None-Match with the current etag is a 304 and a stale one reads the file;
+// If-Match with a stale etag is a 412 and the current one writes.
+void etags(Runtime.Session session, String fileUrl) {
+    if (!(field(getJson(session, fileUrl), "etag") instanceof String etag) || etag.isEmpty()) {
+        throw new IllegalStateException("etag: the file read yields no etag");
+    }
+    // Box's etags are version counters, so this one is well-formed but stale.
+    String stale = "9" + etag;
+
+    expectStatus("If-None-Match with the current etag", 304, () -> session.fetch(
+        Runtime.withHeader(session.newRequest("GET", fileUrl), "If-None-Match", etag)));
+    fetchOk(session, Runtime.withHeader(session.newRequest("GET", fileUrl), "If-None-Match", stale));
+
+    byte[] description = "{\"description\":\"box-gantry etag smoke\"}"
+        .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    expectStatus("If-Match with a stale etag", 412, () -> session.fetch(Runtime.withHeader(
+        Runtime.withJsonBody(session.newRequest("PUT", fileUrl), description), "If-Match", stale)));
+    fetchOk(session, Runtime.withHeader(
+        Runtime.withJsonBody(session.newRequest("PUT", fileUrl), description), "If-Match", etag));
+    System.out.println("etag: 304 for the current etag, 412 for a stale If-Match, the current one writes");
+}
+
+// Run a call that must throw the runtime's error for `status`.
+void expectStatus(String what, int status, Runnable call) {
+    try {
+        call.run();
+    } catch (Runtime.BoxApiException err) {
+        if (err.statusCode() != status || (status == 412 && !err.isPreconditionFailed())) {
+            throw new IllegalStateException("etag: " + what + ": " + err.getMessage() + ", want " + status);
+        }
+        return;
+    }
+    throw new IllegalStateException("etag: " + what + ": succeeded, want " + status);
 }
 
 Object getJson(Runtime.Session session, String url) {

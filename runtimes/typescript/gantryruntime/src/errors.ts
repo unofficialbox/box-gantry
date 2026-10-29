@@ -47,6 +47,13 @@ export class BoxApiError extends Error {
   }
 }
 
+/** Whether `err` is Box's 412 Precondition Failed: an `If-Match` write whose
+ * etag no longer matches, because the item changed since it was read. Re-read
+ * the item and retry with its new etag. */
+export function isPreconditionFailed(err: unknown): err is BoxApiError {
+  return err instanceof BoxApiError && err.status === 412;
+}
+
 /** The error for a non-2xx response: `Client.fetch` throws it once the retry
  * budget and the single 401 refresh are spent, so a caller never mistakes an
  * error body for a result. Box's error fields are read from the body when it

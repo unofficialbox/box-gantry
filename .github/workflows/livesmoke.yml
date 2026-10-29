@@ -50,7 +50,7 @@ jobs:
       # Each runtime's smoke runs independently (`if: ${{ !cancelled() }}`) so one
       # runtime's failure surfaces on its own step and doesn't mask the others'
       # results; the job still fails overall if any runtime fails.
-      - name: Run the Go live smoke (one call per auth flow + upload/download/paginate)
+      - name: Run the Go live smoke (one call per auth flow + upload/download/paginate + etags)
         if: ${{ !cancelled() }}
         working-directory: runtimes/go
         run: go test -tags live -run TestLiveSmoke -v ./gantryruntime/...

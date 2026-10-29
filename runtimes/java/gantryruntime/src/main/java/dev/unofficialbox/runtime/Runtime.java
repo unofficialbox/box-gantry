@@ -172,6 +172,13 @@ public final class Runtime {
             return statusCode;
         }
 
+        /** Whether this is Box's 412 Precondition Failed: an {@code If-Match}
+         * write whose etag no longer matches, because the item changed since it
+         * was read. Re-read the item and retry with its new etag. */
+        public boolean isPreconditionFailed() {
+            return statusCode == 412;
+        }
+
         /** Box's error {@code code} (e.g. {@code not_found}), or null. */
         public String code() {
             return code;

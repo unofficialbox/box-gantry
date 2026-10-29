@@ -70,6 +70,13 @@ impl Error {
         self.api.as_ref().map(|api| api.status)
     }
 
+    /// Whether this is Box's 412 Precondition Failed: an `If-Match` write whose
+    /// etag no longer matches, because the item changed since it was read.
+    /// Re-read the item and retry with its new etag.
+    pub fn is_precondition_failed(&self) -> bool {
+        self.status() == Some(412)
+    }
+
     /// The error for a non-2xx response, reading Box's error fields from the
     /// body when it is a Box error object.
     fn from_response(response: &Response) -> Error {

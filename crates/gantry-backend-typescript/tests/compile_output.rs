@@ -708,6 +708,26 @@ try {
   const updated = await c.files.update('1', {}, { 'if-match': file.etag });
   if (updated.etag !== 'etag-2') throw new Error(`update: etag ${updated.etag}`);
 
+  // The errors guide's re-read-and-retry loop, from a stale etag: the 412 is
+  // isPreconditionFailed, the re-read yields the current etag, and the retry
+  // lands.
+  let etag = 'etag-0';
+  let attempts = 0;
+  let landed;
+  for (;;) {
+    attempts += 1;
+    try {
+      landed = await c.files.update('1', {}, { 'if-match': etag });
+      break;
+    } catch (err) {
+      if (!runtime.isPreconditionFailed(err) || attempts === 3) throw err;
+      etag = (await c.files.get('1')).etag;
+    }
+  }
+  if (attempts !== 2 || landed.etag !== 'etag-2') {
+    throw new Error(`re-read and retry: ${attempts} attempt(s), etag ${landed.etag}`);
+  }
+
   // A missing item: 404 not_found, also from a method with no response body.
   await expectApiError('delete missing', c.files.delete_('2'), 404, 'not_found');
 } finally {

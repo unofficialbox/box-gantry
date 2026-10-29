@@ -14,7 +14,7 @@
 import type { Auth } from './auth.js';
 import { BoxApiError, apiErrorFromResponse } from './errors.js';
 
-export { BoxApiError } from './errors.js';
+export { BoxApiError, isPreconditionFailed } from './errors.js';
 export * from './auth.js';
 
 /** The default base URLs for the D-106 URL classes. */

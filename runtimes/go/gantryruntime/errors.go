@@ -61,3 +61,11 @@ func IsNotModified(err error) bool {
 	var apiErr *APIError
 	return errors.As(err, &apiErr) && apiErr.Status == http.StatusNotModified
 }
+
+// IsPreconditionFailed reports whether err is Box's 412 Precondition Failed:
+// an If-Match write whose etag no longer matches, because the item changed
+// since it was read. Re-read the item and retry with its new etag.
+func IsPreconditionFailed(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.Status == http.StatusPreconditionFailed
+}

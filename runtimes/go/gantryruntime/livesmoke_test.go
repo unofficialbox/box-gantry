@@ -2,8 +2,9 @@
 
 // VR-7 live smoke: exercise the runtime against a real Box account — one
 // call per configured auth flow, plus paginate + upload + download +
-// delete. Build-tagged `live` so the standard CI gate never runs it (no
-// credentials there) — CI only vets it (`go vet -tags live`) so it can't rot.
+// delete, with the etag flow (304 / 412) on the uploaded file. Build-tagged
+// `live` so the standard CI gate never runs it (no credentials there) — CI
+// only vets it (`go vet -tags live`) so it can't rot.
 // Run it on demand with credentials:
 //
 //	go test -tags live -run TestLiveSmoke ./gantryruntime/...
@@ -263,6 +264,49 @@ func smokeUploadDownloadDelete(ctx context.Context, t *testing.T, client *gantry
 		t.Fatalf("download: content mismatch (got %d bytes, want %d)", len(dlBody), len(content))
 	}
 	t.Logf("download: content round-tripped")
+
+	smokeEtags(ctx, t, client, fileID)
+}
+
+// smokeEtags drives Box's etag flow on the uploaded file, as the generated
+// …IfModified variants and the errors guide's re-read-and-retry loop expect
+// it: If-None-Match with the current etag is a 304 and a stale one reads the
+// file; If-Match with a stale etag is a 412 and the current one writes.
+func smokeEtags(ctx context.Context, t *testing.T, client *gantryruntime.Client, fileID string) {
+	url := client.BaseUrl("api") + "/files/" + fileID
+	var file struct {
+		Etag string `json:"etag"`
+	}
+	if err := json.Unmarshal(fetchOK(ctx, t, client, client.NewRequest("GET", url)), &file); err != nil || file.Etag == "" {
+		t.Fatalf("etag: the file read yields no etag (%v)", err)
+	}
+	// Box's etags are version counters, so this one is well-formed but stale.
+	stale := "9" + file.Etag
+
+	read := func(etag string) error {
+		_, err := client.Fetch(ctx, gantryruntime.WithHeader(client.NewRequest("GET", url), "If-None-Match", etag))
+		return err
+	}
+	if err := read(file.Etag); !gantryruntime.IsNotModified(err) {
+		t.Fatalf("etag: If-None-Match with the current etag: err = %v, want a 304", err)
+	}
+	if err := read(stale); err != nil {
+		t.Fatalf("etag: If-None-Match with a stale etag: %v", err)
+	}
+
+	description, _ := json.Marshal(map[string]string{"description": "box-gantry etag smoke"})
+	write := func(etag string) error {
+		req := gantryruntime.WithJsonBody(client.NewRequest("PUT", url), description)
+		_, err := client.Fetch(ctx, gantryruntime.WithHeader(req, "If-Match", etag))
+		return err
+	}
+	if err := write(stale); !gantryruntime.IsPreconditionFailed(err) {
+		t.Fatalf("etag: If-Match with a stale etag: err = %v, want a 412", err)
+	}
+	if err := write(file.Etag); err != nil {
+		t.Fatalf("etag: If-Match with the current etag: %v", err)
+	}
+	t.Logf("etag: 304 for the current etag, 412 for a stale If-Match, the current one writes")
 }
 
 // getJSON fetches a URL and decodes a JSON object, failing on non-2xx.

@@ -8,7 +8,7 @@
 // It mints a token via Client Credentials Grant (no user in the loop), then two
 // live reads exercise, in one flow: auth (a real token mint), URL building, the
 // bearer header, native typed deserialization, the wire key-remap, and
-// pagination. The `${...}` placeholders are filled from repo secrets by the
+// pagination. A scratch folder then carries Box's etag flow (304 and 412). The `${...}` placeholders are filled from repo secrets by the
 // workflow — this file never contains real credentials.
 BoxTokenProvider auth = new BoxCcgTokenProvider(
     '${BOX_CLIENT_ID}',
@@ -34,6 +34,45 @@ System.debug(
     LoggingLevel.ERROR,
     'SMOKE listItems entries=' + entryCount + ' total=' + root.total_count
 );
+
+// 3) Box's etag flow through the generated methods, on a scratch folder that is
+//    deleted afterwards: getIfModified with the current etag is null (Box's
+//    304) and with a stale one the folder; an update with a stale If-Match
+//    throws the 412 that isPreconditionFailed() reports, and the current etag
+//    writes. Box's etags are version counters, so '9' + etag is well-formed
+//    but stale.
+CreateFolderRequest scratch = new CreateFolderRequest();
+scratch.name = 'box-gantry-smoke-' + Datetime.now().getTime();
+scratch.parent = new AttributesParent();
+scratch.parent.id = '0';
+FolderFull folder = client.folders.create(null, scratch);
+try {
+    String etag = folder.etag;
+    String stale = '9' + etag;
+    System.assert(String.isNotBlank(etag), 'the new folder has no etag');
+    System.assertEquals(
+        null,
+        client.folders.getIfModified(folder.id, etag, null, null, null, null, null, null),
+        'getIfModified with the current etag should be null (304)'
+    );
+    System.assertNotEquals(
+        null,
+        client.folders.getIfModified(folder.id, stale, null, null, null, null, null, null),
+        'getIfModified with a stale etag should read the folder'
+    );
+    UpdateFolderRequest change = new UpdateFolderRequest();
+    change.description = 'box-gantry etag smoke';
+    try {
+        client.folders.update_r(folder.id, null, stale, change);
+        System.assert(false, 'an update with a stale If-Match should throw');
+    } catch (BoxApiException e) {
+        System.assert(e.isPreconditionFailed(), 'a stale If-Match should be a 412: ' + e.getMessage());
+    }
+    client.folders.update_r(folder.id, null, etag, change);
+    System.debug(LoggingLevel.ERROR, 'SMOKE etags folder=' + folder.id + ' etag=' + etag);
+} finally {
+    client.folders.delete_r(folder.id, null, true);
+}
 
 // The sentinel the workflow greps for — reached only if every call above
 // succeeded and no assertion or callout threw.

@@ -421,6 +421,7 @@ async fn generated_methods_surface_consistency_outcomes_as_api_errors() {
         .await
         .expect_err("a stale If-Match is refused");
     assert_api_error(&err, 412, Some("precondition_failed"));
+    assert!(err.is_precondition_failed(), "{err}");
 
     // If-Match with the current etag: the write goes through.
     let current = FilesUpdateOptions {
@@ -433,6 +434,28 @@ async fn generated_methods_surface_consistency_outcomes_as_api_errors() {
         .await
         .expect("the current If-Match goes through");
     assert_eq!(updated.etag.flatten().as_deref(), Some("etag-2"));
+
+    // The errors guide's re-read-and-retry loop, from a stale etag: the 412 is
+    // is_precondition_failed, the re-read yields the current etag, and the
+    // retry lands.
+    let mut etag = String::from("etag-0");
+    let mut attempts = 0;
+    let landed = loop {
+        attempts += 1;
+        let guarded = FilesUpdateOptions {
+            if_match: Some(etag.clone()),
+            ..Default::default()
+        };
+        match client.files.update("1".into(), UpdateFileRequest::default(), Some(guarded)).await {
+            Err(err) if err.is_precondition_failed() && attempts < 3 => {
+                let current = client.files.get("1".into(), None).await.expect("the re-read succeeds");
+                etag = current.etag.flatten().expect("the re-read yields an etag");
+            }
+            result => break result.expect("the retry lands"),
+        }
+    };
+    assert_eq!(attempts, 2, "the retry lands on the second attempt");
+    assert_eq!(landed.etag.flatten().as_deref(), Some("etag-2"));
 
     // A missing item: 404 not_found, also from a method with no response body.
     let err = client.files.delete("2".into(), None).await.expect_err("404 is an error");

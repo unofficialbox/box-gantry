@@ -433,16 +433,25 @@ guide):\n\
 - **Writes** — pass the etag as `IfMatch` on a file or folder update or\n\
 \x20\x20delete, or a new file version upload. Box answers `412 Precondition\n\
 \x20\x20Failed` (code `precondition_failed`) when the item changed since you read\n\
-\x20\x20it: read it again, reapply your change, retry. `If-Match` can't block a move.\n\
+\x20\x20it, and `gantryruntime.IsPreconditionFailed(err)` reports it: read it\n\
+\x20\x20again, reapply your change, retry. `If-Match` can't block a move.\n\
 \n\
 ```go\n\
 file, err := client.Files.GetIfModified(ctx, fileID, etag, nil)\n\
 if err == nil && file == nil {\n\
 \t// unchanged since etag\n\
 }\n\
-_, err = client.Files.Update(ctx, fileID, body, &managers.FilesUpdateOptions{IfMatch: &etag})\n\
-var apiErr *gantryruntime.APIError\n\
-if errors.As(err, &apiErr) && apiErr.Status == http.StatusPreconditionFailed {\n\
-\t// changed since etag: re-read and retry\n\
+\n\
+// Re-read and retry: the update lands only on the version it was made from.\n\
+for attempt := 1; ; attempt++ {\n\
+\t_, err = client.Files.Update(ctx, fileID, body, &managers.FilesUpdateOptions{IfMatch: &etag})\n\
+\tif !gantryruntime.IsPreconditionFailed(err) || attempt == 3 {\n\
+\t\tbreak\n\
+\t}\n\
+\tcurrent, err := client.Files.Get(ctx, fileID, nil)\n\
+\tif err != nil {\n\
+\t\treturn err\n\
+\t}\n\
+\tetag = current.Etag.Value // reapply your change to current here\n\
 }\n\
 ```\n";

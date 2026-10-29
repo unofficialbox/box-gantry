@@ -53,6 +53,13 @@ public class BoxApiException extends Exception {
         return error;
     }
 
+    /** Whether this is Box's 412 Precondition Failed: an `If-Match` write whose
+     * etag no longer matches, because the item changed since it was read.
+     * Re-read the item and retry with its new etag. */
+    public Boolean isPreconditionFailed() {
+        return statusCode == 412;
+    }
+
     private static String stringField(Map<String, Object> fields, String key) {
         Object value = fields.get(key);
         return value instanceof String ? (String) value : null;
