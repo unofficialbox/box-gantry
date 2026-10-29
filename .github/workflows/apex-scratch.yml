@@ -67,20 +67,24 @@ jobs:
           mapfile -t tests < <(grep -li '^@isTest' force-app/main/default/classes/*.cls \
             | xargs -n1 basename | sed 's/\.cls$//')
           echo "Running ${#tests[@]} Apex test classes"
-          status=0
+          # The deploy itself always reports failure here: a validation deploy to
+          # a production-type org with RunSpecifiedTests also demands 75%
+          # coverage of every deployed class, which a generated SDK of ~1000
+          # model classes can't meet class by class. Package-level coverage is
+          # enforced where it applies — the release's `--code-coverage` build —
+          # so VR-1.3 judges what it owns: every class compiles, every test passes.
           sf project deploy start --dry-run --test-level RunSpecifiedTests --tests "${tests[@]}" \
-            --wait 30 --ignore-conflicts --target-org target --json > deploy.json || status=$?
-          if [ "$status" -ne 0 ]; then
-            # Name each compile and test failure; the CLI's summary only counts them.
+            --wait 30 --ignore-conflicts --target-org target --json > deploy.json || true
+          component_errors=$(jq '.result.numberComponentErrors // -1' deploy.json)
+          tests_run=$(jq '.result.details.runTestResult.numTestsRun // 0' deploy.json)
+          test_failures=$(jq '.result.details.runTestResult.numFailures // -1' deploy.json)
+          echo "Components failed: $component_errors; tests run: $tests_run, failed: $test_failures"
+          if [ "$component_errors" -ne 0 ] || [ "$test_failures" -ne 0 ] || [ "$tests_run" -eq 0 ]; then
+            # Name each compile and test failure.
             jq -r '((.result.details.componentFailures // [] | if type == "array" then . else [.] end)[]
                      | "component \(.fullName): \(.problem)"),
                    ((.result.details.runTestResult.failures // [] | if type == "array" then . else [.] end)[]
                      | "test \(.name).\(.methodName): \(.message)"),
-                   (.message // empty)' deploy.json || true
-            jq '.result | {status, errorMessage, numberComponentErrors, numberTestsCompleted, numberTestErrors,
-                runTestResult: (.details.runTestResult // {} | {numTestsRun, numFailures,
-                  codeCoverageWarnings: ((.codeCoverageWarnings // []) | if type == "array" then .[:20] else . end)})}' \
-              deploy.json || head -c 6000 deploy.json
-            exit "$status"
+                   (.message // empty)' deploy.json || head -c 6000 deploy.json
+            exit 1
           fi
-          jq -r '"Tests: \(.result.numberTestsCompleted) passed, \(.result.numberTestErrors) failed"' deploy.json
