@@ -488,18 +488,26 @@ guide):\n\
 - **Writes** — pass the etag as `ifMatch` on a file or folder update or\n\
 \x20\x20delete, or a new file version upload. Box answers `412 Precondition\n\
 \x20\x20Failed` (code `precondition_failed`) when the item changed since you read\n\
-\x20\x20it: read it again, reapply your change, retry. `If-Match` can't block a move.\n\
+\x20\x20it, and `e.isPreconditionFailed()` reports it: read it again, reapply your\n\
+\x20\x20change, retry. `If-Match` can't block a move.\n\
 \n\
 ```java\n\
 var file = client.files.getIfModified(fileId, etag, null);\n\
 if (file.isEmpty()) {\n\
 \x20\x20\x20\x20// unchanged since etag\n\
 }\n\
+\n\
+// Re-read and retry: the update lands only on the version it was made from.\n\
 var guarded = new FilesManager.UpdateOptions();\n\
 guarded.ifMatch = etag;\n\
-try {\n\
-\x20\x20\x20\x20client.files.update(fileId, body, guarded);\n\
-} catch (dev.unofficialbox.runtime.Runtime.BoxApiException e) {\n\
-\x20\x20\x20\x20if (e.statusCode() != 412) throw e; // 412: changed since etag, re-read and retry\n\
+for (int attempt = 1; ; attempt++) {\n\
+\x20\x20\x20\x20try {\n\
+\x20\x20\x20\x20\x20\x20\x20\x20client.files.update(fileId, body, guarded);\n\
+\x20\x20\x20\x20\x20\x20\x20\x20break;\n\
+\x20\x20\x20\x20} catch (dev.unofficialbox.runtime.Runtime.BoxApiException e) {\n\
+\x20\x20\x20\x20\x20\x20\x20\x20if (!e.isPreconditionFailed() || attempt == 3) throw e;\n\
+\x20\x20\x20\x20\x20\x20\x20\x20var current = client.files.get(fileId, null);\n\
+\x20\x20\x20\x20\x20\x20\x20\x20guarded.ifMatch = current.etag().value(); // reapply your change to current here\n\
+\x20\x20\x20\x20}\n\
 }\n\
 ```\n";

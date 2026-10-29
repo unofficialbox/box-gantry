@@ -88,11 +88,32 @@ private class BoxConsistencyTest {
             System.assertEquals(412, e.statusCode, 'the 412 is carried');
             System.assertEquals('precondition_failed', e.code, 'Box\'s code is parsed');
             System.assertEquals('req-precondition_failed', e.requestId, 'the request id is parsed');
+            System.assert(e.isPreconditionFailed(), 'the 412 is a failed precondition');
         }
 
         // If-Match with the current etag: the write goes through.
         FileFull updated = client.files.update_r('1', null, file.etag, new UpdateFileRequest());
         System.assertEquals('etag-2', updated.etag, 'the write returns the new etag');
+
+        // The errors guide's re-read-and-retry loop, from a stale etag: the 412
+        // is isPreconditionFailed(), the re-read yields the current etag, and
+        // the retry lands.
+        String etag = 'etag-0';
+        Integer attempts = 0;
+        FileFull landed;
+        while (landed == null) {
+            attempts++;
+            try {
+                landed = client.files.update_r('1', null, etag, new UpdateFileRequest());
+            } catch (BoxApiException e) {
+                if (!e.isPreconditionFailed() || attempts == 3) {
+                    throw e;
+                }
+                etag = client.files.get('1', null, null, null, null).etag;
+            }
+        }
+        System.assertEquals(2, attempts, 'the retry lands on the second attempt');
+        System.assertEquals('etag-2', landed.etag, 'the retry returns the new etag');
 
         // A missing item: 404 not_found, also from a method with no response body.
         try {

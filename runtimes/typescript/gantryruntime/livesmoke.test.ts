@@ -1,6 +1,7 @@
 // VR-7 live smoke: exercise the hand-written `fetch` runtime against a real Box
 // account — one authenticated call per configured auth flow, plus paginate +
-// upload + download + delete. It drives only the stable runtime contract
+// upload + download + delete, with the etag flow (304 / 412) on the uploaded
+// file. It drives only the stable runtime contract
 // (`new Client` / `newRequest` / `fetch` / the `with*` builders / response
 // accessors), so it is independent of any generated method names — it verifies
 // the runtime, which is the part the `tsc` gate cannot exercise.
@@ -28,6 +29,10 @@ import {
   responseBytes,
   statusCode,
   Stream,
+  BoxApiError,
+  isPreconditionFailed,
+  withHeader,
+  withJsonBody,
   withMultipartBody,
   withQuery,
 } from './src/runtime.js';
@@ -202,6 +207,10 @@ async function smokeUploadDownloadDelete(client: Client): Promise<void> {
   const download = await client.fetch(
     client.newRequest('GET', `${client.baseUrl('api')}/files/${fileId}/content`),
   );
+  const etags = await smokeEtags(client, fileId).then(
+    () => undefined,
+    (err: unknown) => err,
+  );
 
   // Delete unconditionally now that we hold the id.
   const deleted = await client.fetch(
@@ -213,8 +222,48 @@ async function smokeUploadDownloadDelete(client: Client): Promise<void> {
   assert.deepEqual(responseBytes(download), content, 'download: content mismatch');
   console.error('download: content round-tripped');
 
+  if (etags !== undefined) {
+    throw etags;
+  }
+  console.error('etag: 304 for the current etag, 412 for a stale If-Match, the current one writes');
+
   assert.equal(statusCode(deleted), 204, 'delete: expected 204');
   console.error(`delete: cleaned up file ${fileId}`);
+}
+
+/// Drive Box's etag flow on the uploaded file, as the generated `…IfModified`
+/// variants and the errors guide's re-read-and-retry loop expect it:
+/// `If-None-Match` with the current etag is a 304 and a stale one reads the
+/// file; `If-Match` with a stale etag is a 412 and the current one writes.
+async function smokeEtags(client: Client, fileId: string): Promise<void> {
+  const url = `${client.baseUrl('api')}/files/${fileId}`;
+  const etag = (await getJson(client, url)).etag;
+  assert.ok(typeof etag === 'string' && etag !== '', 'etag: the file read yields no etag');
+  // Box's etags are version counters, so this one is well-formed but stale.
+  const stale = `9${etag}`;
+
+  const read = (value: string) =>
+    client.fetch(withHeader(client.newRequest('GET', url), 'If-None-Match', value));
+  await assert.rejects(
+    read(etag),
+    (err) => err instanceof BoxApiError && err.status === 304,
+    'etag: If-None-Match with the current etag should be a 304',
+  );
+  await read(stale);
+
+  const description = new TextEncoder().encode(
+    JSON.stringify({ description: 'box-gantry etag smoke' }),
+  );
+  const write = (value: string) =>
+    client.fetch(
+      withHeader(withJsonBody(client.newRequest('PUT', url), description), 'If-Match', value),
+    );
+  await assert.rejects(
+    write(stale),
+    (err) => isPreconditionFailed(err),
+    'etag: If-Match with a stale etag should be a 412',
+  );
+  await write(etag);
 }
 
 /// GET a URL and decode a JSON object, failing on non-2xx.

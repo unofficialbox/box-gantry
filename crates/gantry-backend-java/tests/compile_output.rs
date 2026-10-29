@@ -614,6 +614,29 @@ public final class Consistency {
                 .etag().value();
             check("etag-2".equals(updated), "update: etag " + updated);
 
+            // The errors guide's re-read-and-retry loop, from a stale etag: the
+            // 412 is isPreconditionFailed, the re-read yields the current etag,
+            // and the retry lands.
+            FilesManager.UpdateOptions guarded = new FilesManager.UpdateOptions();
+            guarded.ifMatch = "etag-0";
+            int attempts = 0;
+            String landed;
+            while (true) {
+                attempts++;
+                try {
+                    landed = c.files.update("1", UpdateFileRequest.builder().build(), guarded)
+                        .etag().value();
+                    break;
+                } catch (Runtime.BoxApiException e) {
+                    if (!e.isPreconditionFailed() || attempts == 3) {
+                        throw e;
+                    }
+                    guarded.ifMatch = c.files.get("1", null).etag().value();
+                }
+            }
+            check(attempts == 2 && "etag-2".equals(landed),
+                "re-read and retry: " + attempts + " attempt(s), etag " + landed);
+
             // A missing item: 404 not_found, also from a method with no response body.
             expectApiError("delete missing", () -> c.files.delete("2", null), 404, "not_found");
         } finally {

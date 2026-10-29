@@ -428,15 +428,26 @@ guide):\n\
 - **Writes** — pass the etag as `if_match` on a file or folder update or\n\
 \x20\x20delete, or a new file version upload. Box answers `412 Precondition\n\
 \x20\x20Failed` (code `precondition_failed`) when the item changed since you read\n\
-\x20\x20it: read it again, reapply your change, retry. `If-Match` can't block a move.\n\
+\x20\x20it, and `err.is_precondition_failed()` reports it: read it again, reapply\n\
+\x20\x20your change, retry. `If-Match` can't block a move.\n\
 \n\
 ```rust,ignore\n\
 match client.files.get_if_modified(file_id.clone(), etag.clone(), None).await? {\n\
 \x20\x20\x20\x20None => { /* unchanged since etag */ }\n\
 \x20\x20\x20\x20Some(file) => { /* changed: the current file */ }\n\
 }\n\
-let guarded = FilesUpdateOptions { if_match: Some(etag), ..Default::default() };\n\
-if let Err(err) = client.files.update(file_id, body, Some(guarded)).await {\n\
-\x20\x20\x20\x20if err.status() == Some(412) { /* changed since etag: re-read and retry */ }\n\
-}\n\
+\n\
+// Re-read and retry: the update lands only on the version it was made from.\n\
+let mut attempts = 0;\n\
+let updated = loop {\n\
+\x20\x20\x20\x20attempts += 1;\n\
+\x20\x20\x20\x20let guarded = FilesUpdateOptions { if_match: Some(etag.clone()), ..Default::default() };\n\
+\x20\x20\x20\x20match client.files.update(file_id.clone(), body.clone(), Some(guarded)).await {\n\
+\x20\x20\x20\x20\x20\x20\x20\x20Err(err) if err.is_precondition_failed() && attempts < 3 => {\n\
+\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let current = client.files.get(file_id.clone(), None).await?;\n\
+\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20etag = current.etag.flatten().unwrap_or_default(); // reapply your change to current here\n\
+\x20\x20\x20\x20\x20\x20\x20\x20}\n\
+\x20\x20\x20\x20\x20\x20\x20\x20result => break result?,\n\
+\x20\x20\x20\x20}\n\
+};\n\
 ```\n";

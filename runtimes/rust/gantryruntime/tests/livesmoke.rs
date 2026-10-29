@@ -1,8 +1,9 @@
 //! VR-7 live smoke: exercise the runtime against a real Box account — one
 //! authenticated call per configured auth flow, plus paginate + upload +
-//! download + delete. `#[ignore]`d so the standard `cargo test` gate never runs
-//! it (no credentials there), yet it still *compiles* under the gate so it can't
-//! rot. Run it on demand with credentials:
+//! download + delete, with the etag flow (304 / 412) on the uploaded file.
+//! `#[ignore]`d so the standard `cargo test` gate never runs it (no credentials
+//! there), yet it still *compiles* under the gate so it can't rot. Run it on
+//! demand with credentials:
 //!
 //! ```sh
 //! cargo test -p gantryruntime --test livesmoke -- --ignored --nocapture
@@ -18,8 +19,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use gantryruntime::{
-    response_bytes, status_code, with_multipart_body, with_query, Auth, CcgConfig, Client,
-    JwtConfig, OAuthConfig, Stream,
+    response_bytes, status_code, with_header, with_json_body, with_multipart_body, with_query,
+    Auth, CcgConfig, Client, JwtConfig, OAuthConfig, Stream,
 };
 
 /// The process environment, with any `.env` file filling gaps (real env vars
@@ -248,6 +249,7 @@ async fn smoke_upload_download_delete(client: &Client) {
     // artifact in the account.
     let dl_url = format!("{}/files/{file_id}/content", client.base_url("api"));
     let download = client.fetch(client.new_request("GET", &dl_url)).await;
+    let etags = smoke_etags(client, &file_id).await;
 
     // Delete unconditionally now that we hold the id.
     let del_url = format!("{}/files/{file_id}", client.base_url("api"));
@@ -267,9 +269,76 @@ async fn smoke_upload_download_delete(client: &Client) {
     );
     eprintln!("download: content round-tripped");
 
+    etags.unwrap_or_else(|err| panic!("etag: {err}"));
+    eprintln!("etag: 304 for the current etag, 412 for a stale If-Match, the current one writes");
+
     let resp = deleted.expect("delete request");
     assert_eq!(status_code(&resp), 204, "delete: expected 204");
     eprintln!("delete: cleaned up file {file_id}");
+}
+
+/// Drive Box's etag flow on the uploaded file, as the generated
+/// `…_if_modified` variants and the errors guide's re-read-and-retry loop
+/// expect it: `If-None-Match` with the current etag is a 304 and a stale one
+/// reads the file; `If-Match` with a stale etag is a 412 and the current one
+/// writes. Returns why it didn't, so the caller can still clean up first.
+async fn smoke_etags(client: &Client, file_id: &str) -> Result<(), String> {
+    let url = format!("{}/files/{file_id}", client.base_url("api"));
+    let file = client
+        .fetch(client.new_request("GET", &url))
+        .await
+        .map_err(|err| format!("reading the file: {err}"))?;
+    let file: serde_json::Value =
+        serde_json::from_slice(&response_bytes(&file).unwrap_or_default())
+            .map_err(|err| format!("decoding the file: {err}"))?;
+    let etag = file["etag"]
+        .as_str()
+        .ok_or("the file read yields no etag")?
+        .to_string();
+    // Box's etags are version counters, so this one is well-formed but stale.
+    let stale = format!("9{etag}");
+
+    let read = |etag: &str| {
+        client.fetch(with_header(
+            client.new_request("GET", &url),
+            "If-None-Match",
+            etag,
+        ))
+    };
+    match read(&etag).await {
+        Err(err) if err.status() == Some(304) => {}
+        outcome => {
+            return Err(format!(
+                "If-None-Match with the current etag: {}, want a 304",
+                describe(outcome)
+            ))
+        }
+    }
+    read(&stale)
+        .await
+        .map_err(|err| format!("If-None-Match with a stale etag: {err}"))?;
+
+    let description = serde_json::to_vec(&serde_json::json!({
+        "description": "box-gantry etag smoke",
+    }))
+    .unwrap();
+    let write = |etag: &str| {
+        let req = with_json_body(client.new_request("PUT", &url), &description);
+        client.fetch(with_header(req, "If-Match", etag))
+    };
+    match write(&stale).await {
+        Err(err) if err.is_precondition_failed() => {}
+        outcome => {
+            return Err(format!(
+                "If-Match with a stale etag: {}, want a 412",
+                describe(outcome)
+            ))
+        }
+    }
+    write(&etag)
+        .await
+        .map_err(|err| format!("If-Match with the current etag: {err}"))?;
+    Ok(())
 }
 
 /// Run a request and return the body, failing on transport error or non-2xx.
@@ -283,4 +352,12 @@ async fn fetch_ok(client: &Client, req: gantryruntime::Request) -> Vec<u8> {
         String::from_utf8_lossy(&body)
     );
     body
+}
+
+/// A fetch outcome for a failure message: the error, or the status it got.
+fn describe(outcome: Result<gantryruntime::Response, gantryruntime::Error>) -> String {
+    match outcome {
+        Ok(resp) => format!("status {}", status_code(&resp)),
+        Err(err) => err.to_string(),
+    }
 }

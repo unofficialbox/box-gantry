@@ -432,18 +432,24 @@ guide):\n\
 - **Writes** — pass the etag as `'if-match'` on a file or folder update or\n\
 \x20\x20delete, or a new file version upload. Box answers `412 Precondition\n\
 \x20\x20Failed` (code `precondition_failed`) when the item changed since you read\n\
-\x20\x20it: read it again, reapply your change, retry. `If-Match` can't block a move.\n\
+\x20\x20it, and `runtime.isPreconditionFailed(err)` reports it: read it again,\n\
+\x20\x20reapply your change, retry. `If-Match` can't block a move.\n\
 \n\
 ```ts\n\
 const file = await client.files.getIfModified(fileId, etag);\n\
 if (file === undefined) {\n\
 \x20\x20// unchanged since etag\n\
 }\n\
-try {\n\
-\x20\x20await client.files.update(fileId, body, { 'if-match': etag });\n\
-} catch (err) {\n\
-\x20\x20if (err instanceof runtime.BoxApiError && err.status === 412) {\n\
-\x20\x20\x20\x20// changed since etag: re-read and retry\n\
+\n\
+// Re-read and retry: the update lands only on the version it was made from.\n\
+for (let attempt = 1; ; attempt++) {\n\
+\x20\x20try {\n\
+\x20\x20\x20\x20await client.files.update(fileId, body, { 'if-match': etag });\n\
+\x20\x20\x20\x20break;\n\
+\x20\x20} catch (err) {\n\
+\x20\x20\x20\x20if (!runtime.isPreconditionFailed(err) || attempt === 3) throw err;\n\
+\x20\x20\x20\x20const current = await client.files.get(fileId);\n\
+\x20\x20\x20\x20etag = current.etag ?? undefined; // reapply your change to current here\n\
 \x20\x20}\n\
 }\n\
 ```\n";
