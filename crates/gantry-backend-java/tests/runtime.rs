@@ -635,6 +635,8 @@ fn the_live_smoke_compiles_and_runs_when_credentialed() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&run.stdout);
     let stderr = String::from_utf8_lossy(&run.stderr);
+    // Echo the driver's per-step log so a green run shows what it covered.
+    eprint!("{stdout}");
     assert!(
         run.status.success() && stdout.contains("LIVESMOKE_OK"),
         "live smoke failed:\nstdout: {stdout}\nstderr: {stderr}"
