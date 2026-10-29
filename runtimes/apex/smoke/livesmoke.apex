@@ -8,8 +8,9 @@
 // It mints a token via Client Credentials Grant (no user in the loop), then two
 // live reads exercise, in one flow: auth (a real token mint), URL building, the
 // bearer header, native typed deserialization, the wire key-remap, and
-// pagination. A scratch folder then carries Box's etag flow (304 and 412). The `${...}` placeholders are filled from repo secrets by the
-// workflow — this file never contains real credentials.
+// pagination. A scratch folder and a scratch web link then carry Box's etag
+// flow (304 and 412). The `${...}` placeholders are filled from repo secrets by
+// the workflow — this file never contains real credentials.
 BoxTokenProvider auth = new BoxCcgTokenProvider(
     '${BOX_CLIENT_ID}',
     '${BOX_CLIENT_SECRET}',
@@ -72,6 +73,43 @@ try {
     System.debug(LoggingLevel.ERROR, 'SMOKE etags folder=' + folder.id + ' etag=' + etag);
 } finally {
     client.folders.delete_r(folder.id, null, true);
+}
+
+// 4) The same flow on a scratch web link. The upstream spec declares no etag
+//    headers for web links; fixtures/specs/supplements.json adds them, and
+//    this proves Box honors them.
+CreateWebLinkRequest bookmark = new CreateWebLinkRequest();
+bookmark.url = 'https://example.com/';
+bookmark.name = 'box-gantry-smoke-' + Datetime.now().getTime();
+bookmark.parent = new AttributesParent();
+bookmark.parent.id = '0';
+WebLink link = client.webLinks.create(bookmark);
+try {
+    String etag = link.etag;
+    String stale = '9' + etag;
+    System.assert(String.isNotBlank(etag), 'the new web link has no etag');
+    System.assertEquals(
+        null,
+        client.webLinks.getIfModified(link.id, etag, null),
+        'webLinks.getIfModified with the current etag should be null (304)'
+    );
+    System.assertNotEquals(
+        null,
+        client.webLinks.getIfModified(link.id, stale, null),
+        'webLinks.getIfModified with a stale etag should read the web link'
+    );
+    UpdateWebLinkRequest change = new UpdateWebLinkRequest();
+    change.description = 'box-gantry etag smoke';
+    try {
+        client.webLinks.update_r(link.id, stale, change);
+        System.assert(false, 'a web link update with a stale If-Match should throw');
+    } catch (BoxApiException e) {
+        System.assert(e.isPreconditionFailed(), 'a stale If-Match should be a 412: ' + e.getMessage());
+    }
+    client.webLinks.update_r(link.id, etag, change);
+    System.debug(LoggingLevel.ERROR, 'SMOKE web link etags link=' + link.id + ' etag=' + etag);
+} finally {
+    client.webLinks.delete_r(link.id, null);
 }
 
 // The sentinel the workflow greps for — reached only if every call above

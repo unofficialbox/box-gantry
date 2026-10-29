@@ -22,6 +22,7 @@ mod merge;
 mod overrides;
 mod raw;
 mod report;
+mod supplement;
 
 pub use error::IngestError;
 pub use ingest::{Document, HttpMethod, NAMES_LOCK_FILE, OperationSummary, SpecSet};
@@ -30,3 +31,4 @@ pub use lower::{Lowering, LoweringStats, lower, lower_with_overrides};
 pub use overrides::NameOverrides;
 pub use raw::RawSchema;
 pub use report::{LongName, LongNamesReport, long_names};
+pub use supplement::SUPPLEMENTS_FILE;

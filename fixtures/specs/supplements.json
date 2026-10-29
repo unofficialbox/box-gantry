@@ -1,0 +1,71 @@
+{
+  "//": "Facts about the live Box API that the vendored specs leave out. See README.md (Spec supplements). Each entry may only add; once upstream declares the same parameter or response, ingestion fails until the entry is deleted.",
+  "operations": [
+    {
+      "path": "/web_links/{web_link_id}",
+      "method": "get",
+      "evidence": "Box answers If-None-Match on a web link like on a file or folder: the current etag gets 304 Not Modified, a stale one the web link (live probe, 2026-10-29). box/box-openapi declares neither the header nor the 304 here.",
+      "parameters": [
+        {
+          "name": "if-none-match",
+          "in": "header",
+          "description": "Ensures an item is only returned if it has changed.\n\nPass in the item's last observed `etag` value\ninto this header and the endpoint will fail\nwith a `304 Not Modified` if the item has not\nchanged since.",
+          "required": false,
+          "schema": { "type": "string" },
+          "example": "1"
+        }
+      ],
+      "responses": {
+        "304": {
+          "description": "Returns an empty response when the `If-None-Match` header matches\nthe current `etag` value of the web link. This indicates that the web link\nhas not changed since it was last requested."
+        }
+      }
+    },
+    {
+      "path": "/web_links/{web_link_id}",
+      "method": "put",
+      "evidence": "Box answers If-Match on a web link update like on a file or folder: a stale etag gets 412 precondition_failed, the current one updates (live probe, 2026-10-29). box/box-openapi declares neither the header nor the 412 here.",
+      "parameters": [
+        {
+          "name": "if-match",
+          "in": "header",
+          "description": "Ensures this item hasn't recently changed before\nmaking changes.\n\nPass in the item's last observed `etag` value\ninto this header and the endpoint will fail\nwith a `412 Precondition Failed` if it\nhas changed since.",
+          "required": false,
+          "schema": { "type": "string" },
+          "example": "1"
+        }
+      ],
+      "responses": {
+        "412": {
+          "description": "Returns an error when the `If-Match` header does not match\nthe current `etag` value of the web link. This indicates that the web link\nhas changed since it was last requested.",
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/ClientError" } }
+          }
+        }
+      }
+    },
+    {
+      "path": "/web_links/{web_link_id}",
+      "method": "delete",
+      "evidence": "Box answers If-Match on a web link delete like on a file or folder: a stale etag gets 412 precondition_failed (live probe, 2026-10-29). box/box-openapi declares neither the header nor the 412 here.",
+      "parameters": [
+        {
+          "name": "if-match",
+          "in": "header",
+          "description": "Ensures this item hasn't recently changed before\nmaking changes.\n\nPass in the item's last observed `etag` value\ninto this header and the endpoint will fail\nwith a `412 Precondition Failed` if it\nhas changed since.",
+          "required": false,
+          "schema": { "type": "string" },
+          "example": "1"
+        }
+      ],
+      "responses": {
+        "412": {
+          "description": "Returns an error when the `If-Match` header does not match\nthe current `etag` value of the web link. This indicates that the web link\nhas changed since it was last requested.",
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/ClientError" } }
+          }
+        }
+      }
+    }
+  ]
+}
