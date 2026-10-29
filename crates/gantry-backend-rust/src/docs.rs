@@ -357,21 +357,21 @@ let client = Client::new(auth::Auth::developer_token(\"DEVELOPER_TOKEN\"));\n\
 ## Client Credentials Grant (server auth, no key)\n\n\
 ```rust\n\
 let client = Client::new(auth::Auth::client_credentials(\n\
-    \"CLIENT_ID\",\n\
-    \"CLIENT_SECRET\",\n\
-    // enterprise or managed-user subject:\n\
-    runtime::Subject::Enterprise(\"ENTERPRISE_ID\"),\n\
+\x20   \"CLIENT_ID\",\n\
+\x20   \"CLIENT_SECRET\",\n\
+\x20   // enterprise or managed-user subject:\n\
+\x20   runtime::Subject::Enterprise(\"ENTERPRISE_ID\"),\n\
 ));\n\
 ```\n\n\
 ## JWT (server auth with a signing key)\n\n\
 ```rust\n\
 let auth = auth::Auth::jwt(auth::JwtConfig {\n\
-    client_id: \"CLIENT_ID\".into(),\n\
-    client_secret: \"CLIENT_SECRET\".into(),\n\
-    public_key_id: \"PUBLIC_KEY_ID\".into(),\n\
-    private_key_pem: private_key_pem, // optionally encrypted; set passphrase\n\
-    subject: runtime::Subject::Enterprise(\"ENTERPRISE_ID\".into()),\n\
-    ..Default::default()\n\
+\x20   client_id: \"CLIENT_ID\".into(),\n\
+\x20   client_secret: \"CLIENT_SECRET\".into(),\n\
+\x20   public_key_id: \"PUBLIC_KEY_ID\".into(),\n\
+\x20   private_key_pem: private_key_pem, // optionally encrypted; set passphrase\n\
+\x20   subject: runtime::Subject::Enterprise(\"ENTERPRISE_ID\".into()),\n\
+\x20   ..Default::default()\n\
 })?; // bad key: fails loudly at construction\n\
 let client = Client::new(auth);\n\
 ```\n\n\
@@ -391,8 +391,8 @@ element at a time and threads the cursor for you:\n\n\
 ```rust\n\
 let mut pages = client.folders.list_items(folder_id, None);\n\
 while let Some(item) = pages.next().await {\n\
-    let item = item?;\n\
-    // use item\n\
+\x20   let item = item?;\n\
+\x20   // use item\n\
 }\n\
 ```\n\n\
 The paginator stops when the last page is reached. It owns a copy of the\n\

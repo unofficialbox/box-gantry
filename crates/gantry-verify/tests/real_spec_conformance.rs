@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 
 use gantry_spec::SpecSet;
+use gantry_verify::docs::unindented_block_bodies;
 use gantry_verify::{GeneratedView, apex_shape, conformance, go_shape, typescript_shape};
 
 fn fixture(name: &str) -> PathBuf {
@@ -44,6 +45,7 @@ fn the_generated_go_sdk_is_conformant() {
         .map(|f| (f.path, f.content))
         .collect();
     let views = views_of(&files);
+    assert_docs_keep_indentation(&files);
 
     let report = conformance(&go_shape(), &analysis, &views);
     assert!(
@@ -101,6 +103,7 @@ fn the_generated_apex_sdk_is_conformant() {
             .map(|f| (f.path, f.content))
             .collect();
     let views = views_of(&files);
+    assert_docs_keep_indentation(&files);
 
     let report = conformance(&apex_shape(), &analysis, &views);
     assert!(
@@ -168,6 +171,7 @@ fn the_generated_typescript_sdk_is_conformant() {
             .map(|f| (f.path, f.content))
             .collect();
     let views = views_of(&files);
+    assert_docs_keep_indentation(&files);
 
     let report = conformance(&typescript_shape(), &analysis, &views);
     assert!(
@@ -223,4 +227,23 @@ fn the_generated_typescript_sdk_is_conformant() {
     assert_eq!(by("serialization").status, CheckStatus::Excluded);
     assert_eq!(report.excluded(), 1, "{}", report.report());
     assert_eq!(report.failures(), 0);
+}
+
+/// Every generated markdown file's code examples keep their indentation (a
+/// guide's `\` line continuation strips leading spaces unless escaped).
+fn assert_docs_keep_indentation(files: &[(String, String)]) {
+    let flush_left: Vec<String> = files
+        .iter()
+        .filter(|(path, _)| path.ends_with(".md"))
+        .flat_map(|(path, content)| {
+            unindented_block_bodies(content)
+                .into_iter()
+                .map(move |line| format!("{path} {line}"))
+        })
+        .collect();
+    assert!(
+        flush_left.is_empty(),
+        "unindented code-example lines:\n{}",
+        flush_left.join("\n")
+    );
 }

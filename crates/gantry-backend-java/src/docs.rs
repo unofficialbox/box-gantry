@@ -392,7 +392,7 @@ Client client = new Client(Auth.developerToken(\"DEVELOPER_TOKEN\"));\n\
 ## Client Credentials Grant (server auth, no key)\n\n\
 ```java\n\
 Client client = new Client(Auth.clientCredentials(\n\
-        Runtime.CcgConfig.enterprise(\"CLIENT_ID\", \"CLIENT_SECRET\", \"ENTERPRISE_ID\")));\n\
+\x20       Runtime.CcgConfig.enterprise(\"CLIENT_ID\", \"CLIENT_SECRET\", \"ENTERPRISE_ID\")));\n\
 // or Runtime.CcgConfig.user(\"CLIENT_ID\", \"CLIENT_SECRET\", \"USER_ID\")\n\
 ```\n\n\
 ## JWT (server auth with a signing key)\n\n\
@@ -401,8 +401,8 @@ Client client = new Client(Auth.clientCredentials(\n\
 Client client = new Client(Auth.jwt(Runtime.JwtConfig.fromBoxConfig(boxConfigJson)));\n\
 // or build it explicitly:\n\
 Runtime.JwtConfig config = Runtime.JwtConfig.enterprise(\n\
-        \"CLIENT_ID\", \"CLIENT_SECRET\", \"PUBLIC_KEY_ID\",\n\
-        privateKeyPem, keyPassphrase, \"ENTERPRISE_ID\");\n\
+\x20       \"CLIENT_ID\", \"CLIENT_SECRET\", \"PUBLIC_KEY_ID\",\n\
+\x20       privateKeyPem, keyPassphrase, \"ENTERPRISE_ID\");\n\
 Client client = new Client(Auth.jwt(config));\n\
 ```\n\n\
 ## OAuth 2.0 (authorization code)\n\n\
@@ -450,7 +450,7 @@ the cursor for you — the list method *is* the paginator, so you loop it direct
 with an enhanced `for`:\n\n\
 ```java\n\
 for (var item : client.folders.listItems(folderId, null)) {\n\
-    // use item\n\
+\x20   // use item\n\
 }\n\
 ```\n\n\
 Pass an options object (or `null`) as the final argument. The paginator stops\n\

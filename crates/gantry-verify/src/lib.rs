@@ -12,6 +12,7 @@
 
 pub mod conformance;
 pub mod diff;
+pub mod docs;
 pub mod scratch;
 pub mod shipping;
 
