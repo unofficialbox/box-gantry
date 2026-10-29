@@ -42,14 +42,14 @@ private class BoxWebhookVerifierTest {
 
     @isTest
     static void acceptsTheSignaturesBoxComputed() {
-        Blob body = Blob.valueOf(BODY);
-        System.assert(both().verify(body, headers(PRIMARY), DELIVERED), 'both keys verify');
+        Blob payload = Blob.valueOf(BODY);
+        System.assert(both().verify(payload, headers(PRIMARY), DELIVERED), 'both keys verify');
         System.assert(
-            new BoxWebhookVerifier(null, SECONDARY_KEY).verify(body, headers('not-the-primary'), DELIVERED),
+            new BoxWebhookVerifier(null, SECONDARY_KEY).verify(payload, headers('not-the-primary'), DELIVERED),
             'the secondary key alone verifies, as during a primary rotation'
         );
         System.assert(
-            both().verify(body, headers(PRIMARY), Datetime.newInstanceGmt(2020, 1, 1, 7, 10, 0)),
+            both().verify(payload, headers(PRIMARY), Datetime.newInstanceGmt(2020, 1, 1, 7, 10, 0)),
             'exactly the maximum age old is still in time'
         );
 
@@ -76,28 +76,28 @@ private class BoxWebhookVerifierTest {
 
     @isTest
     static void rejectsWhatBoxDidNotSend() {
-        Blob body = Blob.valueOf(BODY);
+        Blob payload = Blob.valueOf(BODY);
         Map<String, String> unsigned = withHeader('box-signature-primary', null);
         unsigned.remove('Box-Signature-Secondary');
         BoxWebhookVerifier shortLived = both();
         shortLived.maxAgeSeconds = 60;
 
-        System.assert(!new BoxWebhookVerifier('IncorrectKey', 'IncorrectKey').verify(body, headers(PRIMARY), DELIVERED), 'wrong keys');
-        System.assert(!new BoxWebhookVerifier(null, null).verify(body, headers(PRIMARY), DELIVERED), 'no keys');
-        System.assert(!new BoxWebhookVerifier(SECONDARY_KEY, null).verify(body, headers(PRIMARY), DELIVERED), 'secondary key for primary');
+        System.assert(!new BoxWebhookVerifier('IncorrectKey', 'IncorrectKey').verify(payload, headers(PRIMARY), DELIVERED), 'wrong keys');
+        System.assert(!new BoxWebhookVerifier(null, null).verify(payload, headers(PRIMARY), DELIVERED), 'no keys');
+        System.assert(!new BoxWebhookVerifier(SECONDARY_KEY, null).verify(payload, headers(PRIMARY), DELIVERED), 'secondary key for primary');
         System.assert(!both().verify(Blob.valueOf(BODY.replace('Test.txt', 'Test.exe')), headers(PRIMARY), DELIVERED), 'tampered body');
-        System.assert(!both().verify(body, headers(PRIMARY), Datetime.newInstanceGmt(2020, 1, 1, 7, 10, 1)), 'stale');
-        System.assert(!both().verify(body, headers(PRIMARY), Datetime.newInstanceGmt(2020, 1, 1, 6, 59, 59)), 'future');
-        System.assert(!shortLived.verify(body, headers(PRIMARY), Datetime.newInstanceGmt(2020, 1, 1, 7, 1, 1)), 'short max age');
-        System.assert(!both().verify(body, withHeader('box-delivery-timestamp', null), DELIVERED), 'no timestamp');
-        System.assert(!both().verify(body, withHeader('box-delivery-timestamp', 'yesterday'), DELIVERED), 'bad timestamp');
-        System.assert(!both().verify(body, unsigned, DELIVERED), 'no signatures');
-        System.assert(!both().verify(body, withHeader('box-signature-version', null), DELIVERED), 'no version');
-        System.assert(!both().verify(body, withHeader('box-signature-version', '2'), DELIVERED), 'version 2');
-        System.assert(!both().verify(body, withHeader('box-signature-algorithm', 'HmacSHA1'), DELIVERED), 'HmacSHA1');
-        System.assert(!both().verify(body, withHeader('box-signature-algorithm', 'hmacsha256'), DELIVERED), 'algorithm case matters');
+        System.assert(!both().verify(payload, headers(PRIMARY), Datetime.newInstanceGmt(2020, 1, 1, 7, 10, 1)), 'stale');
+        System.assert(!both().verify(payload, headers(PRIMARY), Datetime.newInstanceGmt(2020, 1, 1, 6, 59, 59)), 'future');
+        System.assert(!shortLived.verify(payload, headers(PRIMARY), Datetime.newInstanceGmt(2020, 1, 1, 7, 1, 1)), 'short max age');
+        System.assert(!both().verify(payload, withHeader('box-delivery-timestamp', null), DELIVERED), 'no timestamp');
+        System.assert(!both().verify(payload, withHeader('box-delivery-timestamp', 'yesterday'), DELIVERED), 'bad timestamp');
+        System.assert(!both().verify(payload, unsigned, DELIVERED), 'no signatures');
+        System.assert(!both().verify(payload, withHeader('box-signature-version', null), DELIVERED), 'no version');
+        System.assert(!both().verify(payload, withHeader('box-signature-version', '2'), DELIVERED), 'version 2');
+        System.assert(!both().verify(payload, withHeader('box-signature-algorithm', 'HmacSHA1'), DELIVERED), 'HmacSHA1');
+        System.assert(!both().verify(payload, withHeader('box-signature-algorithm', 'hmacsha256'), DELIVERED), 'algorithm case matters');
         System.assert(!both().verify(null, headers(PRIMARY), DELIVERED), 'no body');
-        System.assert(!both().verify(body, headers(PRIMARY)), 'a 2020 delivery is stale against the real clock');
+        System.assert(!both().verify(payload, headers(PRIMARY)), 'a 2020 delivery is stale against the real clock');
     }
 
     @isTest
