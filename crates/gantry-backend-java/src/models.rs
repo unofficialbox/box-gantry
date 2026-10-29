@@ -444,7 +444,9 @@ impl Printer<'_> {
 
     /// A fluent builder for the record (D-195): a setter per component and a
     /// `build()`. An `Optional<T>` component's setter takes the raw `T` and
-    /// wraps it, so unset optional fields default to `Optional.empty()`. This is
+    /// wraps it, so unset optional fields default to `Optional.empty()`; an
+    /// unset `Tristate<T>` defaults to absent, never `null` (which `toJson()`
+    /// would dereference — a builder that left one unset threw). This is
     /// what makes multi-field bodies readable —
     /// `MetadataQuery.builder().from(…).ancestorFolderId(…).build()` — which the
     /// canonical positional record constructor is not.
@@ -466,6 +468,11 @@ impl Printer<'_> {
                 let _ = writeln!(
                     out,
                     "        private {ty} {ident} = java.util.Optional.empty();"
+                );
+            } else if is_tristate(&ty) {
+                let _ = writeln!(
+                    out,
+                    "        private {ty} {ident} = {CORE_PKG}.Tristate.absent();"
                 );
             } else {
                 let _ = writeln!(out, "        private {ty} {ident};");
@@ -1283,6 +1290,10 @@ fn optional_inner(ty: &str) -> Option<&str> {
     ty.strip_prefix("Optional<")?.strip_suffix('>')
 }
 
+fn is_tristate(ty: &str) -> bool {
+    ty.starts_with("Tristate<")
+}
+
 fn sanitize_ident(name: &str) -> String {
     let mut out: String = name
         .chars()
@@ -1568,6 +1579,16 @@ mod tests {
         assert!(out.contains("Tristate<Long> size"), "{out}");
         assert!(
             out.contains("import dev.unofficialbox.core.Tristate;"),
+            "{out}"
+        );
+        // Unset builder fields start empty — a tri-state one absent, not null,
+        // or `builder().build().toJson()` dereferences null.
+        assert!(
+            out.contains("private Optional<String> displayName = java.util.Optional.empty();"),
+            "{out}"
+        );
+        assert!(
+            out.contains("private Tristate<Long> size = dev.unofficialbox.core.Tristate.absent();"),
             "{out}"
         );
         // Keyword field → suffixed identifier.
