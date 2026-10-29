@@ -18,7 +18,7 @@
 /// carries no in-file version to align.
 ///
 /// A single-place bump here re-versions the whole fleet at once.
-pub const SDK_VERSION: &str = "0.6.1";
+pub const SDK_VERSION: &str = "0.7.0";
 
 /// The MIT license text, emitted as `LICENSE` by every backend.
 ///
