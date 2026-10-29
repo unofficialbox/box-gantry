@@ -86,6 +86,21 @@ pub struct RawPathItem {
 }
 
 impl RawPathItem {
+    /// The operation for a lowercase OpenAPI method name, if declared.
+    pub(crate) fn operation_mut(&mut self, method: &str) -> Option<&mut RawOperation> {
+        match method {
+            "get" => self.get.as_mut(),
+            "put" => self.put.as_mut(),
+            "post" => self.post.as_mut(),
+            "delete" => self.delete.as_mut(),
+            "options" => self.options.as_mut(),
+            "head" => self.head.as_mut(),
+            "patch" => self.patch.as_mut(),
+            "trace" => self.trace.as_mut(),
+            _ => None,
+        }
+    }
+
     /// The operations of this path item, in a fixed method order so every
     /// downstream listing is deterministic (FR-6.2).
     pub fn operations(&self) -> impl Iterator<Item = (&'static str, &RawOperation)> {

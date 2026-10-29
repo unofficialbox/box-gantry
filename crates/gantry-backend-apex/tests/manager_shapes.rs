@@ -460,9 +460,9 @@ fn the_apex_live_smoke_calls_methods_the_sdk_generates() {
         calls += 1;
     }
     assert_eq!(
-        calls, 8,
-        "the smoke's SDK calls (getMe, listItems, then a scratch folder's create, \
-         getIfModified ×2, update_r ×2, delete_r)"
+        calls, 14,
+        "the smoke's SDK calls (getMe, listItems, then a scratch folder's and a scratch \
+         web link's create, getIfModified ×2, update_r ×2, delete_r)"
     );
 }
 

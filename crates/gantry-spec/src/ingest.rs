@@ -7,6 +7,7 @@ use indexmap::IndexMap;
 use crate::error::IngestError;
 use crate::lock::NamesLock;
 use crate::raw::{RawDocument, RawParameter, RawPathItem, RawSchema};
+use crate::supplement::{self, SUPPLEMENTS_FILE};
 
 /// The version-aware model of one ingestion run: every document loaded,
 /// each contributing a distinct API version (FR-1.1).
@@ -22,6 +23,10 @@ pub struct SpecSet {
     /// Where [`Self::names_lock`] was loaded from.
     pub names_lock_file: Option<PathBuf>,
     names_lock_fnv: Option<u64>,
+    /// The spec supplements applied beside the base spec
+    /// ([`SUPPLEMENTS_FILE`]), if any.
+    pub supplements_file: Option<PathBuf>,
+    supplements_fnv: Option<u64>,
 }
 
 /// The names lock [`SpecSet::load`] picks up beside the base spec.
@@ -127,10 +132,19 @@ impl SpecSet {
             }
             documents.push(doc);
         }
-        let candidate = files[0]
-            .parent()
-            .unwrap_or(Path::new(""))
-            .join(NAMES_LOCK_FILE);
+        let beside_base = files[0].parent().unwrap_or(Path::new(""));
+        let candidate = beside_base.join(SUPPLEMENTS_FILE);
+        let (supplements_file, supplements_fnv) = if candidate.is_file() {
+            let bytes = std::fs::read(&candidate).map_err(|source| IngestError::SupplementsIo {
+                file: candidate.clone(),
+                source,
+            })?;
+            supplement::apply(&candidate, &mut documents)?;
+            (Some(candidate), Some(fnv1a_64(&bytes)))
+        } else {
+            (None, None)
+        };
+        let candidate = beside_base.join(NAMES_LOCK_FILE);
         let (names_lock, names_lock_file, names_lock_fnv) = if candidate.is_file() {
             let bytes = std::fs::read(&candidate).map_err(|source| IngestError::NamesLockIo {
                 file: candidate.clone(),
@@ -146,21 +160,25 @@ impl SpecSet {
             names_lock,
             names_lock_file,
             names_lock_fnv,
+            supplements_file,
+            supplements_fnv,
         })
     }
 
     /// A deterministic fingerprint of the whole input set (NF-7): the
     /// documents' content hashes folded in load order, so the same specs in
     /// the same order always produce the same value and any change to any
-    /// input moves it. Rendered as 16 lowercase hex digits. The names lock is
-    /// an input too — it decides generated names.
+    /// input moves it. Rendered as 16 lowercase hex digits. The names lock and
+    /// the spec supplements are inputs too — they decide generated names and
+    /// operations.
     pub fn fingerprint(&self) -> String {
         let mut acc = FNV_OFFSET;
         let hashes = self
             .documents
             .iter()
             .map(|doc| doc.content_fnv)
-            .chain(self.names_lock_fnv);
+            .chain(self.names_lock_fnv)
+            .chain(self.supplements_fnv);
         for hash in hashes {
             for byte in hash.to_le_bytes() {
                 acc = fnv_step(acc, byte);

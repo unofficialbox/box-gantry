@@ -189,6 +189,8 @@ fn conditional_reads_are_the_304_operations_with_an_etag_header() {
             "shared_links_files.get_shared_items -> get_shared_items_if_modified (if-none-match)",
             "shared_links_folders.get_shared_items#folders -> get_shared_items_if_modified (if-none-match)",
             "shared_links_web_links.get_shared_items#web_links -> get_shared_items_if_modified (if-none-match)",
+            // From fixtures/specs/supplements.json: upstream omits the header.
+            "web_links.get -> get_if_modified (if-none-match)",
         ]
     );
 }
