@@ -1208,7 +1208,8 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     // 1013 + 88 + 1 + 3 + 14 = 1119, an @isTest suite of 88 + 2 = 90, and a
     // fifth wire-hook chunk. The runtime's `BoxConsistencyTest` (Box's etag
     // flow through the generated `BoxFiles`) makes 15 runtime classes:
-    // 1120 + 90 + 1 + 5 = 1216 total.
+    // 1120 + 90 + 1 + 5 = 1216 total. `BoxWebhookVerifier` and its test make
+    // 17: 1122 + 90 + 1 + 5 = 1218.
     let classes: Vec<&str> = files
         .iter()
         .filter(|f| f.path.ends_with(".cls"))
@@ -1216,7 +1217,7 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         .collect();
     assert_eq!(
         classes.len(),
-        1120 + 90 + 1 + 5,
+        1122 + 90 + 1 + 5,
         "models + managers + client + stubs + runtime + @isTest suite + BoxBuildInfo + wire-hook suite"
     );
     // The generated test suite ships with the deployable tree.
@@ -1238,6 +1239,7 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         "BoxJwtTokenProvider",
         "BoxChunkedUpload",
         "BoxApiException",
+        "BoxWebhookVerifier",
     ] {
         assert!(
             classes
@@ -1302,17 +1304,17 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         docs.iter().all(|d| d.ends_with(".md")),
         "docs must be Markdown only"
     );
-    // 381 endpoint pages + 88 manager indexes + 1 top index + 3 topic guides
-    // (auth/pagination/errors) = 473.
+    // 381 endpoint pages + 88 manager indexes + 1 top index + 4 topic guides
+    // (auth/pagination/errors/webhooks) = 474.
     assert_eq!(
         docs.len(),
-        473,
+        474,
         "endpoint + manager + top-index + guide docs"
     );
     // 7 base scaffolding (sfdx-project, scratch-def, .forceignore, package.xml,
-    // README, LICENSE, assets/banner.svg) + 4 Remote Site Settings + 1216
-    // classes + 1216 metas + 473 docs.
-    assert_eq!(files.len(), 7 + 4 + (1120 + 90 + 1 + 5) * 2 + 473);
+    // README, LICENSE, assets/banner.svg) + 4 Remote Site Settings + 1218
+    // classes + 1218 metas + 474 docs.
+    assert_eq!(files.len(), 7 + 4 + (1122 + 90 + 1 + 5) * 2 + 474);
 
     // Deterministic and path-sorted.
     let sorted: Vec<&String> = {

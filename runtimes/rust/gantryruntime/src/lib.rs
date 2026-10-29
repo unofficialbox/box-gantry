@@ -16,9 +16,11 @@
 
 mod auth;
 mod jwt;
+mod webhooks;
 
 pub use auth::{Auth, CcgConfig, OAuthConfig, RefreshTokenStore, TokenSource};
 pub use jwt::JwtConfig;
+pub use webhooks::{WebhookVerifier, DEFAULT_WEBHOOK_MAX_AGE};
 
 use std::collections::HashMap;
 use std::time::Duration;

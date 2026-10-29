@@ -79,6 +79,12 @@ fn the_generated_go_sdk_is_conformant() {
         "one iterator per paged surface"
     );
     assert_eq!(by("auth-flows").actual, 4);
+    assert_eq!(by("docs-guides").actual, 5, "index + 4 topic guides");
+    assert_eq!(
+        by("webhook-signatures").actual,
+        1,
+        "the runtime verifies webhooks"
+    );
 }
 
 #[test]
@@ -131,7 +137,12 @@ fn the_generated_apex_sdk_is_conformant() {
         1,
         "BoxBuildInfo carries provenance"
     );
-    assert_eq!(by("docs-guides").actual, 4, "index + 3 topic guides");
+    assert_eq!(by("docs-guides").actual, 5, "index + 4 topic guides");
+    assert_eq!(
+        by("webhook-signatures").actual,
+        1,
+        "the runtime verifies webhooks"
+    );
 
     // The two documented platform exclusions pass as not-applicable, never
     // as failures: erased serialization + interactive OAuth (D-141).
@@ -190,7 +201,12 @@ fn the_generated_typescript_sdk_is_conformant() {
     );
     assert_eq!(by("auth-flows").actual, 4, "all four flows documented");
     assert_eq!(by("manager-docs").actual, 88, "one doc page per manager");
-    assert_eq!(by("docs-guides").actual, 4, "index + 3 topic guides");
+    assert_eq!(by("docs-guides").actual, 5, "index + 4 topic guides");
+    assert_eq!(
+        by("webhook-signatures").actual,
+        1,
+        "the runtime verifies webhooks"
+    );
     // The generated behavioral tests: the serialization baseline plus one
     // round-trip test per discriminated union.
     assert!(
