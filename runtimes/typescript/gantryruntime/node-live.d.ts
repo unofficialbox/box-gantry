@@ -10,9 +10,10 @@ declare module 'node:test' {
 }
 declare module 'node:assert/strict' {
   interface StrictAssert {
-    ok(value: unknown, message?: string): void;
+    ok(value: unknown, message?: string): asserts value;
     equal(actual: unknown, expected: unknown, message?: string): void;
     deepEqual(actual: unknown, expected: unknown, message?: string): void;
+    rejects(promise: Promise<unknown>, validate: (err: unknown) => boolean): Promise<void>;
   }
   const assert: StrictAssert;
   export default assert;
@@ -33,7 +34,8 @@ declare module 'node:http' {
   }
   export interface ServerResponse {
     statusCode: number;
-    end(): void;
+    setHeader(name: string, value: string): void;
+    end(body?: string): void;
   }
   export interface Server {
     listen(port: number, host: string, callback: () => void): void;

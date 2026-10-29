@@ -1,0 +1,15 @@
+{
+  "//": "Emit the runtime + its local unit tests to JS so `node --test` can run them, for the same reason as tsconfig.livesmoke.json (NodeNext `.js` specifiers and parameter-property classes need a real compile). CI runs them; tsconfig.json stays the noEmit type-check gate.",
+  "compilerOptions": {
+    "strict": true,
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022", "DOM"],
+    "rootDir": ".",
+    "outDir": "dist-test",
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/**/*.ts", "runtime.test.ts", "node-live.d.ts"]
+}

@@ -5,7 +5,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 
-import { Client, Stream, developerToken, statusCode, withHeader, withMultipartBody } from './src/runtime.js';
+import { BoxApiError } from './src/errors.js';
+import { Client, Stream, developerToken, withHeader, withMultipartBody } from './src/runtime.js';
 
 /** Concatenate byte chunks into one buffer (no `Buffer` — see node-live.d.ts). */
 function concatBytes(chunks: Uint8Array[]): Uint8Array {
@@ -70,7 +71,7 @@ test('a client default header is sent, and a per-request header overrides it', a
   assert.deepEqual(seen, ['default', 'override']);
 });
 
-test('a 401 with no retries left returns the response, not an error', async () => {
+test('a 401 with no retries left surfaces as a BoxApiError', async () => {
   await withServer(
     (req, res) => {
       res.statusCode = 401;
@@ -78,8 +79,56 @@ test('a 401 with no retries left returns the response, not an error', async () =
     },
     async (url) => {
       const client = new Client(developerToken('t'), { maxRetries: 0 });
-      const response = await client.fetch(client.newRequest('GET', url));
-      assert.equal(statusCode(response), 401);
+      await assert.rejects(client.fetch(client.newRequest('GET', url)), (err: unknown) => {
+        assert.ok(err instanceof BoxApiError);
+        assert.equal(err.status, 401);
+        return true;
+      });
+    },
+  );
+});
+
+// A non-2xx response is a thrown error carrying Box's error fields, never a
+// resolved response whose error body a caller would decode as a result.
+test('a non-2xx response throws a BoxApiError with the Box error fields', async () => {
+  await withServer(
+    (req, res) => {
+      res.statusCode = 404;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(
+        '{"type":"error","status":404,"code":"not_found","message":"Not Found","request_id":"abc123"}',
+      );
+    },
+    async (url) => {
+      const client = new Client(developerToken('t'));
+      await assert.rejects(client.fetch(client.newRequest('GET', url)), (err: unknown) => {
+        assert.ok(err instanceof BoxApiError);
+        assert.equal(err.status, 404);
+        assert.equal(err.code, 'not_found');
+        assert.equal(err.boxMessage, 'Not Found');
+        assert.equal(err.requestId, 'abc123');
+        assert.equal(err.message, 'box: status 404 not_found: Not Found (request_id abc123)');
+        return true;
+      });
+    },
+  );
+});
+
+test('a non-JSON error body is kept raw on the BoxApiError', async () => {
+  await withServer(
+    (req, res) => {
+      res.statusCode = 502;
+      res.end('upstream down');
+    },
+    async (url) => {
+      const client = new Client(developerToken('t'), { maxRetries: 0 });
+      await assert.rejects(client.fetch(client.newRequest('GET', url)), (err: unknown) => {
+        assert.ok(err instanceof BoxApiError);
+        assert.equal(err.status, 502);
+        assert.equal(err.code, undefined);
+        assert.equal(new TextDecoder().decode(err.body), 'upstream down');
+        return true;
+      });
     },
   );
 });

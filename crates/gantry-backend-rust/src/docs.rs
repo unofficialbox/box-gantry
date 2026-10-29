@@ -400,6 +400,14 @@ options you pass, so your value is never mutated.\n";
 const ERRORS_GUIDE: &str = "# Errors\n\n\
 Every I/O method returns `Result<T, runtime::Error>`. An `Err` is either a\n\
 transport failure or a non-2xx response after the network layer's retries\n\
-(exponential backoff + jitter, `401` refresh, `Retry-After`). Response\n\
-bodies for error statuses carry the Box error schema and can be inspected\n\
-on the returned error.\n";
+(exponential backoff + jitter, `401` refresh, `Retry-After`). For a non-2xx\n\
+response, `err.status()` is the HTTP status and `err.api()` the\n\
+`runtime::ApiError` with Box's error `code`, `message`, and `request_id`\n\
+plus the raw `body`; both are `None` for any other failure:\n\n\
+```rust,ignore\n\
+match result {\n\
+    Err(err) if err.status() == Some(404) => { /* not found */ }\n\
+    Err(err) => eprintln!(\"{err}\"), // e.g. box: status 403 access_denied: … (request_id …)\n\
+    Ok(value) => { /* … */ }\n\
+}\n\
+```\n";

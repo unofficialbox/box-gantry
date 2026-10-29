@@ -26,6 +26,7 @@ target
 
 # TypeScript live-smoke build output (VR-7)
 runtimes/typescript/gantryruntime/dist-livesmoke/
+runtimes/typescript/gantryruntime/dist-test/
 
 # macOS
 .DS_Store
