@@ -76,7 +76,7 @@ jobs:
                      | "component \(.fullName): \(.problem)"),
                    ((.result.details.runTestResult.failures // [] | if type == "array" then . else [.] end)[]
                      | "test \(.name).\(.methodName): \(.message)"),
-                   (.message // empty)' deploy.json | head -50
+                   (.message // empty)' deploy.json || head -c 4000 deploy.json
             exit "$status"
           fi
           jq -r '"Tests: \(.result.numberTestsCompleted) passed, \(.result.numberTestErrors) failed"' deploy.json
