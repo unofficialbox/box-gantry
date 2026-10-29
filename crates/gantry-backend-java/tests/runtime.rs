@@ -191,6 +191,14 @@ public final class RuntimeSmoke {
             respond(ex, 200, "ok");
         });
 
+        // A download: 302 to the content host, as Box answers GET /files/{id}/content.
+        server.createContext("/download", ex -> {
+            ex.getResponseHeaders().add("Location", "/content-host");
+            ex.sendResponseHeaders(302, -1);
+            ex.close();
+        });
+        server.createContext("/content-host", ex -> respond(ex, 200, "file bytes"));
+
         server.start();
         String base = "http://127.0.0.1:" + server.getAddress().getPort();
 
@@ -250,6 +258,13 @@ public final class RuntimeSmoke {
         String avatarBody = multipartBody.get();
         check(!avatarBody.contains("application/json"), "avatar: expected no JSON part, got: " + avatarBody);
         check(avatarBody.contains("name=\"pic\"; filename=\"pic\""), "avatar: expected pic file part, got: " + avatarBody);
+
+        // The built-in client follows the download redirect; Java's default
+        // (NEVER) would return the 302's empty body as the file.
+        Runtime.Response dl = dev.fetch(dev.newRequest("GET", base + "/download"));
+        check(Runtime.statusCode(dl) == 200, "download should follow the 302, got " + Runtime.statusCode(dl));
+        check(new String(Runtime.responseBytes(dl), StandardCharsets.UTF_8).equals("file bytes"),
+            "download body after the redirect");
 
         // httpVersion picks the built-in client's protocol; this server speaks
         // HTTP/1.1, so a pinned HTTP_1_1 session must still round-trip.
@@ -323,7 +338,10 @@ fn the_runtime_retries_and_authenticates() {
 
 /// The VR-7 live-smoke driver: one authenticated `GET /users/me` per auth flow
 /// whose credentials are present in the environment (developer token, CCG,
-/// OAuth, JWT from a `box_config.json`). A clean no-op when none are set.
+/// OAuth, JWT from a `box_config.json`), then — on the first flow that
+/// authenticated — paginate the root folder and upload, download, and delete a
+/// file, matching the Go/Rust/TypeScript smokes. A clean no-op when no
+/// credentials are set.
 // A JDK 25+ compact source file (JEP 512): no explicit class declaration and an
 // instance `void main()` — the script-shaped entry point the live smoke wants.
 // The gate compiles it with `javac` (the implicit class is named after the file,
@@ -335,25 +353,192 @@ int ran = 0;
 // Every flow runs before the smoke fails, so one bad credential (an expired
 // developer token) doesn't hide the others' results.
 java.util.List<String> failed = new java.util.ArrayList<>();
+Runtime.Session primary;
 
 void smoke(String name, Runtime.Auth auth) {
     try {
         Runtime.Session session = new Runtime.Session(auth);
-        Runtime.Response response = session.fetch(session.newRequest("GET", session.baseUrl("api") + "/users/me"));
-        long code = Runtime.statusCode(response);
-        if (code != 200) {
-            System.out.println("FAIL " + name + ": status " + code + " "
-                + new String(Runtime.responseBytes(response), java.nio.charset.StandardCharsets.UTF_8));
-            failed.add(name);
-            return;
+        Object me = getJson(session, session.baseUrl("api") + "/users/me");
+        System.out.println("OK " + name + ": authenticated as user " + field(me, "id"));
+        if (primary == null) {
+            primary = session;
         }
+        ran++;
     } catch (RuntimeException err) {
-        System.out.println("FAIL " + name + ": " + err);
+        System.out.println("FAIL " + name + ": " + err.getMessage());
         failed.add(name);
-        return;
     }
-    System.out.println("OK " + name);
-    ran++;
+}
+
+// Walk the root folder's items, following the marker cursor across pages just
+// like the generated paginators do.
+void paginate(Runtime.Session session) {
+    int seen = 0;
+    String marker = "";
+    for (int page = 0; page < 100; page++) {
+        Runtime.Request request = Runtime.withQuery(
+            session.newRequest("GET", session.baseUrl("api") + "/folders/0/items"), "limit", "100");
+        if (!marker.isEmpty()) {
+            request = Runtime.withQuery(request, "marker", marker);
+        }
+        Object body = parseJson(fetchOk(session, request));
+        if (field(body, "entries") instanceof java.util.List<?> entries) {
+            seen += entries.size();
+        }
+        if (field(body, "next_marker") instanceof String next && !next.isEmpty()) {
+            marker = next;
+        } else {
+            break;
+        }
+    }
+    System.out.println("paginate: walked the root folder, " + seen + " item(s)");
+}
+
+// Upload a small file to the root folder, download it back byte-for-byte, then
+// delete it — even if the download fails, so a run never leaves an artifact.
+void uploadDownloadDelete(Runtime.Session session) {
+    byte[] content = "box-gantry live smoke".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    // Unique per run: Box rejects a duplicate name in the same folder (409).
+    String name = "box-gantry-smoke-" + java.util.UUID.randomUUID() + ".txt";
+    byte[] attributes = ("{\"name\":\"" + name + "\",\"parent\":{\"id\":\"0\"}}")
+        .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    Runtime.Request upload = Runtime.withMultipartBody(
+        session.newRequest("POST", session.baseUrl("upload") + "/files/content"),
+        "attributes", attributes, "file", Runtime.Stream.fromBytes(content));
+    Object uploaded = parseJson(fetchOk(session, upload));
+    if (!(field(uploaded, "entries") instanceof java.util.List<?> entries) || entries.isEmpty()
+            || !(field(entries.get(0), "id") instanceof String fileId)) {
+        throw new IllegalStateException("upload: no file id in the response");
+    }
+    System.out.println("upload: created file " + fileId);
+    String fileUrl = session.baseUrl("api") + "/files/" + fileId;
+    try {
+        byte[] downloaded = fetchOk(session, session.newRequest("GET", fileUrl + "/content"));
+        if (!java.util.Arrays.equals(downloaded, content)) {
+            throw new IllegalStateException("download: content mismatch (got " + downloaded.length
+                + " bytes, want " + content.length + ")");
+        }
+        System.out.println("download: content round-tripped");
+    } finally {
+        long code = Runtime.statusCode(session.fetch(session.newRequest("DELETE", fileUrl)));
+        if (code != 204) {
+            throw new IllegalStateException("delete: expected 204, got " + code);
+        }
+        System.out.println("delete: cleaned up file " + fileId);
+    }
+}
+
+Object getJson(Runtime.Session session, String url) {
+    return parseJson(fetchOk(session, session.newRequest("GET", url)));
+}
+
+// Run a request and return the body, failing on a non-2xx status.
+byte[] fetchOk(Runtime.Session session, Runtime.Request request) {
+    Runtime.Response response = session.fetch(request);
+    long code = Runtime.statusCode(response);
+    byte[] body = Runtime.responseBytes(response);
+    if (code < 200 || code >= 300) {
+        throw new IllegalStateException("status " + code + ": "
+            + new String(body, java.nio.charset.StandardCharsets.UTF_8).strip());
+    }
+    return body;
+}
+
+Object field(Object object, String key) {
+    return object instanceof java.util.Map<?, ?> map ? map.get(key) : null;
+}
+
+// A minimal JSON reader: the runtime keeps its own parser private and ships no
+// dependencies, so the smoke carries just enough to read Box's responses.
+// Objects become Maps, arrays Lists, strings Strings, `null` null; any other
+// scalar is kept as its raw token text.
+String json;
+int at;
+
+Object parseJson(byte[] body) {
+    json = new String(body, java.nio.charset.StandardCharsets.UTF_8);
+    at = 0;
+    return jsonValue();
+}
+
+Object jsonValue() {
+    skipSpace();
+    char c = json.charAt(at);
+    if (c == '{') {
+        java.util.Map<String, Object> map = new java.util.LinkedHashMap<>();
+        at++;
+        if (peek() == '}') {
+            at++;
+            return map;
+        }
+        do {
+            skipSpace();
+            String key = jsonString();
+            skipSpace();
+            at++; // ':'
+            map.put(key, jsonValue());
+            skipSpace();
+        } while (json.charAt(at++) == ',');
+        return map;
+    }
+    if (c == '[') {
+        java.util.List<Object> list = new java.util.ArrayList<>();
+        at++;
+        if (peek() == ']') {
+            at++;
+            return list;
+        }
+        do {
+            list.add(jsonValue());
+            skipSpace();
+        } while (json.charAt(at++) == ',');
+        return list;
+    }
+    if (c == '"') {
+        return jsonString();
+    }
+    int start = at;
+    while (at < json.length() && ",}] \t\r\n".indexOf(json.charAt(at)) < 0) {
+        at++;
+    }
+    String token = json.substring(start, at);
+    return token.equals("null") ? null : token;
+}
+
+String jsonString() {
+    StringBuilder out = new StringBuilder();
+    at++; // opening quote
+    for (char c = json.charAt(at++); c != '"'; c = json.charAt(at++)) {
+        if (c != '\\') {
+            out.append(c);
+            continue;
+        }
+        char escaped = json.charAt(at++);
+        switch (escaped) {
+            case 'b' -> out.append('\b');
+            case 'f' -> out.append('\f');
+            case 'n' -> out.append('\n');
+            case 'r' -> out.append('\r');
+            case 't' -> out.append('\t');
+            case 'u' -> {
+                out.append((char) Integer.parseInt(json.substring(at, at + 4), 16));
+                at += 4;
+            }
+            default -> out.append(escaped);
+        }
+    }
+    return out.toString();
+}
+
+char peek() {
+    skipSpace();
+    return json.charAt(at);
+}
+
+void skipSpace() {
+    while (at < json.length() && Character.isWhitespace(json.charAt(at))) {
+        at++;
+    }
 }
 
 String env(String name) {
@@ -379,11 +564,21 @@ void main() throws Exception {
         String json = java.nio.file.Files.readString(java.nio.file.Path.of(env("BOX_JWT_CONFIG")));
         smoke("jwt", Runtime.jwt(Runtime.JwtConfig.fromBoxConfig(json)));
     }
+    if (ran == 0 && failed.isEmpty()) {
+        System.out.println("LIVESMOKE_SKIP (no credentials)");
+        return;
+    }
+    if (primary == null) {
+        System.out.println("LIVESMOKE_FAIL no auth flow yielded a usable token: " + failed);
+        System.exit(1);
+    }
+    paginate(primary);
+    uploadDownloadDelete(primary);
     if (!failed.isEmpty()) {
         System.out.println("LIVESMOKE_FAIL " + failed);
         System.exit(1);
     }
-    System.out.println(ran == 0 ? "LIVESMOKE_SKIP (no credentials)" : "LIVESMOKE_OK");
+    System.out.println("LIVESMOKE_OK");
 }
 "#;
 
@@ -440,6 +635,8 @@ fn the_live_smoke_compiles_and_runs_when_credentialed() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&run.stdout);
     let stderr = String::from_utf8_lossy(&run.stderr);
+    // Echo the driver's per-step log so a green run shows what it covered.
+    eprint!("{stdout}");
     assert!(
         run.status.success() && stdout.contains("LIVESMOKE_OK"),
         "live smoke failed:\nstdout: {stdout}\nstderr: {stderr}"

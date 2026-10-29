@@ -9,9 +9,10 @@
 # anonymous Apex. No scratch org is created (so the daily signup limit never
 # applies); the SDK classes persist in the org and are overwritten each run.
 #
-# Manual (workflow_dispatch): it needs the target org and real Box credentials,
-# both from repo secrets, never the repository. Absent any secret → the job
-# skips, so a dry run still passes.
+# Weekly, like VR-7, so drift surfaces within a week, and on demand
+# (workflow_dispatch). It needs the target org and real Box credentials, both
+# from repo secrets, never the repository. Absent any secret → the job skips,
+# so a dry run still passes.
 #
 # Set up (in addition to VR-1.3's SFDX_AUTH_URL): create a Box Custom App with
 # Client Credentials Grant enabled, authorized in the Box Admin Console, then
@@ -20,6 +21,8 @@
 name: Apex live smoke (VR-1.4)
 
 on:
+  schedule:
+    - cron: '53 4 * * 1'
   workflow_dispatch:
 
 jobs:

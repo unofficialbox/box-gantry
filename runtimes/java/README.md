@@ -64,6 +64,7 @@ Gated inside `cargo test --workspace` (the JDK is installed in CI), three ways:
 - **Live smoke (VR-7)** — a driver does one authenticated `GET /users/me` per
   auth flow whose credentials are in the environment (`BOX_DEVELOPER_TOKEN`;
   `BOX_CLIENT_ID`+`BOX_CLIENT_SECRET`+`BOX_ENTERPRISE_ID`; `…`+
-  `BOX_OAUTH_REFRESH_TOKEN`; `BOX_JWT_CONFIG` → a `box_config.json`). It compiles
-  under the gate (so it can't rot) and runs only when credentialed — a clean
-  no-op otherwise (same file).
+  `BOX_OAUTH_REFRESH_TOKEN`; `BOX_JWT_CONFIG` → a `box_config.json`), then
+  paginates the root folder and uploads, downloads, and deletes a file, like
+  the Go/Rust/TypeScript smokes. It compiles under the gate (so it can't rot)
+  and runs only when credentialed — a clean no-op otherwise (same file).

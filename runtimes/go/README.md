@@ -38,6 +38,6 @@ test loads it automatically (real env vars still win). Recognized variables:
 | `BOX_CLIENT_ID` + `BOX_CLIENT_SECRET` + `BOX_OAUTH_REFRESH_TOKEN` | OAuth 2.0 |
 | `BOX_JWT_CONFIG` (path to `box_config.json`) | JWT |
 
-In CI it runs only via the manual **Live smoke (VR-7)** workflow
-(`workflow_dispatch`), which reads these from repo secrets — never from the
-repository.
+In CI it runs only via the **Live smoke (VR-7)** workflow — weekly and on
+demand (`workflow_dispatch`) — which reads these from repo secrets, never from
+the repository.
