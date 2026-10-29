@@ -340,7 +340,7 @@ func fetchOK(ctx context.Context, t *testing.T, client *gantryruntime.Client, re
 }
 
 // TEMPORARY PROBE (not for merge): how Box answers etag headers on web links.
-func TestProbeWebLinkEtags(t *testing.T) {
+func TestLiveSmokeProbeWebLinkEtags(t *testing.T) {
 	sources := authSources(t)
 	if len(sources) == 0 {
 		t.Skip("no creds")
