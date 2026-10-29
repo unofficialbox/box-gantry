@@ -28,20 +28,86 @@ use std::time::Duration;
 /// intent.
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(300);
 
-/// A runtime error: a failed request, auth acquisition, or body decode. Opaque
-/// by design — the message carries the detail, the type stays stable.
+/// A runtime error: a failed request, auth acquisition, body decode, or a
+/// non-2xx response from Box. The message carries the detail; a non-2xx
+/// response also carries its status and Box's error fields ([`Error::api`]).
 #[derive(Debug)]
-pub struct Error(String);
+pub struct Error {
+    message: String,
+    // Boxed so the common `Result<_, Error>` stays small.
+    api: Option<Box<ApiError>>,
+}
+
+/// A non-2xx response from Box: [`Client::fetch`] returns it (inside an
+/// [`Error`]) once the retry budget and the single 401 refresh are spent, so a
+/// caller never mistakes an error body for a result. `code`, `message`, and
+/// `request_id` come from Box's error body when it has one; `body` is the raw
+/// payload either way.
+#[derive(Debug, Clone)]
+pub struct ApiError {
+    pub status: i64,
+    pub code: Option<String>,
+    pub message: Option<String>,
+    pub request_id: Option<String>,
+    pub body: Vec<u8>,
+}
 
 impl Error {
     pub(crate) fn new(message: impl Into<String>) -> Error {
-        Error(message.into())
+        Error {
+            message: message.into(),
+            api: None,
+        }
+    }
+
+    /// The non-2xx response behind this error, if that's what it is.
+    pub fn api(&self) -> Option<&ApiError> {
+        self.api.as_deref()
+    }
+
+    /// The HTTP status of a non-2xx response; `None` for any other failure.
+    pub fn status(&self) -> Option<i64> {
+        self.api.as_ref().map(|api| api.status)
+    }
+
+    /// The error for a non-2xx response, reading Box's error fields from the
+    /// body when it is a Box error object.
+    fn from_response(response: &Response) -> Error {
+        let payload: serde_json::Value =
+            serde_json::from_slice(&response.body).unwrap_or(serde_json::Value::Null);
+        let field = |key: &str| {
+            payload
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        };
+        let api = ApiError {
+            status: response.status,
+            code: field("code"),
+            message: field("message"),
+            request_id: field("request_id"),
+            body: response.body.clone(),
+        };
+        let mut message = format!("box: status {}", api.status);
+        if let Some(code) = &api.code {
+            message.push_str(&format!(" {code}"));
+        }
+        if let Some(detail) = &api.message {
+            message.push_str(&format!(": {detail}"));
+        }
+        if let Some(id) = &api.request_id {
+            message.push_str(&format!(" (request_id {id})"));
+        }
+        Error {
+            message,
+            api: Some(Box::new(api)),
+        }
     }
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.message)
     }
 }
 
@@ -49,13 +115,13 @@ impl std::error::Error for Error {}
 
 impl From<serde_json::Error> for Error {
     fn from(err: serde_json::Error) -> Self {
-        Error(err.to_string())
+        Error::new(err.to_string())
     }
 }
 
 impl From<reqwest::Error> for Error {
     fn from(err: reqwest::Error) -> Self {
-        Error(err.to_string())
+        Error::new(err.to_string())
     }
 }
 
@@ -287,6 +353,9 @@ impl Client {
             if should_retry(response.status, idempotent) && attempt < self.max_retries {
                 sleep(retry_delay(&response, attempt)).await;
                 continue;
+            }
+            if !(200..300).contains(&response.status) {
+                return Err(Error::from_response(&response));
             }
             return Ok(response);
         }
@@ -933,8 +1002,8 @@ mod tests {
         assert!(text.contains("file bytes"));
     }
 
-    #[tokio::test]
-    async fn a_401_with_no_retries_left_returns_the_response_not_an_error() {
+    /// Serve one canned HTTP response on a local port; returns its URL.
+    async fn serve_once(raw: &'static [u8]) -> String {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -943,16 +1012,63 @@ mod tests {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut buf = vec![0u8; 8192];
             let _ = socket.read(&mut buf).await.unwrap();
-            let _ = socket
-                .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
-                .await;
+            let _ = socket.write_all(raw).await;
         });
+        format!("http://{addr}/")
+    }
+
+    #[tokio::test]
+    async fn a_401_with_no_retries_left_surfaces_as_an_api_error() {
+        let url = serve_once(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n").await;
         let client = Client::new(Auth::developer_token("t")).with_max_retries(0);
-        let response = client
-            .fetch(client.new_request("GET", &format!("http://{addr}/")))
+        let err = client
+            .fetch(client.new_request("GET", &url))
             .await
-            .unwrap();
-        assert_eq!(status_code(&response), 401);
+            .err()
+            .expect("a 401 is an error");
+        assert_eq!(err.status(), Some(401));
+    }
+
+    /// A non-2xx response is an error carrying Box's error fields, never an
+    /// `Ok` whose error body a caller would decode as a result.
+    #[tokio::test]
+    async fn a_non_2xx_response_is_an_api_error_with_the_box_error_fields() {
+        let url = serve_once(
+            b"HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 92\r\n\r\n\
+              {\"type\":\"error\",\"status\":404,\"code\":\"not_found\",\"message\":\"Not Found\",\"request_id\":\"abc123\"}",
+        )
+        .await;
+        let client = Client::new(Auth::developer_token("t"));
+        let err = client
+            .fetch(client.new_request("GET", &url))
+            .await
+            .err()
+            .expect("a 404 is an error");
+        let api = err.api().expect("API error details");
+        assert_eq!(api.status, 404);
+        assert_eq!(api.code.as_deref(), Some("not_found"));
+        assert_eq!(api.message.as_deref(), Some("Not Found"));
+        assert_eq!(api.request_id.as_deref(), Some("abc123"));
+        assert_eq!(
+            err.to_string(),
+            "box: status 404 not_found: Not Found (request_id abc123)"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_non_json_error_body_is_kept_raw() {
+        let url =
+            serve_once(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 13\r\n\r\nupstream down")
+                .await;
+        let client = Client::new(Auth::developer_token("t")).with_max_retries(0);
+        let err = client
+            .fetch(client.new_request("GET", &url))
+            .await
+            .err()
+            .expect("a 502 is an error");
+        let api = err.api().expect("API error details");
+        assert_eq!((api.status, api.code.as_deref()), (502, None));
+        assert_eq!(api.body, b"upstream down");
     }
 
     #[tokio::test]

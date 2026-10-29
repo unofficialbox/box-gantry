@@ -191,6 +191,14 @@ public final class RuntimeSmoke {
             respond(ex, 200, "ok");
         });
 
+        // A Box error body: fetch must throw it, not return it as a result.
+        server.createContext("/missing", ex -> respond(ex, 404,
+            "{\"type\":\"error\",\"status\":404,\"code\":\"not_found\","
+                + "\"message\":\"Not Found\",\"request_id\":\"abc123\"}"));
+        // A persistent 401 (the single refresh doesn't help) and a non-JSON 502.
+        server.createContext("/unauthorized", ex -> respond(ex, 401, ""));
+        server.createContext("/bad-gateway", ex -> respond(ex, 502, "upstream down"));
+
         // A download: 302 to the content host, as Box answers GET /files/{id}/content.
         server.createContext("/download", ex -> {
             ex.getResponseHeaders().add("Location", "/content-host");
@@ -258,6 +266,42 @@ public final class RuntimeSmoke {
         String avatarBody = multipartBody.get();
         check(!avatarBody.contains("application/json"), "avatar: expected no JSON part, got: " + avatarBody);
         check(avatarBody.contains("name=\"pic\"; filename=\"pic\""), "avatar: expected pic file part, got: " + avatarBody);
+
+        // A non-2xx response throws BoxApiException with Box's error fields.
+        Runtime.BoxApiException notFound = null;
+        try {
+            dev.fetch(dev.newRequest("GET", base + "/missing"));
+        } catch (Runtime.BoxApiException err) {
+            notFound = err;
+        }
+        check(notFound != null, "a 404 should throw BoxApiException");
+        check(notFound.statusCode() == 404 && "not_found".equals(notFound.code())
+                && "Not Found".equals(notFound.boxMessage()) && "abc123".equals(notFound.requestId()),
+            "404 error fields, got: " + notFound.getMessage());
+        check(notFound.getMessage().equals("box: status 404 not_found: Not Found (request_id abc123)"),
+            "404 message, got: " + notFound.getMessage());
+
+        Runtime.BoxApiException unauthorized = null;
+        try {
+            dev.fetch(dev.newRequest("GET", base + "/unauthorized"));
+        } catch (Runtime.BoxApiException err) {
+            unauthorized = err;
+        }
+        check(unauthorized != null && unauthorized.statusCode() == 401,
+            "a persistent 401 should throw BoxApiException(401)");
+
+        Runtime.Session noRetry = Runtime.Session.builder(Runtime.developerToken("devtok"))
+            .maxRetries(0)
+            .build();
+        Runtime.BoxApiException badGateway = null;
+        try {
+            noRetry.fetch(noRetry.newRequest("GET", base + "/bad-gateway"));
+        } catch (Runtime.BoxApiException err) {
+            badGateway = err;
+        }
+        check(badGateway != null && badGateway.statusCode() == 502 && badGateway.code() == null
+                && new String(badGateway.body(), StandardCharsets.UTF_8).equals("upstream down"),
+            "a non-JSON 502 should throw with the raw body");
 
         // The built-in client follows the download redirect; Java's default
         // (NEVER) would return the 302's empty body as the file.

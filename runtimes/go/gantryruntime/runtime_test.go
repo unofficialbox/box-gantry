@@ -7,6 +7,7 @@ package gantryruntime
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -40,19 +41,60 @@ func TestDefaultHeaderIsSentAndOverridable(t *testing.T) {
 	}
 }
 
-func TestFetchReturnsA401InsteadOfSwallowingItWhenRetriesAreDisabled(t *testing.T) {
+func TestFetchSurfacesA401InsteadOfSwallowingItWhenRetriesAreDisabled(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer server.Close()
 
 	client := New(fixedToken("t"), WithMaxRetries(0))
-	resp, err := client.Fetch(context.Background(), client.NewRequest("GET", server.URL))
-	if err != nil {
-		t.Fatalf("fetch: %v", err)
+	_, err := client.Fetch(context.Background(), client.NewRequest("GET", server.URL))
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusUnauthorized {
+		t.Fatalf("err = %v, want an *APIError with status %d", err, http.StatusUnauthorized)
 	}
-	if got := StatusCode(resp); got != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d", got, http.StatusUnauthorized)
+}
+
+// A non-2xx response is an error carrying Box's error fields, never a
+// "successful" response whose error body a caller would decode as a result.
+func TestFetchReturnsAnAPIErrorForANon2xxResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		io.WriteString(w, `{"type":"error","status":404,"code":"not_found","message":"Not Found","request_id":"abc123"}`)
+	}))
+	defer server.Close()
+
+	client := New(fixedToken("t"))
+	resp, err := client.Fetch(context.Background(), client.NewRequest("GET", server.URL))
+	if resp != nil {
+		t.Fatalf("resp = %v, want nil alongside the error", resp)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("err = %v, want an *APIError", err)
+	}
+	if apiErr.Status != 404 || apiErr.Code != "not_found" || apiErr.Message != "Not Found" || apiErr.RequestID != "abc123" {
+		t.Fatalf("APIError = %+v", apiErr)
+	}
+	if want := "box: status 404 not_found: Not Found (request_id abc123)"; err.Error() != want {
+		t.Fatalf("Error() = %q, want %q", err.Error(), want)
+	}
+}
+
+// A non-JSON error body still surfaces as an APIError, with the raw body.
+func TestFetchReturnsAnAPIErrorForANonJSONErrorBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		io.WriteString(w, "upstream down")
+	}))
+	defer server.Close()
+
+	client := New(fixedToken("t"), WithMaxRetries(0))
+	_, err := client.Fetch(context.Background(), client.NewRequest("GET", server.URL))
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 502 || string(apiErr.Body) != "upstream down" || apiErr.Code != "" {
+		t.Fatalf("err = %v (%+v), want a 502 APIError carrying the raw body", err, apiErr)
 	}
 }
 

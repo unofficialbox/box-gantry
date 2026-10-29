@@ -216,6 +216,9 @@ func (c *Client) Fetch(ctx context.Context, request *Request) (*Response, error)
 				continue
 			}
 		}
+		if resp.status < 200 || resp.status >= 300 {
+			return nil, newAPIError(resp)
+		}
 		return resp, nil
 	}
 	if lastErr != nil {

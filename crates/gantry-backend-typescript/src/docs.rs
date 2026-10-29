@@ -401,16 +401,17 @@ const ERRORS_GUIDE: &str = "# Errors\n\n\
 Methods are `async` and surface failure by throwing — the return type only\n\
 describes the success value. A thrown `BoxApiError` is either a transport\n\
 failure or a non-2xx response after the network layer's retries (exponential\n\
-backoff + jitter, `401` refresh, `Retry-After`). It carries the HTTP `status`\n\
-when the failure came with a response, and the underlying `cause` for\n\
-transport or decode failures:\n\n\
+backoff + jitter, `401` refresh, `Retry-After`). For a non-2xx response it\n\
+carries the HTTP `status`, Box's error `code`, `boxMessage`, and `requestId`,\n\
+and the raw `body`; transport and decode failures carry the underlying\n\
+`cause` instead:\n\n\
 ```ts\n\
 import { runtime } from '@unofficialbox/box-open-sdk';\n\
 try {\n\
   await client.files.getFileById(fileId);\n\
 } catch (err) {\n\
   if (err instanceof runtime.BoxApiError) {\n\
-    // err.status (number | undefined), err.cause\n\
+    // err.status, err.code, err.boxMessage, err.requestId, err.body, err.cause\n\
   }\n\
 }\n\
 ```\n";
