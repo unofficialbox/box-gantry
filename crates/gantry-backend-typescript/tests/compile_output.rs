@@ -801,6 +801,25 @@ try {
   server.closeAllConnections();
   server.close();
 }
+
+// The webhooks guide's verifier, reached through the package's `runtime`
+// namespace: a delivery signed in Box's own SDK tests verifies, and the same
+// delivery with an altered body does not.
+const webhookBody =
+  '{"type":"webhook_event","webhook":{"id":"1234567890"},"trigger":"FILE.UPLOADED","source":{"id":"1234567890","type":"file","name":"Test.txt"}}';
+const webhookHeaders = {
+  'BOX-DELIVERY-TIMESTAMP': '2020-01-01T00:00:00-07:00',
+  'BOX-SIGNATURE-ALGORITHM': 'HmacSHA256',
+  'BOX-SIGNATURE-PRIMARY': '6TfeAW3A1PASkgboxxA5yqHNKOwFyMWuEXny/FPD5hI=',
+  'BOX-SIGNATURE-VERSION': '1',
+};
+const webhookKeys = { primaryKey: 'SamplePrimaryKey', now: new Date('2020-01-01T07:00:00Z') };
+if (!(await runtime.verifyWebhook(webhookBody, webhookHeaders, webhookKeys))) {
+  throw new Error("verifyWebhook: Box's signed delivery should verify");
+}
+if (await runtime.verifyWebhook(`${webhookBody} `, webhookHeaders, webhookKeys)) {
+  throw new Error('verifyWebhook: an altered body must not verify');
+}
 "#;
 
 /// Ensure the named tools are on `PATH` for a release gate. Returns `true` when

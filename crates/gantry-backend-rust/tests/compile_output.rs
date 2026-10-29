@@ -559,6 +559,24 @@ async fn generated_methods_surface_consistency_outcomes_as_api_errors() {
     let err = client.files.delete("2".into(), None).await.expect_err("404 is an error");
     assert_api_error(&err, 404, Some("not_found"));
 }
+
+/// The webhooks guide's verifier, reached through the shipped runtime module:
+/// a delivery signed in Box's own SDK tests verifies, and the same delivery
+/// with an altered body does not.
+#[test]
+fn the_webhook_verifier_ships_with_the_sdk() {
+    let body = r#"{"type":"webhook_event","webhook":{"id":"1234567890"},"trigger":"FILE.UPLOADED","source":{"id":"1234567890","type":"file","name":"Test.txt"}}"#;
+    let headers = [
+        ("BOX-DELIVERY-TIMESTAMP", "2020-01-01T00:00:00-07:00"),
+        ("BOX-SIGNATURE-ALGORITHM", "HmacSHA256"),
+        ("BOX-SIGNATURE-PRIMARY", "6TfeAW3A1PASkgboxxA5yqHNKOwFyMWuEXny/FPD5hI="),
+        ("BOX-SIGNATURE-VERSION", "1"),
+    ];
+    let delivered = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_577_862_000);
+    let verifier = runtime::WebhookVerifier::new().primary_key("SamplePrimaryKey");
+    assert!(verifier.verify_at(body.as_bytes(), headers, delivered));
+    assert!(!verifier.verify_at(format!("{body} ").as_bytes(), headers, delivered));
+}
 "##;
 
 /// FR-5.2/TR-Rust.5: the generated SDK must compile against the real

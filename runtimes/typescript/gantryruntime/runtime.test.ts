@@ -13,6 +13,7 @@ import {
   eventStream,
   parseJsonExact,
   streamPosition,
+  verifyWebhook,
   withHeader,
   withMultipartBody,
 } from './src/runtime.js';
@@ -255,4 +256,100 @@ test('stream positions round-trip exactly', () => {
   assert.equal(streamPosition(page.next_stream_position), '1152922976252290886');
   assert.equal(page.chunk_size, 2);
   assert.equal(streamPosition('42'), '42');
+});
+
+// The vectors from Box's own SDK test suite (testWebhookValidation): keys,
+// bodies, and the signatures Box computed for them, all delivered at
+// 2020-01-01T00:00:00-07:00.
+const WEBHOOK_PRIMARY_KEY = 'SamplePrimaryKey';
+const WEBHOOK_SECONDARY_KEY = 'SampleSecondaryKey';
+const WEBHOOK_TIMESTAMP = '2020-01-01T00:00:00-07:00';
+const WEBHOOK_BODY =
+  '{"type":"webhook_event","webhook":{"id":"1234567890"},"trigger":"FILE.UPLOADED","source":{"id":"1234567890","type":"file","name":"Test.txt"}}';
+const WEBHOOK_PRIMARY = '6TfeAW3A1PASkgboxxA5yqHNKOwFyMWuEXny/FPD5hI=';
+const WEBHOOK_FILE_PREFIX =
+  '{"webhook":{"id":"1234567890"},"trigger":"FILE.UPLOADED","source":{"id":"1234567890","type":"file","name":"';
+
+/** Box's delivery headers, in mixed case on purpose. */
+function webhookHeaders(primary: string): Record<string, string> {
+  return {
+    'box-delivery-id': 'f96bb54b-ee16-4fc5-aa65-8c2d9e5b546f',
+    'BOX-DELIVERY-TIMESTAMP': WEBHOOK_TIMESTAMP,
+    'box-signature-algorithm': 'HmacSHA256',
+    'box-signature-primary': primary,
+    'Box-Signature-Secondary': 'v+1CD1Jdo3muIcbpv5lxxgPglOqMfsNHPV899xWYydo=',
+    'box-signature-version': '1',
+  };
+}
+
+const deliveredAt = new Date('2020-01-01T07:00:00Z');
+const bothKeys = { primaryKey: WEBHOOK_PRIMARY_KEY, secondaryKey: WEBHOOK_SECONDARY_KEY, now: deliveredAt };
+
+test('verifyWebhook accepts the signatures Box computed', async () => {
+  assert.equal(await verifyWebhook(WEBHOOK_BODY, webhookHeaders(WEBHOOK_PRIMARY), bothKeys), true);
+  assert.equal(
+    await verifyWebhook(
+      new TextEncoder().encode(WEBHOOK_BODY),
+      new Headers(webhookHeaders(WEBHOOK_PRIMARY)),
+      bothKeys,
+    ),
+    true,
+    'bytes and a Headers object work too',
+  );
+  assert.equal(
+    await verifyWebhook(WEBHOOK_BODY, webhookHeaders('not-the-primary'), {
+      secondaryKey: WEBHOOK_SECONDARY_KEY,
+      now: deliveredAt,
+    }),
+    true,
+    'the secondary key alone verifies, as during a primary rotation',
+  );
+  // Box signs non-ASCII characters as \uXXXX escapes; a body that arrives as
+  // raw UTF-8 verifies through that form. Escapes already in the JSON
+  // (\r, \/, \\) are signed as they are.
+  const cases: [string, string][] = [
+    ['スクリーンショット 2020-08-05.txt', 'LV2uCu+5NJtIHrCXDYgZ0v/PP5THGRuegw3RtdnEyuE='],
+    ['😀 2020-08-05.txt', 'xF/SDZosX4le+v4A0Qn59sZhuD1RqY5KRUKzVMSbh0E='],
+    ['test \\r', 'SVkbKgy3dEEf2PbbzpNu2lDZS7zZ/aboU7HOZgBGrJk='],
+    ['\\/', 't41PWT5ZB6OcysnD6SDy9Ud+p9hdXxIdXqcdweyZv/Q='],
+    ['\\\\', 'ERpMZwUQsGDTfj82ehdX6VvDZfvOhK5ULNfVmwVAGe0='],
+  ];
+  for (const [name, signature] of cases) {
+    const body = `${WEBHOOK_FILE_PREFIX}${name}"}}`;
+    const keys = { primaryKey: WEBHOOK_PRIMARY_KEY, now: deliveredAt };
+    assert.equal(await verifyWebhook(body, webhookHeaders(signature), keys), true, name);
+  }
+  const atTheLimit = { ...bothKeys, now: new Date('2020-01-01T07:10:00Z') };
+  assert.equal(
+    await verifyWebhook(WEBHOOK_BODY, webhookHeaders(WEBHOOK_PRIMARY), atTheLimit),
+    true,
+    'exactly the maximum age old is still in time',
+  );
+});
+
+test('verifyWebhook rejects what Box did not send', async () => {
+  const headers = webhookHeaders(WEBHOOK_PRIMARY);
+  const without = (...names: string[]): Record<string, string> =>
+    Object.fromEntries(Object.entries(headers).filter(([k]) => !names.includes(k.toLowerCase())));
+  const withValue = (name: string, value: string) => ({ ...without(name), [name]: value });
+  const tampered = WEBHOOK_BODY.replace('Test.txt', 'Test.exe');
+  const cases: [string, string, Record<string, string>, Parameters<typeof verifyWebhook>[2]][] = [
+    ['wrong keys', WEBHOOK_BODY, headers, { primaryKey: 'IncorrectKey', secondaryKey: 'IncorrectKey', now: deliveredAt }],
+    ['no keys', WEBHOOK_BODY, headers, { now: deliveredAt }],
+    ['secondary key for primary', WEBHOOK_BODY, headers, { primaryKey: WEBHOOK_SECONDARY_KEY, now: deliveredAt }],
+    ['tampered body', tampered, headers, bothKeys],
+    ['stale', WEBHOOK_BODY, headers, { ...bothKeys, now: new Date('2020-01-01T07:10:01Z') }],
+    ['future', WEBHOOK_BODY, headers, { ...bothKeys, now: new Date('2020-01-01T06:59:59Z') }],
+    ['short max age', WEBHOOK_BODY, headers, { ...bothKeys, maxAgeSeconds: 60, now: new Date('2020-01-01T07:01:01Z') }],
+    ['no timestamp', WEBHOOK_BODY, without('box-delivery-timestamp'), bothKeys],
+    ['bad timestamp', WEBHOOK_BODY, withValue('box-delivery-timestamp', 'yesterday'), bothKeys],
+    ['no signatures', WEBHOOK_BODY, without('box-signature-primary', 'box-signature-secondary'), bothKeys],
+    ['no version', WEBHOOK_BODY, without('box-signature-version'), bothKeys],
+    ['version 2', WEBHOOK_BODY, withValue('box-signature-version', '2'), bothKeys],
+    ['HmacSHA1', WEBHOOK_BODY, withValue('box-signature-algorithm', 'HmacSHA1'), bothKeys],
+    ['not base64', WEBHOOK_BODY, withValue('box-signature-primary', '%%%'), { primaryKey: WEBHOOK_PRIMARY_KEY, now: deliveredAt }],
+  ];
+  for (const [name, body, h, keys] of cases) {
+    assert.equal(await verifyWebhook(body, h, keys), false, name);
+  }
 });

@@ -89,6 +89,7 @@ pub struct TargetShape {
     pub count_auth: fn(&[GeneratedView]) -> usize,
     pub count_traceability: fn(&[GeneratedView]) -> usize,
     pub count_guides: fn(&[GeneratedView]) -> usize,
+    pub count_webhook_verification: fn(&[GeneratedView]) -> usize,
     pub exclusions: &'static [Exclusion],
 }
 
@@ -239,9 +240,16 @@ pub fn conformance(
         capability(
             shape,
             "docs-guides",
-            4,
+            GUIDES.len(),
             (shape.count_guides)(files),
-            "index + auth/pagination/errors guides",
+            "index + auth/pagination/errors/webhooks guides",
+        ),
+        capability(
+            shape,
+            "webhook-signatures",
+            1,
+            (shape.count_webhook_verification)(files),
+            "Box v2 webhook signature verification in the runtime",
         ),
     ];
 
@@ -315,6 +323,7 @@ pub fn go_shape() -> TargetShape {
         count_auth: go_auth,
         count_traceability: go_traceability,
         count_guides: go_guides,
+        count_webhook_verification: go_webhook_verification,
         exclusions: &[],
     }
 }
@@ -412,6 +421,14 @@ fn go_traceability(files: &[GeneratedView]) -> usize {
     }))
 }
 
+fn go_webhook_verification(files: &[GeneratedView]) -> usize {
+    runtime_defines(
+        files,
+        "gantryruntime/webhooks.go",
+        "type WebhookVerifier struct",
+    )
+}
+
 fn go_guides(files: &[GeneratedView]) -> usize {
     GUIDES
         .iter()
@@ -439,6 +456,7 @@ pub fn apex_shape() -> TargetShape {
         count_auth: apex_auth,
         count_traceability: apex_traceability,
         count_guides: apex_guides,
+        count_webhook_verification: apex_webhook_verification,
         exclusions: APEX_EXCLUSIONS,
     }
 }
@@ -587,6 +605,14 @@ fn apex_traceability(files: &[GeneratedView]) -> usize {
     }))
 }
 
+fn apex_webhook_verification(files: &[GeneratedView]) -> usize {
+    runtime_defines(
+        files,
+        "force-app/main/default/classes/BoxWebhookVerifier.cls",
+        "public class BoxWebhookVerifier",
+    )
+}
+
 fn apex_guides(files: &[GeneratedView]) -> usize {
     GUIDES
         .iter()
@@ -620,6 +646,7 @@ pub fn rust_shape() -> TargetShape {
         count_auth: rust_auth,
         count_traceability: rust_traceability,
         count_guides: rust_guides,
+        count_webhook_verification: rust_webhook_verification,
         exclusions: &[],
     }
 }
@@ -738,6 +765,14 @@ fn rust_auth(files: &[GeneratedView]) -> usize {
         .unwrap_or(0)
 }
 
+fn rust_webhook_verification(files: &[GeneratedView]) -> usize {
+    runtime_defines(
+        files,
+        "src/runtime/webhooks.rs",
+        "pub struct WebhookVerifier",
+    )
+}
+
 fn rust_guides(files: &[GeneratedView]) -> usize {
     GUIDES
         .iter()
@@ -774,6 +809,7 @@ pub fn typescript_shape() -> TargetShape {
         count_auth: ts_auth,
         count_traceability: ts_traceability,
         count_guides: ts_guides,
+        count_webhook_verification: ts_webhook_verification,
         exclusions: TYPESCRIPT_EXCLUSIONS,
     }
 }
@@ -896,6 +932,14 @@ fn ts_manager_docs(files: &[GeneratedView]) -> usize {
         .count()
 }
 
+fn ts_webhook_verification(files: &[GeneratedView]) -> usize {
+    runtime_defines(
+        files,
+        "src/webhooks.ts",
+        "export async function verifyWebhook",
+    )
+}
+
 fn ts_guides(files: &[GeneratedView]) -> usize {
     GUIDES
         .iter()
@@ -908,12 +952,23 @@ const AUTH_FLOWS: [&str; 4] = ["Developer Token", "Client Credentials", "JWT", "
 
 /// The cross-cutting guide set (FR-7.7): the index plus the three topic
 /// guides. Both targets emit these paths under `docs/`.
-const GUIDES: [&str; 4] = [
+const GUIDES: [&str; 5] = [
     "docs/README.md",
     "docs/auth.md",
     "docs/pagination.md",
     "docs/errors.md",
+    "docs/webhooks.md",
 ];
+
+/// Whether the vendored runtime file at `path` defines the webhook verifier
+/// named by `marker`.
+fn runtime_defines(files: &[GeneratedView], path: &str, marker: &str) -> usize {
+    usize::from(
+        files
+            .iter()
+            .any(|f| f.path == path && f.content.contains(marker)),
+    )
+}
 
 #[cfg(test)]
 mod tests {
@@ -979,6 +1034,11 @@ mod tests {
             ("docs/README.md".into(), "index".into()),
             ("docs/pagination.md".into(), "pages".into()),
             ("docs/errors.md".into(), "errors".into()),
+            ("docs/webhooks.md".into(), "webhooks".into()),
+            (
+                "gantryruntime/webhooks.go".into(),
+                "type WebhookVerifier struct{}\n".into(),
+            ),
             (
                 "buildinfo/buildinfo.go".into(),
                 "const EngineVersion = \"0.1.0\"\nconst SpecFingerprint = \"abc\"\n".into(),
@@ -1146,6 +1206,11 @@ mod tests {
             ),
             ("docs/pagination.md".to_string(), "# Pagination\n".to_string()),
             ("docs/errors.md".to_string(), "# Errors\n".to_string()),
+            ("docs/webhooks.md".to_string(), "# Webhooks\n".to_string()),
+            (
+                "src/runtime/webhooks.rs".to_string(),
+                "pub struct WebhookVerifier {}\n".to_string(),
+            ),
             (
                 "src/serialization_tests.rs".to_string(),
                 "#[test]\nfn date_round_trip() {}\n".to_string(),
@@ -1170,14 +1235,16 @@ mod tests {
         assert_eq!(check("pagination").actual, 1);
         assert_eq!(check("serialization").status, CheckStatus::Pass);
         assert_eq!(check("traceability").status, CheckStatus::Pass);
-        // Docs are emitted: the per-manager page, all four guides, and every
+        // Docs are emitted: the per-manager page, all five guides, and every
         // auth flow documented in the auth guide.
         assert_eq!(check("manager-docs").actual, 1);
         assert_eq!(check("manager-docs").status, CheckStatus::Pass);
-        assert_eq!(check("docs-guides").actual, 4);
+        assert_eq!(check("docs-guides").actual, 5);
         assert_eq!(check("docs-guides").status, CheckStatus::Pass);
         assert_eq!(check("auth-flows").actual, 4);
         assert_eq!(check("auth-flows").status, CheckStatus::Pass);
+        assert_eq!(check("webhook-signatures").actual, 1);
+        assert_eq!(check("webhook-signatures").status, CheckStatus::Pass);
         // Generated round-trip tests: the serialization behavioral baseline
         // plus one per-union round-trip test — the capability passes.
         assert_eq!(check("round-trip-tests").actual, 2);
@@ -1294,6 +1361,7 @@ mod tests {
         assert_eq!(check("docs-guides").actual, 0);
         assert_eq!(check("auth-flows").actual, 0);
         assert_eq!(check("round-trip-tests").actual, 0);
+        assert_eq!(check("webhook-signatures").actual, 0);
         // The `async *` paginator is counted as a paged surface. This synthetic
         // program has no paginated operations (expected 0), so it passes; on the
         // real spec the recognizer reads one paginator per paged operation.

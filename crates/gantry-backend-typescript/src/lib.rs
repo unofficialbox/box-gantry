@@ -140,6 +140,13 @@ pub fn generate(
             ),
         },
         GeneratedFile {
+            path: "src/webhooks.ts".to_string(),
+            content: vendored(
+                "runtimes/typescript/gantryruntime/src/webhooks.ts",
+                include_str!("../../../runtimes/typescript/gantryruntime/src/webhooks.ts"),
+            ),
+        },
+        GeneratedFile {
             path: "src/jwt.ts".to_string(),
             content: vendored(
                 "runtimes/typescript/gantryruntime/src/jwt.ts",

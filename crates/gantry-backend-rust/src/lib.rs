@@ -150,6 +150,15 @@ pub fn generate(
                 )),
             ),
         },
+        GeneratedFile {
+            path: "src/runtime/webhooks.rs".to_string(),
+            content: vendored(
+                "runtimes/rust/gantryruntime/src/webhooks.rs",
+                nest_submodule(include_str!(
+                    "../../../runtimes/rust/gantryruntime/src/webhooks.rs"
+                )),
+            ),
+        },
     ];
     files.extend(generate_models(analysis, build));
     files.extend(generate_managers(analysis, build));

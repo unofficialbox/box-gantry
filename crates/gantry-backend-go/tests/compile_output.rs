@@ -440,6 +440,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/unofficialbox/box-open-go-sdk/auth"
 	"github.com/unofficialbox/box-open-go-sdk/client"
@@ -551,6 +552,28 @@ func wantAPIError(t *testing.T, what string, err error, status int, code string)
 	}
 	if code != "" && apiErr.RequestID != "req-"+code {
 		t.Fatalf("%s: request_id = %q", what, apiErr.RequestID)
+	}
+}
+
+// The webhooks guide's verifier, reached through the shipped runtime package:
+// a delivery signed in Box's own SDK tests verifies, and the same delivery
+// with an altered body does not.
+func TestWebhookVerifierShipsWithTheSDK(t *testing.T) {
+	const body = `{"type":"webhook_event","webhook":{"id":"1234567890"},"trigger":"FILE.UPLOADED","source":{"id":"1234567890","type":"file","name":"Test.txt"}}`
+	header := http.Header{}
+	header.Set("Box-Delivery-Timestamp", "2020-01-01T00:00:00-07:00")
+	header.Set("Box-Signature-Algorithm", "HmacSHA256")
+	header.Set("Box-Signature-Primary", "6TfeAW3A1PASkgboxxA5yqHNKOwFyMWuEXny/FPD5hI=")
+	header.Set("Box-Signature-Version", "1")
+	verifier := gantryruntime.WebhookVerifier{
+		PrimaryKey: "SamplePrimaryKey",
+		Now:        func() time.Time { return time.Date(2020, 1, 1, 7, 0, 0, 0, time.UTC) },
+	}
+	if !verifier.Verify([]byte(body), header) {
+		t.Fatal("Box's signed delivery should verify")
+	}
+	if verifier.Verify([]byte(body+" "), header) {
+		t.Fatal("an altered body must not verify")
 	}
 }
 "#;

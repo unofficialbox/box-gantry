@@ -796,6 +796,22 @@ public final class Consistency {
         } finally {
             server.stop(0);
         }
+
+        // The webhooks guide's verifier, reached through the shipped runtime: a
+        // delivery signed in Box's own SDK tests verifies, and the same
+        // delivery with an altered body does not.
+        String webhookBody = "{\"type\":\"webhook_event\",\"webhook\":{\"id\":\"1234567890\"},\"trigger\":\"FILE.UPLOADED\",\"source\":{\"id\":\"1234567890\",\"type\":\"file\",\"name\":\"Test.txt\"}}";
+        java.util.Map<String, String> webhookHeaders = java.util.Map.of(
+            "BOX-DELIVERY-TIMESTAMP", "2020-01-01T00:00:00-07:00",
+            "BOX-SIGNATURE-ALGORITHM", "HmacSHA256",
+            "BOX-SIGNATURE-PRIMARY", "6TfeAW3A1PASkgboxxA5yqHNKOwFyMWuEXny/FPD5hI=",
+            "BOX-SIGNATURE-VERSION", "1");
+        java.time.Instant delivered = java.time.Instant.parse("2020-01-01T07:00:00Z");
+        Runtime.WebhookVerifier verifier = new Runtime.WebhookVerifier("SamplePrimaryKey", null);
+        check(verifier.verify(webhookBody.getBytes(StandardCharsets.UTF_8), webhookHeaders, delivered),
+            "Box's signed delivery should verify");
+        check(!verifier.verify((webhookBody + " ").getBytes(StandardCharsets.UTF_8), webhookHeaders, delivered),
+            "an altered body must not verify");
         System.out.println("CONSISTENCY_OK");
     }
 }

@@ -16,6 +16,7 @@ import { BoxApiError, apiErrorFromResponse } from './errors.js';
 
 export { BoxApiError, isPreconditionFailed } from './errors.js';
 export * from './auth.js';
+export * from './webhooks.js';
 
 /** The default base URLs for the D-106 URL classes. */
 const DEFAULT_BASE_URLS: Record<string, string> = {
