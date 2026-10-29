@@ -3,8 +3,8 @@
 # check-only-deploys it, so the platform compiler is the oracle.
 #
 # It deploys against the org that SFDX_AUTH_URL authorizes (the Dev Hub) with
-# `--dry-run`, so the platform compiles every class and runs the Apex tests
-# (RunLocalTests) but nothing is persisted —
+# `--dry-run`, so the platform compiles every class and runs the SDK's Apex
+# tests but nothing is persisted —
 # and no scratch org is created, so the Dev Hub's daily scratch-org signup limit
 # is never a factor. Manual (workflow_dispatch); the auth comes from a repo
 # secret, never the repository. Without the secret the job skips, so a dry run
@@ -59,9 +59,24 @@ jobs:
           set -euo pipefail
           printf '%s' "$SFDX_AUTH_URL" | sf org login sfdx-url --sfdx-url-stdin --set-default --alias target
           # Validate-only deploy (--dry-run): the platform compiles every class
-          # and runs the project's Apex tests (RunLocalTests) — the runtime's
-          # HttpCalloutMock suites included — but nothing is persisted. This is
-          # the VR-1.3 signal; release builds run the same tests via
-          # `sf package version create --code-coverage`.
-          sf project deploy start --dry-run --test-level RunLocalTests --wait 30 \
-            --ignore-conflicts --target-org target
+          # and runs the SDK's own Apex tests — the runtime's HttpCalloutMock
+          # suites included — but nothing is persisted. This is the VR-1.3
+          # signal; release builds run the same tests via `sf package version
+          # create --code-coverage`. RunSpecifiedTests, not RunLocalTests: the
+          # target is a shared Dev Hub, whose other code's tests aren't ours.
+          mapfile -t tests < <(grep -li '^@isTest' force-app/main/default/classes/*.cls \
+            | xargs -n1 basename | sed 's/\.cls$//')
+          echo "Running ${#tests[@]} Apex test classes"
+          status=0
+          sf project deploy start --dry-run --test-level RunSpecifiedTests --tests "${tests[@]}" \
+            --wait 30 --ignore-conflicts --target-org target --json > deploy.json || status=$?
+          if [ "$status" -ne 0 ]; then
+            # Name each compile and test failure; the CLI's summary only counts them.
+            jq -r '((.result.details.componentFailures // [] | if type == "array" then . else [.] end)[]
+                     | "component \(.fullName): \(.problem)"),
+                   ((.result.details.runTestResult.failures // [] | if type == "array" then . else [.] end)[]
+                     | "test \(.name).\(.methodName): \(.message)"),
+                   (.message // empty)' deploy.json | head -50
+            exit "$status"
+          fi
+          jq -r '"Tests: \(.result.numberTestsCompleted) passed, \(.result.numberTestErrors) failed"' deploy.json
