@@ -178,4 +178,41 @@ pub enum IngestError {
         location: String,
         name: String,
     },
+
+    #[error("{file}: cannot read the spec supplements: {source}")]
+    SupplementsIo {
+        file: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("{file}: malformed spec supplements: {source}")]
+    SupplementsParse {
+        file: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+
+    /// A supplement that can't be applied as written: no evidence, nothing
+    /// to add, a malformed parameter, or an operation no spec declares.
+    #[error("{file}: supplement for {operation}: {detail}")]
+    InvalidSupplement {
+        file: PathBuf,
+        operation: String,
+        detail: String,
+    },
+
+    /// A supplement adds something the spec now declares itself — upstream
+    /// fixed the gap. Loud, so the supplement is deleted rather than left to
+    /// shadow the upstream definition.
+    #[error(
+        "{file}: supplement for {operation}: {spec} already declares {what}; \
+         upstream fixed the gap, so delete this supplement"
+    )]
+    RedundantSupplement {
+        file: PathBuf,
+        operation: String,
+        spec: PathBuf,
+        what: String,
+    },
 }

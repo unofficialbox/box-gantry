@@ -23,6 +23,20 @@ and review the diff: new types are added, and a group whose first location
 moved keeps its name under the new key. The full-set test fails on a stale
 lock.
 
+## Spec supplements
+
+`supplements.json` holds facts about the live Box API that the specs leave out,
+so the vendored files stay byte-for-byte upstream. Ingestion applies it beside
+the base spec, like the names lock, and folds it into the input fingerprint.
+Each entry adds parameters and responses to one operation and names its
+evidence. It may only add: once upstream declares the same parameter or
+response, ingestion fails until the entry is deleted, so a fixed gap can't
+linger. An entry that matches no operation, or names no evidence, also fails.
+
+Current entries: `If-None-Match`/304 on `GET /web_links/{web_link_id}` and
+`If-Match`/412 on its `PUT` and `DELETE`. Box honors both (probed live), but
+`box/box-openapi` declares them only for files and folders.
+
 Checksums (`sha256sum`):
 
 ```
