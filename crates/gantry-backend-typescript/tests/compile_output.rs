@@ -619,7 +619,93 @@ fn the_generated_sdk_packs_and_loads_dual_format() {
         Command::new("node").arg("cjs.cjs").current_dir(&consumer),
         "CJS require smoke",
     );
+    // Box's consistency outcomes through the built package's generated methods.
+    std::fs::write(consumer.join("consistency.mjs"), CONSISTENCY_SMOKE).unwrap();
+    run_ok(
+        Command::new("node")
+            .arg("consistency.mjs")
+            .current_dir(&consumer),
+        "consistency smoke",
+    );
 }
+
+/// The etag flow from Box's "Ensure consistency" guide, through the built
+/// package's generated `files` methods and the real runtime: `If-None-Match` on
+/// a GET answers 304 when the item is unchanged, `If-Match` on a write answers
+/// 412 when it changed since, and a missing item answers 404 — each a non-2xx
+/// that must reject with a `BoxApiError` carrying its status and Box code,
+/// never resolve as a decoded "result".
+const CONSISTENCY_SMOKE: &str = r#"import http from 'node:http';
+import { Client, runtime } from '@unofficialbox/box-open-sdk';
+
+// A Box error body, as Box sends with a 4xx.
+function boxError(res, status, code) {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ type: 'error', status, code, message: code, request_id: `req-${code}` }));
+}
+
+const server = http.createServer((req, res) => {
+  if (req.method === 'GET' && req.url === '/files/1') {
+    if (req.headers['if-none-match'] === 'etag-1') {
+      res.writeHead(304);
+      res.end();
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end('{"id":"1","type":"file","etag":"etag-1"}');
+  } else if (req.method === 'PUT' && req.url === '/files/1') {
+    if (req.headers['if-match'] !== 'etag-1') {
+      boxError(res, 412, 'precondition_failed');
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end('{"id":"1","type":"file","etag":"etag-2"}');
+  } else {
+    boxError(res, 404, 'not_found');
+  }
+});
+await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+async function expectApiError(what, call, status, code) {
+  try {
+    await call;
+  } catch (err) {
+    if (!(err instanceof runtime.BoxApiError) || err.status !== status || err.code !== code) {
+      throw new Error(`${what}: got ${err}, want a BoxApiError(${status} ${code})`);
+    }
+    if (code !== undefined && err.requestId !== `req-${code}`) {
+      throw new Error(`${what}: request_id ${err.requestId}`);
+    }
+    return;
+  }
+  throw new Error(`${what}: resolved, want a BoxApiError(${status})`);
+}
+
+try {
+  const api = `http://127.0.0.1:${server.address().port}`;
+  const c = new Client(runtime.developerToken('t'), { baseUrls: { api } });
+
+  // A plain read succeeds and yields the etag to send back.
+  const file = await c.files.get('1');
+  if (file.etag !== 'etag-1') throw new Error(`get: etag ${file.etag}`);
+
+  // If-None-Match with the current etag: 304, as an error, no body decoded.
+  await expectApiError('get If-None-Match', c.files.get('1', { 'if-none-match': file.etag }), 304, undefined);
+
+  // If-Match with a stale etag: 412 precondition_failed.
+  await expectApiError('update stale If-Match', c.files.update('1', {}, { 'if-match': 'etag-0' }), 412, 'precondition_failed');
+
+  // If-Match with the current etag: the write goes through.
+  const updated = await c.files.update('1', {}, { 'if-match': file.etag });
+  if (updated.etag !== 'etag-2') throw new Error(`update: etag ${updated.etag}`);
+
+  // A missing item: 404 not_found, also from a method with no response body.
+  await expectApiError('delete missing', c.files.delete_('2'), 404, 'not_found');
+} finally {
+  server.closeAllConnections();
+  server.close();
+}
+"#;
 
 /// Ensure the named tools are on `PATH` for a release gate. Returns `true` when
 /// all are present. When any is missing: **panic in CI** — a release gate must

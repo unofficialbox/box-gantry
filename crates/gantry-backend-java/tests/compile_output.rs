@@ -368,6 +368,9 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
     )
     .unwrap();
     sources.push(smoke);
+    let consistency = dir.join("Consistency.java");
+    std::fs::write(&consistency, CONSISTENCY_DRIVER).unwrap();
+    sources.push(consistency);
 
     let argfile = dir.join("sources.txt");
     let listing: String = sources
@@ -399,7 +402,139 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
         ok,
         "the generated SDK failed to compile against the real runtime (FR-5.2):\n{log}"
     );
+
+    // Box's consistency outcomes through the generated methods.
+    let run = Command::new("java")
+        .arg("-cp")
+        .arg(&out)
+        .arg("Consistency")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success() && stdout.contains("CONSISTENCY_OK"),
+        "generated methods mishandled an error status:\n{stdout}{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
 }
+
+/// The etag flow from Box's "Ensure consistency" guide, through the generated
+/// `FilesManager` and the real runtime: `If-None-Match` on a GET answers 304
+/// when the item is unchanged, `If-Match` on a write answers 412 when it
+/// changed since, and a missing item answers 404 — each a non-2xx that must
+/// throw `BoxApiException` carrying its status and Box code, never return a
+/// decoded "result".
+const CONSISTENCY_DRIVER: &str = r#"import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+import dev.unofficialbox.Client;
+import dev.unofficialbox.managers.FilesManager;
+import dev.unofficialbox.model.schemas.UpdateFileRequest;
+import dev.unofficialbox.runtime.Runtime;
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.util.Objects;
+
+public final class Consistency {
+    private interface Call {
+        void run();
+    }
+
+    private static void respond(HttpExchange ex, int status, String body) throws IOException {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        ex.getResponseHeaders().add("Content-Type", "application/json");
+        ex.sendResponseHeaders(status, bytes.length == 0 ? -1 : bytes.length);
+        if (bytes.length > 0) {
+            ex.getResponseBody().write(bytes);
+        }
+        ex.close();
+    }
+
+    // A Box error body, as Box sends with a 4xx.
+    private static String boxError(int status, String code) {
+        return "{\"type\":\"error\",\"status\":" + status + ",\"code\":\"" + code
+            + "\",\"message\":\"" + code + "\",\"request_id\":\"req-" + code + "\"}";
+    }
+
+    private static void check(boolean ok, String what) {
+        if (!ok) {
+            throw new AssertionError(what);
+        }
+    }
+
+    private static void expectApiError(String what, Call call, int status, String code) {
+        try {
+            call.run();
+        } catch (Runtime.BoxApiException err) {
+            check(err.statusCode() == status && Objects.equals(err.code(), code),
+                what + ": got " + err.getMessage());
+            check(code == null || ("req-" + code).equals(err.requestId()),
+                what + ": request_id " + err.requestId());
+            return;
+        }
+        throw new AssertionError(what + ": returned, want a BoxApiException(" + status + ")");
+    }
+
+    public static void main(String[] args) throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", ex -> {
+            String method = ex.getRequestMethod();
+            String path = ex.getRequestURI().getPath();
+            if (method.equals("GET") && path.equals("/files/1")) {
+                if ("etag-1".equals(ex.getRequestHeaders().getFirst("If-None-Match"))) {
+                    respond(ex, 304, "");
+                } else {
+                    respond(ex, 200, "{\"id\":\"1\",\"type\":\"file\",\"etag\":\"etag-1\"}");
+                }
+            } else if (method.equals("PUT") && path.equals("/files/1")) {
+                if ("etag-1".equals(ex.getRequestHeaders().getFirst("If-Match"))) {
+                    respond(ex, 200, "{\"id\":\"1\",\"type\":\"file\",\"etag\":\"etag-2\"}");
+                } else {
+                    respond(ex, 412, boxError(412, "precondition_failed"));
+                }
+            } else {
+                respond(ex, 404, boxError(404, "not_found"));
+            }
+        });
+        server.start();
+        try {
+            Runtime.Session session = Runtime.Session.builder(Runtime.developerToken("t"))
+                .baseUrl("api", "http://127.0.0.1:" + server.getAddress().getPort())
+                .build();
+            Client c = new Client(session);
+
+            // A plain read succeeds and yields the etag to send back.
+            String etag = c.files.get("1", null).etag().value();
+            check("etag-1".equals(etag), "get: etag " + etag);
+
+            // If-None-Match with the current etag: 304, as an error, no body decoded.
+            FilesManager.GetOptions unchanged = new FilesManager.GetOptions();
+            unchanged.ifNoneMatch = etag;
+            expectApiError("get If-None-Match", () -> c.files.get("1", unchanged), 304, null);
+
+            // If-Match with a stale etag: 412 precondition_failed.
+            FilesManager.UpdateOptions stale = new FilesManager.UpdateOptions();
+            stale.ifMatch = "etag-0";
+            expectApiError("update stale If-Match",
+                () -> c.files.update("1", UpdateFileRequest.builder().build(), stale),
+                412, "precondition_failed");
+
+            // If-Match with the current etag: the write goes through.
+            FilesManager.UpdateOptions current = new FilesManager.UpdateOptions();
+            current.ifMatch = etag;
+            String updated = c.files.update("1", UpdateFileRequest.builder().build(), current)
+                .etag().value();
+            check("etag-2".equals(updated), "update: etag " + updated);
+
+            // A missing item: 404 not_found, also from a method with no response body.
+            expectApiError("delete missing", () -> c.files.delete("2", null), 404, "not_found");
+        } finally {
+            server.stop(0);
+        }
+        System.out.println("CONSISTENCY_OK");
+    }
+}
+"#;
 
 /// FR-7.3: every paged operation gets a `<Prefix><Method>Paginator` class in the
 /// managers package. On the real Box spec `detect_pagination` finds 64 paged

@@ -311,7 +311,122 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
         "go vet failed against the real runtime:\n{}",
         String::from_utf8_lossy(&vet.stderr)
     );
+
+    // Generated methods surface Box's documented consistency outcomes as
+    // typed errors, end to end through the real runtime.
+    std::fs::create_dir_all(dir.join("consistency")).unwrap();
+    std::fs::write(
+        dir.join("consistency/consistency_test.go"),
+        CONSISTENCY_TEST,
+    )
+    .unwrap();
+    let test = Command::new("go")
+        .args(["test", "./consistency/"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        test.status.success(),
+        "generated methods mishandled an error status:\n{}{}",
+        String::from_utf8_lossy(&test.stdout),
+        String::from_utf8_lossy(&test.stderr)
+    );
 }
+
+/// The etag flow from Box's "Ensure consistency" guide, through the generated
+/// `Files` methods and the real runtime: `If-None-Match` on a GET answers 304
+/// when the item is unchanged, `If-Match` on a write answers 412 when it
+/// changed since, and a missing item answers 404 — each a non-2xx that must
+/// come back as a `*gantryruntime.APIError` with its status and Box code, never
+/// as a decoded "result".
+const CONSISTENCY_TEST: &str = r#"package consistency
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"testing"
+
+	"github.com/unofficialbox/box-open-go-sdk/auth"
+	"github.com/unofficialbox/box-open-go-sdk/client"
+	"github.com/unofficialbox/box-open-go-sdk/gantryruntime"
+	"github.com/unofficialbox/box-open-go-sdk/managers"
+)
+
+// boxError writes a Box error body, as Box sends with a 4xx.
+func boxError(w http.ResponseWriter, status int, code string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	io.WriteString(w, `{"type":"error","status":`+strconv.Itoa(status)+
+		`,"code":"`+code+`","message":"`+code+`","request_id":"req-`+code+`"}`)
+}
+
+func TestGeneratedMethodsSurfaceConsistencyOutcomesAsAPIErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/files/1":
+			if r.Header.Get("If-None-Match") == "etag-1" {
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+			io.WriteString(w, `{"id":"1","type":"file","etag":"etag-1"}`)
+		case r.Method == http.MethodPut && r.URL.Path == "/files/1":
+			if r.Header.Get("If-Match") != "etag-1" {
+				boxError(w, http.StatusPreconditionFailed, "precondition_failed")
+				return
+			}
+			io.WriteString(w, `{"id":"1","type":"file","etag":"etag-2"}`)
+		default:
+			boxError(w, http.StatusNotFound, "not_found")
+		}
+	}))
+	defer server.Close()
+	c := client.NewClient(auth.DeveloperToken("t"), gantryruntime.WithBaseURL("api", server.URL))
+	ctx := context.Background()
+
+	// A plain read succeeds and yields the etag to send back.
+	file, err := c.Files.Get(ctx, "1", nil)
+	if err != nil || file.Etag == nil || file.Etag.Value != "etag-1" {
+		t.Fatalf("Get: file=%+v err=%v", file, err)
+	}
+	etag := file.Etag.Value
+
+	// If-None-Match with the current etag: 304, as an error, no body decoded.
+	_, err = c.Files.Get(ctx, "1", &managers.FilesGetOptions{IfNoneMatch: &etag})
+	wantAPIError(t, "Get If-None-Match", err, http.StatusNotModified, "")
+
+	// If-Match with a stale etag: 412 precondition_failed.
+	stale := "etag-0"
+	_, err = c.Files.Update(ctx, "1", nil, &managers.FilesUpdateOptions{IfMatch: &stale})
+	wantAPIError(t, "Update If-Match", err, http.StatusPreconditionFailed, "precondition_failed")
+
+	// If-Match with the current etag: the write goes through.
+	updated, err := c.Files.Update(ctx, "1", nil, &managers.FilesUpdateOptions{IfMatch: &etag})
+	if err != nil || updated.Etag == nil || updated.Etag.Value != "etag-2" {
+		t.Fatalf("Update with the current etag: file=%+v err=%v", updated, err)
+	}
+
+	// A missing item: 404 not_found, also from a method with no response body.
+	wantAPIError(t, "Delete", c.Files.Delete(ctx, "2", nil), http.StatusNotFound, "not_found")
+}
+
+func wantAPIError(t *testing.T, what string, err error, status int, code string) {
+	t.Helper()
+	var apiErr *gantryruntime.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("%s: err = %v, want *gantryruntime.APIError", what, err)
+	}
+	if apiErr.Status != status || apiErr.Code != code {
+		t.Fatalf("%s: got status %d code %q, want %d %q", what, apiErr.Status, apiErr.Code, status, code)
+	}
+	if code != "" && apiErr.RequestID != "req-"+code {
+		t.Fatalf("%s: request_id = %q", what, apiErr.RequestID)
+	}
+}
+"#;
 
 /// D-192: the shipped tree must carry the real runtime, never the
 /// compile-only contract stub. Every other gate here proves the output

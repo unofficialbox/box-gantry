@@ -1203,7 +1203,9 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     // box-version strip (D-191) drops 2 more. The 2026-10-28 spec refresh
     // brings 1013 model classes and 88 managers (Shuttle, Document Split):
     // 1013 + 88 + 1 + 3 + 14 = 1119, an @isTest suite of 88 + 2 = 90, and a
-    // fifth wire-hook chunk. 1119 + 90 + 1 + 5 = 1215 total.
+    // fifth wire-hook chunk. The runtime's `BoxConsistencyTest` (Box's etag
+    // flow through the generated `BoxFiles`) makes 15 runtime classes:
+    // 1120 + 90 + 1 + 5 = 1216 total.
     let classes: Vec<&str> = files
         .iter()
         .filter(|f| f.path.ends_with(".cls"))
@@ -1211,7 +1213,7 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         .collect();
     assert_eq!(
         classes.len(),
-        1119 + 90 + 1 + 5,
+        1120 + 90 + 1 + 5,
         "models + managers + client + stubs + runtime + @isTest suite + BoxBuildInfo + wire-hook suite"
     );
     // The generated test suite ships with the deployable tree.
@@ -1305,9 +1307,9 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         "endpoint + manager + top-index + guide docs"
     );
     // 7 base scaffolding (sfdx-project, scratch-def, .forceignore, package.xml,
-    // README, LICENSE, assets/banner.svg) + 4 Remote Site Settings + 1215
-    // classes + 1215 metas + 473 docs.
-    assert_eq!(files.len(), 7 + 4 + (1119 + 90 + 1 + 5) * 2 + 473);
+    // README, LICENSE, assets/banner.svg) + 4 Remote Site Settings + 1216
+    // classes + 1216 metas + 473 docs.
+    assert_eq!(files.len(), 7 + 4 + (1120 + 90 + 1 + 5) * 2 + 473);
 
     // Deterministic and path-sorted.
     let sorted: Vec<&String> = {

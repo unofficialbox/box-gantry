@@ -193,7 +193,9 @@ private class BoxHttpClientTest {
     static void nonRetriable4xxThrowsWithBody() {
         SequenceMock mock = new SequenceMock(
             new List<Integer>{ 404 },
-            new List<String>{ '{"code":"not_found"}' }
+            new List<String>{
+                '{"type":"error","status":404,"code":"not_found","message":"Not Found","request_id":"abc123"}'
+            }
         );
         Test.setMock(HttpCalloutMock.class, mock);
         CountingTokens tokens = new CountingTokens();
@@ -208,11 +210,40 @@ private class BoxHttpClientTest {
                 e.responseBody != null && e.responseBody.contains('not_found'),
                 'the raw error payload is preserved'
             );
+            System.assertEquals('not_found', e.code, 'Box\'s error code is parsed');
+            System.assertEquals('Not Found', e.boxMessage, 'Box\'s error message is parsed');
+            System.assertEquals('abc123', e.requestId, 'Box\'s request id is parsed');
+            System.assertEquals(
+                'box: status 404 not_found: Not Found (request_id abc123)',
+                e.getMessage(),
+                'the message matches the other SDKs'
+            );
         }
         Test.stopTest();
 
         System.assertEquals(1, mock.seen.size(), 'a 4xx is not retried');
         System.assertEquals(0, tokens.invalidations, 'a 404 is not an auth failure');
+    }
+
+    @isTest
+    static void nonJsonErrorBodyIsKeptRaw() {
+        SequenceMock mock = new SequenceMock(
+            new List<Integer>{ 403 },
+            new List<String>{ '<html>forbidden</html>' }
+        );
+        Test.setMock(HttpCalloutMock.class, mock);
+
+        Test.startTest();
+        try {
+            new BoxHttpClient(new CountingTokens()).send(request('GET', 'api', '/files/0'));
+            System.assert(false, 'a 403 must throw');
+        } catch (BoxApiException e) {
+            System.assertEquals(403, e.statusCode, 'the status is carried');
+            System.assertEquals(null, e.code, 'no Box code in a non-JSON body');
+            System.assertEquals('<html>forbidden</html>', e.responseBody, 'the raw body is kept');
+            System.assertEquals('box: status 403', e.getMessage(), 'the message names the status');
+        }
+        Test.stopTest();
     }
 
     @isTest

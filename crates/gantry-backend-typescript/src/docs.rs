@@ -397,21 +397,55 @@ offset pagination), and owns a private copy of the options you pass, so your\n\
 value is never mutated. The wire cursor (`next_marker` / `offset`, verbatim per\n\
 TR-TS.2) is threaded through the options for you.\n";
 
-const ERRORS_GUIDE: &str = "# Errors\n\n\
+const ERRORS_GUIDE: &str = "# Errors\n\
+\n\
 Methods are `async` and surface failure by throwing — the return type only\n\
 describes the success value. A thrown `BoxApiError` is either a transport\n\
 failure or a non-2xx response after the network layer's retries (exponential\n\
 backoff + jitter, `401` refresh, `Retry-After`). For a non-2xx response it\n\
 carries the HTTP `status`, Box's error `code`, `boxMessage`, and `requestId`,\n\
 and the raw `body`; transport and decode failures carry the underlying\n\
-`cause` instead:\n\n\
+`cause` instead:\n\
+\n\
 ```ts\n\
 import { runtime } from '@unofficialbox/box-open-sdk';\n\
 try {\n\
-  await client.files.getFileById(fileId);\n\
+\x20\x20await client.files.get(fileId);\n\
 } catch (err) {\n\
-  if (err instanceof runtime.BoxApiError) {\n\
-    // err.status, err.code, err.boxMessage, err.requestId, err.body, err.cause\n\
-  }\n\
+\x20\x20if (err instanceof runtime.BoxApiError) {\n\
+\x20\x20\x20\x20// err.status, err.code, err.boxMessage, err.requestId, err.body, err.cause\n\
+\x20\x20}\n\
+}\n\
+```\n\
+\n\
+## Etags: `If-None-Match` and `If-Match`\n\
+\n\
+Files and folders carry an `etag`. Send it back to stay in sync with Box\n\
+(Box's [Ensure consistency](https://developer.box.com/guides/api-calls/ensure-consistency/)\n\
+guide):\n\
+\n\
+- **Reads** — pass the stored etag as `if-none-match` on a file or folder\n\
+\x20\x20`get` (or a shared-item lookup). Box answers `304 Not Modified` when\n\
+\x20\x20nothing changed, and the SDK raises it as the error above with status\n\
+\x20\x20`304`: keep your cached copy.\n\
+- **Writes** — pass it as `if-match` on a file or folder update or delete,\n\
+\x20\x20or a new file version upload. Box answers `412 Precondition Failed`\n\
+\x20\x20(code `precondition_failed`) when the item changed since you read it:\n\
+\x20\x20read it again, reapply your change, retry. `If-Match` can't block a move.\n\
+\n\
+```ts\n\
+try {\n\
+\x20\x20await client.files.get(fileId, { 'if-none-match': etag });\n\
+} catch (err) {\n\
+\x20\x20if (err instanceof runtime.BoxApiError && err.status === 304) {\n\
+\x20\x20\x20\x20// unchanged since etag\n\
+\x20\x20}\n\
+}\n\
+try {\n\
+\x20\x20await client.files.update(fileId, body, { 'if-match': etag });\n\
+} catch (err) {\n\
+\x20\x20if (err instanceof runtime.BoxApiError && err.status === 412) {\n\
+\x20\x20\x20\x20// changed since etag: re-read and retry\n\
+\x20\x20}\n\
 }\n\
 ```\n";

@@ -457,17 +457,51 @@ when the last page is reached. It is re-iterable: each `iterator()` runs an\n\
 independent pass over a private copy of your options, so your options object is\n\
 never mutated.\n";
 
-const ERRORS_GUIDE: &str = "# Errors\n\n\
+const ERRORS_GUIDE: &str = "# Errors\n\
+\n\
 Every I/O method is blocking and returns its value directly. Failures are\n\
 thrown as an unchecked `dev.unofficialbox.runtime.Runtime.BoxApiException` — either a\n\
 transport failure or a non-2xx response after the network layer's retries\n\
 (exponential backoff + jitter, `401` refresh, `Retry-After`). Because it extends\n\
-`RuntimeException`, you catch it only where you mean to handle it:\n\n\
+`RuntimeException`, you catch it only where you mean to handle it:\n\
+\n\
 ```java\n\
 try {\n\
-    var file = client.files.getById(fileId, null);\n\
+\x20\x20\x20\x20var file = client.files.get(fileId, null);\n\
 } catch (dev.unofficialbox.runtime.Runtime.BoxApiException e) {\n\
-    // a non-2xx response: e.statusCode(), e.code(), e.boxMessage(),\n\
-    // e.requestId(), e.body(); statusCode() is 0 for any other failure\n\
+\x20\x20\x20\x20// a non-2xx response: e.statusCode(), e.code(), e.boxMessage(),\n\
+\x20\x20\x20\x20// e.requestId(), e.body(); statusCode() is 0 for any other failure\n\
+}\n\
+```\n\
+\n\
+## Etags: `If-None-Match` and `If-Match`\n\
+\n\
+Files and folders carry an `etag`. Send it back to stay in sync with Box\n\
+(Box's [Ensure consistency](https://developer.box.com/guides/api-calls/ensure-consistency/)\n\
+guide):\n\
+\n\
+- **Reads** — pass the stored etag as `if-none-match` on a file or folder\n\
+\x20\x20`get` (or a shared-item lookup). Box answers `304 Not Modified` when\n\
+\x20\x20nothing changed, and the SDK raises it as the error above with status\n\
+\x20\x20`304`: keep your cached copy.\n\
+- **Writes** — pass it as `if-match` on a file or folder update or delete,\n\
+\x20\x20or a new file version upload. Box answers `412 Precondition Failed`\n\
+\x20\x20(code `precondition_failed`) when the item changed since you read it:\n\
+\x20\x20read it again, reapply your change, retry. `If-Match` can't block a move.\n\
+\n\
+```java\n\
+var unchanged = new FilesManager.GetOptions();\n\
+unchanged.ifNoneMatch = etag;\n\
+try {\n\
+\x20\x20\x20\x20var file = client.files.get(fileId, unchanged);\n\
+} catch (dev.unofficialbox.runtime.Runtime.BoxApiException e) {\n\
+\x20\x20\x20\x20if (e.statusCode() != 304) throw e; // 304: unchanged since etag\n\
+}\n\
+var guarded = new FilesManager.UpdateOptions();\n\
+guarded.ifMatch = etag;\n\
+try {\n\
+\x20\x20\x20\x20client.files.update(fileId, body, guarded);\n\
+} catch (dev.unofficialbox.runtime.Runtime.BoxApiException e) {\n\
+\x20\x20\x20\x20if (e.statusCode() != 412) throw e; // 412: changed since etag, re-read and retry\n\
 }\n\
 ```\n";
