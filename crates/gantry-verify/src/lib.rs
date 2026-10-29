@@ -68,6 +68,7 @@ mod tests {
             request: None,
             response: ir::ResponseShape::None,
             deprecated: false,
+            conditional: None,
         }
     }
 

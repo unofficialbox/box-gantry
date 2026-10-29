@@ -62,26 +62,46 @@ pub(crate) fn plan_managers<'a>(
 /// shape actually synthesizes (see [`cursor_is_synthesizable`] — a `paged`
 /// hit alone isn't enough, #78 review) reserves in the same pool — so that
 /// name can't collide with a later operation's either, public or private
-/// (#78). The single source of truth shared by the manager printer (which
-/// camelCases them at emission and derives the options-interface names) and
-/// the docs.
+/// (#78) — and the public `<base>_if_modified`-style base of a conditional
+/// read's variant. The single source of truth shared by the manager printer
+/// (which camelCases them at emission and derives the options-interface
+/// names) and the docs.
 pub(crate) fn method_bases(
     program: &ir::Program,
     op_indices: &[usize],
     paged: &HashMap<usize, PagedOperation>,
-) -> Vec<(String, Option<String>)> {
+) -> Vec<MethodBases> {
     let mut used = Vec::new();
     op_indices
         .iter()
         .map(|&i| {
-            let base = dedupe(&mut used, operation_base(&program.operations[i]));
+            let op = &program.operations[i];
+            let base = dedupe(&mut used, operation_base(op));
+            let conditional = op.conditional.as_ref().map(|read| {
+                let variant = ir::Operation {
+                    name: read.name.clone(),
+                    ..op.clone()
+                };
+                dedupe(&mut used, operation_base(&variant))
+            });
             let page_base = paged
                 .get(&i)
-                .filter(|p| cursor_is_synthesizable(program, &program.operations[i], p))
+                .filter(|p| cursor_is_synthesizable(program, op, p))
                 .map(|_| dedupe(&mut used, format!("{base}_page")));
-            (base, page_base)
+            MethodBases {
+                base,
+                page_base,
+                conditional,
+            }
         })
         .collect()
+}
+
+/// One operation's reserved method bases (see [`method_bases`]).
+pub(crate) struct MethodBases {
+    pub(crate) base: String,
+    pub(crate) page_base: Option<String>,
+    pub(crate) conditional: Option<String>,
 }
 
 /// Generate the `managers` module (one file per manager), the `managers`
@@ -248,7 +268,7 @@ impl Printer<'_> {
         // interface in a class), emitted before the class so methods name them.
         for (pos, &index) in indices.iter().enumerate() {
             let op = self.program.operations[index].clone();
-            self.options_interface(&op, name, &bases[pos].0);
+            self.options_interface(&op, name, &bases[pos].base);
         }
 
         let _ = writeln!(
@@ -260,7 +280,11 @@ impl Printer<'_> {
         );
         for (pos, &index) in indices.iter().enumerate() {
             let op = self.program.operations[index].clone();
-            let (base, page_base) = &bases[pos];
+            let MethodBases {
+                base,
+                page_base,
+                conditional,
+            } = &bases[pos];
             let method = camel(base);
             let page_method = page_base.as_ref().map(|b| camel(b));
             // Option A (FR-7.3): emit the async-generator paginator as the public
@@ -278,6 +302,9 @@ impl Printer<'_> {
                 self.operation(&op, name, base, page_method.as_deref().unwrap(), false);
             } else {
                 self.operation(&op, name, base, &method, true);
+                if let (Some(read), Some(variant)) = (&op.conditional, conditional) {
+                    self.conditional_read(&op, read, name, base, &camel(variant));
+                }
             }
         }
         self.body.push_str("}\n");
@@ -381,6 +408,84 @@ impl Printer<'_> {
         self.request_body(op);
         self.fetch_and_decode(op);
         self.body.push_str("  }\n");
+    }
+
+    /// A conditional read's `<method>IfModified` (Box's etag flow): `<method>`
+    /// with the `If-None-Match` parameter set to `etag`, resolving `undefined`
+    /// for the 304 Not Modified that means "unchanged since etag" instead of
+    /// rejecting. Lowering only marks JSON reads conditional.
+    fn conditional_read(
+        &mut self,
+        op: &ir::Operation,
+        read: &ir::ConditionalRead,
+        name: &ManagerName,
+        base: &str,
+        variant: &str,
+    ) {
+        let ir::ResponseShape::Json(ty) = &op.response else {
+            unreachable!("sema: a conditional read returns JSON");
+        };
+        let ok = self.ts_type(unwrap_optionality(ty));
+        let etag_param = op
+            .params
+            .iter()
+            .find(|p| p.name == read.etag)
+            .expect("sema: the etag is an operation parameter");
+        let etag_optional = matches!(etag_param.ty, ir::Type::Optional(_));
+        // The base signature with the etag lifted out as a required `string`.
+        let mut params: Vec<String> = Vec::new();
+        let mut call: Vec<String> = Vec::new();
+        for param in op
+            .params
+            .iter()
+            .filter(|p| !matches!(p.ty, ir::Type::Optional(_)))
+        {
+            if param.name == read.etag {
+                call.push("etag".to_string());
+                continue;
+            }
+            let arg = camel(param.name.as_str());
+            params.push(format!("{arg}: {}", self.ts_type(&param.ty)));
+            call.push(arg);
+        }
+        params.push("etag: string".to_string());
+        if let Some(body) = &op.request {
+            params.push(format!(
+                "body: {}",
+                self.ts_type(unwrap_optionality(&body.ty))
+            ));
+            call.push("body".to_string());
+        }
+        if op
+            .params
+            .iter()
+            .any(|p| matches!(p.ty, ir::Type::Optional(_)))
+        {
+            params.push(format!("opts?: {}", options_type(&name.class, base)));
+            call.push(if etag_optional {
+                format!("{{ ...opts, {}: etag }}", field_key(&etag_param.wire_name))
+            } else {
+                "opts".to_string()
+            });
+        }
+        let _ = writeln!(
+            self.body,
+            "\n  /** `{method}` with `If-None-Match` set to `etag`: resolves `undefined` when\n\
+             \x20  * the item is unchanged since `etag` (Box answers 304 Not Modified). */\n\
+             \x20 async {variant}({params}): Promise<{ok} | undefined> {{\n\
+             \x20   try {{\n\
+             \x20     return await this.{method}({call});\n\
+             \x20   }} catch (err) {{\n\
+             \x20     if (err instanceof runtime.BoxApiError && err.status === 304) {{\n\
+             \x20       return undefined;\n\
+             \x20     }}\n\
+             \x20     throw err;\n\
+             \x20   }}\n\
+             \x20 }}",
+            method = camel(base),
+            params = params.join(", "),
+            call = call.join(", "),
+        );
     }
 
     /// Set the `box-version` header for a non-base operation (D-191). The header
@@ -1291,6 +1396,7 @@ mod tests {
             request: None,
             response: ResponseShape::Json(Type::Decl(DeclId(0))),
             deprecated: false,
+            conditional: None,
         });
         p
     }
@@ -1411,6 +1517,7 @@ mod tests {
             request: None,
             response: ResponseShape::Json(Type::Decl(DeclId(1))),
             deprecated: false,
+            conditional: None,
         });
         p.operations.push(Operation {
             name: ident("list_items_page"),
@@ -1427,6 +1534,7 @@ mod tests {
             request: None,
             response: ResponseShape::Json(Type::Decl(DeclId(0))),
             deprecated: false,
+            conditional: None,
         });
         p
     }

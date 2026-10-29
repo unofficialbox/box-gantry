@@ -74,6 +74,12 @@ pub enum SemaError {
         location: ir::ParamLocation,
         wire_name: String,
     },
+
+    #[error(
+        "{context}: conditional read's etag {etag:?} is not a header parameter of the \
+         operation — engine bug"
+    )]
+    ConditionalEtag { context: String, etag: String },
 }
 
 impl SemaError {
@@ -83,7 +89,8 @@ impl SemaError {
         match self {
             Self::DanglingRef { .. }
             | Self::DoubleOptional { .. }
-            | Self::BadNullability { .. } => true,
+            | Self::BadNullability { .. }
+            | Self::ConditionalEtag { .. } => true,
             Self::DuplicateDeclName { .. }
             | Self::DuplicateWireName { .. }
             | Self::EmptyUnion { .. }
@@ -317,21 +324,38 @@ pub fn analyze(program: &ir::Program) -> Result<Analysis<'_>, Vec<SemaError>> {
     let mut op_keys: HashSet<String> = HashSet::new();
     for (index, op) in program.operations.iter().enumerate() {
         let context = operation_context(op);
-        let key = format!(
-            "{}/{}{}@{}",
-            op.manager.as_str(),
-            op.name.as_str(),
-            op.variation
-                .as_ref()
-                .map(|v| format!("#{}", v.as_str()))
-                .unwrap_or_default(),
-            op.api_version
-                .as_ref()
-                .map(|v| v.0.as_str())
-                .unwrap_or("unversioned"),
-        );
-        if !op_keys.insert(key.clone()) {
-            errors.push(SemaError::DuplicateOperation { key });
+        let key = |name: &ir::Identifier| {
+            format!(
+                "{}/{}{}@{}",
+                op.manager.as_str(),
+                name.as_str(),
+                op.variation
+                    .as_ref()
+                    .map(|v| format!("#{}", v.as_str()))
+                    .unwrap_or_default(),
+                op.api_version
+                    .as_ref()
+                    .map(|v| v.0.as_str())
+                    .unwrap_or("unversioned"),
+            )
+        };
+        // A conditional read's variant method shares the manager's namespace.
+        for name in std::iter::once(&op.name).chain(op.conditional.as_ref().map(|c| &c.name)) {
+            let key = key(name);
+            if !op_keys.insert(key.clone()) {
+                errors.push(SemaError::DuplicateOperation { key });
+            }
+        }
+        if let Some(conditional) = &op.conditional
+            && !op
+                .params
+                .iter()
+                .any(|p| p.name == conditional.etag && p.location == ir::ParamLocation::Header)
+        {
+            errors.push(SemaError::ConditionalEtag {
+                context: context.clone(),
+                etag: conditional.etag.as_str().to_string(),
+            });
         }
         let mut param_keys: HashSet<(ir::ParamLocation, &str)> = HashSet::new();
         for param in &op.params {
@@ -501,6 +525,7 @@ mod tests {
             request,
             response,
             deprecated: false,
+            conditional: None,
         }
     }
 
@@ -647,6 +672,7 @@ mod tests {
             request: None,
             response: ir::ResponseShape::None,
             deprecated: false,
+            conditional: None,
         };
         let mut program = program_with(vec![]);
         program.operations = vec![op(), op()];
@@ -661,6 +687,53 @@ mod tests {
         let analysis = analyze(&program).unwrap();
         assert_eq!(analysis.managers.len(), 1);
         assert_eq!(analysis.managers["files"], vec![0, 1]);
+    }
+
+    #[test]
+    fn a_conditional_read_needs_its_etag_header_and_a_free_name() {
+        let etag = ir::Param {
+            name: ident("if_none_match"),
+            wire_name: "if-none-match".into(),
+            location: ir::ParamLocation::Header,
+            ty: ir::Type::Optional(Box::new(ir::Type::String)),
+        };
+        let op = |name: &str, conditional: Option<&str>| ir::Operation {
+            name: ident(name),
+            variation: None,
+            manager: ident("files"),
+            api_version: Some(ir::ApiVersion("2024.0".into())),
+            method: ir::HttpMethod::Get,
+            base_url: ir::BaseUrl::Api,
+            path: vec![ir::PathSegment::Literal("files".into())],
+            params: vec![etag.clone()],
+            request: None,
+            response: ir::ResponseShape::None,
+            deprecated: false,
+            conditional: conditional.map(|name| ir::ConditionalRead {
+                name: ident(name),
+                etag: ident("if_none_match"),
+            }),
+        };
+        let mut program = program_with(vec![]);
+        program.operations = vec![op("get", Some("get_if_modified"))];
+        assert!(analyze(&program).is_ok());
+
+        // The variant shares the manager's method namespace.
+        program.operations.push(op("get_if_modified", None));
+        assert!(matches!(
+            analyze(&program).unwrap_err().as_slice(),
+            [SemaError::DuplicateOperation { .. }]
+        ));
+
+        // Its etag must be one of the operation's header parameters.
+        program.operations.truncate(1);
+        program.operations[0].params[0].location = ir::ParamLocation::Query;
+        let errors = analyze(&program).unwrap_err();
+        assert!(
+            matches!(errors.as_slice(), [SemaError::ConditionalEtag { .. }]),
+            "{errors:?}"
+        );
+        assert!(errors[0].is_engine_bug());
     }
 
     #[test]

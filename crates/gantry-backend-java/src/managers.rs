@@ -61,28 +61,37 @@ pub(crate) fn method_name(op: &ir::Operation) -> String {
     keyword_safe(&camel(&name))
 }
 
-/// The deduped `(op index, method name, reserved page method)` list for a
-/// manager's operations — the single source of truth the manager printer and
-/// docs both use, so a method heading in the docs matches the emitted method
-/// name exactly. An operation whose cursor shape actually synthesizes (see
-/// [`cursor_is_synthesizable`] — a `paged` hit alone isn't enough, #78 review)
-/// reserves its private `<method>Page` fetch name in the same pool right
-/// after its own, so neither name can collide with a later operation's
-/// either, public or private (#78).
+/// The deduped `(op index, method name, reserved page method, conditional
+/// variant)` list for a manager's operations — the single source of truth the
+/// manager printer and docs both use, so a method heading in the docs matches
+/// the emitted method name exactly. An operation whose cursor shape actually
+/// synthesizes (see [`cursor_is_synthesizable`] — a `paged` hit alone isn't
+/// enough, #78 review) reserves its private `<method>Page` fetch name in the
+/// same pool right after its own, so neither name can collide with a later
+/// operation's either, public or private (#78); a conditional read reserves
+/// its public `<method>IfModified`-style variant the same way.
 pub(crate) fn deduped_methods(
     program: &ir::Program,
     ops: &[usize],
     paged: &HashMap<usize, PagedOperation>,
-) -> Vec<(usize, String, Option<String>)> {
+) -> Vec<(usize, String, Option<String>, Option<String>)> {
     let mut used: Vec<String> = Vec::new();
     ops.iter()
         .map(|&i| {
-            let name = dedupe(&mut used, method_name(&program.operations[i]));
+            let op = &program.operations[i];
+            let name = dedupe(&mut used, method_name(op));
+            let conditional = op.conditional.as_ref().map(|read| {
+                let variant = ir::Operation {
+                    name: read.name.clone(),
+                    ..op.clone()
+                };
+                dedupe(&mut used, method_name(&variant))
+            });
             let page_name = paged
                 .get(&i)
-                .filter(|p| cursor_is_synthesizable(program, &program.operations[i], p))
+                .filter(|p| cursor_is_synthesizable(program, op, p))
                 .map(|_| dedupe(&mut used, format!("{name}Page")));
-            (i, name, page_name)
+            (i, name, page_name, conditional)
         })
         .collect()
 }
@@ -275,7 +284,7 @@ impl ManagerPrinter<'_> {
             plan.class
         );
         let mut paginators = Vec::new();
-        for (i, name, page_name) in &methods {
+        for (i, name, page_name, conditional) in &methods {
             let op = &self.program.operations[*i];
             // Option A (FR-7.3): a paged operation whose cursor shape we can
             // synthesize exposes the auto-paging `Iterable` *as* the public
@@ -307,11 +316,15 @@ impl ManagerPrinter<'_> {
                 None => {
                     out.push_str(&self.operation(op, name, name, true));
                     out.push('\n');
+                    if let (Some(read), Some(variant)) = (&op.conditional, conditional) {
+                        out.push_str(&self.conditional_read(op, read, name, variant));
+                        out.push('\n');
+                    }
                 }
             }
         }
         // Nested options classes, after the methods that reference them.
-        for (i, name, _) in &methods {
+        for (i, name, _, _) in &methods {
             if let Some(options) = self.options_class(&self.program.operations[*i], name) {
                 out.push_str(&options);
                 out.push('\n');
@@ -398,6 +411,107 @@ impl ManagerPrinter<'_> {
         self.request_body(&mut out, op);
         self.fetch_and_decode(&mut out, op);
         out.push_str("    }\n");
+        out
+    }
+
+    /// A conditional read's `<method>IfModified` (Box's etag flow): `<method>`
+    /// with the `If-None-Match` parameter set to `etag`, returning
+    /// `Optional.empty()` for the 304 Not Modified that means "unchanged since
+    /// etag" instead of throwing. The caller's options object is copied, never
+    /// mutated. Lowering only marks JSON reads conditional.
+    fn conditional_read(
+        &self,
+        op: &ir::Operation,
+        read: &ir::ConditionalRead,
+        base: &str,
+        variant: &str,
+    ) -> String {
+        let ir::ResponseShape::Json(_) = &op.response else {
+            unreachable!("sema: a conditional read returns JSON");
+        };
+        let optional: Vec<&ir::Param> = op
+            .params
+            .iter()
+            .filter(|p| matches!(p.ty, ir::Type::Optional(_)))
+            .collect();
+        let etag_optional = optional.iter().any(|p| p.name == read.etag);
+        let options_ty = append_without_repeating(&pascal(base), "Options");
+        // The base signature with the etag lifted out as a required `String`.
+        let mut sig: Vec<String> = Vec::new();
+        let mut call: Vec<String> = Vec::new();
+        for param in op
+            .params
+            .iter()
+            .filter(|p| !matches!(p.ty, ir::Type::Optional(_)))
+        {
+            if param.name == read.etag {
+                call.push("etag".to_string());
+                continue;
+            }
+            let ident = component_ident(param.name.as_str());
+            sig.push(format!("{} {ident}", self.java_type(&param.ty)));
+            call.push(ident);
+        }
+        sig.push("String etag".to_string());
+        if let Some(body) = &op.request {
+            sig.push(format!(
+                "{} body",
+                self.java_type(unwrap_optionality(&body.ty))
+            ));
+            call.push("body".to_string());
+        }
+        if !optional.is_empty() {
+            sig.push(format!("{options_ty} options"));
+            call.push(
+                if etag_optional {
+                    "_conditional"
+                } else {
+                    "options"
+                }
+                .to_string(),
+            );
+        }
+
+        let mut out = String::new();
+        let _ = writeln!(
+            out,
+            "    /**\n     * {{@link #{base}}} with {{@code If-None-Match}} set to {{@code etag}}: empty when\n\
+             \x20    * the item is unchanged since {{@code etag}} (Box answers 304 Not Modified).\n     */"
+        );
+        let _ = writeln!(
+            out,
+            "    public java.util.Optional<{}> {variant}({}) {{",
+            self.return_type(op),
+            sig.join(", ")
+        );
+        if etag_optional {
+            let _ = writeln!(
+                out,
+                "        {options_ty} _conditional = new {options_ty}();"
+            );
+            out.push_str("        if (options != null) {\n");
+            for param in optional.iter().filter(|p| p.name != read.etag) {
+                let ident = component_ident(param.name.as_str());
+                let _ = writeln!(out, "            _conditional.{ident} = options.{ident};");
+            }
+            out.push_str("        }\n");
+            let _ = writeln!(
+                out,
+                "        _conditional.{} = etag;",
+                component_ident(read.etag.as_str())
+            );
+        }
+        let _ = writeln!(
+            out,
+            "        try {{\n            return java.util.Optional.of({base}({}));\n\
+             \x20       }} catch ({RUNTIME}.BoxApiException e) {{\n\
+             \x20           if (e.statusCode() == 304) {{\n\
+             \x20               return java.util.Optional.empty();\n\
+             \x20           }}\n\
+             \x20           throw e;\n\
+             \x20       }}\n    }}",
+            call.join(", ")
+        );
         out
     }
 
@@ -1658,6 +1772,7 @@ mod tests {
             request: None,
             response: ResponseShape::Json(Type::Decl(file)),
             deprecated: false,
+            conditional: None,
         });
         p
     }
@@ -1839,6 +1954,7 @@ mod tests {
             request: None,
             response: ResponseShape::Json(Type::Decl(envelope)),
             deprecated: false,
+            conditional: None,
         });
         p
     }
@@ -1941,6 +2057,7 @@ mod tests {
             request: None,
             response: ResponseShape::Json(Type::Decl(ir::DeclId(0))),
             deprecated: false,
+            conditional: None,
         });
         let files = generated(&p);
         let out = file_ending(&files, "managers/ItemsManager.java");
@@ -2026,6 +2143,7 @@ mod tests {
             request: None,
             response: ResponseShape::Json(Type::Decl(ir::DeclId(0))),
             deprecated: false,
+            conditional: None,
         });
         let files = generated(&p);
 

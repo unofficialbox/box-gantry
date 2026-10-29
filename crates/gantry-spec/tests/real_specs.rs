@@ -148,6 +148,51 @@ fn the_full_real_spec_set_ingests() {
     assert_eq!((sole, orphan), (778, 36));
 }
 
+/// Box's conditional reads (the "Ensure consistency" etag flow): exactly the
+/// operations whose spec declares a 304 for an `If-None-Match` header get an
+/// `…_if_modified` variant. Copy also declares a 304 but takes no
+/// `If-None-Match`, so a 304 can't happen and it gets none.
+#[test]
+fn conditional_reads_are_the_304_operations_with_an_etag_header() {
+    let set = SpecSet::load(&[
+        fixture("openapi.json"),
+        fixture("openapi-v2025.0.json"),
+        fixture("openapi-v2026.0.json"),
+    ])
+    .unwrap();
+    let lowering = gantry_spec::lower(&set).unwrap();
+    let mut conditional: Vec<String> = lowering
+        .program
+        .operations
+        .iter()
+        .filter_map(|op| {
+            let read = op.conditional.as_ref()?;
+            Some(format!(
+                "{}.{}{} -> {} ({})",
+                op.manager.as_str(),
+                op.name.as_str(),
+                op.variation
+                    .as_ref()
+                    .map(|v| format!("#{}", v.as_str()))
+                    .unwrap_or_default(),
+                read.name.as_str(),
+                read.etag.as_str()
+            ))
+        })
+        .collect();
+    conditional.sort();
+    assert_eq!(
+        conditional,
+        [
+            "files.get -> get_if_modified (if-none-match)",
+            "folders.get -> get_if_modified (if-none-match)",
+            "shared_links_files.get_shared_items -> get_shared_items_if_modified (if-none-match)",
+            "shared_links_folders.get_shared_items#folders -> get_shared_items_if_modified (if-none-match)",
+            "shared_links_web_links.get_shared_items#web_links -> get_shared_items_if_modified (if-none-match)",
+        ]
+    );
+}
+
 /// Method names never fall through to a meaningless numeric collision suffix,
 /// and the curated endpoints (D-194) carry their intended names.
 #[test]

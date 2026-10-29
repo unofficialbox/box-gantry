@@ -208,10 +208,19 @@ impl Printer<'_> {
         // nothing is ever emitted under must not consume a dedup slot.
         let mut used = Vec::new();
         let mut methods: Vec<String> = Vec::with_capacity(indices.len());
+        let mut variants: Vec<Option<String>> = Vec::with_capacity(indices.len());
         let mut plans: Vec<Option<PaginationPlan>> = Vec::with_capacity(indices.len());
         for &index in indices {
             let op = &self.program.operations[index];
             let method = dedupe(&mut used, method_name(op));
+            // A conditional read's `<method>_if_modified` variant is public too.
+            variants.push(op.conditional.as_ref().map(|read| {
+                let variant = ir::Operation {
+                    name: read.name.clone(),
+                    ..op.clone()
+                };
+                dedupe(&mut used, method_name(&variant))
+            }));
             let plan = self
                 .paged
                 .get(&index)
@@ -257,7 +266,12 @@ impl Printer<'_> {
                 }
                 // No paginator synthesized: the plain single-page `<method>`
                 // ships as the public entry point (VR-6).
-                None => self.operation(&op, &methods[pos], &methods[pos], true),
+                None => {
+                    self.operation(&op, &methods[pos], &methods[pos], true);
+                    if let (Some(read), Some(variant)) = (&op.conditional, &variants[pos]) {
+                        self.conditional_read(&op, read, &methods[pos], variant);
+                    }
+                }
             }
         }
         self.body.push_str("}\n");
@@ -649,30 +663,7 @@ impl Printer<'_> {
 
         self.body.push('\n');
         let vis = if public_method { "pub " } else { "" };
-        let sig = format!(
-            "    {vis}async fn {method}({}) -> {ret} {{",
-            params.join(", ")
-        );
-        if sig.len() <= 100 {
-            let _ = writeln!(self.body, "{sig}");
-        } else {
-            let _ = writeln!(self.body, "    {vis}async fn {method}(");
-            for param in &params {
-                let line = format!("        {param},");
-                if line.len() <= 100 {
-                    let _ = writeln!(self.body, "{line}");
-                } else if let Some((head, inner)) = param.split_once(": Option<") {
-                    // rustfmt breaks an over-long `name: Option<Type>` param.
-                    let inner = inner.strip_suffix('>').unwrap_or(inner);
-                    let _ = writeln!(self.body, "        {head}: Option<");
-                    let _ = writeln!(self.body, "            {inner},");
-                    self.body.push_str("        >,\n");
-                } else {
-                    let _ = writeln!(self.body, "{line}");
-                }
-            }
-            let _ = writeln!(self.body, "    ) -> {ret} {{");
-        }
+        self.signature(vis, method, &params, &ret);
 
         self.url_and_request(op);
         let modifies = op
@@ -698,6 +689,117 @@ impl Printer<'_> {
         self.request_body(op);
         self.fetch_and_decode(op);
         self.body.push_str("    }\n");
+    }
+
+    /// An async method's signature line(s), wrapped the way rustfmt does past
+    /// 100 columns so the output stays `cargo fmt`-clean (TR-Rust.4).
+    fn signature(&mut self, vis: &str, method: &str, params: &[String], ret: &str) {
+        let sig = format!(
+            "    {vis}async fn {method}({}) -> {ret} {{",
+            params.join(", ")
+        );
+        if sig.len() <= 100 {
+            let _ = writeln!(self.body, "{sig}");
+            return;
+        }
+        let _ = writeln!(self.body, "    {vis}async fn {method}(");
+        for param in params {
+            let line = format!("        {param},");
+            if line.len() <= 100 {
+                let _ = writeln!(self.body, "{line}");
+            } else if let Some((head, inner)) = param.split_once(": Option<") {
+                // rustfmt breaks an over-long `name: Option<Type>` param.
+                let inner = inner.strip_suffix('>').unwrap_or(inner);
+                let _ = writeln!(self.body, "        {head}: Option<");
+                let _ = writeln!(self.body, "            {inner},");
+                self.body.push_str("        >,\n");
+            } else {
+                let _ = writeln!(self.body, "{line}");
+            }
+        }
+        let _ = writeln!(self.body, "    ) -> {ret} {{");
+    }
+
+    /// A conditional read's `<method>_if_modified` (Box's etag flow):
+    /// `<method>` with the `If-None-Match` parameter set to `etag`, answering
+    /// `Ok(None)` for the 304 Not Modified that means "unchanged since etag"
+    /// instead of an `Err`. Lowering only marks JSON reads conditional.
+    fn conditional_read(
+        &mut self,
+        op: &ir::Operation,
+        read: &ir::ConditionalRead,
+        base: &str,
+        variant: &str,
+    ) {
+        let ir::ResponseShape::Json(ty) = &op.response else {
+            unreachable!("sema: a conditional read returns JSON");
+        };
+        let ok = self.rust_type(unwrap_optionality(ty));
+        let options_ty = options_type(op.manager.as_str(), base);
+        let etag_optional = op
+            .params
+            .iter()
+            .any(|p| p.name == read.etag && matches!(p.ty, ir::Type::Optional(_)));
+        // The base signature with the etag lifted out as a required `String`.
+        let mut params = vec!["&self".to_string()];
+        let mut call: Vec<String> = Vec::new();
+        for param in op
+            .params
+            .iter()
+            .filter(|p| !matches!(p.ty, ir::Type::Optional(_)))
+        {
+            if param.name == read.etag {
+                call.push("etag".to_string());
+                continue;
+            }
+            let name = field_ident(param.name.as_str());
+            params.push(format!("{name}: {}", self.rust_type(&param.ty)));
+            call.push(name);
+        }
+        params.push("etag: String".to_string());
+        if let Some(body) = &op.request {
+            params.push(format!(
+                "body: {}",
+                self.rust_type(unwrap_optionality(&body.ty))
+            ));
+            call.push("body".to_string());
+        }
+        let has_options = op
+            .params
+            .iter()
+            .any(|p| matches!(p.ty, ir::Type::Optional(_)));
+        if has_options {
+            params.push(format!("opts: Option<{options_ty}>"));
+            call.push(if etag_optional { "Some(opts)" } else { "opts" }.to_string());
+        }
+        let _ = writeln!(
+            self.body,
+            "\n    /// [`Self::{base}`] with `If-None-Match` set to `etag`: `Ok(None)` when\n\
+             \x20   /// the item is unchanged since `etag` (Box answers 304 Not Modified)."
+        );
+        self.signature(
+            "pub ",
+            variant,
+            &params,
+            &format!("Result<Option<{ok}>, Error>"),
+        );
+        if etag_optional {
+            let field = field_ident(read.etag.as_str());
+            let _ = writeln!(
+                self.body,
+                "        let mut opts = opts.unwrap_or_default();\n\
+                 \x20       opts.{field} = Some(etag);"
+            );
+        }
+        let _ = writeln!(
+            self.body,
+            "        match self.{base}({}).await {{\n\
+             \x20           Err(err) if err.status() == Some(304) => Ok(None),\n\
+             \x20           result => result.map(Some),\n\
+             \x20       }}\n\
+             \x20   }}",
+            call.join(", ")
+        );
     }
 
     /// Build the URL from the D-106 base class + structured path segments.
@@ -1450,6 +1552,7 @@ mod tests {
             request: None,
             response: ResponseShape::Json(Type::Decl(DeclId(0))),
             deprecated: false,
+            conditional: None,
         });
         p
     }
@@ -1551,6 +1654,7 @@ mod tests {
             request: None,
             response: ResponseShape::Json(Type::Decl(DeclId(1))),
             deprecated: false,
+            conditional: None,
         });
         p.operations.push(Operation {
             name: ident("list_items_page"),
@@ -1567,6 +1671,7 @@ mod tests {
             request: None,
             response: ResponseShape::Json(Type::Decl(DeclId(0))),
             deprecated: false,
+            conditional: None,
         });
         let paged = HashMap::from([(
             0,

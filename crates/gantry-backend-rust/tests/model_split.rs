@@ -54,6 +54,7 @@ fn op(name: &str, manager: &str, response: ir::Type) -> ir::Operation {
         request: None,
         response: ir::ResponseShape::Json(response),
         deprecated: false,
+        conditional: None,
     }
 }
 

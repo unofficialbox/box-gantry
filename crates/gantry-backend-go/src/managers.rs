@@ -157,7 +157,17 @@ impl ManagerPrinter<'_> {
         // operation's public name (or another private fetch's) either (#78).
         let mut used: Vec<String> = op_indices
             .iter()
-            .map(|&i| self.method_name(&self.analysis.program.operations[i]))
+            .flat_map(|&i| {
+                let op = &self.analysis.program.operations[i];
+                // A conditional read's variant is public too.
+                let variant = op.conditional.as_ref().map(|read| {
+                    method_name(&ir::Operation {
+                        name: read.name.clone(),
+                        ..op.clone()
+                    })
+                });
+                std::iter::once(self.method_name(op)).chain(variant)
+            })
             .collect();
         for &index in op_indices {
             let op = self.analysis.program.operations[index].clone();
@@ -172,9 +182,107 @@ impl ManagerPrinter<'_> {
                     self.paginator(&type_name, &op, paged, &private)?;
                 }
                 // Not paged: the exported single-page `{Method}` is the entry point.
-                None => self.operation(&type_name, &op, &public, &public)?,
+                None => {
+                    self.operation(&type_name, &op, &public, &public)?;
+                    if let Some(read) = &op.conditional {
+                        self.conditional_read(&type_name, &op, read, &public)?;
+                    }
+                }
             }
         }
+        Ok(())
+    }
+
+    /// A conditional read's `{Method}IfModified` (Box's etag flow): `{Method}`
+    /// with the `If-None-Match` parameter set to `etag`, answering `nil, nil`
+    /// for the 304 Not Modified that means "unchanged since etag" instead of
+    /// returning it as an error. Lowering only marks JSON reads conditional.
+    fn conditional_read(
+        &mut self,
+        manager_type: &str,
+        op: &ir::Operation,
+        read: &ir::ConditionalRead,
+        base: &str,
+    ) -> Result<(), BackendError> {
+        let variant = method_name(&ir::Operation {
+            name: read.name.clone(),
+            ..op.clone()
+        });
+        let ir::ResponseShape::Json(ty) = &op.response else {
+            unreachable!("sema: a conditional read returns JSON");
+        };
+        let go = self.go_type(unwrap_optionality(ty))?;
+        let ret = if nilable(&go) { go } else { format!("*{go}") };
+        let options_type =
+            append_without_repeating(&format!("{}{base}", pascal(op.manager.as_str())), "Options");
+        // The base signature with the etag lifted out as a required string.
+        let mut args = vec!["ctx context.Context".to_string()];
+        let mut call = vec!["ctx".to_string()];
+        let mut etag_optional = false;
+        for param in &op.params {
+            match (
+                param.name == read.etag,
+                matches!(param.ty, ir::Type::Optional(_)),
+            ) {
+                (true, optional) => etag_optional = optional,
+                (false, true) => {}
+                (false, false) => {
+                    let ty = self.go_type(&param.ty)?;
+                    args.push(format!("{} {ty}", arg_name(param)));
+                    call.push(arg_name(param));
+                }
+            }
+        }
+        args.push("etag string".to_string());
+        if !etag_optional {
+            // A required etag is positional in the base method, in order.
+            call = vec!["ctx".to_string()];
+            for param in op
+                .params
+                .iter()
+                .filter(|p| !matches!(p.ty, ir::Type::Optional(_)))
+            {
+                call.push(if param.name == read.etag {
+                    "etag".to_string()
+                } else {
+                    arg_name(param)
+                });
+            }
+        }
+        if let Some(body) = &op.request {
+            let ty = self.go_type(unwrap_optionality(&body.ty))?;
+            let expr = if nilable(&ty) { ty } else { format!("*{ty}") };
+            args.push(format!("body {expr}"));
+            call.push("body".to_string());
+        }
+        let has_options = op
+            .params
+            .iter()
+            .any(|p| matches!(p.ty, ir::Type::Optional(_)));
+        if has_options {
+            args.push(format!("opts *{options_type}"));
+            call.push(if etag_optional { "&o" } else { "opts" }.to_string());
+        }
+        let _ = writeln!(
+            self.body,
+            "// {variant} is {base} with If-None-Match set to etag. It returns nil, nil\n\
+             // when the item is unchanged since etag (Box answers 304 Not Modified).\n\
+             func (m *{manager_type}) {variant}({}) ({ret}, error) {{",
+            args.join(", ")
+        );
+        if etag_optional {
+            let field = pascal(read.etag.as_str());
+            let _ = writeln!(
+                self.body,
+                "\tvar o {options_type}\n\tif opts != nil {{\n\t\to = *opts\n\t}}\n\to.{field} = &etag"
+            );
+        }
+        let _ = writeln!(
+            self.body,
+            "\tout, err := m.{base}({})\n\tif gantryruntime.IsNotModified(err) {{\n\t\treturn nil, nil\n\t}}\n\
+             \treturn out, err\n}}\n",
+            call.join(", ")
+        );
         Ok(())
     }
 
@@ -1220,6 +1328,7 @@ mod tests {
             request: None,
             response: ResponseShape::Json(Type::Decl(DeclId(1))),
             deprecated: false,
+            conditional: None,
         });
         p.operations.push(Operation {
             name: ident("list_items_page"),
@@ -1236,6 +1345,7 @@ mod tests {
             request: None,
             response: ResponseShape::Json(Type::Decl(DeclId(0))),
             deprecated: false,
+            conditional: None,
         });
         let paged = HashMap::from([(
             0,

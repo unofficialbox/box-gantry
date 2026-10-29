@@ -1105,7 +1105,7 @@ impl<'a> DocLowerer<'a> {
                 false => snake,
             }
         };
-        let taken = self.method_names.entry(scope).or_default();
+        let taken = self.method_names.entry(scope.clone()).or_default();
         let method_ident = {
             // A curated name for the few endpoints whose operationId tokens
             // derive an awkward or colliding method (D-194). Otherwise: terse
@@ -1169,6 +1169,41 @@ impl<'a> DocLowerer<'a> {
         let request = self.lower_request_body(&location, &owner, op, box_tag, method)?;
         let response = self.lower_response(&location, &owner, op)?;
         let base_url = self.lower_base_url(&location, op)?;
+        // A conditional read: the spec declares a `304 Not Modified` for an
+        // `If-None-Match` header parameter. Its `…_if_modified` variant is
+        // reserved with the manager's other method names, falling back to a
+        // numeric suffix like them, so it can never collide.
+        let conditional = match params.iter().find(|p| {
+            p.location == ir::ParamLocation::Header
+                && p.wire_name.eq_ignore_ascii_case("if-none-match")
+        }) {
+            // "Not modified" is an absent result, so only a JSON read has one.
+            Some(_)
+                if op.responses.contains_key("304")
+                    && !matches!(response, ir::ResponseShape::Json(_)) =>
+            {
+                return Err(self.unsupported(
+                    &location,
+                    "declares 304 Not Modified for If-None-Match on a non-JSON response",
+                ));
+            }
+            Some(etag) if op.responses.contains_key("304") => {
+                let taken = self.method_names.entry(scope).or_default();
+                let base = format!("{method_ident}_if_modified");
+                let mut variant = base.clone();
+                let mut suffix = 2;
+                while taken.contains(&variant.to_ascii_lowercase()) {
+                    variant = format!("{base}_{suffix}");
+                    suffix += 1;
+                }
+                taken.insert(variant.to_ascii_lowercase());
+                Some(ir::ConditionalRead {
+                    name: identifier(doc, &location, &variant)?,
+                    etag: etag.name.clone(),
+                })
+            }
+            _ => None,
+        };
 
         let method = match method {
             "get" => ir::HttpMethod::Get,
@@ -1203,6 +1238,7 @@ impl<'a> DocLowerer<'a> {
             request,
             response,
             deprecated: op.deprecated,
+            conditional,
         })
     }
 

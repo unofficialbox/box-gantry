@@ -85,7 +85,7 @@ fn manager_page(
     let bases = method_bases(program, op_indices, paged);
     for (pos, &index) in op_indices.iter().enumerate() {
         let op = &program.operations[index];
-        let method = camel(&bases[pos].0);
+        let method = camel(&bases[pos].base);
         let _ = writeln!(body, "## {method}\n");
         if op.deprecated {
             body.push_str("> **Deprecated.**\n\n");
@@ -424,22 +424,20 @@ Files and folders carry an `etag`. Send it back to stay in sync with Box\n\
 (Box's [Ensure consistency](https://developer.box.com/guides/api-calls/ensure-consistency/)\n\
 guide):\n\
 \n\
-- **Reads** — pass the stored etag as `if-none-match` on a file or folder\n\
-\x20\x20`get` (or a shared-item lookup). Box answers `304 Not Modified` when\n\
-\x20\x20nothing changed, and the SDK raises it as the error above with status\n\
-\x20\x20`304`: keep your cached copy.\n\
-- **Writes** — pass it as `if-match` on a file or folder update or delete,\n\
-\x20\x20or a new file version upload. Box answers `412 Precondition Failed`\n\
-\x20\x20(code `precondition_failed`) when the item changed since you read it:\n\
-\x20\x20read it again, reapply your change, retry. `If-Match` can't block a move.\n\
+- **Reads** — a file or folder `get`, and each shared-item lookup, has an\n\
+\x20\x20`…IfModified` variant that takes the stored etag, sends it as\n\
+\x20\x20`If-None-Match`, and returns `undefined` when Box answers `304 Not Modified`:\n\
+\x20\x20keep your cached copy. (The plain method surfaces that 304 as the error\n\
+\x20\x20above if you set `if-none-match` on it yourself.)\n\
+- **Writes** — pass the etag as `'if-match'` on a file or folder update or\n\
+\x20\x20delete, or a new file version upload. Box answers `412 Precondition\n\
+\x20\x20Failed` (code `precondition_failed`) when the item changed since you read\n\
+\x20\x20it: read it again, reapply your change, retry. `If-Match` can't block a move.\n\
 \n\
 ```ts\n\
-try {\n\
-\x20\x20await client.files.get(fileId, { 'if-none-match': etag });\n\
-} catch (err) {\n\
-\x20\x20if (err instanceof runtime.BoxApiError && err.status === 304) {\n\
-\x20\x20\x20\x20// unchanged since etag\n\
-\x20\x20}\n\
+const file = await client.files.getIfModified(fileId, etag);\n\
+if (file === undefined) {\n\
+\x20\x20// unchanged since etag\n\
 }\n\
 try {\n\
 \x20\x20await client.files.update(fileId, body, { 'if-match': etag });\n\

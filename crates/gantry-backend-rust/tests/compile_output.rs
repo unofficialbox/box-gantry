@@ -296,10 +296,11 @@ fn the_real_spec_models_compile() {
 }
 
 /// The etag flow from Box's "Ensure consistency" guide, through the generated
-/// `files` methods and the real runtime: `If-None-Match` on a GET answers 304
-/// when the item is unchanged, `If-Match` on a write answers 412 when it
-/// changed since, and a missing item answers 404 — each a non-2xx that must
-/// come back as an `Err` carrying its status and Box code, never as a decoded
+/// `files` methods and the real runtime: `get_if_modified` answers `Ok(None)`
+/// for the 304 that means "unchanged" and the file for a stale etag; otherwise
+/// `If-None-Match` on a plain GET (304), `If-Match` on a write that changed
+/// since (412), and a missing item (404) are each a non-2xx that must come
+/// back as an `Err` carrying its status and Box code, never as a decoded
 /// "result".
 const CONSISTENCY_TEST: &str = r##"use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -384,7 +385,24 @@ async fn generated_methods_surface_consistency_outcomes_as_api_errors() {
     let file = client.files.get("1".into(), None).await.expect("a plain read succeeds");
     let etag = file.etag.flatten().expect("the read yields an etag");
 
-    // If-None-Match with the current etag: 304, as an error, no body decoded.
+    // get_if_modified with the current etag: Box's 304 is "unchanged", Ok(None).
+    let unchanged = client
+        .files
+        .get_if_modified("1".into(), etag.clone(), None)
+        .await
+        .expect("a 304 is not an error here");
+    assert!(unchanged.is_none(), "the current etag means unchanged");
+    // With a stale etag: the current file.
+    let fresh = client
+        .files
+        .get_if_modified("1".into(), "etag-0".into(), None)
+        .await
+        .expect("a stale etag reads the file")
+        .expect("a stale etag yields the file");
+    assert_eq!(fresh.etag.flatten().as_deref(), Some("etag-1"));
+
+    // The plain get with If-None-Match set by hand still surfaces the 304 as
+    // an error — no body is decoded.
     let unchanged = FilesGetOptions {
         if_none_match: Some(etag.clone()),
         ..Default::default()

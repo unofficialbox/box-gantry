@@ -195,6 +195,7 @@ mod tests {
             request: None,
             response: ir::ResponseShape::Json(ir::Type::Decl(ir::DeclId(1))),
             deprecated: false,
+            conditional: None,
         };
         ir::Program {
             decls: vec![element, envelope],

@@ -334,11 +334,12 @@ fn the_generated_sdk_compiles_against_the_real_runtime() {
 }
 
 /// The etag flow from Box's "Ensure consistency" guide, through the generated
-/// `Files` methods and the real runtime: `If-None-Match` on a GET answers 304
-/// when the item is unchanged, `If-Match` on a write answers 412 when it
-/// changed since, and a missing item answers 404 — each a non-2xx that must
-/// come back as a `*gantryruntime.APIError` with its status and Box code, never
-/// as a decoded "result".
+/// `Files` methods and the real runtime: `GetIfModified` answers nil, nil for
+/// the 304 that means "unchanged" and the file for a stale etag; otherwise
+/// `If-None-Match` on a plain GET (304), `If-Match` on a write that changed
+/// since (412), and a missing item (404) are each a non-2xx that must come
+/// back as a `*gantryruntime.APIError` with its status and Box code, never as
+/// a decoded "result".
 const CONSISTENCY_TEST: &str = r#"package consistency
 
 import (
@@ -394,7 +395,19 @@ func TestGeneratedMethodsSurfaceConsistencyOutcomesAsAPIErrors(t *testing.T) {
 	}
 	etag := file.Etag.Value
 
-	// If-None-Match with the current etag: 304, as an error, no body decoded.
+	// GetIfModified with the current etag: Box's 304 is "unchanged", nil, nil.
+	unchanged, err := c.Files.GetIfModified(ctx, "1", etag, nil)
+	if unchanged != nil || err != nil {
+		t.Fatalf("GetIfModified, current etag: file=%+v err=%v, want nil, nil", unchanged, err)
+	}
+	// With a stale etag: the current file.
+	fresh, err := c.Files.GetIfModified(ctx, "1", "etag-0", nil)
+	if err != nil || fresh == nil || fresh.Etag == nil || fresh.Etag.Value != "etag-1" {
+		t.Fatalf("GetIfModified, stale etag: file=%+v err=%v", fresh, err)
+	}
+
+	// The plain Get with If-None-Match set by hand still surfaces the 304 as
+	// an error — no body is decoded.
 	_, err = c.Files.Get(ctx, "1", &managers.FilesGetOptions{IfNoneMatch: &etag})
 	wantAPIError(t, "Get If-None-Match", err, http.StatusNotModified, "")
 

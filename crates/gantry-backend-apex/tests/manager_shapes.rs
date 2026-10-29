@@ -65,6 +65,7 @@ fn sample() -> Vec<GeneratedFile> {
         request: None,
         response: ir::ResponseShape::Json(ir::Type::Decl(file)),
         deprecated: false,
+        conditional: None,
     });
     let program = Box::leak(Box::new(program));
     let analysis = gantry_sema::analyze(program).unwrap();
@@ -166,6 +167,7 @@ fn remap_sample() -> Vec<GeneratedFile> {
         }),
         response: ir::ResponseShape::Json(ir::Type::Decl(paged)),
         deprecated: false,
+        conditional: None,
     });
     let program = Box::leak(Box::new(program));
     let analysis = gantry_sema::analyze(program).unwrap();
@@ -242,6 +244,7 @@ fn null_only_sample() -> Vec<GeneratedFile> {
         }),
         response: ir::ResponseShape::None,
         deprecated: false,
+        conditional: None,
     });
     let program = Box::leak(Box::new(program));
     let analysis = gantry_sema::analyze(program).unwrap();
@@ -301,6 +304,7 @@ fn object_response_sample() -> Vec<GeneratedFile> {
         request: None,
         response: ir::ResponseShape::Json(ir::Type::Decl(envelope)),
         deprecated: false,
+        conditional: None,
     });
     let program = Box::leak(Box::new(program));
     let analysis = gantry_sema::analyze(program).unwrap();
