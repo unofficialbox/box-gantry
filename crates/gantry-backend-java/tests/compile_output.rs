@@ -597,11 +597,16 @@ fn empty_builders_driver(files: &[gantry_backend_java::GeneratedFile]) -> (Strin
     let mut records: Vec<String> = files
         .iter()
         .filter_map(|file| {
+            // Generated model records only: the vendored runtime has builders
+            // of its own (`Session.Builder`) that this text scan misreads.
             let class = file
                 .path
                 .strip_prefix("src/main/java/")?
                 .strip_suffix(".java")?
                 .replace('/', ".");
+            if !class.starts_with("dev.unofficialbox.model.") {
+                return None;
+            }
             let builder = file
                 .content
                 .split_once("public static final class Builder {")?

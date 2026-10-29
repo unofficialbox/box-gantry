@@ -12,17 +12,17 @@ public with sharing class BoxEventStream {
     /** What the stream polls: a generated events manager's typed page call. */
     public interface Source {
         /** The events after a stream position, and the position to poll from next. */
-        Page page(String position);
+        EventPage fetch(String position);
         /** The event's id, so a repeat can be dropped (null when it has none). */
         String id(Object event);
     }
 
     /** One page of events. */
-    public class Page {
+    public class EventPage {
         public List<Object> events;
         public String next;
 
-        public Page(List<Object> events, String next) {
+        public EventPage(List<Object> events, String next) {
             this.events = events;
             this.next = next;
         }
@@ -44,9 +44,9 @@ public with sharing class BoxEventStream {
 
     /** Fetch the events after the position, once each, and advance past them. */
     public List<Object> poll() {
-        Page page = source.page(position);
+        EventPage batch = source.fetch(position);
         List<Object> fresh = new List<Object>();
-        List<Object> events = page.events == null ? new List<Object>() : page.events;
+        List<Object> events = batch.events == null ? new List<Object>() : batch.events;
         for (Object event : events) {
             String id = source.id(event);
             if (id != null) {
@@ -67,8 +67,8 @@ public with sharing class BoxEventStream {
                 }
             }
         }
-        if (String.isNotBlank(page.next)) {
-            position = page.next;
+        if (String.isNotBlank(batch.next)) {
+            position = batch.next;
         }
         return fresh;
     }

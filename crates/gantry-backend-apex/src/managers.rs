@@ -242,9 +242,9 @@ fn render_stream(
     let _ = writeln!(
         out,
         "        }}\n\
-         \x20       public BoxEventStream.Page page(String position) {{\n\
-         \x20           {page_ty} page = manager.{method}({call});\n\
-         \x20           return new BoxEventStream.Page(page.{entries}, BoxEventStream.position(page.{next}));\n\
+         \x20       public BoxEventStream.EventPage fetch(String position) {{\n\
+         \x20           {page_ty} batch = manager.{method}({call});\n\
+         \x20           return new BoxEventStream.EventPage(batch.{entries}, BoxEventStream.position(batch.{next}));\n\
          \x20       }}\n\
          \x20       public String id(Object event) {{\n\
          \x20           return (({event}) event).{id};\n\
