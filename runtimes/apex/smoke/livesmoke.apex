@@ -112,6 +112,13 @@ try {
     client.webLinks.delete_r(link.id, null);
 }
 
+// 5) The polled event stream: one poll from "now" fetches the events since and
+//    advances the position Box returns (Apex can't hold Box's long poll open).
+BoxEventStream events = client.events.stream(null, null, null, null, null, null);
+List<Object> polled = events.poll();
+System.assertNotEquals('now', events.position, 'the poll took the position Box returned');
+System.debug(LoggingLevel.ERROR, 'SMOKE events polled=' + polled.size() + ' position=' + events.position);
+
 // The sentinel the workflow greps for — reached only if every call above
 // succeeded and no assertion or callout threw.
 System.debug(LoggingLevel.ERROR, 'SMOKE OK');

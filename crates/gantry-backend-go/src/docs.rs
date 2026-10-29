@@ -401,7 +401,18 @@ for item, err := range client.Folders.ListItems(ctx, folderID, nil) {\n\
 ```\n\n\
 The iterator threads the cursor for you and stops when the last page is\n\
 reached. It copies the options you pass, so your struct is never\n\
-mutated.\n";
+mutated.\n\n\
+## Events\n\n\
+`client.Events.Stream` follows Box's long-poll event stream: it yields the\n\
+events after `opts.StreamPosition` (`\"now\"` when unset), each once — Box may\n\
+deliver an event twice — then waits on a real-time server until Box reports a\n\
+change. It lists a fresh server when Box asks it to reconnect, and retries a\n\
+long poll that times out. It ends when `ctx` does, or when a call fails, with\n\
+that error:\n\n\
+```go\n\
+for event, err := range client.Events.Stream(ctx, nil) {\n\
+\tif err != nil {\n\t\treturn err\n\t}\n\t// use event; break to stop\n}\n\
+```\n";
 
 const ERRORS_GUIDE: &str = "# Errors\n\
 \n\

@@ -18,6 +18,7 @@ use gantry_ir as ir;
 use gantry_ir::naming::{camel, pascal};
 use gantry_manifest::CapabilityManifest;
 use gantry_sema::Analysis;
+use gantry_synth::EventStream;
 
 use crate::models::{ClassNames, apex_type, mint_unique};
 use crate::{CLASSES_DIR, GeneratedFile, safe_word};
@@ -41,6 +42,7 @@ pub fn generate_managers(
     let names = ClassNames::build(program, limit);
     let wire = crate::wire::Wire::build(program, &names);
     let infos = manager_infos(analysis, &names, limit);
+    let streams = gantry_synth::detect_event_streams(analysis);
 
     let mut files = Vec::new();
     for info in &infos {
@@ -54,6 +56,7 @@ pub fn generate_managers(
                 &info.class,
                 &info.manager,
                 op_indices,
+                &streams,
             ),
         });
     }
@@ -117,6 +120,7 @@ fn manager_class(
     class: &str,
     manager: &str,
     op_indices: &[usize],
+    streams: &[EventStream],
 ) -> String {
     let mut out = header();
     let _ = writeln!(
@@ -139,6 +143,7 @@ fn manager_class(
 
     // Method names must be unique within the class.
     let mut used: HashSet<String> = HashSet::new();
+    let mut signatures: Vec<(usize, OpSignature)> = Vec::new();
     for &index in op_indices {
         let op = &program.operations[index];
         out.push('\n');
@@ -148,10 +153,109 @@ fn manager_class(
             out.push('\n');
             render_conditional(&mut out, op, &sig, name);
         }
+        signatures.push((index, sig));
+    }
+    for stream in streams.iter().filter(|s| op_indices.contains(&s.list)) {
+        assert!(
+            !used.contains("stream"),
+            "{class}: the manager already has a `stream` method for the event stream"
+        );
+        let list = signatures
+            .iter()
+            .find(|(i, _)| *i == stream.list)
+            .map(|(_, sig)| sig)
+            .expect("same manager");
+        out.push('\n');
+        render_stream(&mut out, program, names, class, stream, list);
     }
 
     let _ = writeln!(out, "}}");
     out
+}
+
+/// `stream`: Box's event stream, polled (`BoxEventStream`) — Apex can't hold
+/// a long poll open, so the stream fetches once per `poll()`. Its source is an
+/// inner class over this manager's typed page method, the other parameters
+/// fixed at the values `stream` was given.
+fn render_stream(
+    out: &mut String,
+    program: &ir::Program,
+    names: &ClassNames,
+    class: &str,
+    stream: &EventStream,
+    list: &OpSignature,
+) {
+    let event = apex_type(program, names, &ir::Type::Decl(stream.event));
+    let page_ty = apex_type(program, names, &ir::Type::Decl(stream.page));
+    let field = |f: &ir::Field| safe_word(f.name.as_str());
+    let position = arg_name(&stream.position_param);
+    let fixed: Vec<&OpParam> = list.params.iter().filter(|p| p.name != position).collect();
+    let _ = writeln!(
+        out,
+        "    /**\n\
+         \x20    * Box's event stream from `{position}` (`now` when null), polled: each\n\
+         \x20    * `poll()` returns the events since the last one, once each, as `{event}`.\n\
+         \x20    * Apex can't hold Box's long poll open, so schedule `poll()` and save\n\
+         \x20    * `position` between transactions to resume.\n\
+         \x20    */\n\
+         \x20   public BoxEventStream stream({}) {{\n\
+         \x20       return new BoxEventStream(new StreamSource(this{}), {position});\n\
+         \x20   }}\n",
+        list.arg_list(),
+        fixed
+            .iter()
+            .map(|p| format!(", {}", p.name))
+            .collect::<String>(),
+    );
+    let _ = writeln!(
+        out,
+        "    /** The typed page call `stream` polls. */\n\
+         \x20   private class StreamSource implements BoxEventStream.Source {{\n\
+         \x20       private final {class} manager;"
+    );
+    for p in &fixed {
+        let _ = writeln!(out, "        private final {} {};", p.apex_type, p.name);
+    }
+    let _ = writeln!(
+        out,
+        "        public StreamSource({class} manager{}) {{\n\
+         \x20           this.manager = manager;",
+        fixed
+            .iter()
+            .map(|p| format!(", {} {}", p.apex_type, p.name))
+            .collect::<String>(),
+    );
+    for p in &fixed {
+        let _ = writeln!(out, "            this.{0} = {0};", p.name);
+    }
+    let call: Vec<String> = list
+        .params
+        .iter()
+        .map(|p| {
+            if p.name == position {
+                "position".to_string()
+            } else {
+                p.name.clone()
+            }
+        })
+        .collect();
+    let _ = writeln!(
+        out,
+        "        }}\n\
+         \x20       public BoxEventStream.Page page(String position) {{\n\
+         \x20           {page_ty} page = manager.{method}({call});\n\
+         \x20           return new BoxEventStream.Page(page.{entries}, BoxEventStream.position(page.{next}));\n\
+         \x20       }}\n\
+         \x20       public String id(Object event) {{\n\
+         \x20           return (({event}) event).{id};\n\
+         \x20       }}\n\
+         \x20   }}",
+        method = list.method_name,
+        call = call.join(", "),
+        entries = field(&stream.entries),
+        next = field(&stream.next_position),
+        id = field(&stream.event_id),
+    );
 }
 
 /// One parameter of a generated method, in call order.

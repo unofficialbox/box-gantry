@@ -37,6 +37,7 @@ type Request struct {
 	header  http.Header
 	query   url.Values
 	getBody func() (io.Reader, error)
+	timeout time.Duration
 }
 
 // Response is the runtime-owned HTTP response envelope. The body is read
@@ -161,6 +162,12 @@ func (c *Client) Fetch(ctx context.Context, request *Request) (*Response, error)
 	if len(request.query) > 0 {
 		u += "?" + request.query.Encode()
 	}
+	client := c.http
+	if request.timeout > 0 {
+		perRequest := *c.http
+		perRequest.Timeout = request.timeout
+		client = &perRequest
+	}
 	refreshed := false
 	var lastErr error
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
@@ -189,7 +196,7 @@ func (c *Client) Fetch(ctx context.Context, request *Request) (*Response, error)
 		}
 		httpReq.Header.Set("Authorization", "Bearer "+token)
 
-		httpResp, err := c.http.Do(httpReq)
+		httpResp, err := client.Do(httpReq)
 		if err != nil {
 			lastErr = err
 			if attempt == c.maxRetries || !sleep(ctx, backoff(attempt)) {
@@ -272,6 +279,13 @@ func sleep(ctx context.Context, d time.Duration) bool {
 // WithHeader returns the request with the header set.
 func WithHeader(request *Request, name string, value string) *Request {
 	request.header.Set(name, value)
+	return request
+}
+
+// WithTimeout returns the request with its own timeout, in place of the
+// client's, for a call meant to wait longer (a long poll).
+func WithTimeout(request *Request, timeout time.Duration) *Request {
+	request.timeout = timeout
 	return request
 }
 

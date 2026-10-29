@@ -17,7 +17,9 @@ use std::fmt::Write as _;
 use gantry_ir as ir;
 use gantry_ir::naming::{append_without_repeating, pascal, snake};
 use gantry_sema::Analysis;
-use gantry_synth::{PageStyle, PagedOperation, detect_pagination};
+use gantry_synth::{
+    EventStream, PageStyle, PagedOperation, PositionShape, detect_event_streams, detect_pagination,
+};
 
 use crate::models::{module_names, type_name};
 use crate::{BuildInfo, GeneratedFile};
@@ -117,6 +119,8 @@ pub fn generate_managers(analysis: &Analysis<'_>, _build: &BuildInfo) -> Vec<Gen
         .map(|p| (p.operation, p))
         .collect();
 
+    let streams = detect_event_streams(analysis);
+
     // Allocate one collision-free base per manager (shared with the docs).
     let named = plan_managers(analysis);
 
@@ -128,6 +132,8 @@ pub fn generate_managers(analysis: &Analysis<'_>, _build: &BuildInfo) -> Vec<Gen
             base_version: base_version.clone(),
             modules: &modules,
             paged: &paged,
+            streams: &streams,
+            exact_json: false,
             body: String::new(),
             uses_path_escape: false,
             uses_join: false,
@@ -248,6 +254,12 @@ struct Printer<'p> {
     modules: &'p BTreeMap<ir::ModulePath, String>,
     /// Paginated operations by index, so a paged method also emits a paginator.
     paged: &'p HashMap<usize, PagedOperation>,
+    /// Event streams, so a stream's page operation decodes positions exactly
+    /// and its manager gains `stream`.
+    streams: &'p [EventStream],
+    /// Set while emitting an operation whose JSON must keep large integers
+    /// exact (an event stream's page: its position).
+    exact_json: bool,
     body: String,
     /// Which generation-side helpers this manager needs imported.
     uses_path_escape: bool,
@@ -298,6 +310,7 @@ impl Printer<'_> {
             // The single-page fetch: the private, already-reserved page
             // method a paginator drives, else the public `<method>` (VR-6
             // fallback).
+            self.exact_json = self.streams.iter().any(|s| s.list == index);
             if paginated {
                 self.operation(&op, name, base, page_method.as_deref().unwrap(), false);
             } else {
@@ -306,8 +319,91 @@ impl Printer<'_> {
                     self.conditional_read(&op, read, name, base, &camel(variant));
                 }
             }
+            self.exact_json = false;
+        }
+        for stream in self.streams.iter().filter(|s| indices.contains(&s.list)) {
+            let base_of = |op: usize| {
+                let pos = indices.iter().position(|&i| i == op).expect("same manager");
+                bases[pos].base.clone()
+            };
+            assert!(
+                bases.iter().all(|b| b.base != "stream"),
+                "{key}: the manager already has a `stream` method for the event stream"
+            );
+            self.event_stream(
+                stream,
+                name,
+                &base_of(stream.list),
+                &base_of(stream.options),
+            );
         }
         self.body.push_str("}\n");
+    }
+
+    /// `stream`: Box's long-poll event stream (`runtime.eventStream`) over
+    /// this manager's typed page and server methods, as an async generator.
+    fn event_stream(
+        &mut self,
+        stream: &EventStream,
+        name: &ManagerName,
+        list: &str,
+        options: &str,
+    ) {
+        let event = self.ts_type(&ir::Type::Decl(stream.event));
+        let key = |field: &ir::Field| field_key(&field.wire_name);
+        let next = match stream.position {
+            PositionShape::String => format!("page.{}", key(&stream.next_position)),
+            PositionShape::StringOrInteger => {
+                format!(
+                    "runtime.streamPosition(page.{})",
+                    key(&stream.next_position)
+                )
+            }
+        };
+        let _ = writeln!(
+            self.body,
+            "\n  /** Box's long-poll event stream from `opts.{position}` (`'now'` when\n\
+             \x20  * unset): yields each event once, then waits on a real-time server for the\n\
+             \x20  * next change. It rejects when a call fails; aborting `signal` stops it. */\n\
+             \x20 stream(opts?: {options_type}, signal?: AbortSignal): AsyncGenerator<{event}, void, undefined> {{\n\
+             \x20   const options = {{ ...opts }};\n\
+             \x20   return runtime.eventStream(\n\
+             \x20     this.session,\n\
+             \x20     options.{position} ?? 'now',\n\
+             \x20     {{\n\
+             \x20       server: async () => {{\n\
+             \x20         const listed = await this.{options}();\n\
+             \x20         for (const s of listed.{servers} ?? []) {{\n\
+             \x20           if (s.{url} !== undefined) {{\n\
+             \x20             return {{\n\
+             \x20               url: s.{url},\n\
+             \x20               maxRetries: s.{retries} === undefined ? undefined : Number(s.{retries}),\n\
+             \x20               retryTimeoutSeconds: s.{timeout},\n\
+             \x20             }};\n\
+             \x20           }}\n\
+             \x20         }}\n\
+             \x20         throw new runtime.BoxApiError('box: no real-time server to long-poll');\n\
+             \x20       }},\n\
+             \x20       page: async (position) => {{\n\
+             \x20         const page = await this.{list}({{ ...options, {position}: position }});\n\
+             \x20         return {{ events: page.{entries} ?? [], next: {next} }};\n\
+             \x20       }},\n\
+             \x20       id: (event) => event.{id},\n\
+             \x20     }},\n\
+             \x20     signal,\n\
+             \x20   );\n\
+             \x20 }}",
+            position = field_key(&stream.position_param.wire_name),
+            options_type = options_type(&name.class, list),
+            options = camel(options),
+            list = camel(list),
+            servers = key(&stream.servers),
+            url = key(&stream.url),
+            retries = key(&stream.max_retries),
+            timeout = key(&stream.retry_timeout),
+            entries = key(&stream.entries),
+            id = key(&stream.event_id),
+        );
     }
 
     /// Emit the module-level options interface for an operation's optional
@@ -899,9 +995,14 @@ impl Printer<'_> {
                     .push_str("    const resp = await this.session.fetch(req);\n");
                 self.body
                     .push_str("    const data = runtime.responseBytes(resp);\n");
+                let parse = if self.exact_json {
+                    "runtime.parseJsonExact"
+                } else {
+                    "JSON.parse"
+                };
                 let _ = writeln!(
                     self.body,
-                    "    return JSON.parse(new TextDecoder().decode(data)) as {cast};"
+                    "    return {parse}(new TextDecoder().decode(data)) as {cast};"
                 );
             }
             ir::ResponseShape::Binary => {
@@ -1413,6 +1514,8 @@ mod tests {
             base_version: None,
             modules: &modules,
             paged: &paged,
+            streams: &[],
+            exact_json: false,
             body: String::new(),
             uses_path_escape: false,
             uses_join: false,
@@ -1558,6 +1661,8 @@ mod tests {
             base_version: None,
             modules: &modules,
             paged: &paged,
+            streams: &[],
+            exact_json: false,
             body: String::new(),
             uses_path_escape: false,
             uses_join: false,
@@ -1612,6 +1717,8 @@ mod tests {
             base_version: None,
             modules: &modules,
             paged: &paged,
+            streams: &[],
+            exact_json: false,
             body: String::new(),
             uses_path_escape: false,
             uses_join: false,

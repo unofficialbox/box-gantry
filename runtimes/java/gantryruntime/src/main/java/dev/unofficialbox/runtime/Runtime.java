@@ -57,6 +57,7 @@ public final class Runtime {
         private final List<String[]> query = new ArrayList<>();
         private byte[] body;
         private String contentType;
+        private Duration timeout;
 
         private Request(String method, String url) {
             this.method = method;
@@ -340,7 +341,7 @@ public final class Runtime {
 
         private Response send(Request request, String token) throws IOException, InterruptedException {
             HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(buildUrl(request)))
-                    .timeout(API_TIMEOUT);
+                    .timeout(request.timeout != null ? request.timeout : API_TIMEOUT);
             HttpRequest.BodyPublisher body = request.body == null
                     ? HttpRequest.BodyPublishers.noBody()
                     : HttpRequest.BodyPublishers.ofByteArray(request.body);
@@ -565,6 +566,206 @@ public final class Runtime {
     /** The response status code. */
     public static long statusCode(Response response) {
         return response.status;
+    }
+
+    /** Return the request with its own timeout, in place of the session's, for
+     * a call meant to wait longer (a long poll). */
+    public static Request withTimeout(Request request, Duration timeout) {
+        request.timeout = timeout;
+        return request;
+    }
+
+    // ---------------------------------------------------------- event stream
+
+    /**
+     * One of Box's real-time servers, as {@code OPTIONS /events} lists them. A
+     * non-positive {@code maxRetries} or a null/zero {@code retryTimeout} takes
+     * Box's documented default.
+     */
+    public record LongPollServer(String url, int maxRetries, Duration retryTimeout) {
+        /** A server from the listing's raw fields: {@code max_retries} is a
+         * string, {@code retry_timeout} seconds; either may be absent. */
+        public static LongPollServer of(String url, String maxRetries, Long retryTimeoutSeconds) {
+            int retries = 0;
+            if (maxRetries != null) {
+                try {
+                    retries = Integer.parseInt(maxRetries.trim());
+                } catch (NumberFormatException unparsable) {
+                    // The default applies.
+                }
+            }
+            Duration timeout = retryTimeoutSeconds == null ? null : Duration.ofSeconds(retryTimeoutSeconds);
+            return new LongPollServer(url, retries, timeout);
+        }
+    }
+
+    /** A page of events, and the position to wait from next (null keeps the current one). */
+    public record EventPage<E>(List<E> events, String next) {}
+
+    /**
+     * What {@link EventStream} drives: the typed calls a generated events
+     * manager supplies. {@code server} lists a real-time server (null when Box
+     * lists none); {@code page} fetches the events after a stream position;
+     * {@code id} names an event so a repeat can be dropped (null when it has none).
+     */
+    public interface EventSource<E> {
+        LongPollServer server();
+
+        EventPage<E> page(String position);
+
+        String id(E event);
+    }
+
+    /**
+     * Box's long-poll event stream from a position ({@code "now"} for events
+     * from here on): iterating yields the events after it, each once, then
+     * blocks on a real-time server until Box reports a change and yields those.
+     * A {@code reconnect} answer, or exhausting the server's retries, lists a
+     * fresh server. A long poll that times out or fails in transit is retried;
+     * an error response from Box is thrown. {@link #close} (from any thread)
+     * stops it: a blocked {@code hasNext} then returns false.
+     */
+    public static final class EventStream<E> implements java.util.Iterator<E>, AutoCloseable {
+        private static final int DEFAULT_LONG_POLL_RETRIES = 10;
+        private static final Duration DEFAULT_LONG_POLL_TIMEOUT = Duration.ofSeconds(610);
+        /** Box may deliver an event twice; this many recent event ids are kept
+         * to drop the repeats (the bound Box's own SDKs use). */
+        private static final int MAX_SEEN_EVENTS = 1000;
+
+        private final Session session;
+        private final EventSource<E> source;
+        private final java.util.ArrayDeque<E> pending = new java.util.ArrayDeque<>();
+        private java.util.Set<String> seen = new java.util.HashSet<>();
+        private String position;
+        private LongPollServer server;
+        private int retries;
+        private boolean fetched;
+        private volatile boolean closed;
+        private volatile Thread waiter;
+
+        public EventStream(Session session, String position, EventSource<E> source) {
+            this.session = session;
+            this.position = position;
+            this.source = source;
+        }
+
+        @Override
+        public boolean hasNext() {
+            waiter = Thread.currentThread();
+            try {
+                while (pending.isEmpty()) {
+                    if (closed || (fetched && !waitForChange())) {
+                        return false;
+                    }
+                    fetch();
+                }
+                return !closed;
+            } finally {
+                waiter = null;
+                if (closed) {
+                    // Clear the interrupt close() used to wake this thread.
+                    Thread.interrupted();
+                }
+            }
+        }
+
+        @Override
+        public E next() {
+            if (!hasNext()) {
+                throw new java.util.NoSuchElementException("the event stream is closed");
+            }
+            return pending.poll();
+        }
+
+        /** Stop the stream, waking a thread blocked in {@code hasNext}. */
+        @Override
+        public void close() {
+            closed = true;
+            Thread blocked = waiter;
+            if (blocked != null) {
+                blocked.interrupt();
+            }
+        }
+
+        /** Fetch the events after the position, queue the unseen ones, advance. */
+        private void fetch() {
+            EventPage<E> page = source.page(position);
+            fetched = true;
+            for (E event : page.events()) {
+                String id = source.id(event);
+                if (id == null || seen.add(id)) {
+                    pending.add(event);
+                }
+            }
+            if (seen.size() >= MAX_SEEN_EVENTS) {
+                // Repeats arrive close together: keep only this page's ids.
+                seen = new java.util.HashSet<>();
+                for (E event : page.events()) {
+                    String id = source.id(event);
+                    if (id != null) {
+                        seen.add(id);
+                    }
+                }
+            }
+            if (page.next() != null && !page.next().isEmpty()) {
+                position = page.next();
+            }
+        }
+
+        /** Long-poll until Box reports a change after the position; false once closed. */
+        private boolean waitForChange() {
+            while (!closed) {
+                if (server == null || retries >= server.maxRetries()) {
+                    LongPollServer listed = source.server();
+                    if (listed == null) {
+                        throw new BoxApiException("box: no real-time server to long-poll");
+                    }
+                    server = new LongPollServer(
+                            listed.url(),
+                            listed.maxRetries() > 0 ? listed.maxRetries() : DEFAULT_LONG_POLL_RETRIES,
+                            listed.retryTimeout() == null || listed.retryTimeout().isZero()
+                                    ? DEFAULT_LONG_POLL_TIMEOUT
+                                    : listed.retryTimeout());
+                    retries = 0;
+                }
+                retries++;
+                String message;
+                try {
+                    message = longPoll(server);
+                } catch (BoxApiException err) {
+                    if (closed) {
+                        return false;
+                    }
+                    if (err.statusCode() != 0) {
+                        throw err;
+                    }
+                    // Timed out or failed in transit: poll again.
+                    continue;
+                }
+                switch (message) {
+                    case "new_change" -> {
+                        return true;
+                    }
+                    case "reconnect", "max_retries" -> server = null;
+                    default -> {
+                        // Anything else: poll again.
+                    }
+                }
+            }
+            return false;
+        }
+
+        /** Wait on a real-time server for Box's next message about the stream
+         * after the position: {@code new_change}, {@code reconnect}, or
+         * {@code max_retries}. */
+        private String longPoll(LongPollServer server) {
+            Request request = withTimeout(
+                    withQuery(session.newRequest("GET", server.url()), "stream_position", position),
+                    server.retryTimeout());
+            Map<String, Object> answer =
+                    JsonLite.parseObject(new String(session.fetch(request).body, StandardCharsets.UTF_8));
+            return answer.get("message") instanceof String message ? message : "";
+        }
     }
 
     // ------------------------------------------------------------ auth flows

@@ -6,7 +6,16 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 
 import { BoxApiError } from './src/errors.js';
-import { Client, Stream, developerToken, withHeader, withMultipartBody } from './src/runtime.js';
+import {
+  Client,
+  Stream,
+  developerToken,
+  eventStream,
+  parseJsonExact,
+  streamPosition,
+  withHeader,
+  withMultipartBody,
+} from './src/runtime.js';
 
 /** Concatenate byte chunks into one buffer (no `Buffer` — see node-live.d.ts). */
 function concatBytes(chunks: Uint8Array[]): Uint8Array {
@@ -168,4 +177,82 @@ test('withMultipartBody omits an absent JSON part', async () => {
   });
   assert.ok(!body.includes('application/json'));
   assert.ok(body.includes('name="pic"; filename="pic"'));
+});
+
+/** A real-time server answering long polls from a script, one answer per
+ * request; `hang` holds the request past the poll's timeout. Records the
+ * stream position each poll waited from. */
+function realtime(answers: string[], positions: string[]) {
+  return (req: http.IncomingMessage, res: http.ServerResponse) => {
+    positions.push(new URL(req.url ?? '/', 'http://x').searchParams.get('stream_position') ?? '');
+    const answer = answers.shift() ?? 'reconnect';
+    if (answer === 'hang') {
+      setTimeout(() => res.end('{"message":"late"}'), 300);
+    } else if (answer === 'error') {
+      res.statusCode = 400;
+      res.end('{"type":"error","status":400,"code":"bad_request"}');
+    } else {
+      res.end(JSON.stringify({ version: 1, message: answer }));
+    }
+  };
+}
+
+/** Script `EventSource.page`: the events per call, the next position the call
+ * number; and count the servers listed. */
+function scripted(url: string, pages: string[][], servers: { count: number }) {
+  let call = 0;
+  return {
+    server: async () => {
+      servers.count++;
+      return { url: `${url}subscribe?channel=c`, retryTimeoutSeconds: 0.1 };
+    },
+    page: async (position: string) => {
+      assert.equal(position, call === 0 ? 'now' : String(call), `page ${call}'s position`);
+      const events = pages[call] ?? [];
+      call++;
+      return { events, next: String(call) };
+    },
+    id: (event: string) => event.replace("'", ''),
+  };
+}
+
+test('the event stream follows the long-poll protocol and drops repeats', async () => {
+  const positions: string[] = [];
+  await withServer(realtime(['reconnect', 'new_change', 'hang', 'new_change'], positions), async (url) => {
+    const client = new Client(developerToken('t'), { maxRetries: 0 });
+    const servers = { count: 0 };
+    const got: string[] = [];
+    // "now" yields nothing; then a and b; then b again (a repeat) with c.
+    for await (const event of eventStream(client, 'now', scripted(url, [[], ['a', 'b'], ["b'", 'c']], servers))) {
+      got.push(event);
+      if (got.length === 3) {
+        break;
+      }
+    }
+    assert.deepEqual(got, ['a', 'b', 'c']);
+    assert.equal(servers.count, 2, 'a reconnect lists a fresh server');
+    assert.deepEqual(positions, ['1', '1', '2', '2'], 'a timed-out poll is retried');
+  });
+});
+
+test('the event stream ends on an error response, and on abort', async () => {
+  await withServer(realtime(['error'], []), async (url) => {
+    const client = new Client(developerToken('t'), { maxRetries: 0 });
+    const stream = eventStream(client, 'now', scripted(url, [], { count: 0 }));
+    await assert.rejects(stream.next(), (err) => err instanceof BoxApiError && err.status === 400);
+  });
+  await withServer(realtime(['hang', 'hang'], []), async (url) => {
+    const client = new Client(developerToken('t'), { maxRetries: 0 });
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 50);
+    const source = { ...scripted(url, [], { count: 0 }), server: async () => ({ url, retryTimeoutSeconds: 5 }) };
+    await assert.rejects(eventStream(client, 'now', source, controller.signal).next(), () => controller.signal.aborted);
+  });
+});
+
+test('stream positions round-trip exactly', () => {
+  const page = parseJsonExact('{"next_stream_position":1152922976252290886,"chunk_size":2}') as Record<string, unknown>;
+  assert.equal(streamPosition(page.next_stream_position), '1152922976252290886');
+  assert.equal(page.chunk_size, 2);
+  assert.equal(streamPosition('42'), '42');
 });

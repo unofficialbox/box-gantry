@@ -555,6 +555,11 @@ fn runtime_files() -> Vec<GeneratedFile> {
             include_str!("../../../runtimes/go/gantryruntime/errors.go"),
         ),
         (
+            "gantryruntime",
+            "events.go",
+            include_str!("../../../runtimes/go/gantryruntime/events.go"),
+        ),
+        (
             "auth",
             "auth.go",
             include_str!("../../../runtimes/go/auth/auth.go"),

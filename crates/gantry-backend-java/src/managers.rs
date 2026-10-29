@@ -20,7 +20,9 @@ use std::fmt::Write as _;
 use gantry_ir as ir;
 use gantry_ir::naming::{append_without_repeating, camel, pascal, snake};
 use gantry_sema::Analysis;
-use gantry_synth::{PageStyle, PagedOperation, detect_pagination};
+use gantry_synth::{
+    EventStream, PageStyle, PagedOperation, PositionShape, detect_event_streams, detect_pagination,
+};
 
 use crate::models::{
     JAVA_KEYWORDS, component_ident, dedupe, package_names, struct_components, type_names,
@@ -191,6 +193,7 @@ pub fn generate_managers(analysis: &Analysis<'_>, build: &BuildInfo) -> Vec<Gene
             .into_iter()
             .map(|p| (p.operation, p))
             .collect(),
+        streams: detect_event_streams(analysis),
     };
     let plans = plan_managers(analysis);
 
@@ -260,6 +263,8 @@ struct ManagerPrinter<'p> {
     /// Paged operations by operation index (FR-7.3), so a manager method that
     /// pages also gets a `<method>Paginate` constructor + a paginator class.
     paged: HashMap<usize, PagedOperation>,
+    /// Event streams, so a stream's manager gains `stream`.
+    streams: Vec<EventStream>,
 }
 
 impl ManagerPrinter<'_> {
@@ -323,6 +328,27 @@ impl ManagerPrinter<'_> {
                 }
             }
         }
+        for stream in self.streams.iter().filter(|s| plan.ops.contains(&s.list)) {
+            let method_of = |op: usize| {
+                methods
+                    .iter()
+                    .find(|(i, ..)| *i == op)
+                    .map(|(_, name, ..)| name.clone())
+                    .expect("same manager")
+            };
+            assert!(
+                methods.iter().all(|(_, name, ..)| name != "stream"),
+                "{}: the manager already has a `stream` method for the event stream",
+                plan.class
+            );
+            out.push_str(&self.event_stream(
+                stream,
+                &plan.class,
+                &method_of(stream.list),
+                &method_of(stream.options),
+            ));
+            out.push('\n');
+        }
         // Nested options classes, after the methods that reference them.
         for (i, name, _, _) in &methods {
             if let Some(options) = self.options_class(&self.program.operations[*i], name) {
@@ -333,6 +359,87 @@ impl ManagerPrinter<'_> {
         out.truncate(out.trim_end().len());
         out.push_str("\n}\n");
         (out, paginators)
+    }
+
+    /// `stream`: Box's long-poll event stream (`Runtime.EventStream`) over this
+    /// manager's typed page and server methods, on a copy of the caller's options.
+    fn event_stream(&self, stream: &EventStream, class: &str, list: &str, options: &str) -> String {
+        let list_op = &self.program.operations[stream.list];
+        let options_ty = append_without_repeating(&pascal(list), "Options");
+        let event = self.java_type(&ir::Type::Decl(stream.event));
+        let accessor = |decl: ir::DeclId, field: &ir::Field| {
+            let ir::DeclKind::Struct(s) = &self.program.decl(decl).kind else {
+                unreachable!("detection: an event-stream decl is a struct");
+            };
+            struct_components(s)
+                .into_iter()
+                .find(|(_, f)| f.wire_name == field.wire_name)
+                .map(|(ident, _)| ident)
+                .expect("detection: the field is the struct's")
+        };
+        let position = component_ident(stream.position_param.name.as_str());
+        let next = accessor(stream.page, &stream.next_position);
+        let next_value = match stream.position {
+            PositionShape::String => format!("_page.{next}().orElse(null)"),
+            PositionShape::StringOrInteger => {
+                format!("_page.{next}().map(_p -> String.valueOf(_p.value())).orElse(null)")
+            }
+        };
+        let mut out = String::new();
+        let _ = writeln!(
+            out,
+            "    /**\n\
+             \x20    * Box's long-poll event stream from {{@code options.{position}}} ({{@code \"now\"}} when\n\
+             \x20    * unset): iterating yields each event once, blocking on a real-time server for the\n\
+             \x20    * next change. Close it, from any thread, to stop.\n\
+             \x20    */\n\
+             \x20   public {RUNTIME}.EventStream<{event}> stream({options_ty} options) {{\n\
+             \x20       {options_ty} _stream = new {options_ty}();\n\
+             \x20       if (options != null) {{"
+        );
+        for param in list_op
+            .params
+            .iter()
+            .filter(|p| matches!(p.ty, ir::Type::Optional(_)))
+        {
+            let ident = component_ident(param.name.as_str());
+            let _ = writeln!(out, "            _stream.{ident} = options.{ident};");
+        }
+        let _ = writeln!(
+            out,
+            "        }}\n\
+             \x20       String _from = _stream.{position} != null ? _stream.{position} : \"now\";\n\
+             \x20       return new {RUNTIME}.EventStream<>(session, _from, new {RUNTIME}.EventSource<{event}>() {{\n\
+             \x20           @Override\n\
+             \x20           public {RUNTIME}.LongPollServer server() {{\n\
+             \x20               for (var _s : {class}.this.{options}().{servers}().orElse(java.util.List.of())) {{\n\
+             \x20                   if (_s.{url}().isPresent()) {{\n\
+             \x20                       return {RUNTIME}.LongPollServer.of(\n\
+             \x20                               _s.{url}().get(), _s.{retries}().orElse(null), _s.{timeout}().orElse(null));\n\
+             \x20                   }}\n\
+             \x20               }}\n\
+             \x20               return null;\n\
+             \x20           }}\n\n\
+             \x20           @Override\n\
+             \x20           public {RUNTIME}.EventPage<{event}> page(String position) {{\n\
+             \x20               _stream.{position} = position;\n\
+             \x20               var _page = {class}.this.{list}(_stream);\n\
+             \x20               return new {RUNTIME}.EventPage<>(_page.{entries}().orElse(java.util.List.of()), {next_value});\n\
+             \x20           }}\n\n\
+             \x20           @Override\n\
+             \x20           public String id({event} event) {{\n\
+             \x20               return event.{id}().orElse(null);\n\
+             \x20           }}\n\
+             \x20       }});\n\
+             \x20   }}",
+            servers = accessor(stream.server_list, &stream.servers),
+            url = accessor(stream.server, &stream.url),
+            retries = accessor(stream.server, &stream.max_retries),
+            timeout = accessor(stream.server, &stream.retry_timeout),
+            entries = accessor(stream.page, &stream.entries),
+            id = accessor(stream.event, &stream.event_id),
+        );
+        out
     }
 
     /// One operation → a blocking method routing through the runtime contract.
