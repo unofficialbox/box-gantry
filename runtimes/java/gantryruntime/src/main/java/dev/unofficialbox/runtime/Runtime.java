@@ -200,6 +200,143 @@ public final class Runtime {
         }
     }
 
+    /**
+     * Checks that a webhook delivery came from Box, unaltered and recent, by
+     * Box's v2 signature scheme: each {@code BOX-SIGNATURE-*} header is the
+     * base64 HMAC-SHA256, under that signature key, of the body followed by the
+     * {@code BOX-DELIVERY-TIMESTAMP} header.
+     */
+    public static final class WebhookVerifier {
+        /** How old a delivery may be before it's rejected as a possible replay:
+         * Box's ten minutes. */
+        public static final Duration DEFAULT_MAX_AGE = Duration.ofMinutes(10);
+
+        private final String primaryKey;
+        private final String secondaryKey;
+        private final Duration maxAge;
+
+        /** The app's signature keys from the Developer Console; either may be
+         * null. A delivery is genuine when the signature of any configured key
+         * matches, so a key can be rotated while the other keeps verifying. */
+        public WebhookVerifier(String primaryKey, String secondaryKey) {
+            this(primaryKey, secondaryKey, DEFAULT_MAX_AGE);
+        }
+
+        /** As above, accepting deliveries up to {@code maxAge} old. */
+        public WebhookVerifier(String primaryKey, String secondaryKey, Duration maxAge) {
+            this.primaryKey = primaryKey;
+            this.secondaryKey = secondaryKey;
+            this.maxAge = maxAge;
+        }
+
+        /** Whether {@code body} and {@code headers} are a genuine, recent
+         * delivery from Box. Pass the body exactly as received; header names
+         * match in any case. */
+        public boolean verify(byte[] body, Map<String, String> headers) {
+            return verify(body, headers, java.time.Instant.now());
+        }
+
+        /** {@link #verify(byte[], Map)} against the clock reading {@code now}.
+         * It is false for an unknown signature version or algorithm, a delivery
+         * older than the maximum age or timestamped in the future, and a
+         * signature no configured key produces. */
+        public boolean verify(byte[] body, Map<String, String> headers, java.time.Instant now) {
+            if (!"1".equals(header(headers, "box-signature-version"))
+                    || !"HmacSHA256".equals(header(headers, "box-signature-algorithm"))) {
+                return false;
+            }
+            String timestamp = header(headers, "box-delivery-timestamp");
+            long sent;
+            try {
+                sent = java.time.OffsetDateTime.parse(timestamp).toEpochSecond();
+            } catch (RuntimeException unparseable) {
+                return false;
+            }
+            // Whole seconds, as Box's own SDKs compare them.
+            long at = now.getEpochSecond();
+            if (sent > at || at - sent > maxAge.toSeconds()) {
+                return false;
+            }
+
+            List<byte[]> bodies = new ArrayList<>(List.of(body));
+            byte[] escaped = escapeNonAscii(body);
+            if (escaped != null) {
+                bodies.add(escaped);
+            }
+            String[][] signed = {
+                {primaryKey, "box-signature-primary"},
+                {secondaryKey, "box-signature-secondary"},
+            };
+            for (String[] pair : signed) {
+                String received = header(headers, pair[1]);
+                if (pair[0] == null || pair[0].isEmpty() || received == null) {
+                    continue;
+                }
+                byte[] signature;
+                try {
+                    signature = java.util.Base64.getDecoder().decode(received);
+                } catch (IllegalArgumentException notBase64) {
+                    continue;
+                }
+                for (byte[] candidate : bodies) {
+                    if (java.security.MessageDigest.isEqual(
+                            hmac(pair[0], candidate, timestamp), signature)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        private static String header(Map<String, String> headers, String name) {
+            for (Map.Entry<String, String> entry : headers.entrySet()) {
+                if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(name)) {
+                    return entry.getValue();
+                }
+            }
+            return null;
+        }
+
+        private static byte[] hmac(String key, byte[] body, String timestamp) {
+            try {
+                javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+                mac.init(new javax.crypto.spec.SecretKeySpec(
+                    key.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+                mac.update(body);
+                return mac.doFinal(timestamp.getBytes(StandardCharsets.UTF_8));
+            } catch (java.security.GeneralSecurityException missing) {
+                // Every Java platform is required to provide HmacSHA256.
+                throw new IllegalStateException("HmacSHA256 is unavailable", missing);
+            }
+        }
+
+        /** {@code body} with every character from U+007F up written as a JSON
+         * unicode escape (UTF-16, lowercase hex) — the form Box signs. A body
+         * re-encoded as raw UTF-8 on its way to the caller verifies through it.
+         * Null when {@code body} is already all ASCII, or is not UTF-8. */
+        private static byte[] escapeNonAscii(byte[] body) {
+            String text;
+            try {
+                text = StandardCharsets.UTF_8.newDecoder()
+                    .decode(java.nio.ByteBuffer.wrap(body)).toString();
+            } catch (java.nio.charset.CharacterCodingException notUtf8) {
+                return null;
+            }
+            StringBuilder out = new StringBuilder(text.length() + 16);
+            boolean escaped = false;
+            for (int i = 0; i < text.length(); i++) {
+                char unit = text.charAt(i);
+                if (unit < 0x7f) {
+                    out.append(unit);
+                } else {
+                    escaped = true;
+                    out.append(String.format("\\u%04x", (int) unit));
+                }
+            }
+            return escaped ? out.toString().getBytes(StandardCharsets.UTF_8) : null;
+        }
+    }
+
     /** A source of access tokens for the configured auth flow. */
     public interface Auth {
         /** A valid access token, acquired or refreshed as needed. */

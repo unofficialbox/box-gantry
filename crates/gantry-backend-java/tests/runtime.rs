@@ -380,6 +380,155 @@ fn the_runtime_retries_and_authenticates() {
     );
 }
 
+/// The webhook driver: `Runtime.WebhookVerifier` against the vectors from Box's
+/// own SDK test suite (testWebhookValidation) — keys, bodies, and the
+/// signatures Box computed, all delivered at 2020-01-01T00:00:00-07:00 — and
+/// every way a delivery must be refused.
+const WEBHOOK_DRIVER: &str = r#"
+import dev.unofficialbox.runtime.Runtime;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+public final class WebhookSmoke {
+    static final String PRIMARY_KEY = "SamplePrimaryKey";
+    static final String SECONDARY_KEY = "SampleSecondaryKey";
+    static final String BODY = "{\"type\":\"webhook_event\",\"webhook\":{\"id\":\"1234567890\"},\"trigger\":\"FILE.UPLOADED\",\"source\":{\"id\":\"1234567890\",\"type\":\"file\",\"name\":\"Test.txt\"}}";
+    static final String PRIMARY = "6TfeAW3A1PASkgboxxA5yqHNKOwFyMWuEXny/FPD5hI=";
+    static final String FILE_PREFIX = "{\"webhook\":{\"id\":\"1234567890\"},\"trigger\":\"FILE.UPLOADED\",\"source\":{\"id\":\"1234567890\",\"type\":\"file\",\"name\":\"";
+    static final Instant DELIVERED = Instant.parse("2020-01-01T07:00:00Z");
+
+    static void check(boolean cond, String msg) {
+        if (!cond) {
+            System.out.println("FAIL: " + msg);
+            System.exit(1);
+        }
+    }
+
+    // Mixed case on purpose: lookups must not depend on the sender's casing.
+    static Map<String, String> headers(String primary) {
+        Map<String, String> h = new LinkedHashMap<>();
+        h.put("box-delivery-id", "f96bb54b-ee16-4fc5-aa65-8c2d9e5b546f");
+        h.put("BOX-DELIVERY-TIMESTAMP", "2020-01-01T00:00:00-07:00");
+        h.put("box-signature-algorithm", "HmacSHA256");
+        h.put("box-signature-primary", primary);
+        h.put("Box-Signature-Secondary", "v+1CD1Jdo3muIcbpv5lxxgPglOqMfsNHPV899xWYydo=");
+        h.put("box-signature-version", "1");
+        return h;
+    }
+
+    static Map<String, String> with(String name, String value) {
+        Map<String, String> h = headers(PRIMARY);
+        h.keySet().removeIf(k -> k.equalsIgnoreCase(name));
+        if (value != null) {
+            h.put(name, value);
+        }
+        return h;
+    }
+
+    static byte[] utf8(String s) {
+        return s.getBytes(StandardCharsets.UTF_8);
+    }
+
+    public static void main(String[] args) {
+        Runtime.WebhookVerifier both = new Runtime.WebhookVerifier(PRIMARY_KEY, SECONDARY_KEY);
+        Runtime.WebhookVerifier primaryOnly = new Runtime.WebhookVerifier(PRIMARY_KEY, null);
+        byte[] body = utf8(BODY);
+
+        check(both.verify(body, headers(PRIMARY), DELIVERED), "both keys verify");
+        check(new Runtime.WebhookVerifier(null, SECONDARY_KEY)
+                .verify(body, headers("not-the-primary"), DELIVERED),
+            "the secondary key alone verifies, as during a primary rotation");
+        // Box signs non-ASCII characters as JSON unicode escapes; a body that
+        // arrives as raw UTF-8 verifies through that form. Escapes already in
+        // the JSON (backslash-r, backslash-slash, a doubled backslash) are
+        // signed as they are.
+        String[][] signed = {
+            {"スクリーンショット 2020-08-05.txt", "LV2uCu+5NJtIHrCXDYgZ0v/PP5THGRuegw3RtdnEyuE="},
+            {"😀 2020-08-05.txt", "xF/SDZosX4le+v4A0Qn59sZhuD1RqY5KRUKzVMSbh0E="},
+            {"test \\r", "SVkbKgy3dEEf2PbbzpNu2lDZS7zZ/aboU7HOZgBGrJk="},
+            {"\\/", "t41PWT5ZB6OcysnD6SDy9Ud+p9hdXxIdXqcdweyZv/Q="},
+            {"\\\\", "ERpMZwUQsGDTfj82ehdX6VvDZfvOhK5ULNfVmwVAGe0="},
+        };
+        for (String[] c : signed) {
+            check(primaryOnly.verify(utf8(FILE_PREFIX + c[0] + "\"}}"), headers(c[1]), DELIVERED),
+                c[0] + ": Box's signature verifies");
+        }
+        check(both.verify(body, headers(PRIMARY), Instant.parse("2020-01-01T07:10:00Z")),
+            "exactly the maximum age old is still in time");
+
+        Map<String, String> unsigned = with("box-signature-primary", null);
+        unsigned.remove("Box-Signature-Secondary");
+        Object[][] refused = {
+            {"wrong keys", new Runtime.WebhookVerifier("IncorrectKey", "IncorrectKey"), body, headers(PRIMARY), DELIVERED},
+            {"no keys", new Runtime.WebhookVerifier(null, null), body, headers(PRIMARY), DELIVERED},
+            {"secondary key for primary", new Runtime.WebhookVerifier(SECONDARY_KEY, null), body, headers(PRIMARY), DELIVERED},
+            {"tampered body", both, utf8(BODY.replace("Test.txt", "Test.exe")), headers(PRIMARY), DELIVERED},
+            {"stale", both, body, headers(PRIMARY), Instant.parse("2020-01-01T07:10:01Z")},
+            {"future", both, body, headers(PRIMARY), Instant.parse("2020-01-01T06:59:59Z")},
+            {"short max age", new Runtime.WebhookVerifier(PRIMARY_KEY, SECONDARY_KEY, Duration.ofMinutes(1)), body, headers(PRIMARY), Instant.parse("2020-01-01T07:01:01Z")},
+            {"no timestamp", both, body, with("box-delivery-timestamp", null), DELIVERED},
+            {"bad timestamp", both, body, with("box-delivery-timestamp", "yesterday"), DELIVERED},
+            {"no signatures", both, body, unsigned, DELIVERED},
+            {"no version", both, body, with("box-signature-version", null), DELIVERED},
+            {"version 2", both, body, with("box-signature-version", "2"), DELIVERED},
+            {"HmacSHA1", both, body, with("box-signature-algorithm", "HmacSHA1"), DELIVERED},
+            {"not base64", primaryOnly, body, with("box-signature-primary", "%%%"), DELIVERED},
+        };
+        for (Object[] c : refused) {
+            @SuppressWarnings("unchecked")
+            Map<String, String> h = (Map<String, String>) c[3];
+            check(!((Runtime.WebhookVerifier) c[1]).verify((byte[]) c[2], h, (Instant) c[4]),
+                c[0] + ": must not verify");
+        }
+        System.out.println("WEBHOOKS_OK");
+    }
+}
+"#;
+
+/// `Runtime.WebhookVerifier` accepts Box's own signatures and refuses every
+/// altered, stale, future, or unsigned delivery.
+#[test]
+fn the_runtime_verifies_webhook_signatures() {
+    if !jdk_targets_26() {
+        eprintln!("SKIPPED: JDK 26+ not available; CI installs one and runs this gate");
+        return;
+    }
+    let dir = ScratchDir::new("gantry-java-webhooks");
+    let driver = dir.join("WebhookSmoke.java");
+    std::fs::write(&driver, WEBHOOK_DRIVER).unwrap();
+    let classes = dir.join("classes");
+    std::fs::create_dir_all(&classes).unwrap();
+    let javac = Command::new("javac")
+        .arg("--release")
+        .arg("26")
+        .arg("-d")
+        .arg(&classes)
+        .arg(runtime_src())
+        .arg(&driver)
+        .output()
+        .unwrap();
+    assert!(
+        javac.status.success(),
+        "webhook driver failed to compile:\n{}",
+        String::from_utf8_lossy(&javac.stderr)
+    );
+    let run = Command::new("java")
+        .arg("-cp")
+        .arg(&classes)
+        .arg("WebhookSmoke")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success() && stdout.contains("WEBHOOKS_OK"),
+        "webhook verification failed:\nstdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
 /// The VR-7 live-smoke driver: one authenticated `GET /users/me` per auth flow
 /// whose credentials are present in the environment (developer token, CCG,
 /// OAuth, JWT from a `box_config.json`), then — on the first flow that
