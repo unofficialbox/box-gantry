@@ -332,15 +332,25 @@ const LIVE_SMOKE: &str = r#"
 import dev.unofficialbox.runtime.Runtime;
 
 int ran = 0;
+// Every flow runs before the smoke fails, so one bad credential (an expired
+// developer token) doesn't hide the others' results.
+java.util.List<String> failed = new java.util.ArrayList<>();
 
 void smoke(String name, Runtime.Auth auth) {
-    Runtime.Session session = new Runtime.Session(auth);
-    Runtime.Response response = session.fetch(session.newRequest("GET", session.baseUrl("api") + "/users/me"));
-    long code = Runtime.statusCode(response);
-    if (code != 200) {
-        System.out.println("FAIL " + name + ": status " + code + " "
-            + new String(Runtime.responseBytes(response), java.nio.charset.StandardCharsets.UTF_8));
-        System.exit(1);
+    try {
+        Runtime.Session session = new Runtime.Session(auth);
+        Runtime.Response response = session.fetch(session.newRequest("GET", session.baseUrl("api") + "/users/me"));
+        long code = Runtime.statusCode(response);
+        if (code != 200) {
+            System.out.println("FAIL " + name + ": status " + code + " "
+                + new String(Runtime.responseBytes(response), java.nio.charset.StandardCharsets.UTF_8));
+            failed.add(name);
+            return;
+        }
+    } catch (RuntimeException err) {
+        System.out.println("FAIL " + name + ": " + err);
+        failed.add(name);
+        return;
     }
     System.out.println("OK " + name);
     ran++;
@@ -368,6 +378,10 @@ void main() throws Exception {
     if (!env("BOX_JWT_CONFIG").isEmpty()) {
         String json = java.nio.file.Files.readString(java.nio.file.Path.of(env("BOX_JWT_CONFIG")));
         smoke("jwt", Runtime.jwt(Runtime.JwtConfig.fromBoxConfig(json)));
+    }
+    if (!failed.isEmpty()) {
+        System.out.println("LIVESMOKE_FAIL " + failed);
+        System.exit(1);
     }
     System.out.println(ran == 0 ? "LIVESMOKE_SKIP (no credentials)" : "LIVESMOKE_OK");
 }

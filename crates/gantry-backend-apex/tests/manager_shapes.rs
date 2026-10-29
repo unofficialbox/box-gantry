@@ -400,3 +400,83 @@ fn generation_is_deterministic() {
         assert_eq!(a.content, b.content, "nondeterministic: {}", a.path);
     }
 }
+
+/// The Apex live smoke (`runtimes/apex/smoke/livesmoke.apex`, VR-1.4) runs as
+/// anonymous Apex, so nothing compiles it until a credentialed run — a renamed
+/// method (`getItems` → `listItems`) surfaced as a compile error months later.
+/// Pin every `client.<manager>.<method>(…)` it calls to a generated method of
+/// the same arity.
+#[test]
+fn the_apex_live_smoke_calls_methods_the_sdk_generates() {
+    let smoke = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtimes/apex/smoke/livesmoke.apex"),
+    )
+    .unwrap();
+    let files = real_spec_managers();
+    let class_source = |class: &str| {
+        let path = format!("{CLASSES}/{class}.cls");
+        files
+            .iter()
+            .find(|f| f.path == path)
+            .unwrap_or_else(|| panic!("no generated {path}"))
+            .content
+            .as_str()
+    };
+    let client = class_source("Box");
+
+    let mut calls = 0;
+    for (at, _) in smoke.match_indices("client.") {
+        let rest = &smoke[at + "client.".len()..];
+        let Some((manager, rest)) = rest.split_once('.') else {
+            continue;
+        };
+        let Some((method, args)) = rest.split_once('(') else {
+            continue;
+        };
+        if !is_identifier(manager) || !is_identifier(method) {
+            continue;
+        }
+        let field = format!(" {manager};");
+        let class = client
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("public final ")?.strip_suffix(&field))
+            .unwrap_or_else(|| panic!("Box has no `{manager}` manager"));
+        let signature = format!(" {method}(");
+        let params = class_source(class)
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("public "))
+            .find_map(|l| l.split_once(&signature).map(|(_, params)| arity(params)))
+            .unwrap_or_else(|| panic!("{class} has no method `{method}`"));
+        assert_eq!(
+            arity(args),
+            params,
+            "client.{manager}.{method}: the smoke's argument count doesn't match {class}.{method}"
+        );
+        calls += 1;
+    }
+    assert_eq!(calls, 2, "the smoke's SDK calls (getMe, listItems)");
+}
+
+fn is_identifier(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// How many comma-separated items precede the `)` closing a call or
+/// parameter list, given the text just after its `(`.
+fn arity(list: &str) -> usize {
+    let mut depth = 0;
+    let mut items = 0;
+    for c in list.chars() {
+        match c {
+            '(' | '<' => depth += 1,
+            '>' => depth -= 1,
+            ')' if depth == 0 => break,
+            ')' => depth -= 1,
+            ',' if depth == 0 => items += 1,
+            c if !c.is_whitespace() && items == 0 => items = 1,
+            _ => {}
+        }
+    }
+    items
+}

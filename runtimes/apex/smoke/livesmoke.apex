@@ -27,12 +27,12 @@ System.debug(LoggingLevel.ERROR, 'SMOKE getMe id=' + me.id + ' login=' + me.logi
 
 // 2) Pagination + wire remap: GET /folders/0/items → Items. `Items` renames
 //    `limit` → `limit_r`, so this also drives normalizeKeys on a real response.
-Items root = client.folders.getItems('0', null, false, null, null, null, null, null, null);
-System.assertNotEquals(null, root, 'getItems returned null');
+Items root = client.folders.listItems('0', null, false, null, null, null, null, null, null);
+System.assertNotEquals(null, root, 'listItems returned null');
 Integer entryCount = (root.entries == null) ? 0 : root.entries.size();
 System.debug(
     LoggingLevel.ERROR,
-    'SMOKE getItems entries=' + entryCount + ' total=' + root.total_count
+    'SMOKE listItems entries=' + entryCount + ' total=' + root.total_count
 );
 
 // The sentinel the workflow greps for — reached only if every call above
