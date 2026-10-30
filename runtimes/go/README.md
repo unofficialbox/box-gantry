@@ -40,4 +40,5 @@ test loads it automatically (real env vars still win). Recognized variables:
 
 In CI it runs only via the **Live smoke (VR-7)** workflow — weekly and on
 demand (`workflow_dispatch`) — which reads these from repo secrets, never from
-the repository.
+the repository. A failing run on `main` opens a `live-smoke-failure` issue,
+which closes itself once the workflow passes again.
