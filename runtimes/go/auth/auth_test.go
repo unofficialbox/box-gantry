@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -138,6 +139,82 @@ func TestCachedTokenRefreshesOnExpiry(t *testing.T) {
 	}
 	if srv.hits != 3 {
 		t.Fatalf("expected a refresh on every call (3 hits), got %d", srv.hits)
+	}
+}
+
+// savedTokens is a RefreshTokenStore that records each save and fails while
+// failing is set.
+type savedTokens struct {
+	saved   []string
+	failing bool
+}
+
+func (st *savedTokens) SaveRefreshToken(_ context.Context, refreshToken string) error {
+	if st.failing {
+		return errors.New("store unavailable")
+	}
+	st.saved = append(st.saved, refreshToken)
+	return nil
+}
+
+// The code exchange saves the refresh token Box issues, and each rotation
+// saves the new one before its access token is handed out.
+func TestOAuthStoreSavesExchangedAndRotatedTokens(t *testing.T) {
+	srv := newTokenServer(t, func(form url.Values) string {
+		if form.Get("grant_type") == "authorization_code" {
+			return `{"access_token":"at-0","refresh_token":"rt-1","expires_in":1}`
+		}
+		return `{"access_token":"at-1","refresh_token":"rt-2","expires_in":3600}`
+	})
+	store := &savedTokens{}
+	cfg := OAuthConfig{ClientID: "c", ClientSecret: "s", TokenURL: srv.server.URL, Store: store}
+
+	src, err := cfg.ExchangeCode(context.Background(), "code", "https://app.example/callback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// at-0 expires inside the refresh margin, so this rotates rt-1 -> rt-2.
+	token, err := src.AccessToken(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != "at-1" || strings.Join(store.saved, ",") != "rt-1,rt-2" {
+		t.Fatalf("got %q, saved %q; want at-1 with rt-1,rt-2 saved", token, store.saved)
+	}
+}
+
+// A failed save on rotation surfaces on that call, keeps the new refresh
+// token, and is retried on the next call.
+func TestOAuthStoreFailureIsLoudAndRetried(t *testing.T) {
+	srv := newTokenServer(t, func(form url.Values) string {
+		return `{"access_token":"at-` + form.Get("refresh_token") + `","refresh_token":"rt-2","expires_in":3600}`
+	})
+	store := &savedTokens{failing: true}
+	src := OAuth(OAuthConfig{ClientID: "c", ClientSecret: "s", TokenURL: srv.server.URL, Store: store}, "rt-1")
+
+	if _, err := src.AccessToken(context.Background()); err == nil {
+		t.Fatal("a failed save should fail the rotating call")
+	}
+	store.failing = false
+	token, err := src.AccessToken(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The cached access token came from rt-1's exchange; no second exchange
+	// was needed, and the retried save stored rt-2.
+	if token != "at-rt-1" || srv.hits != 1 || strings.Join(store.saved, ",") != "rt-2" {
+		t.Fatalf("got %q after %d exchanges, saved %q", token, srv.hits, store.saved)
+	}
+}
+
+// With a Store, a failed save on the code exchange fails ExchangeCode.
+func TestOAuthExchangeFailsWhenTheStoreDoes(t *testing.T) {
+	srv := newTokenServer(t, func(url.Values) string {
+		return `{"access_token":"at","refresh_token":"rt","expires_in":3600}`
+	})
+	cfg := OAuthConfig{ClientID: "c", ClientSecret: "s", TokenURL: srv.server.URL, Store: &savedTokens{failing: true}}
+	if src, err := cfg.ExchangeCode(context.Background(), "code", "https://app.example/callback"); err == nil || src != nil {
+		t.Fatalf("want an error and no source, got %v, %v", src, err)
 	}
 }
 

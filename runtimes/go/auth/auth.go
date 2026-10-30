@@ -178,12 +178,28 @@ func ClientCredentials(cfg CCGConfig) gantryruntime.TokenSource {
 // grants a Box app access). Use AuthorizeURL to build the redirect,
 // ExchangeCode to turn the returned code into a gantryruntime.TokenSource, or OAuth to
 // resume from a stored refresh token.
+//
+// Box rotates the refresh token on every exchange and invalidates the old
+// one, so an app that outlives its process needs Store: without it the newest
+// refresh token lives only in memory, and a restart resumes from one Box has
+// already rejected.
 type OAuthConfig struct {
 	ClientID     string
 	ClientSecret string
-	TokenURL     string       // optional; defaults to Box's token endpoint
-	HTTPClient   *http.Client // optional
-	Proxy        *url.URL     // optional; overrides the HTTPS_PROXY environment (ignored with HTTPClient)
+	TokenURL     string            // optional; defaults to Box's token endpoint
+	HTTPClient   *http.Client      // optional
+	Proxy        *url.URL          // optional; overrides the HTTPS_PROXY environment (ignored with HTTPClient)
+	Store        RefreshTokenStore // optional; persists each new refresh token
+}
+
+// RefreshTokenStore durably persists the OAuth refresh token, so a restarted
+// app resumes (with OAuth) from the newest one. SaveRefreshToken runs before
+// a newly issued token is used: on the code exchange, and on each rotation.
+// If it fails on a rotation, the call that rotated returns its error, the new
+// token stays in memory, and the save is retried on every later call until
+// it succeeds — a rotation is never treated as durable when it isn't.
+type RefreshTokenStore interface {
+	SaveRefreshToken(ctx context.Context, refreshToken string) error
 }
 
 // AuthorizeURL builds the URL to redirect a user to so they can grant
@@ -199,7 +215,9 @@ func (cfg OAuthConfig) AuthorizeURL(redirectURI, state string) string {
 }
 
 // ExchangeCode exchanges an authorization code for a gantryruntime.TokenSource that
-// refreshes itself thereafter.
+// refreshes itself thereafter. With a Store, the refresh token Box issues is
+// saved before ExchangeCode returns; if that save fails ExchangeCode returns
+// the error and no source, and the user goes through consent again.
 func (cfg OAuthConfig) ExchangeCode(ctx context.Context, code, redirectURI string) (gantryruntime.TokenSource, error) {
 	httpc := authHTTPClient(cfg.HTTPClient, cfg.Proxy)
 	tokenURL := orDefault(cfg.TokenURL, defaultTokenURL)
@@ -216,13 +234,19 @@ func (cfg OAuthConfig) ExchangeCode(ctx context.Context, code, redirectURI strin
 	if tr.RefreshToken == "" {
 		return nil, errors.New("auth: authorization-code exchange returned no refresh_token")
 	}
+	if cfg.Store != nil {
+		if err := cfg.Store.SaveRefreshToken(ctx, tr.RefreshToken); err != nil {
+			return nil, fmt.Errorf("auth: saving the refresh token: %w", err)
+		}
+	}
 	s := newOAuthSource(cfg, httpc, tokenURL, tr.RefreshToken)
 	s.token, s.expiry = tr.AccessToken, time.Now().Add(tr.ttl())
 	return s, nil
 }
 
 // OAuth resumes the authorization-code flow from a previously stored
-// refresh token, exchanging it for access tokens as needed.
+// refresh token, exchanging it for access tokens as needed. Set cfg.Store to
+// persist each rotation; refreshToken itself is taken as already stored.
 func OAuth(cfg OAuthConfig, refreshToken string) gantryruntime.TokenSource {
 	return newOAuthSource(cfg, authHTTPClient(cfg.HTTPClient, cfg.Proxy), orDefault(cfg.TokenURL, defaultTokenURL), refreshToken)
 }
@@ -238,6 +262,10 @@ type oauthSource struct {
 	token        string
 	expiry       time.Time
 	refreshToken string
+	store        RefreshTokenStore
+	// unsaved is set while refreshToken is a rotation the store hasn't
+	// confirmed; every call retries the save until it does.
+	unsaved bool
 }
 
 func newOAuthSource(cfg OAuthConfig, httpc *http.Client, tokenURL, refreshToken string) *oauthSource {
@@ -247,12 +275,16 @@ func newOAuthSource(cfg OAuthConfig, httpc *http.Client, tokenURL, refreshToken 
 		clientID:     cfg.ClientID,
 		clientSecret: cfg.ClientSecret,
 		refreshToken: refreshToken,
+		store:        cfg.Store,
 	}
 }
 
 func (s *oauthSource) AccessToken(ctx context.Context) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.unsaved && s.store.SaveRefreshToken(ctx, s.refreshToken) == nil {
+		s.unsaved = false
+	}
 	if s.token != "" && time.Until(s.expiry) > refreshMargin {
 		return s.token, nil
 	}
@@ -266,8 +298,17 @@ func (s *oauthSource) AccessToken(ctx context.Context) (string, error) {
 		return "", err
 	}
 	s.token, s.expiry = tr.AccessToken, time.Now().Add(tr.ttl())
-	if tr.RefreshToken != "" {
+	if tr.RefreshToken != "" && tr.RefreshToken != s.refreshToken {
+		// Box has already invalidated the old token, so keep the new one
+		// even if the store fails — but say so now.
 		s.refreshToken = tr.RefreshToken
+		if s.store != nil {
+			if err := s.store.SaveRefreshToken(ctx, s.refreshToken); err != nil {
+				s.unsaved = true
+				return "", fmt.Errorf("auth: saving the rotated refresh token: %w", err)
+			}
+			s.unsaved = false
+		}
 	}
 	return s.token, nil
 }
