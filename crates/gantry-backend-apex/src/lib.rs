@@ -358,6 +358,13 @@ proxy never applies.
 Apex has no request hooks: Salesforce's debug logs already record every callout
 (`CALLOUT_REQUEST` / `CALLOUT_RESPONSE`), retries included.
 
+## Retries
+
+Apex has no `sleep`, so a 429 or 5xx is retried at once, with no backoff to
+configure; set the budget with `new BoxHttpClient(tokens, maxRetries,
+timeoutMs)` (default 2), and drive slower retries across transactions (e.g. a
+`Queueable`).
+
 ## Deploy
 
 ```bash

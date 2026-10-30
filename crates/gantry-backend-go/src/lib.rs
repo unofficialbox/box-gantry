@@ -542,6 +542,19 @@ to `WithHTTPClient`. Token requests are not observed.
 debug level. Query values whose names look secret (`token`, `secret`,
 `password`, `code`, …) read `REDACTED`; the token and bodies are never logged.
 
+## Retries
+
+A 429, a 5xx, or a failed connection is retried up to five times, with
+exponential backoff and full jitter: the wait before retry *n* is up to
+500ms·2ⁿ, capped at 30s, unless Box sends a `Retry-After`. A 401 refreshes the
+token once. Tune the budget and the backoff:
+
+```go
+c := client.NewClient(ts,
+	gantryruntime.WithMaxRetries(3),
+	gantryruntime.WithRetryBackoff(200*time.Millisecond, 10*time.Second))
+```
+
 ## Documentation
 
 API reference on [pkg.go.dev](https://pkg.go.dev/@MODULE@); the [`docs/`](./docs)

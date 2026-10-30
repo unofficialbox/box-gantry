@@ -163,6 +163,13 @@ function redactUrl(raw: string): string {
 export interface ClientOptions {
   /** How many times a retriable failure is retried (default 5). */
   maxRetries?: number;
+  /** The exponential backoff between retries: the wait before retry `n` is
+   * uniform (full jitter) in `[0, min(retryBaseDelayMs·2ⁿ, retryMaxDelayMs)]`
+   * (defaults 500 and 30000). A Retry-After from Box still raises the wait,
+   * up to its own ceiling. */
+  retryBaseDelayMs?: number;
+  /** The cap on one backoff wait (see `retryBaseDelayMs`). */
+  retryMaxDelayMs?: number;
   /** Override individual base-URL classes (custom deployments). */
   baseUrls?: Record<string, string>;
   /** Override the platform `fetch` (same signature) — e.g. to inject an
@@ -183,6 +190,8 @@ export class Client {
   private readonly auth: Auth;
   private readonly baseUrls: Record<string, string>;
   private readonly maxRetries: number;
+  private readonly retryBaseDelayMs: number;
+  private readonly retryMaxDelayMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly defaultHeaders: Record<string, string>;
   private readonly hooks: ClientHooks[];
@@ -194,6 +203,8 @@ export class Client {
       throw new RangeError('maxRetries must be a non-negative integer');
     }
     this.maxRetries = maxRetries;
+    this.retryBaseDelayMs = nonNegative('retryBaseDelayMs', options.retryBaseDelayMs ?? 500);
+    this.retryMaxDelayMs = nonNegative('retryMaxDelayMs', options.retryMaxDelayMs ?? 30_000);
     this.baseUrls = { ...DEFAULT_BASE_URLS, ...(options.baseUrls ?? {}) };
     this.fetchImpl = options.fetch ?? fetch;
     this.defaultHeaders = { ...(options.headers ?? {}) };
@@ -211,6 +222,8 @@ export class Client {
     );
     return new Client(this.auth, {
       maxRetries: this.maxRetries,
+      retryBaseDelayMs: this.retryBaseDelayMs,
+      retryMaxDelayMs: this.retryMaxDelayMs,
       baseUrls: this.baseUrls,
       fetch: this.fetchImpl,
       headers: { ...headers, 'As-User': userId },
@@ -279,7 +292,7 @@ export class Client {
         if (attempt === this.maxRetries || !idempotent) {
           break;
         }
-        await sleep(backoff(attempt), signal);
+        await sleep(backoff(attempt, this.retryBaseDelayMs, this.retryMaxDelayMs), signal);
         continue;
       }
 
@@ -303,7 +316,7 @@ export class Client {
         continue;
       }
       if (shouldRetry(response.status, idempotent) && attempt < this.maxRetries) {
-        await sleep(retryDelay(response, attempt), signal);
+        await sleep(retryDelay(response, backoff(attempt, this.retryBaseDelayMs, this.retryMaxDelayMs)), signal);
         continue;
       }
       if (response.status < 200 || response.status >= 300) {
@@ -347,9 +360,17 @@ export class Client {
   }
 }
 
-/** The safety ceiling on any single retry sleep, so a hostile server-sent
- * Retry-After can't stall the client indefinitely. */
+/** The safety ceiling on a server-sent Retry-After, so a hostile one can't
+ * stall the client indefinitely. */
 const MAX_RETRY_DELAY_MS = 30_000;
+
+/** `value`, if it is a finite, non-negative number of milliseconds. */
+function nonNegative(name: string, value: number): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new RangeError(`${name} must be a non-negative number of milliseconds`);
+  }
+  return value;
+}
 
 /** HTTP's idempotent methods: safe to replay after a transport error or 5xx. */
 const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'PUT', 'DELETE', 'OPTIONS', 'TRACE']);
@@ -365,23 +386,27 @@ function shouldRetry(status: number, idempotent: boolean): boolean {
   return status === 429 || (status >= 500 && idempotent);
 }
 
-/** Full-jitter exponential backoff, capped at the max retry delay. */
-function backoff(attempt: number): number {
-  const base = Math.min(2 ** attempt * 500, MAX_RETRY_DELAY_MS);
-  return Math.random() * base;
+/** Full-jitter exponential backoff from `baseMs`, doubling per attempt up to
+ * `maxMs`. */
+function backoff(attempt: number, baseMs: number, maxMs: number): number {
+  let ceiling = Math.min(baseMs, maxMs);
+  for (let i = 0; i < attempt && ceiling < maxMs; i++) {
+    ceiling = Math.min(ceiling * 2, maxMs);
+  }
+  return Math.random() * ceiling;
 }
 
-/** The delay before the next retry: exponential backoff, raised to a
- * (delay-seconds) Retry-After as a floor when present, and clamped to
+/** The delay before the next retry: the exponential backoff, raised to a
+ * (delay-seconds) Retry-After as a floor when present — that header clamped to
  * `MAX_RETRY_DELAY_MS`. HTTP-date Retry-After values fall back to backoff (the
  * same posture as the Rust runtime). */
-function retryDelay(response: Response, attempt: number): number {
-  let delay = backoff(attempt);
+function retryDelay(response: Response, backoffMs: number): number {
+  let delay = backoffMs;
   const header = response.headers.get('Retry-After');
   if (header && /^\d+$/.test(header.trim())) {
-    delay = Math.max(delay, Number(header.trim()) * 1000);
+    delay = Math.max(delay, Math.min(Number(header.trim()) * 1000, MAX_RETRY_DELAY_MS));
   }
-  return Math.min(delay, MAX_RETRY_DELAY_MS);
+  return delay;
 }
 
 /** Sleep for `ms`, rejecting promptly if the signal aborts. */

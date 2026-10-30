@@ -247,6 +247,11 @@ public final class RuntimeSmoke {
             }
         });
 
+        // 503 twenty times, then 200, for the retry backoff test.
+        AtomicInteger unavailableHits = new AtomicInteger();
+        server.createContext("/unavailable", ex ->
+            respond(ex, unavailableHits.incrementAndGet() <= 20 ? 503 : 200, "{}"));
+
         server.start();
         String base = "http://127.0.0.1:" + server.getAddress().getPort();
 
@@ -482,6 +487,28 @@ public final class RuntimeSmoke {
         check(lines.size() == 1 && lines.get(0).startsWith("box: GET http://box.invalid/proxied?Access_Token=REDACTED"
                 + "&code=REDACTED&refresh%5Ftoken=REDACTED&api_key=REDACTED&q=a@b&password=REDACTED -> 200 in "),
             "redacted line " + lines);
+
+        // retryBackoff sets the waits: twenty of them, each uniform in
+        // [0, 100ms], sum to about 1s — over 400ms all but certainly, and
+        // under the 2s cap, where the default 500ms-to-30s backoff would take
+        // minutes.
+        Runtime.Session quick = Runtime.Session.builder(Runtime.developerToken("t"))
+            .maxRetries(20)
+            .retryBackoff(java.time.Duration.ofMillis(100), java.time.Duration.ofMillis(100))
+            .build();
+        long backoffStarted = System.nanoTime();
+        quick.fetch(quick.newRequest("GET", base + "/unavailable"));
+        long backoffMs = (System.nanoTime() - backoffStarted) / 1_000_000;
+        check(unavailableHits.get() == 21 && backoffMs >= 400 && backoffMs < 5_000,
+            "retry backoff: " + unavailableHits.get() + " hits in " + backoffMs + "ms");
+        boolean negative = false;
+        try {
+            Runtime.Session.builder(Runtime.developerToken("t"))
+                .retryBackoff(java.time.Duration.ofMillis(-1), java.time.Duration.ZERO);
+        } catch (IllegalArgumentException expected) {
+            negative = true;
+        }
+        check(negative, "a negative retry delay should be rejected");
 
         server.stop(0);
         System.out.println("RUNTIME_OK");

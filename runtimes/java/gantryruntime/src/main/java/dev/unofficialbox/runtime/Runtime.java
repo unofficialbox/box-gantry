@@ -39,10 +39,11 @@ public final class Runtime {
 
     /** A token within this margin of expiry is treated as stale and refreshed. */
     private static final long REFRESH_MARGIN_MS = 60_000L;
-    /** Exponential-backoff base and cap (before jitter). */
-    private static final long BACKOFF_BASE_MS = 500L;
-    private static final long BACKOFF_CAP_MS = 30_000L;
-    /** Ceiling on the post-Retry-After delay (a two-tier cap, mirroring Rust). */
+    /** The default exponential backoff (see {@link Session.Builder#retryBackoff}):
+     * the wait before retry n is uniform in [0, min(base·2^n, max)]. */
+    public static final Duration DEFAULT_RETRY_BASE_DELAY = Duration.ofMillis(500);
+    public static final Duration DEFAULT_RETRY_MAX_DELAY = Duration.ofSeconds(30);
+    /** Ceiling on a server-sent Retry-After (mirroring Rust). */
     private static final long MAX_RETRY_DELAY_MS = 300_000L;
     private static final int DEFAULT_MAX_RETRIES = 5;
     private static final String DEFAULT_TOKEN_URL = "https://api.box.com/oauth2/token";
@@ -385,6 +386,8 @@ public final class Runtime {
         private final Auth auth;
         private final HttpClient http;
         private final int maxRetries;
+        private final long retryBaseMs;
+        private final long retryMaxMs;
         private final Map<String, String> baseUrls;
         private final Map<String, String> baseUrlOverrides;
         private final Map<String, String> defaultHeaders;
@@ -404,6 +407,8 @@ public final class Runtime {
                     ? builder.http
                     : defaultHttpClient(builder.httpVersion, builder.proxy);
             this.maxRetries = builder.maxRetries;
+            this.retryBaseMs = builder.retryBase.toMillis();
+            this.retryMaxMs = builder.retryMax.toMillis();
             this.baseUrls = defaultBaseUrls();
             this.baseUrlOverrides = Map.copyOf(builder.baseUrlOverrides);
             this.defaultHeaders = Map.copyOf(builder.defaultHeaders);
@@ -415,6 +420,8 @@ public final class Runtime {
             this.auth = base.auth;
             this.http = base.http;
             this.maxRetries = base.maxRetries;
+            this.retryBaseMs = base.retryBaseMs;
+            this.retryMaxMs = base.retryMaxMs;
             this.baseUrls = base.baseUrls;
             this.baseUrlOverrides = base.baseUrlOverrides;
             this.defaultHeaders = Map.copyOf(defaultHeaders);
@@ -514,7 +521,7 @@ public final class Runtime {
                     if (attempt == maxRetries || !idempotent) {
                         throw new BoxApiException("gantryruntime: request failed: " + err.getMessage(), err);
                     }
-                    sleep(backoff(attempt));
+                    sleep(backoff(attempt, retryBaseMs, retryMaxMs));
                     continue;
                 }
                 if (response.status == 401 && !refreshed && attempt < maxRetries) {
@@ -523,7 +530,7 @@ public final class Runtime {
                     continue;
                 }
                 if (shouldRetry(response.status, idempotent) && attempt < maxRetries) {
-                    sleep(retryDelay(response, attempt));
+                    sleep(retryDelay(response, backoff(attempt, retryBaseMs, retryMaxMs)));
                     continue;
                 }
                 if (response.status / 100 != 2) {
@@ -668,6 +675,8 @@ public final class Runtime {
             private HttpClient.Version httpVersion;
             private ProxySelector proxy;
             private int maxRetries = DEFAULT_MAX_RETRIES;
+            private Duration retryBase = DEFAULT_RETRY_BASE_DELAY;
+            private Duration retryMax = DEFAULT_RETRY_MAX_DELAY;
             private final Map<String, String> baseUrlOverrides = new LinkedHashMap<>();
             private final Map<String, String> defaultHeaders = new LinkedHashMap<>();
             private final List<Consumer<RequestInfo>> requestHooks = new ArrayList<>();
@@ -717,6 +726,24 @@ public final class Runtime {
                     throw new IllegalArgumentException("gantryruntime: maxRetries must be non-negative");
                 }
                 this.maxRetries = maxRetries;
+                return this;
+            }
+
+            /** The exponential backoff between retries: the wait before
+             * retry n is uniform (full jitter) in [0, min(base·2^n, max)],
+             * from {@link Runtime#DEFAULT_RETRY_BASE_DELAY} and {@link
+             * Runtime#DEFAULT_RETRY_MAX_DELAY}, to the millisecond. A
+             * Retry-After from Box still raises the wait, up to its own
+             * ceiling. */
+            public Builder retryBackoff(Duration base, Duration max) {
+                if (base.isNegative() || max.isNegative()) {
+                    throw new IllegalArgumentException("gantryruntime: retry delays must be non-negative");
+                }
+                // Fail here, not at the first retry, on a delay too long for millis.
+                base.toMillis();
+                max.toMillis();
+                this.retryBase = base;
+                this.retryMax = max;
                 return this;
             }
 
@@ -1759,18 +1786,24 @@ public final class Runtime {
         return status == 429 || (status >= 500 && idempotent);
     }
 
-    private static long backoff(int attempt) {
-        long base = Math.min(BACKOFF_BASE_MS << Math.min(attempt, 20), BACKOFF_CAP_MS);
-        return ThreadLocalRandom.current().nextLong(base + 1);
+    // Full-jitter exponential backoff from baseMs, doubling per attempt up to maxMs.
+    private static long backoff(int attempt, long baseMs, long maxMs) {
+        long ceiling = Math.min(baseMs, maxMs);
+        for (int i = 0; i < attempt && ceiling < maxMs; i++) {
+            ceiling = ceiling > maxMs / 2 ? maxMs : ceiling * 2;
+        }
+        return ThreadLocalRandom.current().nextLong(Math.min(ceiling, Long.MAX_VALUE - 1) + 1);
     }
 
-    private static long retryDelay(Response response, int attempt) {
-        long delay = backoff(attempt);
+    // The backoff, raised to a server-sent Retry-After as a floor — that header
+    // clamped to MAX_RETRY_DELAY_MS so a hostile one can't stall the client.
+    private static long retryDelay(Response response, long backoffMs) {
+        long delay = backoffMs;
         String retryAfter = responseHeader(response, "Retry-After").trim();
         if (retryAfter.matches("\\d+")) {
-            delay = Math.max(delay, Long.parseLong(retryAfter) * 1000L);
+            delay = Math.max(delay, Math.min(Long.parseLong(retryAfter) * 1000L, MAX_RETRY_DELAY_MS));
         }
-        return Math.min(delay, MAX_RETRY_DELAY_MS);
+        return delay;
     }
 
     private static void sleep(long millis) {

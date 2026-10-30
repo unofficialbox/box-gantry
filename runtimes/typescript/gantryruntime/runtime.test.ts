@@ -323,6 +323,52 @@ test('the debug logger redacts secret query values and userinfo', () => {
   }
 });
 
+test('the retry backoff doubles from retryBaseDelayMs up to retryMaxDelayMs', async () => {
+  let hits = 0;
+  const sentAt: number[] = [];
+  // Pin the jitter to its top so each wait is exactly the backoff ceiling.
+  const random = Math.random;
+  Math.random = () => 1;
+  try {
+    await withServer(
+      (req, res) => {
+        res.statusCode = ++hits <= 3 ? 503 : 200;
+        res.end('{}');
+      },
+      async (url) => {
+        const client = new Client(developerToken('t'), {
+          retryBaseDelayMs: 40,
+          retryMaxDelayMs: 100,
+          hooks: [{ onRequest: () => sentAt.push(performance.now()) }],
+        });
+        await client.fetch(client.newRequest('GET', url));
+      },
+    );
+  } finally {
+    Math.random = random;
+  }
+  assert.equal(sentAt.length, 4);
+  [40, 80, 100].forEach((wait, i) => {
+    const gap = (sentAt[i + 1] ?? 0) - (sentAt[i] ?? 0);
+    // Timers may fire a hair early; the upper bound is generous.
+    assert.ok(gap >= wait - 2 && gap < wait + 1000, `wait ${i + 1}: ${gap}ms, want ~${wait}ms`);
+  });
+});
+
+test('retry delays must be non-negative', () => {
+  assert.equal(
+    [{ retryBaseDelayMs: -1 }, { retryMaxDelayMs: Number.NaN }].filter((options) => {
+      try {
+        new Client(developerToken('t'), options);
+        return false;
+      } catch (err) {
+        return err instanceof RangeError;
+      }
+    }).length,
+    2,
+  );
+});
+
 test('a response hook sees a transport error', async () => {
   const responses: ResponseInfo[] = [];
   const failing = (async () => {

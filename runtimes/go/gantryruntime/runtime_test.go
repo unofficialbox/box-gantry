@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fixedToken string
@@ -395,6 +396,62 @@ func TestDebugLoggingRedactsSecrets(t *testing.T) {
 	}
 	if logged := out.String(); strings.Contains(logged, "query-token") || !strings.Contains(logged, "error=") {
 		t.Fatalf("transport error line:\n%s", logged)
+	}
+}
+
+// The backoff ceiling doubles from the base up to the max; full jitter keeps
+// each wait at or under it, and over many samples close to it.
+func TestBackoffFollowsTheConfiguredBaseAndMax(t *testing.T) {
+	ms := time.Millisecond
+	for _, tc := range []struct {
+		opts    []Option
+		attempt int
+		ceiling time.Duration
+	}{
+		// The defaults, unchanged: 500ms doubling to a 30s cap.
+		{nil, 0, 500 * ms},
+		{nil, 1, time.Second},
+		{nil, 5, 16 * time.Second},
+		{nil, 6, 30 * time.Second},
+		{nil, 100, 30 * time.Second},
+		{[]Option{WithRetryBackoff(10*ms, 35*ms)}, 0, 10 * ms},
+		{[]Option{WithRetryBackoff(10*ms, 35*ms)}, 1, 20 * ms},
+		{[]Option{WithRetryBackoff(10*ms, 35*ms)}, 2, 35 * ms},
+		{[]Option{WithRetryBackoff(-ms, 0)}, 3, 0},
+	} {
+		client := New(fixedToken("t"), tc.opts...)
+		var largest time.Duration
+		for range 200 {
+			wait := client.backoff(tc.attempt)
+			if wait < 0 || wait > tc.ceiling {
+				t.Fatalf("backoff(%d) = %v, want within [0, %v]", tc.attempt, wait, tc.ceiling)
+			}
+			largest = max(largest, wait)
+		}
+		if largest < tc.ceiling/2 {
+			t.Fatalf("backoff(%d) never passed %v in 200 samples (largest %v)", tc.attempt, tc.ceiling/2, largest)
+		}
+	}
+}
+
+// A small backoff shortens the waits between retried 503s.
+func TestWithRetryBackoffShortensTheWaits(t *testing.T) {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits++; hits <= 4 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	}))
+	defer server.Close()
+
+	client := New(fixedToken("t"), WithRetryBackoff(time.Millisecond, 4*time.Millisecond))
+	started := time.Now()
+	if _, err := client.Fetch(context.Background(), client.NewRequest("GET", server.URL)); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	// Four waits of at most 1, 2, 4, and 4ms, where the defaults allow 7.5s.
+	if elapsed := time.Since(started); hits != 5 || elapsed > 2*time.Second {
+		t.Fatalf("%d attempts in %v, want 5 well under 2s", hits, elapsed)
 	}
 }
 

@@ -543,6 +543,20 @@ runtime has no logging dependency, so pass `|line| eprintln!("{line}")` or a
 `secret`, `password`, `code`, …) read `REDACTED`; the token and bodies are never
 logged.
 
+## Retries
+
+A 429 is retried for any request; a 5xx or a failed connection only for
+idempotent methods, since a `POST` may already have taken effect. Up to five
+retries wait with exponential backoff and full jitter — up to 500ms·2ⁿ before
+retry *n*, capped at 30s — raised to Box's `Retry-After` when it sends one. A
+401 refreshes the token once. Tune the budget and the backoff:
+
+```rust,ignore
+let session = runtime::Client::new(auth)
+    .with_max_retries(3)
+    .with_retry_backoff(Duration::from_millis(200), Duration::from_secs(10));
+```
+
 ## Documentation
 
 API reference on [docs.rs](https://docs.rs/box-open-sdk); the [`docs/`](./docs)

@@ -29,10 +29,15 @@ pub use webhooks::{WebhookVerifier, DEFAULT_WEBHOOK_MAX_AGE};
 use std::collections::HashMap;
 use std::time::Duration;
 
-/// The safety ceiling on any single retry sleep, so a pathological server-sent
-/// `Retry-After` (hours, years) can never suspend `fetch` far past the caller's
-/// intent.
+/// The safety ceiling on a server-sent `Retry-After`, so a pathological one
+/// (hours, years) can never suspend `fetch` far past the caller's intent.
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(300);
+
+/// The default exponential backoff (see [`Client::with_retry_backoff`]): the
+/// wait before retry `n` is uniform in `[0, min(base·2ⁿ, max)]`.
+pub const DEFAULT_RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
+/// The default cap on one backoff wait (see [`DEFAULT_RETRY_BASE_DELAY`]).
+pub const DEFAULT_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
 
 /// A runtime error: a failed request, auth acquisition, body decode, or a
 /// non-2xx response from Box. The message carries the detail; a non-2xx
@@ -264,6 +269,8 @@ pub struct Client {
     http: reqwest::Client,
     base_urls: HashMap<String, String>,
     max_retries: u32,
+    retry_base: Duration,
+    retry_max: Duration,
     default_headers: Vec<(String, String)>,
     // The built-in HTTP client's settings, kept so `with_http_version` and
     // `with_proxy` combine.
@@ -281,6 +288,8 @@ impl Client {
             auth: std::sync::Arc::new(auth),
             http: api_http_client(HttpVersion::Http2, None),
             max_retries: 5,
+            retry_base: DEFAULT_RETRY_BASE_DELAY,
+            retry_max: DEFAULT_RETRY_MAX_DELAY,
             base_urls: default_base_urls(),
             default_headers: Vec::new(),
             http_version: HttpVersion::Http2,
@@ -293,6 +302,16 @@ impl Client {
     /// Override how many times a retriable failure is retried (fluent).
     pub fn with_max_retries(mut self, n: u32) -> Client {
         self.max_retries = n;
+        self
+    }
+
+    /// Set the exponential backoff between retries (fluent): the wait before
+    /// retry `n` is uniform (full jitter) in `[0, min(base·2ⁿ, max)]`, from
+    /// [`DEFAULT_RETRY_BASE_DELAY`] and [`DEFAULT_RETRY_MAX_DELAY`]. A
+    /// `Retry-After` from Box still raises the wait, up to its own ceiling.
+    pub fn with_retry_backoff(mut self, base: Duration, max: Duration) -> Client {
+        self.retry_base = base;
+        self.retry_max = max;
         self
     }
 
@@ -387,6 +406,8 @@ impl Client {
             http: self.http.clone(),
             base_urls: self.base_urls.clone(),
             max_retries: self.max_retries,
+            retry_base: self.retry_base,
+            retry_max: self.retry_max,
             default_headers: self.default_headers.clone(),
             http_version: self.http_version,
             proxy: self.proxy.clone(),
@@ -484,7 +505,7 @@ impl Client {
                     if attempt == self.max_retries || !idempotent {
                         return Err(err.into());
                     }
-                    sleep(backoff(attempt)).await;
+                    sleep(backoff(attempt, self.retry_base, self.retry_max)).await;
                     continue;
                 }
             };
@@ -504,7 +525,8 @@ impl Client {
             }
             // Back off exponentially on rate-limit / server errors.
             if should_retry(response.status, idempotent) && attempt < self.max_retries {
-                sleep(retry_delay(&response, attempt)).await;
+                let wait = backoff(attempt, self.retry_base, self.retry_max);
+                sleep(retry_delay(&response, wait)).await;
                 continue;
             }
             if !(200..300).contains(&response.status) {
@@ -737,23 +759,32 @@ fn should_retry(status: i64, idempotent: bool) -> bool {
     status == 429 || (status >= 500 && idempotent)
 }
 
-/// Exponential backoff capped at 30s, with full jitter.
-fn backoff(attempt: u32) -> Duration {
-    let base = (500u64.saturating_mul(1u64 << attempt.min(20))).min(30_000);
-    Duration::from_millis(jitter(base))
+/// Exponential backoff from `base`, doubling per attempt up to `max`, with full
+/// jitter.
+fn backoff(attempt: u32, base: Duration, max: Duration) -> Duration {
+    let mut ceiling = base.min(max);
+    for _ in 0..attempt {
+        if ceiling >= max {
+            break;
+        }
+        ceiling = ceiling.saturating_mul(2).min(max);
+    }
+    let nanos = u64::try_from(ceiling.as_nanos()).unwrap_or(u64::MAX);
+    Duration::from_nanos(jitter(nanos))
 }
 
-/// The delay before the next retry: exponential backoff (so repeated 429s/5xx
-/// escalate), raised to a server-sent `Retry-After` as a floor when present, and
-/// clamped to [`MAX_RETRY_DELAY`] so a hostile header can't stall the client.
-fn retry_delay(response: &Response, attempt: u32) -> Duration {
-    let mut delay = backoff(attempt);
+/// The delay before the next retry: the exponential `backoff` (so repeated
+/// 429s/5xx escalate), raised to a server-sent `Retry-After` as a floor when
+/// present — that header clamped to [`MAX_RETRY_DELAY`] so a hostile one
+/// can't stall the client.
+fn retry_delay(response: &Response, backoff: Duration) -> Duration {
+    let mut delay = backoff;
     if let Some(value) = header_value(&response.headers, "retry-after") {
         if let Ok(secs) = value.trim().parse::<u64>() {
-            delay = delay.max(Duration::from_secs(secs));
+            delay = delay.max(Duration::from_secs(secs).min(MAX_RETRY_DELAY));
         }
     }
-    delay.min(MAX_RETRY_DELAY)
+    delay
 }
 
 /// A cheap, dependency-free full-jitter source: a uniform value in `[0, max]`
@@ -771,7 +802,7 @@ fn jitter(max: u64) -> u64 {
     x ^= x << 13;
     x ^= x >> 7;
     x ^= x << 17;
-    x % (max + 1)
+    x % max.saturating_add(1)
 }
 
 async fn sleep(duration: Duration) {
@@ -1046,6 +1077,11 @@ mod tests {
         assert!(!should_retry(404, true));
     }
 
+    /// The default backoff: 500ms doubling to a 30s cap.
+    fn default_backoff(attempt: u32) -> Duration {
+        backoff(attempt, DEFAULT_RETRY_BASE_DELAY, DEFAULT_RETRY_MAX_DELAY)
+    }
+
     #[test]
     fn backoff_is_bounded_and_grows() {
         // Full jitter keeps every sample within [0, cap]; the cap climbs with
@@ -1053,26 +1089,76 @@ mod tests {
         for attempt in 0..8u32 {
             let cap = (500u64 << attempt.min(20)).min(30_000);
             for _ in 0..64 {
-                assert!(backoff(attempt) <= Duration::from_millis(cap));
+                assert!(default_backoff(attempt) <= Duration::from_millis(cap));
             }
         }
         // At high attempts the cap saturates at 30s, never higher.
         for _ in 0..64 {
-            assert!(backoff(20) <= Duration::from_millis(30_000));
+            assert!(default_backoff(20) <= Duration::from_millis(30_000));
+            assert!(default_backoff(u32::MAX) <= Duration::from_millis(30_000));
+        }
+    }
+
+    #[test]
+    fn backoff_follows_the_configured_base_and_max() {
+        let ms = Duration::from_millis;
+        for (attempt, base, max, cap) in [
+            (0, ms(10), ms(35), ms(10)),
+            (1, ms(10), ms(35), ms(20)),
+            (2, ms(10), ms(35), ms(35)),
+            (9, ms(10), ms(35), ms(35)),
+            (3, ms(0), ms(0), ms(0)),
+            (40, Duration::MAX, Duration::MAX, Duration::MAX),
+        ] {
+            // Every sample is at or under the cap, and over 200 of them full
+            // jitter comes close to it.
+            let samples: Vec<Duration> = (0..200).map(|_| backoff(attempt, base, max)).collect();
+            assert!(
+                samples.iter().all(|wait| *wait <= cap),
+                "{attempt}: {samples:?}"
+            );
+            let largest = samples.iter().max().copied().unwrap_or_default();
+            assert!(
+                largest >= cap / 2 || cap == Duration::MAX,
+                "{attempt}: {largest:?}"
+            );
         }
     }
 
     #[test]
     fn retry_delay_uses_backoff_floored_by_retry_after_and_capped() {
-        // At attempt 0 backoff is <= 500ms, so a 2s Retry-After raises the floor.
+        // A 2s Retry-After raises a shorter backoff to the floor.
         let resp = response(429, &[("Retry-After", "2")], b"");
-        assert_eq!(retry_delay(&resp, 0), Duration::from_secs(2));
+        assert_eq!(
+            retry_delay(&resp, Duration::from_millis(400)),
+            Duration::from_secs(2)
+        );
         // A pathological Retry-After is clamped to the ceiling, never honored raw.
         let resp = response(429, &[("Retry-After", "100000")], b"");
-        assert_eq!(retry_delay(&resp, 0), MAX_RETRY_DELAY);
-        // A non-numeric Retry-After falls back to jittered backoff (<= cap).
+        assert_eq!(retry_delay(&resp, Duration::ZERO), MAX_RETRY_DELAY);
+        // A non-numeric Retry-After falls back to the backoff.
         let resp = response(503, &[("Retry-After", "soon")], b"");
-        assert!(retry_delay(&resp, 0) <= Duration::from_millis(500));
+        assert_eq!(
+            retry_delay(&resp, Duration::from_millis(400)),
+            Duration::from_millis(400)
+        );
+    }
+
+    #[tokio::test]
+    async fn with_retry_backoff_shortens_the_waits() {
+        const UNAVAILABLE: &[u8] =
+            b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
+        const OK: &[u8] = b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}";
+        let (url, heads) =
+            serve_sequence(&[UNAVAILABLE, UNAVAILABLE, UNAVAILABLE, UNAVAILABLE, OK]).await;
+        let client = Client::new(Auth::developer_token("t"))
+            .with_retry_backoff(Duration::from_millis(1), Duration::from_millis(4));
+        let started = std::time::Instant::now();
+        client.fetch(client.new_request("GET", &url)).await.unwrap();
+        // Four waits of at most 1, 2, 4, and 4ms, where the defaults allow 7.5s.
+        let elapsed = started.elapsed();
+        assert_eq!(heads.lock().unwrap().len(), 5);
+        assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
     }
 
     #[test]
@@ -1513,6 +1599,7 @@ mod tests {
         let responses = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let (seen_requests, seen_responses) = (requests.clone(), responses.clone());
         let client = Client::new(Auth::developer_token("secret-token"))
+            .with_retry_backoff(Duration::ZERO, Duration::ZERO)
             .with_request_hook(move |r| seen_requests.lock().unwrap().push(r.clone()))
             .with_response_hook(move |r| seen_responses.lock().unwrap().push(r.clone()));
         let request = with_query(client.new_request("GET", &url), "fields", "id");
@@ -1552,6 +1639,7 @@ mod tests {
         let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let sink = lines.clone();
         let client = Client::new(Auth::developer_token("secret-token"))
+            .with_retry_backoff(Duration::ZERO, Duration::ZERO)
             .with_debug_logging(move |line| sink.lock().unwrap().push(line.to_string()));
         let mut request = with_query(client.new_request("POST", &url), "fields", "id");
         request = with_query(request, "access_token", "query-token");

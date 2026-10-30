@@ -57,6 +57,8 @@ type Client struct {
 	http           *http.Client
 	baseURLs       map[string]string
 	maxRetries     int
+	retryBase      time.Duration
+	retryMax       time.Duration
 	defaultHeaders http.Header
 	requestHooks   []func(context.Context, RequestInfo)
 	responseHooks  []func(context.Context, ResponseInfo)
@@ -131,6 +133,28 @@ func apiHTTPClient(v HTTPVersion, proxy *url.URL) *http.Client {
 
 // WithMaxRetries sets how many times a retriable failure is retried.
 func WithMaxRetries(n int) Option { return func(c *Client) { c.maxRetries = n } }
+
+// The default exponential backoff: the wait before retry n is uniform in
+// [0, min(base·2ⁿ, max)].
+const (
+	DefaultRetryBaseDelay = 500 * time.Millisecond
+	DefaultRetryMaxDelay  = 30 * time.Second
+)
+
+// WithRetryBackoff sets the exponential backoff between retries: the wait
+// before retry n is uniform (full jitter) in [0, min(base·2ⁿ, max)], from
+// DefaultRetryBaseDelay and DefaultRetryMaxDelay. A negative value counts as
+// zero. A Retry-After from Box still sets the wait for that retry.
+func WithRetryBackoff(base, max time.Duration) Option {
+	return func(c *Client) { c.retryBase, c.retryMax = clampNonNegative(base), clampNonNegative(max) }
+}
+
+func clampNonNegative(d time.Duration) time.Duration {
+	if d < 0 {
+		return 0
+	}
+	return d
+}
 
 // RequestInfo describes one HTTP attempt as Fetch is about to send it. The
 // Header is a copy whose Authorization value reads "REDACTED", so a hook that
@@ -275,6 +299,8 @@ func New(ts TokenSource, opts ...Option) *Client {
 	c := &Client{
 		ts:             ts,
 		maxRetries:     5,
+		retryBase:      DefaultRetryBaseDelay,
+		retryMax:       DefaultRetryMaxDelay,
 		defaultHeaders: http.Header{},
 		baseURLs: map[string]string{
 			"api":             "https://api.box.com/2.0",
@@ -358,7 +384,7 @@ func (c *Client) Fetch(ctx context.Context, request *Request) (*Response, error)
 		if err != nil {
 			c.observeResponse(ctx, info, nil, started, err)
 			lastErr = err
-			if attempt == c.maxRetries || !sleep(ctx, backoff(attempt)) {
+			if attempt == c.maxRetries || !sleep(ctx, c.backoff(attempt)) {
 				return nil, err
 			}
 			continue
@@ -379,7 +405,7 @@ func (c *Client) Fetch(ctx context.Context, request *Request) (*Response, error)
 		}
 		// Backoff on rate-limit / server errors, honoring Retry-After.
 		if retriable(resp.status) && attempt < c.maxRetries {
-			if sleep(ctx, retryAfter(resp, attempt)) {
+			if sleep(ctx, c.retryAfter(resp, attempt)) {
 				continue
 			}
 		}
@@ -437,22 +463,27 @@ func retriable(status int) bool {
 	return status == http.StatusTooManyRequests || status >= 500
 }
 
-func backoff(attempt int) time.Duration {
-	base := time.Duration(1<<attempt) * 500 * time.Millisecond
-	if base > 30*time.Second {
-		base = 30 * time.Second
+// backoff is the wait before retrying after the given attempt: full jitter
+// over min(retryBase·2^attempt, retryMax).
+func (c *Client) backoff(attempt int) time.Duration {
+	ceiling := min(c.retryBase, c.retryMax)
+	for i := 0; i < attempt && ceiling < c.retryMax; i++ {
+		ceiling = min(ceiling*2, c.retryMax)
+		if ceiling < 0 { // overflowed
+			ceiling = c.retryMax
+		}
 	}
 	// Full jitter.
-	return time.Duration(rand.Int63n(int64(base) + 1))
+	return time.Duration(rand.Int63n(int64(ceiling) + 1))
 }
 
-func retryAfter(resp *Response, attempt int) time.Duration {
+func (c *Client) retryAfter(resp *Response, attempt int) time.Duration {
 	if v := resp.header.Get("Retry-After"); v != "" {
 		if secs, err := strconv.Atoi(v); err == nil {
 			return time.Duration(secs) * time.Second
 		}
 	}
-	return backoff(attempt)
+	return c.backoff(attempt)
 }
 
 func sleep(ctx context.Context, d time.Duration) bool {
