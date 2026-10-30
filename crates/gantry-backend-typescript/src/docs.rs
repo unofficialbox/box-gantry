@@ -435,6 +435,18 @@ const controller = new AbortController();\n\
 for await (const event of client.events.stream({}, controller.signal)) {\n\
 \x20 // use event\n\
 }\n\
+```\n\n\
+## Representations (PDF, text, thumbnails)\n\n\
+`client.files.getRepresentationContent` downloads a rendering of a file that Box\n\
+generates on demand — a PDF, its extracted text, page images. `repHints` names it\n\
+as Box's `X-Rep-Hints` header does; `assetPath` picks one asset of a multi-asset\n\
+representation (`'1.png'` for a page) and is `''` for a single-file one. It waits\n\
+while Box generates the representation, up to `maxWaitMs`\n\
+(`runtime.DEFAULT_REPRESENTATION_WAIT_MS`), and rejects if Box fails to:\n\n\
+```ts\n\
+const text = await client.files.getRepresentationContent(fileId, '[extracted_text]', '', {\n\
+\x20 maxWaitMs: 60_000,\n\
+});\n\
 ```\n";
 
 const ERRORS_GUIDE: &str = "# Errors\n\

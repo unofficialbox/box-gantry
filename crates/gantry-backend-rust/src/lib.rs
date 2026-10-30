@@ -151,6 +151,15 @@ pub fn generate(
             ),
         },
         GeneratedFile {
+            path: "src/runtime/representations.rs".to_string(),
+            content: vendored(
+                "runtimes/rust/gantryruntime/src/representations.rs",
+                nest_submodule(include_str!(
+                    "../../../runtimes/rust/gantryruntime/src/representations.rs"
+                )),
+            ),
+        },
+        GeneratedFile {
             path: "src/runtime/webhooks.rs".to_string(),
             content: vendored(
                 "runtimes/rust/gantryruntime/src/webhooks.rs",

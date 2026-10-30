@@ -439,6 +439,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -661,6 +662,62 @@ func TestGeneratedDownloadZipFollowsTheDownloadURL(t *testing.T) {
 	want := []string{"POST /zip_downloads", "GET /opaque/archive.zip"}
 	if len(seen) != len(want) || seen[0] != want[0] || seen[1] != want[1] {
 		t.Fatalf("requests = %q, want %q", seen, want)
+	}
+}
+
+// GetRepresentationContent runs Box's representation protocol: the item
+// offers the representation pending, the info URL answers pending once and
+// then success, and the asset comes from the content URL template. A
+// representation Box failed to generate is an error naming Box's code, and the
+// wait is bounded by the context.
+func TestGeneratedRepresentationContentPollsThenDownloads(t *testing.T) {
+	var server *httptest.Server
+	polls := 0
+	entry := func(state string) string {
+		return `{"representation":"extracted_text","info":{"url":"` + server.URL + `/rep/info"},` +
+			`"status":{"state":"` + state + `","code":"` + state + `_code"},` +
+			`"content":{"url_template":"` + server.URL + `/rep/content/{+asset_path}"}}`
+	}
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked := r.URL.Query().Get("fields") == "representations" && r.Header.Get("X-Rep-Hints") == "[extracted_text]"
+		switch {
+		case r.URL.Path == "/files/7" && asked:
+			io.WriteString(w, `{"id":"7","type":"file","representations":{"entries":[`+entry("pending")+`]}}`)
+		case r.URL.Path == "/files/8" && asked:
+			io.WriteString(w, `{"id":"8","type":"file","representations":{"entries":[`+entry("error")+`]}}`)
+		case r.URL.Path == "/rep/info":
+			polls++
+			if polls == 1 {
+				io.WriteString(w, entry("pending"))
+			} else {
+				io.WriteString(w, entry("success"))
+			}
+		case r.URL.Path == "/rep/content/page.txt":
+			io.WriteString(w, "extracted words")
+		default:
+			boxError(w, http.StatusNotFound, "not_found")
+		}
+	}))
+	defer server.Close()
+	c := client.NewClient(auth.DeveloperToken("t"), gantryruntime.WithBaseURL("api", server.URL))
+	ctx := context.Background()
+
+	text, err := c.Files.GetRepresentationContent(ctx, "7", "[extracted_text]", "page.txt")
+	if err != nil {
+		t.Fatalf("GetRepresentationContent: %v", err)
+	}
+	if body, _ := io.ReadAll(text); string(body) != "extracted words" || polls != 2 {
+		t.Fatalf("content = %q after %d info polls, want %q after 2", body, polls, "extracted words")
+	}
+
+	if _, err := c.Files.GetRepresentationContent(ctx, "8", "[extracted_text]", ""); err == nil || !strings.Contains(err.Error(), "error_code") {
+		t.Fatalf("an error state: err = %v, want one naming error_code", err)
+	}
+
+	short, cancel := context.WithTimeout(ctx, time.Millisecond)
+	defer cancel()
+	if _, err := c.Files.GetRepresentationContent(short, "7", "[extracted_text]", "page.txt"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a short deadline: err = %v, want context.DeadlineExceeded", err)
 	}
 }
 

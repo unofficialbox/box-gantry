@@ -19,7 +19,8 @@ use gantry_ir::naming::{camel, pascal};
 use gantry_manifest::CapabilityManifest;
 use gantry_sema::Analysis;
 use gantry_synth::{
-    ACCESS_TOKEN_TYPE, EventStream, TOKEN_EXCHANGE_GRANT, TokenExchange, ZipDownload,
+    ACCESS_TOKEN_TYPE, EventStream, Representation, TOKEN_EXCHANGE_GRANT, TokenExchange,
+    ZipDownload,
 };
 
 use crate::models::{ClassNames, apex_type, mint_unique};
@@ -48,6 +49,7 @@ pub fn generate_managers(
         streams: gantry_synth::detect_event_streams(analysis),
         exchanges: gantry_synth::detect_token_exchanges(analysis),
         zips: gantry_synth::detect_zip_downloads(analysis),
+        representations: gantry_synth::detect_representations(analysis),
     };
 
     let mut files = Vec::new();
@@ -117,6 +119,7 @@ struct Helpers {
     streams: Vec<EventStream>,
     exchanges: Vec<TokenExchange>,
     zips: Vec<ZipDownload>,
+    representations: Vec<Representation>,
 }
 
 fn manager_class(
@@ -221,9 +224,71 @@ fn manager_class(
             signature(zip.content),
         );
     }
+    for source in helpers
+        .representations
+        .iter()
+        .filter(|r| op_indices.contains(&r.operation))
+    {
+        assert!(
+            !used.contains("getRepresentationContent"),
+            "{class}: the manager already has a `getRepresentationContent` method"
+        );
+        out.push('\n');
+        render_representation_content(&mut out, program, names, source);
+    }
 
     let _ = writeln!(out, "}}");
     out
+}
+
+/// `getRepresentationContent`: one step of Box's representation protocol
+/// (`BoxRepresentations.fetch`) over this manager's item `GET` — Apex can't
+/// wait while Box generates a representation, so a call reports `pending`.
+fn render_representation_content(
+    out: &mut String,
+    program: &ir::Program,
+    names: &ClassNames,
+    source: &Representation,
+) {
+    let op = &program.operations[source.operation];
+    let params: Vec<String> = op
+        .params
+        .iter()
+        .filter(|p| p.location == ir::ParamLocation::Path)
+        .map(|p| {
+            format!(
+                "{} {}",
+                apex_type(program, names, &p.ty),
+                camel(p.name.as_str())
+            )
+        })
+        .collect();
+    let _ = writeln!(
+        out,
+        "    /**\n\
+         \x20    * Fetch a representation of the item — a PDF, its extracted text, page\n\
+         \x20    * images. `repHints` names it as `X-Rep-Hints` does (`'[pdf]'`,\n\
+         \x20    * `'[extracted_text]'`); `assetPath` picks one asset of a multi-asset\n\
+         \x20    * representation (`'1.png'`) and is `''` for a single-file one. Apex can't\n\
+         \x20    * wait while Box generates it: the result's `content` is set once Box has\n\
+         \x20    * it, and its `state` is `pending` until then — call again later.\n\
+         \x20    */\n\
+         \x20   public BoxRepresentations.Result getRepresentationContent({}, String repHints, String assetPath) {{\n\
+         \x20       BoxRequest request = new BoxRequest();\n\
+         \x20       request.method = 'GET';\n\
+         \x20       request.baseUrl = '{base}';\n\
+         \x20       request.path = {path};\n\
+         \x20       request.query.put('{fields}', '{field}');\n\
+         \x20       request.headers.put('{hints}', repHints);\n\
+         \x20       return BoxRepresentations.fetch(client, request, '{field}', assetPath);\n\
+         \x20   }}",
+        params.join(", "),
+        base = base_url_key(op.base_url),
+        path = path_expr(&op.path),
+        fields = escape(&source.fields_param.wire_name),
+        hints = escape(&source.hints_param.wire_name),
+        field = escape(&source.field.wire_name),
+    );
 }
 
 /// `downloadZip`: create the archive with this manager's typed `POST`, then

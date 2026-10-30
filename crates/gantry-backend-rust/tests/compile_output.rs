@@ -565,6 +565,105 @@ async fn generated_methods_surface_consistency_outcomes_as_api_errors() {
     assert_api_error(&err, 404, Some("not_found"));
 }
 
+/// Answer Box's representation protocol: GET /files/7 offers the
+/// `extracted_text` representation `pending`, its info URL answers `pending`
+/// once and then `success`, and its content URL serves the text. GET /files/8
+/// offers one Box failed to generate. Info polls are counted in `polls`.
+fn serve_representations(polls: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let base = url.clone();
+    std::thread::spawn(move || {
+        let entry = |state: &str| {
+            format!(
+                r#"{{"representation":"extracted_text","info":{{"url":"{base}/rep/info"}},"status":{{"state":"{state}","code":"{state}_code"}},"content":{{"url_template":"{base}/rep/content/{{+asset_path}}"}}}}"#
+            )
+        };
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).unwrap();
+            let mut hints = String::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let Some((name, value)) = line.trim_end().split_once(':') else {
+                    break;
+                };
+                if name.eq_ignore_ascii_case("x-rep-hints") {
+                    hints = value.trim().to_string();
+                }
+            }
+            let target = request_line.split_whitespace().nth(1).unwrap_or_default();
+            let item = |state: &str| {
+                format!(r#"{{"id":"7","type":"file","representations":{{"entries":[{}]}}}}"#, entry(state))
+            };
+            let asked = target.ends_with("?fields=representations") && hints == "[extracted_text]";
+            let (status, body) = match target {
+                "/files/7?fields=representations" if asked => ("200 OK", item("pending")),
+                "/files/8?fields=representations" if asked => ("200 OK", item("error")),
+                "/rep/info" => {
+                    let n = polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    ("200 OK", entry(if n == 0 { "pending" } else { "success" }))
+                }
+                "/rep/content/page.txt" => ("200 OK", "extracted words".to_string()),
+                _ => ("404 Not Found", box_error(404, "not_found")),
+            };
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+    });
+    url
+}
+
+#[tokio::test]
+async fn representation_content_polls_then_downloads() {
+    let polls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let session = runtime::Client::new(Auth::developer_token("t"))
+        .with_base_url("api", &serve_representations(polls.clone()));
+    let client = Client::from_session(session);
+
+    // Pending on the item, pending on the first poll, success on the second:
+    // then the asset at the content URL template.
+    let text = client
+        .files
+        .get_representation_content("7".into(), "[extracted_text]", "page.txt", None)
+        .await
+        .expect("the representation is downloaded once Box has it");
+    assert_eq!(text.into_bytes(), b"extracted words");
+    assert_eq!(polls.load(std::sync::atomic::Ordering::SeqCst), 2, "two info polls");
+
+    // A representation Box failed to generate is an error naming Box's code.
+    let Err(err) = client
+        .files
+        .get_representation_content("8".into(), "[extracted_text]", "", None)
+        .await
+    else {
+        panic!("an error state is an error");
+    };
+    assert!(err.to_string().contains("error_code"), "{err}");
+
+    // A wait shorter than Box takes is an error, not a hang.
+    let Err(err) = client
+        .files
+        .get_representation_content(
+            "7".into(),
+            "[extracted_text]",
+            "page.txt",
+            Some(std::time::Duration::from_millis(1)),
+        )
+        .await
+    else {
+        panic!("the wait is bounded");
+    };
+    assert!(err.to_string().contains("timed out"), "{err}");
+}
+
 /// Answer `POST /oauth2/token` like Box: a downscoped token, or an OAuth 400
 /// when the form carries no scope. Each request's form body is recorded.
 fn serve_token(forms: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> String {

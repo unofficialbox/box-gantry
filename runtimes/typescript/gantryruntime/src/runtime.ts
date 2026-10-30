@@ -523,3 +523,83 @@ export function parseJsonExact(text: string): unknown {
       : value;
   return JSON.parse(text, reviver);
 }
+
+/** How long `representationContent` waits for Box to generate a
+ * representation, in milliseconds, unless the caller passes its own bound. */
+export const DEFAULT_REPRESENTATION_WAIT_MS = 300_000;
+
+/** Bounds on `representationContent`'s wait. */
+export interface RepresentationOptions {
+  /** The longest wait, in milliseconds (`DEFAULT_REPRESENTATION_WAIT_MS`). */
+  maxWaitMs?: number;
+  /** Aborting it stops the wait and throws the abort. */
+  signal?: AbortSignal;
+}
+
+/** One of Box's representation entries, as far as the protocol reads it. */
+interface RepresentationEntry {
+  representation?: string;
+  info?: { url?: string };
+  status?: { state?: string; code?: string };
+  content?: { url_template?: string };
+}
+
+/**
+ * Run Box's representation protocol for the item `request` fetches, which
+ * already asks for `field` and carries the `X-Rep-Hints` header: take the
+ * first representation Box offers under `field`, poll its info URL while Box
+ * generates it (`pending`, `none`), then download `assetPath` from its content
+ * URL template (`''` for a single-file representation such as a PDF or
+ * extracted text). A representation Box fails to generate (`error`) throws,
+ * as does waiting past `maxWaitMs` or aborting `signal`.
+ */
+export async function representationContent(
+  client: Client,
+  request: Request,
+  field: string,
+  assetPath: string,
+  options: RepresentationOptions = {},
+): Promise<Stream> {
+  const timeout = AbortSignal.timeout(options.maxWaitMs ?? DEFAULT_REPRESENTATION_WAIT_MS);
+  const signal = options.signal === undefined ? timeout : AbortSignal.any([options.signal, timeout]);
+  const json = (response: Response): unknown =>
+    JSON.parse(new TextDecoder().decode(responseBytes(response)));
+  const item = json(await client.fetch(request, signal)) as Record<string, { entries?: RepresentationEntry[] }>;
+  const first = item[field]?.entries?.[0];
+  if (first === undefined) {
+    throw new BoxApiError('box: no representation matches the X-Rep-Hints requested');
+  }
+  const rep: RepresentationEntry = { ...first };
+  const name = rep.representation ?? '';
+  let delay = 250;
+  for (;;) {
+    const state = rep.status?.state;
+    if (state === 'success' || state === 'viewable') {
+      break;
+    }
+    if (state === 'error') {
+      throw new BoxApiError(`box: Box could not generate the ${name} representation (${rep.status?.code ?? ''})`);
+    }
+    if (state !== 'pending' && state !== 'none') {
+      throw new BoxApiError(`box: unknown representation state ${state}`);
+    }
+    if (rep.info?.url === undefined) {
+      throw new BoxApiError(`box: the ${name} representation has no info URL to poll`);
+    }
+    if (state === 'pending') {
+      await sleep(delay, signal);
+    }
+    delay = Math.min(delay * 2, 5000);
+    const polled = json(await client.fetch(client.newRequest('GET', rep.info.url), signal)) as RepresentationEntry;
+    rep.status = polled.status;
+    if (polled.content?.url_template !== undefined) {
+      rep.content = polled.content;
+    }
+  }
+  const template = rep.content?.url_template;
+  if (template === undefined) {
+    throw new BoxApiError(`box: the ${name} representation has no content URL`);
+  }
+  const url = template.replace('{+asset_path}', assetPath);
+  return responseStream(await client.fetch(client.newRequest('GET', url), signal));
+}

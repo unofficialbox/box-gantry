@@ -813,6 +813,63 @@ try {
   server.close();
 }
 
+// getRepresentationContent runs Box's representation protocol: the item offers
+// the representation pending, the info URL answers pending once and then
+// success, and the asset comes from the content URL template. A representation
+// Box failed to generate rejects naming Box's code, and the wait is bounded.
+let repPolls = 0;
+const repServer = http.createServer((req, res) => {
+  const base = `http://127.0.0.1:${repServer.address().port}`;
+  const entry = (state) => ({
+    representation: 'extracted_text',
+    info: { url: `${base}/rep/info` },
+    status: { state, code: `${state}_code` },
+    content: { url_template: `${base}/rep/content/{+asset_path}` },
+  });
+  const asked = req.headers['x-rep-hints'] === '[extracted_text]';
+  res.setHeader('Content-Type', 'application/json');
+  if (asked && req.url === '/files/7?fields=representations') {
+    res.end(JSON.stringify({ id: '7', type: 'file', representations: { entries: [entry('pending')] } }));
+  } else if (asked && req.url === '/files/8?fields=representations') {
+    res.end(JSON.stringify({ id: '8', type: 'file', representations: { entries: [entry('error')] } }));
+  } else if (req.url === '/rep/info') {
+    repPolls += 1;
+    res.end(JSON.stringify(entry(repPolls === 1 ? 'pending' : 'success')));
+  } else if (req.url === '/rep/content/page.txt') {
+    res.end('extracted words');
+  } else {
+    boxError(res, 404, 'not_found');
+  }
+});
+await new Promise((resolve) => repServer.listen(0, '127.0.0.1', resolve));
+try {
+  const api = `http://127.0.0.1:${repServer.address().port}`;
+  const c = new Client(runtime.developerToken('t'), { baseUrls: { api } });
+  const text = await c.files.getRepresentationContent('7', '[extracted_text]', 'page.txt');
+  const body = new TextDecoder().decode(text.data);
+  if (body !== 'extracted words' || repPolls !== 2) {
+    throw new Error(`getRepresentationContent: ${JSON.stringify(body)} after ${repPolls} info polls`);
+  }
+  const rejects = async (what, call, want) => {
+    try {
+      await call;
+    } catch (err) {
+      if (!String(err).includes(want)) throw new Error(`${what}: got ${err}, want ${want}`);
+      return;
+    }
+    throw new Error(`${what}: resolved, want a rejection`);
+  };
+  await rejects('an error state', c.files.getRepresentationContent('8', '[extracted_text]'), 'error_code');
+  await rejects(
+    'a short wait',
+    c.files.getRepresentationContent('7', '[extracted_text]', 'page.txt', { maxWaitMs: 1 }),
+    'aborted',
+  );
+} finally {
+  repServer.closeAllConnections();
+  repServer.close();
+}
+
 // downscopeToken exchanges the session's current token at the token endpoint
 // through the generated token method: the form carries the exchange grant, the
 // subject token and its type, the space-joined scopes, and the resource. Box's

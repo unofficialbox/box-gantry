@@ -272,7 +272,8 @@ public with sharing class BoxHttpClient implements BoxClient {
     }
 
     private String buildUrl(BoxRequest request) {
-        // An absolute URL Box handed back (a zip's download_url) is used as is.
+        // An absolute URL Box handed back (a zip's download_url, a
+        // representation's info or content URL) is used as is.
         String url = request.url;
         if (url == null) {
             String base = this.baseUrls.get(request.baseUrl);
