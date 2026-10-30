@@ -1,13 +1,22 @@
 // The `fetch`-only Box auth flows, each an `Auth` passed to the runtime
 // `Client`: `developerToken` (a fixed token), `clientCredentials` (CCG), and the
 // OAuth 2.0 authorization-code flow. They exchange credentials at Box's token
-// endpoint and cache the access token (via the shared machinery in `tokens.ts`).
-// JWT server auth lives in `jwt.ts` — the only flow that reaches beyond `fetch`.
+// endpoint and cache the access token (via the shared machinery in `tokens.ts`),
+// and revoke it on logout (`revokeToken`). JWT server auth lives in `jwt.ts` —
+// the only flow that reaches beyond `fetch`.
 
 import { BoxApiError } from './errors.js';
-import { type Auth, CachedToken, DEFAULT_TOKEN_URL, type Token, postTokenForm } from './tokens.js';
+import {
+  type Auth,
+  CachedToken,
+  DEFAULT_TOKEN_URL,
+  type RevocableAuth,
+  type Token,
+  postRevokeForm,
+  postTokenForm,
+} from './tokens.js';
 
-export type { Auth } from './tokens.js';
+export type { Auth, RevocableAuth } from './tokens.js';
 
 /** Where a user is sent to grant an OAuth 2.0 app access. */
 const AUTHORIZE_URL = 'https://account.box.com/api/oauth2/authorize';
@@ -15,7 +24,9 @@ const AUTHORIZE_URL = 'https://account.box.com/api/oauth2/authorize';
 /**
  * The simplest flow: a fixed access token from the Box developer console. A
  * fixed token cannot be refreshed, so `forceRefresh` returns it unchanged (a
- * subsequent 401 then surfaces to the caller).
+ * subsequent 401 then surfaces to the caller). It has no client credentials to
+ * revoke itself with, so it is a plain `Auth`; revoke one through the
+ * generated `authorization` manager instead.
  */
 export function developerToken(token: string): Auth {
   return {
@@ -43,7 +54,7 @@ export interface CcgConfig {
 }
 
 /** Build a CCG `Auth`. Requires a subject: `enterpriseId` or `userId`. */
-export function clientCredentials(config: CcgConfig): Auth {
+export function clientCredentials(config: CcgConfig): RevocableAuth {
   if (!config.userId && !config.enterpriseId) {
     throw new BoxApiError('clientCredentials requires a subject: enterpriseId or userId');
   }
@@ -53,19 +64,26 @@ export function clientCredentials(config: CcgConfig): Auth {
   const subject = config.userId
     ? { type: 'user', id: config.userId }
     : { type: 'enterprise', id: config.enterpriseId ?? '' };
-  return new CachedToken(() =>
-    postTokenForm(
-      tokenUrl,
-      {
-        grant_type: 'client_credentials',
-        client_id: config.clientId,
-        client_secret: config.clientSecret,
-        box_subject_type: subject.type,
-        box_subject_id: subject.id,
-      },
-      undefined,
-      config.fetch,
-    ),
+  return new CachedToken(
+    () =>
+      postTokenForm(
+        tokenUrl,
+        {
+          grant_type: 'client_credentials',
+          client_id: config.clientId,
+          client_secret: config.clientSecret,
+          box_subject_type: subject.type,
+          box_subject_id: subject.id,
+        },
+        undefined,
+        config.fetch,
+      ),
+    async (token) => {
+      if (token) {
+        const form = { client_id: config.clientId, client_secret: config.clientSecret, token };
+        await postRevokeForm(tokenUrl, form, config.fetch);
+      }
+    },
   );
 }
 
@@ -106,18 +124,28 @@ export function authorizeUrl(config: OAuthConfig, redirectUri: string, state: st
 }
 
 /**
- * The refresh exchange for the authorization-code flow: it swaps the current
+ * The authorization-code flow's token source. Its refresh swaps the current
  * refresh token for a fresh access token and rotates the refresh token Box
  * returns (Box invalidates the old one on each exchange), reporting each rotated
  * token through `config.onRefresh` so a caller can persist it.
+ *
+ * Its revoke spends the refresh token (or, without one, the cached access
+ * token): Box accepts either and revokes the whole grant, so no fresh access
+ * token is minted first. After that every call rejects — the user must
+ * authorize again — and a second revoke is a no-op.
  */
-function refreshTokenExchange(
+function oauthSource(
   config: OAuthConfig,
   tokenUrl: string,
   initialRefresh: string,
-): () => Promise<Token> {
+  seed?: Token,
+): RevocableAuth {
   let refreshToken = initialRefresh;
-  return async () => {
+  let revoked = false;
+  const refresh = async (): Promise<Token> => {
+    if (revoked) {
+      throw new BoxApiError('the OAuth grant was revoked; run the authorization-code flow again');
+    }
     const token = await postTokenForm(
       tokenUrl,
       {
@@ -135,15 +163,27 @@ function refreshTokenExchange(
     }
     return token;
   };
+  const revoke = async (accessToken: string): Promise<void> => {
+    if (revoked) {
+      return;
+    }
+    const token = refreshToken || accessToken;
+    if (token) {
+      const form = { client_id: config.clientId, client_secret: config.clientSecret, token };
+      await postRevokeForm(tokenUrl, form, config.fetch);
+    }
+    revoked = true;
+    refreshToken = '';
+  };
+  return new CachedToken(refresh, revoke, seed);
 }
 
 /**
  * Resume the authorization-code flow from a previously stored refresh token,
  * exchanging it for access tokens as needed.
  */
-export function oauth(config: OAuthConfig, refreshToken: string): Auth {
-  const tokenUrl = config.tokenUrl ?? DEFAULT_TOKEN_URL;
-  return new CachedToken(refreshTokenExchange(config, tokenUrl, refreshToken));
+export function oauth(config: OAuthConfig, refreshToken: string): RevocableAuth {
+  return oauthSource(config, config.tokenUrl ?? DEFAULT_TOKEN_URL, refreshToken);
 }
 
 /**
@@ -156,7 +196,7 @@ export async function exchangeCode(
   code: string,
   redirectUri: string,
   signal?: AbortSignal,
-): Promise<Auth> {
+): Promise<RevocableAuth> {
   const tokenUrl = config.tokenUrl ?? DEFAULT_TOKEN_URL;
   const token = await postTokenForm(
     tokenUrl,
@@ -176,5 +216,5 @@ export async function exchangeCode(
   config.onRefresh?.(token.refreshToken);
   // Seed the cache with the access token we just obtained, and refresh via the
   // rotating refresh token thereafter.
-  return new CachedToken(refreshTokenExchange(config, tokenUrl, token.refreshToken), token);
+  return oauthSource(config, tokenUrl, token.refreshToken, token);
 }

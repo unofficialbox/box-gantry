@@ -17,7 +17,7 @@ embeds it at build time.
 | `BoxHttpClient` | `implements BoxClient` — real HTTP callout, base-URL resolution, retries, non-2xx → exception |
 | `BoxTokenProvider` | auth-token contract (`getAccessToken()` + `invalidate()`) |
 | `BoxDeveloperTokenProvider` | simplest flow: a fixed developer token |
-| `BoxCachingTokenProvider` | abstract base: token cache, refresh-before-expiry, error normalization |
+| `BoxCachingTokenProvider` | abstract base: token cache, refresh-before-expiry, `revoke()`, error normalization |
 | `BoxCcgTokenProvider` | Client Credentials Grant: mint + cache a server-to-server token (no crypto) |
 | `BoxJwtTokenProvider` | JWT server auth: RS256-signed assertion via an org-stored key (`Crypto.signWithCertificate`) |
 | `BoxChunkedUpload` | orchestrates Box's create-session → PUT parts → commit protocol (SHA-1 digests, byte ranges) |
@@ -40,7 +40,9 @@ FileFull f = client.files.getById(fileId, null, null, null, null);
 Store the client secret in a **Named Credential** or protected Custom Metadata,
 never in source. `BoxCcgTokenProvider` caches the access token and refreshes it a
 minute before expiry; on a `401` the HTTP client calls `invalidate()` so a
-prematurely-revoked token is re-minted on the next attempt.
+prematurely-revoked token is re-minted on the next attempt. To revoke the token
+yourself (logout, uninstall), call `BoxAuth.revokeToken(auth)`: it posts the
+token with the app's client credentials to Box's revoke endpoint and drops it.
 
 For the **JWT** flow, import the app's RSA private key into Salesforce
 **Certificate and Key Management** and register the public key with Box (Box

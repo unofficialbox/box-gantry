@@ -35,6 +35,18 @@ private class BoxAuthTest {
         System.assertNotEquals(null, p, 'JWT provider');
     }
 
+    // A developer token has no client credentials, so revokeToken refuses it
+    // loudly rather than making a callout Box would reject.
+    @isTest
+    static void revokeTokenRefusesADeveloperToken() {
+        try {
+            BoxAuth.revokeToken(BoxAuth.developerToken('DEV_TOKEN'));
+            System.assert(false, 'a developer token must not revoke');
+        } catch (BoxApiException e) {
+            System.assert(e.getMessage().contains('cannot revoke'), e.getMessage());
+        }
+    }
+
     // Answers the token endpoint like Box: a downscoped token, or an OAuth 400
     // when the form carries no scope. Records the last request.
     private class TokenEndpointMock implements HttpCalloutMock {

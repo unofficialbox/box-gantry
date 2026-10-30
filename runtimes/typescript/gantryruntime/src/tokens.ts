@@ -35,6 +35,20 @@ export interface Auth {
   forceRefresh(stale: string): Promise<string>;
 }
 
+/**
+ * An `Auth` that can revoke the token it holds — what `clientCredentials`,
+ * `oauth`, `exchangeCode`, and `jwtAuth` return.
+ */
+export interface RevocableAuth extends Auth {
+  /**
+   * Revoke the held token at Box's revoke endpoint, with the flow's own client
+   * credentials, and clear it from the cache — for logout and uninstall. CCG and
+   * JWT acquire a fresh token on their next use; OAuth revokes the whole grant,
+   * so every later call rejects rather than refreshing a dead grant.
+   */
+  revokeToken(): Promise<void>;
+}
+
 /** A normalized token exchange result. */
 export interface Token {
   accessToken: string;
@@ -48,13 +62,15 @@ export interface Token {
  * during a refresh share one in-flight exchange (single-flight), so a token is
  * never fetched twice at once, and the exchange is not tied to any one caller.
  */
-export class CachedToken implements Auth {
+export class CachedToken implements RevocableAuth {
   private token: string;
   private expiry: number;
   private inflight?: Promise<string>;
 
+  /** `revoke` gets the live cached access token, or `''` when there is none. */
   constructor(
     private readonly refresh: () => Promise<Token>,
+    private readonly revoke: (accessToken: string) => Promise<void>,
     seed?: Token,
   ) {
     this.token = seed?.accessToken ?? '';
@@ -74,6 +90,15 @@ export class CachedToken implements Auth {
       return this.token;
     }
     return this.refreshOnce();
+  }
+
+  async revokeToken(): Promise<void> {
+    // Let an exchange already in flight land first, so its token is the one
+    // revoked rather than cached after the revoke.
+    await this.inflight?.catch(() => undefined);
+    await this.revoke(this.token && this.expiry > Date.now() ? this.token : '');
+    this.token = '';
+    this.expiry = 0;
   }
 
   /** Run the flow's refresh, sharing one in-flight exchange across callers. */
@@ -152,4 +177,49 @@ export async function postTokenForm(
     refreshToken: parsed.refresh_token ?? '',
     ttlMs: (parsed.expires_in ?? 0) * 1000,
   };
+}
+
+/**
+ * The revoke endpoint beside `tokenUrl`: Box serves both under `/oauth2`, so a
+ * custom token URL ending in `/token` gets its sibling `/revoke`. Any other
+ * token URL is an error, not a guess.
+ */
+function revokeUrl(tokenUrl: string): string {
+  if (!tokenUrl.endsWith('/token')) {
+    throw new BoxApiError(
+      `can't derive a revoke endpoint from token URL ${tokenUrl} (it doesn't end in /token)`,
+    );
+  }
+  return `${tokenUrl.slice(0, -'/token'.length)}/revoke`;
+}
+
+/**
+ * POST `token` with the client credentials to the revoke endpoint beside
+ * `tokenUrl`. Box answers an empty 200; a transport failure or a non-2xx body
+ * surfaces as a `BoxApiError`, as for token requests.
+ */
+export async function postRevokeForm(
+  tokenUrl: string,
+  form: { client_id: string; client_secret: string; token: string },
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const url = revokeUrl(tokenUrl);
+  let response: Awaited<ReturnType<typeof fetch>>;
+  let text: string;
+  try {
+    response = await fetchImpl(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(form).toString(),
+      signal: AbortSignal.timeout(TOKEN_TIMEOUT_MS),
+    });
+    text = await response.text();
+  } catch (err) {
+    throw new BoxApiError('revoke endpoint request failed', { cause: err });
+  }
+  if (!response.ok) {
+    throw new BoxApiError(`revoke endpoint returned ${response.status}: ${text.trim()}`, {
+      status: response.status,
+    });
+  }
 }

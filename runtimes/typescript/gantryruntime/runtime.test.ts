@@ -9,7 +9,9 @@ import { BoxApiError } from './src/errors.js';
 import {
   Client,
   Stream,
+  clientCredentials,
   developerToken,
+  oauth,
   eventStream,
   parseJsonExact,
   streamPosition,
@@ -393,4 +395,90 @@ test('verifyWebhook rejects what Box did not send', async () => {
   for (const [name, body, h, keys] of cases) {
     assert.equal(await verifyWebhook(body, h, keys), false, name);
   }
+});
+
+/** An `assert.rejects` validator: a `BoxApiError` whose message mentions `text`. */
+function boxError(text: string): (err: unknown) => boolean {
+  return (err) => err instanceof BoxApiError && err.message.includes(text);
+}
+
+/** Run `fn` against a stand-in Box `/oauth2` server: `/oauth2/token` mints
+ * tok-1, tok-2, … (with rt-1, rt-2, …), `/oauth2/revoke` answers
+ * `revokeStatus`, and every request is recorded as `"<path> <form>"`. */
+async function withOAuth2Server(
+  fn: (tokenUrl: string, seen: string[]) => Promise<void>,
+  revokeStatus = 200,
+): Promise<void> {
+  const seen: string[] = [];
+  let minted = 0;
+  await withServer(
+    (req, res) => {
+      const chunks: Uint8Array[] = [];
+      req.on('data', (chunk) => chunks.push(chunk));
+      req.on('end', () => {
+        seen.push(`${req.url} ${new TextDecoder().decode(concatBytes(chunks))}`);
+        if (req.url === '/oauth2/revoke') {
+          res.statusCode = revokeStatus;
+          res.end(revokeStatus === 200 ? '' : '{"error":"invalid_client"}');
+          return;
+        }
+        minted++;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(`{"access_token":"tok-${minted}","refresh_token":"rt-${minted}","expires_in":3600}`);
+      });
+    },
+    (url) => fn(`${url}oauth2/token`, seen),
+  );
+}
+
+test('a CCG revoke posts the token with the client credentials, then re-acquires', async () => {
+  await withOAuth2Server(async (tokenUrl, seen) => {
+    const config = { clientId: 'c', clientSecret: 's', enterpriseId: '1', tokenUrl };
+    const auth = clientCredentials(config);
+    assert.equal(await auth.accessToken(), 'tok-1');
+    await auth.revokeToken();
+    assert.equal(seen[1], '/oauth2/revoke client_id=c&client_secret=s&token=tok-1');
+    assert.equal(await auth.accessToken(), 'tok-2');
+    // A fresh flow has nothing cached to revoke: no request at all.
+    await clientCredentials(config).revokeToken();
+    assert.equal(seen.length, 3);
+  });
+});
+
+test('a failed revoke rejects and keeps the token', async () => {
+  await withOAuth2Server(async (tokenUrl) => {
+    const auth = clientCredentials({ clientId: 'c', clientSecret: 'bad', enterpriseId: '1', tokenUrl });
+    await auth.accessToken();
+    await assert.rejects(auth.revokeToken(), (err: unknown) => {
+      assert.ok(err instanceof BoxApiError);
+      assert.equal(err.status, 400);
+      return true;
+    });
+    assert.equal(await auth.accessToken(), 'tok-1');
+  }, 400);
+});
+
+test('an OAuth revoke revokes the grant, then every call rejects', async () => {
+  await withOAuth2Server(async (tokenUrl, seen) => {
+    const auth = oauth({ clientId: 'c', clientSecret: 's', tokenUrl }, 'rt-0');
+    assert.equal(await auth.accessToken(), 'tok-1');
+    await auth.revokeToken();
+    // The rotated refresh token is what gets revoked.
+    assert.equal(seen[1], '/oauth2/revoke client_id=c&client_secret=s&token=rt-1');
+    await assert.rejects(auth.accessToken(), boxError('revoked'));
+    await assert.rejects(auth.forceRefresh('tok-1'), boxError('revoked'));
+    await auth.revokeToken();
+    assert.equal(seen.length, 2, 'a second revoke is a no-op');
+  });
+});
+
+test('a token URL without /token has no derivable revoke endpoint', async () => {
+  await withServer(
+    (req, res) => res.end('{"access_token":"tok","expires_in":3600}'),
+    async (url) => {
+      const auth = clientCredentials({ clientId: 'c', clientSecret: 's', enterpriseId: '1', tokenUrl: url });
+      await auth.accessToken();
+      await assert.rejects(auth.revokeToken(), boxError('revoke endpoint'));
+    },
+  );
 });

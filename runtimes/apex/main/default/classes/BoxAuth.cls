@@ -51,4 +51,21 @@ public with sharing class BoxAuth {
             certDevName
         );
     }
+
+    /**
+     * Revoke the token a Client Credentials or JWT provider holds, with the
+     * app's own client credentials, and drop it (the next call mints a fresh
+     * one) — for logout and uninstall. A developer token has no client
+     * credentials to revoke with, so it throws; revoke one through the
+     * generated `authorization` manager instead.
+     */
+    public static void revokeToken(BoxTokenProvider provider) {
+        if (provider instanceof BoxCachingTokenProvider) {
+            ((BoxCachingTokenProvider) provider).revoke();
+            return;
+        }
+        throw new BoxApiException(
+            'This token provider cannot revoke its token (a developer token has no client credentials).'
+        );
+    }
 }

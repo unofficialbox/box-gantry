@@ -420,6 +420,21 @@ Runtime.OAuthConfig oauth = new Runtime.OAuthConfig(\"CLIENT_ID\", \"CLIENT_SECR
 // later runs: rebuild from the stored refresh token.\n\
 Client client = new Client(Auth.oauth(oauth, storedRefreshToken));\n\
 ```\n\n\
+## Revoking a token\n\n\
+For logout or uninstall, `revokeToken()` revokes the token a CCG, JWT, or OAuth\n\
+flow holds — with the flow's own client credentials, at the revoke endpoint\n\
+beside its token URL, through its proxy — and clears it from the cache:\n\n\
+```java\n\
+Runtime.Auth auth = Auth.oauth(oauth, storedRefreshToken);\n\
+Client client = new Client(auth);\n\
+// … on logout:\n\
+auth.revokeToken();\n\
+```\n\n\
+A CCG or JWT flow acquires a fresh token on its next use. OAuth revokes the\n\
+whole grant: every later call throws, so discard the stored refresh token and\n\
+run the authorization-code flow again. A developer token has no client\n\
+credentials to revoke with (`revokeToken()` throws) — pass them yourself to\n\
+`client.authorization.revokeOauth2`.\n\n\
 ## Acting as another user\n\n\
 An admin, or a service account whose app may *make API calls using the as-user\n\
 header*, can act as another user. `withAsUserHeader` returns a new client whose\n\

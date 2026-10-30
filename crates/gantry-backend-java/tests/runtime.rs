@@ -213,6 +213,28 @@ public final class RuntimeSmoke {
             proxiedHost.set(ex.getRequestHeaders().getFirst("Host"));
             respond(ex, 200, "proxied");
         });
+        // Revoke: /rv/oauth2/token mints rv-1, rv-2, … (with rotating refresh
+        // tokens), /rv/oauth2/revoke records each form; /rvbad/oauth2/revoke
+        // refuses. /revoke is the proxied CCG's revoke (its token URL is
+        // http://box.invalid/token), recording the Host it was asked for.
+        AtomicInteger minted = new AtomicInteger();
+        java.util.List<String> revoked = new java.util.concurrent.CopyOnWriteArrayList<>();
+        com.sun.net.httpserver.HttpHandler mint = ex -> {
+            int n = minted.incrementAndGet();
+            respond(ex, 200, "{\"access_token\":\"rv-" + n + "\",\"expires_in\":3600,\"refresh_token\":\"rrt-" + n + "\"}");
+        };
+        server.createContext("/rv/oauth2/token", mint);
+        server.createContext("/rvbad/oauth2/token", mint);
+        server.createContext("/rv/oauth2/revoke", ex -> {
+            revoked.add(new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            respond(ex, 200, "");
+        });
+        server.createContext("/rvbad/oauth2/revoke", ex -> respond(ex, 400, "{\"error\":\"invalid_client\"}"));
+        server.createContext("/revoke", ex -> {
+            revoked.add(ex.getRequestHeaders().getFirst("Host") + " "
+                + new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            respond(ex, 200, "");
+        });
 
         server.start();
         String base = "http://127.0.0.1:" + server.getAddress().getPort();
@@ -339,16 +361,22 @@ public final class RuntimeSmoke {
         // proxy sends API and token requests through the given proxy — here
         // this server, which answers for a host that doesn't resolve.
         java.net.ProxySelector viaServer = java.net.ProxySelector.of(server.getAddress());
-        Runtime.Session proxied = Runtime.Session.builder(Runtime.clientCredentials(
+        Runtime.Auth proxiedAuth = Runtime.clientCredentials(
                 Runtime.CcgConfig.enterprise("cid", "csecret", "ent1")
                     .tokenUrl("http://box.invalid/token")
-                    .proxy(viaServer)))
+                    .proxy(viaServer));
+        Runtime.Session proxied = Runtime.Session.builder(proxiedAuth)
             .proxy(viaServer)
             .build();
         check(proxied.accessToken().equals("tok123"), "token request through the proxy");
         Runtime.Response rp = proxied.fetch(proxied.newRequest("GET", "http://box.invalid/proxied"));
         check(Runtime.statusCode(rp) == 200 && "box.invalid".equals(proxiedHost.get()),
             "API request through the proxy, Host: " + proxiedHost.get());
+        // A revoke goes through the token client, so through the proxy too.
+        proxiedAuth.revokeToken();
+        check(revoked.equals(java.util.List.of("box.invalid client_id=cid&client_secret=csecret&token=tok123")),
+            "revoke through the proxy, got: " + revoked);
+        revoked.clear();
         boolean proxyConflicted = false;
         try {
             Runtime.Session.builder(Runtime.developerToken("devtok"))
@@ -359,6 +387,80 @@ public final class RuntimeSmoke {
             proxyConflicted = true;
         }
         check(proxyConflicted, "httpClient + proxy should be rejected at build()");
+
+        // revokeToken: CCG posts the cached token with its own credentials to
+        // the revoke endpoint beside the token URL, then re-acquires.
+        Runtime.Auth rvCcg = Runtime.clientCredentials(
+            Runtime.CcgConfig.enterprise("c", "s", "ent1").tokenUrl(base + "/rv/oauth2/token"));
+        check(rvCcg.accessToken().equals("rv-1"), "ccg token before revoke");
+        rvCcg.revokeToken();
+        check(revoked.equals(java.util.List.of("client_id=c&client_secret=s&token=rv-1")),
+            "ccg revoke form, got: " + revoked);
+        check(rvCcg.accessToken().equals("rv-2"), "ccg re-acquires after revoke");
+        // Nothing cached: nothing to revoke, no request.
+        Runtime.clientCredentials(
+            Runtime.CcgConfig.enterprise("c", "s", "ent1").tokenUrl(base + "/rv/oauth2/token")).revokeToken();
+        check(revoked.size() == 1, "an empty revoke makes no request, got: " + revoked);
+        revoked.clear();
+
+        // JWT revokes the same way.
+        Runtime.Auth rvJwt = Runtime.jwt(
+            Runtime.JwtConfig.enterprise("c", "s", "kid1", pem, null, "ent1")
+                .tokenUrl(base + "/rv/oauth2/token"));
+        String jwtToken = rvJwt.accessToken();
+        rvJwt.revokeToken();
+        check(revoked.equals(java.util.List.of("client_id=c&client_secret=s&token=" + jwtToken)),
+            "jwt revoke form, got: " + revoked);
+        revoked.clear();
+
+        // OAuth revokes the grant through its (rotated) refresh token, then
+        // every call throws instead of refreshing a dead grant.
+        Runtime.Auth rvOauth = Runtime.oauth(
+            new Runtime.OAuthConfig("c", "s").tokenUrl(base + "/rv/oauth2/token"), "rrt-0");
+        rvOauth.accessToken();
+        String rotated = "rrt-" + minted.get();
+        rvOauth.revokeToken();
+        check(revoked.equals(java.util.List.of("client_id=c&client_secret=s&token=" + rotated)),
+            "oauth revokes the refresh token, got: " + revoked);
+        boolean deadGrant = false;
+        try {
+            rvOauth.accessToken();
+        } catch (Runtime.BoxApiException expected) {
+            deadGrant = expected.getMessage().contains("revoked");
+        }
+        check(deadGrant, "a revoked OAuth grant should throw on the next call");
+        rvOauth.revokeToken();
+        check(revoked.size() == 1, "a second OAuth revoke is a no-op, got: " + revoked);
+
+        // A failed revoke throws and keeps the token; a developer token can't
+        // revoke; a token URL without /token has no derivable revoke URL.
+        Runtime.Auth rvBad = Runtime.clientCredentials(
+            Runtime.CcgConfig.enterprise("c", "bad", "ent1").tokenUrl(base + "/rvbad/oauth2/token"));
+        String kept = rvBad.accessToken();
+        boolean refused = false;
+        try {
+            rvBad.revokeToken();
+        } catch (Runtime.BoxApiException expected) {
+            refused = expected.getMessage().contains("400");
+        }
+        check(refused && rvBad.accessToken().equals(kept), "a failed revoke throws and keeps the token");
+        boolean devRefused = false;
+        try {
+            Runtime.developerToken("devtok").revokeToken();
+        } catch (Runtime.BoxApiException expected) {
+            devRefused = true;
+        }
+        check(devRefused, "a developer token should refuse to revoke");
+        Runtime.Auth rvNoSuffix = Runtime.clientCredentials(
+            Runtime.CcgConfig.enterprise("c", "s", "ent1").tokenUrl(base + "/rv/oauth2/token?v=1"));
+        rvNoSuffix.accessToken();
+        boolean underivable = false;
+        try {
+            rvNoSuffix.revokeToken();
+        } catch (Runtime.BoxApiException expected) {
+            underivable = expected.getMessage().contains("revoke endpoint");
+        }
+        check(underivable, "a token URL without /token should refuse to guess a revoke URL");
 
         server.stop(0);
         System.out.println("RUNTIME_OK");

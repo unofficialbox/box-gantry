@@ -77,6 +77,11 @@ public virtual with sharing class BoxJwtTokenProvider extends BoxCachingTokenPro
             '&client_secret=' + EncodingUtil.urlEncode(this.clientSecret, 'UTF-8');
     }
 
+    protected override String clientCredentialsForm() {
+        return 'client_id=' + EncodingUtil.urlEncode(this.clientId, 'UTF-8') +
+            '&client_secret=' + EncodingUtil.urlEncode(this.clientSecret, 'UTF-8');
+    }
+
     /** The signed `header.claims.signature` assertion. */
     private String buildAssertion() {
         Long nowSeconds = System.currentTimeMillis() / 1000;
