@@ -9,6 +9,7 @@ import { BoxApiError } from './src/errors.js';
 import {
   Client,
   Stream,
+  debugLogger,
   clientCredentials,
   developerToken,
   oauth,
@@ -17,8 +18,11 @@ import {
   streamPosition,
   verifyWebhook,
   withHeader,
+  withJsonBody,
   withMultipartBody,
+  withQuery,
 } from './src/runtime.js';
+import type { RequestInfo, ResponseInfo } from './src/runtime.js';
 
 /** Concatenate byte chunks into one buffer (no `Buffer` — see node-live.d.ts). */
 function concatBytes(chunks: Uint8Array[]): Uint8Array {
@@ -221,6 +225,166 @@ test('withMultipartBody omits an absent JSON part', async () => {
   });
   assert.ok(!body.includes('application/json'));
   assert.ok(body.includes('name="pic"; filename="pic"'));
+});
+
+/** A server answering a 429 (`Retry-After: 0`), then a 401, then 200; it
+ * records the Authorization header of each request. */
+function flaky(auths: string[]) {
+  return (req: http.IncomingMessage, res: http.ServerResponse) => {
+    auths.push(String(req.headers.authorization ?? ''));
+    if (auths.length === 1) {
+      res.statusCode = 429;
+      res.setHeader('Retry-After', '0');
+    } else if (auths.length === 2) {
+      res.statusCode = 401;
+    }
+    res.end('{}');
+  };
+}
+
+test('hooks observe every attempt, a retried 429 and a 401 refresh included, without the token', async () => {
+  const auths: string[] = [];
+  const requests: RequestInfo[] = [];
+  const responses: ResponseInfo[] = [];
+  let url = '';
+  await withServer(flaky(auths), async (base) => {
+    url = `${base}files/1`;
+    const client = new Client(developerToken('secret-token'), {
+      hooks: [{ onRequest: (r) => requests.push(r) }, { onResponse: (r) => responses.push(r) }],
+    });
+    await client.fetch(withQuery(client.newRequest('GET', url), 'fields', 'id'));
+  });
+  assert.deepEqual(auths, ['Bearer secret-token', 'Bearer secret-token', 'Bearer secret-token']);
+  assert.equal(requests.length, 3);
+  assert.deepEqual(
+    responses.map((r) => [r.request.attempt, r.status, r.error]),
+    [
+      [1, 429, undefined],
+      [2, 401, undefined],
+      [3, 200, undefined],
+    ],
+  );
+  requests.forEach((r, i) => {
+    assert.equal(r.attempt, i + 1);
+    assert.equal(r.method, 'GET');
+    assert.equal(r.url, `${url}?fields=id`);
+    assert.equal(r.headers.get('Authorization'), 'REDACTED');
+  });
+  assert.equal(responses[0]?.headers?.get('Retry-After'), '0');
+  assert.ok(responses.every((r) => r.elapsedMs >= 0));
+});
+
+test('the debug logger writes a line per attempt and never a secret', async () => {
+  const lines: string[] = [];
+  const log = { debug: (line: string) => lines.push(line) };
+  let url = '';
+  await withServer(flaky([]), async (base) => {
+    url = `${base}files/1`;
+    const client = new Client(developerToken('secret-token'), { hooks: [debugLogger(log)] });
+    let request = withQuery(client.newRequest('POST', url), 'fields', 'id');
+    request = withQuery(withQuery(request, 'access_token', 'query-token'), 'client_secret', 'query-secret');
+    await client.fetch(withJsonBody(request, new TextEncoder().encode('{"password":"body-secret"}')));
+  });
+  // A transport error's message may carry the URL; it's redacted there too.
+  const failing = (async (input: string | URL | globalThis.Request) => {
+    throw new TypeError(`fetch failed: ${String(input)}`);
+  }) as typeof fetch;
+  const refused = new Client(developerToken('t'), { maxRetries: 0, fetch: failing, hooks: [debugLogger(log)] });
+  await assert.rejects(refused.fetch(withQuery(refused.newRequest('GET', url), 'access_token', 'query-token')), () => true);
+
+  assert.equal(lines.length, 4);
+  for (const line of lines) {
+    for (const secret of ['secret-token', 'query-token', 'query-secret', 'body-secret']) {
+      assert.ok(!line.includes(secret), `leaked ${secret}: ${line}`);
+    }
+  }
+  ['429', '401', '200'].forEach((status, i) => {
+    const want = `box: POST ${url}?fields=id&access_token=REDACTED&client_secret=REDACTED -> ${status} in `;
+    assert.ok(lines[i]?.startsWith(want), lines[i]);
+    assert.ok(lines[i]?.endsWith(`(attempt ${i + 1})`), lines[i]);
+  });
+  assert.ok(lines[3]?.includes(`-> error: fetch failed: ${url}?access_token=REDACTED in `), lines[3]);
+});
+
+test('the debug logger redacts secret query values and userinfo', () => {
+  const cases: [string, string][] = [
+    ['https://api.box.com/2.0/files/1', 'https://api.box.com/2.0/files/1'],
+    ['https://api.box.com/2.0/files?fields=id&limit=5', 'https://api.box.com/2.0/files?fields=id&limit=5'],
+    [
+      'https://a.box.com/x?Access_Token=t&code=c&refresh%5Ftoken=r#frag',
+      'https://a.box.com/x?Access_Token=REDACTED&code=REDACTED&refresh%5Ftoken=REDACTED',
+    ],
+    ['https://user:pass@box.example/x?api_key=k&q=a@b', 'https://box.example/x?api_key=REDACTED&q=a@b'],
+    ['https://box.example/x?password', 'https://box.example/x?password=REDACTED'],
+  ];
+  for (const [raw, want] of cases) {
+    const lines: string[] = [];
+    const request = { method: 'GET', url: raw, headers: new Headers(), attempt: 1 };
+    debugLogger({ debug: (line) => lines.push(line) }).onResponse?.({ request, status: 200, elapsedMs: 1 });
+    assert.equal(lines[0], `box: GET ${want} -> 200 in 1ms (attempt 1)`);
+  }
+});
+
+test('the retry backoff doubles from retryBaseDelayMs up to retryMaxDelayMs', async () => {
+  let hits = 0;
+  const sentAt: number[] = [];
+  // Pin the jitter to its top so each wait is exactly the backoff ceiling.
+  const random = Math.random;
+  Math.random = () => 1;
+  try {
+    await withServer(
+      (req, res) => {
+        res.statusCode = ++hits <= 3 ? 503 : 200;
+        res.end('{}');
+      },
+      async (url) => {
+        const client = new Client(developerToken('t'), {
+          retryBaseDelayMs: 40,
+          retryMaxDelayMs: 100,
+          hooks: [{ onRequest: () => sentAt.push(performance.now()) }],
+        });
+        await client.fetch(client.newRequest('GET', url));
+      },
+    );
+  } finally {
+    Math.random = random;
+  }
+  assert.equal(sentAt.length, 4);
+  [40, 80, 100].forEach((wait, i) => {
+    const gap = (sentAt[i + 1] ?? 0) - (sentAt[i] ?? 0);
+    // Timers may fire a hair early; the upper bound is generous.
+    assert.ok(gap >= wait - 2 && gap < wait + 1000, `wait ${i + 1}: ${gap}ms, want ~${wait}ms`);
+  });
+});
+
+test('retry delays must be non-negative', () => {
+  assert.equal(
+    [{ retryBaseDelayMs: -1 }, { retryMaxDelayMs: Number.NaN }].filter((options) => {
+      try {
+        new Client(developerToken('t'), options);
+        return false;
+      } catch (err) {
+        return err instanceof RangeError;
+      }
+    }).length,
+    2,
+  );
+});
+
+test('a response hook sees a transport error', async () => {
+  const responses: ResponseInfo[] = [];
+  const failing = (async () => {
+    throw new TypeError('fetch failed');
+  }) as typeof fetch;
+  const client = new Client(developerToken('t'), {
+    maxRetries: 0,
+    fetch: failing,
+    hooks: [{ onResponse: (r) => responses.push(r) }],
+  });
+  await assert.rejects(client.fetch(client.newRequest('GET', 'http://box.invalid/')), () => true);
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0]?.status, undefined);
+  assert.ok(responses[0]?.error instanceof TypeError);
 });
 
 /** A real-time server answering long polls from a script, one answer per

@@ -14,7 +14,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"io"
+	"log/slog"
 	"math/rand"
 	"mime/multipart"
 	"net/http"
@@ -55,7 +57,11 @@ type Client struct {
 	http           *http.Client
 	baseURLs       map[string]string
 	maxRetries     int
+	retryBase      time.Duration
+	retryMax       time.Duration
 	defaultHeaders http.Header
+	requestHooks   []func(context.Context, RequestInfo)
+	responseHooks  []func(context.Context, ResponseInfo)
 
 	// The built-in API client's settings (WithHTTPVersion, WithProxy); New
 	// builds it from them unless WithHTTPClient injected one.
@@ -128,6 +134,141 @@ func apiHTTPClient(v HTTPVersion, proxy *url.URL) *http.Client {
 // WithMaxRetries sets how many times a retriable failure is retried.
 func WithMaxRetries(n int) Option { return func(c *Client) { c.maxRetries = n } }
 
+// The default exponential backoff: the wait before retry n is uniform in
+// [0, min(base·2ⁿ, max)].
+const (
+	DefaultRetryBaseDelay = 500 * time.Millisecond
+	DefaultRetryMaxDelay  = 30 * time.Second
+)
+
+// WithRetryBackoff sets the exponential backoff between retries: the wait
+// before retry n is uniform (full jitter) in [0, min(base·2ⁿ, max)], from
+// DefaultRetryBaseDelay and DefaultRetryMaxDelay. A negative value counts as
+// zero. A Retry-After from Box still sets the wait for that retry.
+func WithRetryBackoff(base, max time.Duration) Option {
+	return func(c *Client) { c.retryBase, c.retryMax = clampNonNegative(base), clampNonNegative(max) }
+}
+
+func clampNonNegative(d time.Duration) time.Duration {
+	if d < 0 {
+		return 0
+	}
+	return d
+}
+
+// RequestInfo describes one HTTP attempt as Fetch is about to send it. The
+// Header is a copy whose Authorization value reads "REDACTED", so a hook that
+// records every header never captures the access token.
+type RequestInfo struct {
+	Method string
+	URL    string
+	Header http.Header
+	// Attempt counts from 1: each retry, and the resend after a 401 token
+	// refresh, is its own attempt.
+	Attempt int
+}
+
+// ResponseInfo describes how one HTTP attempt ended: the response's status
+// and headers, or Err when no response arrived (Status is then 0). Elapsed
+// runs from sending the request to reading the whole body.
+type ResponseInfo struct {
+	Request RequestInfo
+	Status  int
+	Header  http.Header
+	Elapsed time.Duration
+	Err     error
+}
+
+// WithRequestHook calls hook before every HTTP attempt Fetch makes, retries
+// included. Hooks observe; they can't change the request. Give the option
+// more than once to add more hooks, which run in order. Token requests are
+// not observed. To change requests in flight, wrap the transport of a client
+// passed to WithHTTPClient instead.
+func WithRequestHook(hook func(ctx context.Context, request RequestInfo)) Option {
+	return func(c *Client) { c.requestHooks = append(c.requestHooks, hook) }
+}
+
+// WithResponseHook calls hook after every HTTP attempt Fetch makes — a
+// retried 429 or 5xx, the 401 before a token refresh, and the final answer
+// alike — and after an attempt that failed in transport. Like
+// WithRequestHook it observes only, and may be given more than once.
+func WithResponseHook(hook func(ctx context.Context, response ResponseInfo)) Option {
+	return func(c *Client) { c.responseHooks = append(c.responseHooks, hook) }
+}
+
+// WithDebugLogging logs one line per HTTP attempt to logger (slog.Default()
+// when nil) at debug level: the method, the URL with secret-looking query
+// values redacted, the status or transport error, the elapsed time, and the
+// attempt number. It never logs the Authorization header, a token, or a body.
+// Like WithResponseHook it adds to any hooks already set.
+func WithDebugLogging(logger *slog.Logger) Option {
+	return WithResponseHook(func(ctx context.Context, r ResponseInfo) {
+		log := logger
+		if log == nil {
+			log = slog.Default()
+		}
+		redacted := redactURL(r.Request.URL)
+		attrs := []slog.Attr{slog.String("method", r.Request.Method), slog.String("url", redacted)}
+		if r.Err != nil {
+			attrs = append(attrs, slog.String("error", redactError(r.Err, r.Request.URL, redacted)))
+		} else {
+			attrs = append(attrs, slog.Int("status", r.Status))
+		}
+		attrs = append(attrs, slog.Duration("elapsed", r.Elapsed), slog.Int("attempt", r.Request.Attempt))
+		log.LogAttrs(ctx, slog.LevelDebug, "box: http attempt", attrs...)
+	})
+}
+
+// secretParamHints mark a query parameter whose value the debug log redacts:
+// any name containing one of them, case-insensitively.
+var secretParamHints = []string{"token", "secret", "password", "code", "assertion", "key", "signature", "auth"}
+
+// redactURL is raw for a log line: any userinfo dropped, the fragment cut,
+// and the value of every secret-looking query parameter replaced by REDACTED.
+func redactURL(raw string) string {
+	raw, _, _ = strings.Cut(raw, "#")
+	base, query, hasQuery := strings.Cut(raw, "?")
+	if scheme := strings.Index(base, "://"); scheme >= 0 {
+		start := scheme + 3
+		end := len(base)
+		if slash := strings.IndexByte(base[start:], '/'); slash >= 0 {
+			end = start + slash
+		}
+		if at := strings.LastIndexByte(base[start:end], '@'); at >= 0 {
+			base = base[:start] + base[start+at+1:]
+		}
+	}
+	if !hasQuery {
+		return base
+	}
+	pairs := strings.Split(query, "&")
+	for i, pair := range pairs {
+		name, _, _ := strings.Cut(pair, "=")
+		decoded, err := url.QueryUnescape(name)
+		if err != nil {
+			decoded = name
+		}
+		decoded = strings.ToLower(decoded)
+		for _, hint := range secretParamHints {
+			if strings.Contains(decoded, hint) {
+				pairs[i] = name + "=REDACTED"
+				break
+			}
+		}
+	}
+	return base + "?" + strings.Join(pairs, "&")
+}
+
+// redactError is err's message for a log line, with the raw request URL in it
+// (a *url.Error carries one) replaced by its redacted form.
+func redactError(err error, rawURL, redacted string) string {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return urlErr.Op + " " + redacted + ": " + urlErr.Err.Error()
+	}
+	return strings.ReplaceAll(err.Error(), rawURL, redacted)
+}
+
 // WithBaseURL overrides one base-URL class (custom deployments).
 func WithBaseURL(name, base string) Option {
 	return func(c *Client) { c.baseURLs[name] = strings.TrimRight(base, "/") }
@@ -158,6 +299,8 @@ func New(ts TokenSource, opts ...Option) *Client {
 	c := &Client{
 		ts:             ts,
 		maxRetries:     5,
+		retryBase:      DefaultRetryBaseDelay,
+		retryMax:       DefaultRetryMaxDelay,
 		defaultHeaders: http.Header{},
 		baseURLs: map[string]string{
 			"api":             "https://api.box.com/2.0",
@@ -235,15 +378,19 @@ func (c *Client) Fetch(ctx context.Context, request *Request) (*Response, error)
 		}
 		httpReq.Header.Set("Authorization", "Bearer "+token)
 
+		info := c.observeRequest(ctx, httpReq, attempt+1)
+		started := time.Now()
 		httpResp, err := client.Do(httpReq)
 		if err != nil {
+			c.observeResponse(ctx, info, nil, started, err)
 			lastErr = err
-			if attempt == c.maxRetries || !sleep(ctx, backoff(attempt)) {
+			if attempt == c.maxRetries || !sleep(ctx, c.backoff(attempt)) {
 				return nil, err
 			}
 			continue
 		}
 		resp, err := readResponse(httpResp)
+		c.observeResponse(ctx, info, resp, started, err)
 		if err != nil {
 			return nil, err
 		}
@@ -258,7 +405,7 @@ func (c *Client) Fetch(ctx context.Context, request *Request) (*Response, error)
 		}
 		// Backoff on rate-limit / server errors, honoring Retry-After.
 		if retriable(resp.status) && attempt < c.maxRetries {
-			if sleep(ctx, retryAfter(resp, attempt)) {
+			if sleep(ctx, c.retryAfter(resp, attempt)) {
 				continue
 			}
 		}
@@ -271,6 +418,36 @@ func (c *Client) Fetch(ctx context.Context, request *Request) (*Response, error)
 		return nil, lastErr
 	}
 	return nil, context.DeadlineExceeded
+}
+
+// observeRequest runs the request hooks for one attempt and returns what they
+// saw, for the response hooks to carry along.
+func (c *Client) observeRequest(ctx context.Context, httpReq *http.Request, attempt int) RequestInfo {
+	if len(c.requestHooks) == 0 && len(c.responseHooks) == 0 {
+		return RequestInfo{}
+	}
+	header := httpReq.Header.Clone()
+	header.Set("Authorization", "REDACTED")
+	info := RequestInfo{Method: httpReq.Method, URL: httpReq.URL.String(), Header: header, Attempt: attempt}
+	for _, hook := range c.requestHooks {
+		hook(ctx, info)
+	}
+	return info
+}
+
+// observeResponse runs the response hooks for one attempt: resp when it
+// arrived, err when it didn't.
+func (c *Client) observeResponse(ctx context.Context, request RequestInfo, resp *Response, started time.Time, err error) {
+	if len(c.responseHooks) == 0 {
+		return
+	}
+	info := ResponseInfo{Request: request, Elapsed: time.Since(started), Err: err}
+	if resp != nil {
+		info.Status, info.Header = resp.status, resp.header.Clone()
+	}
+	for _, hook := range c.responseHooks {
+		hook(ctx, info)
+	}
 }
 
 func readResponse(httpResp *http.Response) (*Response, error) {
@@ -286,22 +463,27 @@ func retriable(status int) bool {
 	return status == http.StatusTooManyRequests || status >= 500
 }
 
-func backoff(attempt int) time.Duration {
-	base := time.Duration(1<<attempt) * 500 * time.Millisecond
-	if base > 30*time.Second {
-		base = 30 * time.Second
+// backoff is the wait before retrying after the given attempt: full jitter
+// over min(retryBase·2^attempt, retryMax).
+func (c *Client) backoff(attempt int) time.Duration {
+	ceiling := min(c.retryBase, c.retryMax)
+	for i := 0; i < attempt && ceiling < c.retryMax; i++ {
+		ceiling = min(ceiling*2, c.retryMax)
+		if ceiling < 0 { // overflowed
+			ceiling = c.retryMax
+		}
 	}
 	// Full jitter.
-	return time.Duration(rand.Int63n(int64(base) + 1))
+	return time.Duration(rand.Int63n(int64(ceiling) + 1))
 }
 
-func retryAfter(resp *Response, attempt int) time.Duration {
+func (c *Client) retryAfter(resp *Response, attempt int) time.Duration {
 	if v := resp.header.Get("Retry-After"); v != "" {
 		if secs, err := strconv.Atoi(v); err == nil {
 			return time.Duration(secs) * time.Second
 		}
 	}
-	return backoff(attempt)
+	return c.backoff(attempt)
 }
 
 func sleep(ctx context.Context, d time.Duration) bool {

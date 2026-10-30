@@ -623,6 +623,42 @@ Otherwise pass a `fetch` that dispatches through an undici `ProxyAgent`, as for
 HTTP/2 above, to both the client and the auth config (its `fetch` option).
 Browsers, Deno, and Bun use the platform's own proxy settings.
 
+## Hooks and logging
+
+`hooks` observe every HTTP attempt — each retry and the resend after a token
+refresh included — with its method, URL, headers (the `Authorization` value
+withheld), status, elapsed time, and attempt number:
+
+```ts
+const client = new Client(auth.developerToken('DEVELOPER_TOKEN'), {
+  hooks: [{ onResponse: (r) => console.log(r.request.method, r.status, r.elapsedMs, r.request.attempt) }],
+});
+```
+
+Hooks observe only; to change requests, pass your own `fetch`. Token requests
+are not observed.
+
+`runtime.debugLogger(log)` is a ready-made hook that logs one line per attempt
+to `log.debug` (`console` by default): `hooks: [runtime.debugLogger()]`. Query
+values whose names look secret (`token`, `secret`, `password`, `code`, …) read
+`REDACTED`; the token and bodies are never logged.
+
+## Retries
+
+A 429 is retried for any request; a 5xx or a failed connection only for
+idempotent methods, since a `POST` may already have taken effect. Up to five
+retries wait with exponential backoff and full jitter — up to 500ms·2ⁿ before
+retry *n*, capped at 30s — raised to Box's `Retry-After` when it sends one. A
+401 refreshes the token once. Tune the budget and the backoff:
+
+```ts
+const client = new Client(auth.developerToken('DEVELOPER_TOKEN'), {
+  maxRetries: 3,
+  retryBaseDelayMs: 200,
+  retryMaxDelayMs: 10_000,
+});
+```
+
 ## Documentation
 
 The [`docs/`](./docs/README.md) tree carries the per-manager reference and the

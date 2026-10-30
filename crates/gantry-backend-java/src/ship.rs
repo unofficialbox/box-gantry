@@ -372,6 +372,41 @@ With a proxy, the built-in client prefers HTTP/2: HTTP/3 runs over UDP, which an
 HTTP proxy can't carry. An injected `HttpClient` carries its own proxy — set one
 or the other.
 
+## Hooks and logging
+
+`onRequest` and `onResponse` observe every HTTP attempt — each retry and the
+resend after a token refresh included — with its method, URL, headers (the
+`Authorization` value withheld), status, elapsed time, and attempt number:
+
+```java
+var session = Runtime.Session.builder(auth)
+    .onResponse(r -> System.out.println(
+        r.request().method() + " " + r.status() + " " + r.elapsed() + " #" + r.request().attempt()))
+    .build();
+```
+
+Hooks observe only; they can't change a request. Token requests are not
+observed.
+
+`debugLogging(System.getLogger("dev.unofficialbox"))` logs one line per attempt
+at `DEBUG`. Query values whose names look secret (`token`, `secret`, `password`,
+`code`, …) read `REDACTED`; the token and bodies are never logged.
+
+## Retries
+
+A 429 is retried for any request; a 5xx or a failed connection only for
+idempotent methods, since a `POST` may already have taken effect. Up to five
+retries wait with exponential backoff and full jitter — up to 500ms·2ⁿ before
+retry *n*, capped at 30s — raised to Box's `Retry-After` when it sends one. A
+401 refreshes the token once. Tune the budget and the backoff:
+
+```java
+var session = Runtime.Session.builder(auth)
+    .maxRetries(3)
+    .retryBackoff(java.time.Duration.ofMillis(200), java.time.Duration.ofSeconds(10))
+    .build();
+```
+
 ## Documentation
 
 The [`docs/`](./docs) tree carries the per-manager reference — a call snippet for

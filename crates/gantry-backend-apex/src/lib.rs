@@ -353,6 +353,18 @@ Salesforce's callout layer chooses the protocol; Apex can't configure it. The
 same goes for proxies: callouts leave from Salesforce's network, so a corporate
 proxy never applies.
 
+## Hooks and logging
+
+Apex has no request hooks: Salesforce's debug logs already record every callout
+(`CALLOUT_REQUEST` / `CALLOUT_RESPONSE`), retries included.
+
+## Retries
+
+Apex has no `sleep`, so a 429 or 5xx is retried at once, with no backoff to
+configure; set the budget with `new BoxHttpClient(tokens, maxRetries,
+timeoutMs)` (default 2), and drive slower retries across transactions (e.g. a
+`Queueable`).
+
 ## Deploy
 
 ```bash

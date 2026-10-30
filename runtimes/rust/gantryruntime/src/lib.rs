@@ -29,10 +29,15 @@ pub use webhooks::{WebhookVerifier, DEFAULT_WEBHOOK_MAX_AGE};
 use std::collections::HashMap;
 use std::time::Duration;
 
-/// The safety ceiling on any single retry sleep, so a pathological server-sent
-/// `Retry-After` (hours, years) can never suspend `fetch` far past the caller's
-/// intent.
+/// The safety ceiling on a server-sent `Retry-After`, so a pathological one
+/// (hours, years) can never suspend `fetch` far past the caller's intent.
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(300);
+
+/// The default exponential backoff (see [`Client::with_retry_backoff`]): the
+/// wait before retry `n` is uniform in `[0, min(base·2ⁿ, max)]`.
+pub const DEFAULT_RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
+/// The default cap on one backoff wait (see [`DEFAULT_RETRY_BASE_DELAY`]).
+pub const DEFAULT_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
 
 /// A runtime error: a failed request, auth acquisition, body decode, or a
 /// non-2xx response from Box. The message carries the detail; a non-2xx
@@ -223,6 +228,38 @@ fn api_http_client(version: HttpVersion, proxy: Option<&reqwest::Proxy>) -> reqw
     builder.build().unwrap_or_default()
 }
 
+/// One HTTP attempt as [`Client::fetch`] is about to send it, for a request
+/// hook (see [`Client::with_request_hook`]). The headers are those sent, except
+/// that the `authorization` value reads `REDACTED`, so a hook that records
+/// every header never captures the access token.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct RequestInfo {
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    /// Counts from 1: each retry, and the resend after a 401 token refresh, is
+    /// its own attempt.
+    pub attempt: u32,
+}
+
+/// How one HTTP attempt ended, for a response hook (see
+/// [`Client::with_response_hook`]): the response's status and headers, or the
+/// transport `error` when none arrived. `elapsed` runs from sending the
+/// request to reading the whole body.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct ResponseInfo {
+    pub request: RequestInfo,
+    pub status: Option<i64>,
+    pub headers: Vec<(String, String)>,
+    pub elapsed: Duration,
+    pub error: Option<String>,
+}
+
+type RequestHook = std::sync::Arc<dyn Fn(&RequestInfo) + Send + Sync>;
+type ResponseHook = std::sync::Arc<dyn Fn(&ResponseInfo) + Send + Sync>;
+
 /// The runtime session: it holds the auth flow, HTTP client, base-URL
 /// configuration, and retry policy shared by every manager.
 pub struct Client {
@@ -232,11 +269,15 @@ pub struct Client {
     http: reqwest::Client,
     base_urls: HashMap<String, String>,
     max_retries: u32,
+    retry_base: Duration,
+    retry_max: Duration,
     default_headers: Vec<(String, String)>,
     // The built-in HTTP client's settings, kept so `with_http_version` and
     // `with_proxy` combine.
     http_version: HttpVersion,
     proxy: Option<reqwest::Proxy>,
+    request_hooks: Vec<RequestHook>,
+    response_hooks: Vec<ResponseHook>,
 }
 
 impl Client {
@@ -247,16 +288,30 @@ impl Client {
             auth: std::sync::Arc::new(auth),
             http: api_http_client(HttpVersion::Http2, None),
             max_retries: 5,
+            retry_base: DEFAULT_RETRY_BASE_DELAY,
+            retry_max: DEFAULT_RETRY_MAX_DELAY,
             base_urls: default_base_urls(),
             default_headers: Vec::new(),
             http_version: HttpVersion::Http2,
             proxy: None,
+            request_hooks: Vec::new(),
+            response_hooks: Vec::new(),
         }
     }
 
     /// Override how many times a retriable failure is retried (fluent).
     pub fn with_max_retries(mut self, n: u32) -> Client {
         self.max_retries = n;
+        self
+    }
+
+    /// Set the exponential backoff between retries (fluent): the wait before
+    /// retry `n` is uniform (full jitter) in `[0, min(base·2ⁿ, max)]`, from
+    /// [`DEFAULT_RETRY_BASE_DELAY`] and [`DEFAULT_RETRY_MAX_DELAY`]. A
+    /// `Retry-After` from Box still raises the wait, up to its own ceiling.
+    pub fn with_retry_backoff(mut self, base: Duration, max: Duration) -> Client {
+        self.retry_base = base;
+        self.retry_max = max;
         self
     }
 
@@ -290,6 +345,43 @@ impl Client {
         self
     }
 
+    /// Call `hook` before every HTTP attempt `fetch` makes, retries included
+    /// (fluent). Hooks observe; they can't change the request. Call again to
+    /// add more hooks, which run in order. Token requests are not observed.
+    /// This is the way in for instrumentation: a `reqwest::Client` has no
+    /// middleware to wrap.
+    pub fn with_request_hook(
+        mut self,
+        hook: impl Fn(&RequestInfo) + Send + Sync + 'static,
+    ) -> Client {
+        self.request_hooks.push(std::sync::Arc::new(hook));
+        self
+    }
+
+    /// Call `hook` after every HTTP attempt `fetch` makes (fluent) — a retried
+    /// 429 or 5xx, the 401 before a token refresh, and the final answer alike —
+    /// and after an attempt that failed in transport. Like
+    /// [`Client::with_request_hook`] it observes only, and adds to any hooks
+    /// already set.
+    pub fn with_response_hook(
+        mut self,
+        hook: impl Fn(&ResponseInfo) + Send + Sync + 'static,
+    ) -> Client {
+        self.response_hooks.push(std::sync::Arc::new(hook));
+        self
+    }
+
+    /// Log one line per HTTP attempt to `sink` (fluent): the method, the URL
+    /// with secret-looking query values redacted, the status or transport
+    /// error, the elapsed time, and the attempt number. It never logs the
+    /// `authorization` header, a token, or a body. The runtime has no logging
+    /// dependency, so the sink decides where lines go —
+    /// `|line| eprintln!("{line}")`, or a `log`/`tracing` macro. Like
+    /// [`Client::with_response_hook`] it adds to any hooks already set.
+    pub fn with_debug_logging(self, sink: impl Fn(&str) + Send + Sync + 'static) -> Client {
+        self.with_response_hook(move |response| sink(&debug_log_line(response)))
+    }
+
     /// Add a header sent with every request from this client (fluent) — e.g.
     /// a tracing or `User-Agent` header an embedding application wants on
     /// every call. Replaces any prior default with the same name
@@ -314,9 +406,13 @@ impl Client {
             http: self.http.clone(),
             base_urls: self.base_urls.clone(),
             max_retries: self.max_retries,
+            retry_base: self.retry_base,
+            retry_max: self.retry_max,
             default_headers: self.default_headers.clone(),
             http_version: self.http_version,
             proxy: self.proxy.clone(),
+            request_hooks: self.request_hooks.clone(),
+            response_hooks: self.response_hooks.clone(),
         }
         .with_header("As-User", user_id)
     }
@@ -398,19 +494,34 @@ impl Client {
                 builder = builder.timeout(timeout);
             }
 
-            let response = match builder.send().await {
+            let mut info = None;
+            let started = std::time::Instant::now();
+            let sent = match builder.build() {
+                Ok(http_request) => {
+                    info = self.observe_request(&http_request, attempt + 1);
+                    self.http.execute(http_request).await
+                }
+                Err(err) => Err(err),
+            };
+            let response = match sent {
                 Ok(response) => response,
                 Err(err) => {
+                    self.observe_response(info, started, Err(&err.to_string()));
                     // A transport error gives no response, so a non-idempotent
                     // request may or may not have committed — don't replay it.
                     if attempt == self.max_retries || !idempotent {
                         return Err(err.into());
                     }
-                    sleep(backoff(attempt)).await;
+                    sleep(backoff(attempt, self.retry_base, self.retry_max)).await;
                     continue;
                 }
             };
-            let response = read_response(response).await?;
+            let response = read_response(response).await;
+            match &response {
+                Ok(response) => self.observe_response(info, started, Ok(response)),
+                Err(err) => self.observe_response(info, started, Err(&err.to_string())),
+            }
+            let response = response?;
 
             // A single force-refresh on 401: re-acquire past the token cache so
             // the retry doesn't just resend the same rejected token.
@@ -421,7 +532,8 @@ impl Client {
             }
             // Back off exponentially on rate-limit / server errors.
             if should_retry(response.status, idempotent) && attempt < self.max_retries {
-                sleep(retry_delay(&response, attempt)).await;
+                let wait = backoff(attempt, self.retry_base, self.retry_max);
+                sleep(retry_delay(&response, wait)).await;
                 continue;
             }
             if !(200..300).contains(&response.status) {
@@ -430,6 +542,66 @@ impl Client {
             return Ok(response);
         }
         Err(Error::new("gantryruntime: retries exhausted"))
+    }
+}
+
+impl Client {
+    /// Run the request hooks for one attempt, returning what they saw for the
+    /// response hooks to carry along (`None` when there are no hooks at all).
+    fn observe_request(&self, request: &reqwest::Request, attempt: u32) -> Option<RequestInfo> {
+        if self.request_hooks.is_empty() && self.response_hooks.is_empty() {
+            return None;
+        }
+        let headers = request
+            .headers()
+            .iter()
+            .map(|(name, value)| {
+                let value = if name == reqwest::header::AUTHORIZATION {
+                    "REDACTED"
+                } else {
+                    value.to_str().unwrap_or_default()
+                };
+                (name.as_str().to_string(), value.to_string())
+            })
+            .collect();
+        let info = RequestInfo {
+            method: request.method().as_str().to_string(),
+            url: request.url().as_str().to_string(),
+            headers,
+            attempt,
+        };
+        for hook in &self.request_hooks {
+            hook(&info);
+        }
+        Some(info)
+    }
+
+    /// Run the response hooks for one attempt: the response when it arrived,
+    /// the error's message when it didn't.
+    fn observe_response(
+        &self,
+        request: Option<RequestInfo>,
+        started: std::time::Instant,
+        outcome: Result<&Response, &str>,
+    ) {
+        let Some(request) = request else { return };
+        if self.response_hooks.is_empty() {
+            return;
+        }
+        let (status, headers, error) = match outcome {
+            Ok(response) => (Some(response.status), response.headers.clone(), None),
+            Err(message) => (None, Vec::new(), Some(message.to_string())),
+        };
+        let info = ResponseInfo {
+            request,
+            status,
+            headers,
+            elapsed: started.elapsed(),
+            error,
+        };
+        for hook in &self.response_hooks {
+            hook(&info);
+        }
     }
 }
 
@@ -594,23 +766,32 @@ fn should_retry(status: i64, idempotent: bool) -> bool {
     status == 429 || (status >= 500 && idempotent)
 }
 
-/// Exponential backoff capped at 30s, with full jitter.
-fn backoff(attempt: u32) -> Duration {
-    let base = (500u64.saturating_mul(1u64 << attempt.min(20))).min(30_000);
-    Duration::from_millis(jitter(base))
+/// Exponential backoff from `base`, doubling per attempt up to `max`, with full
+/// jitter.
+fn backoff(attempt: u32, base: Duration, max: Duration) -> Duration {
+    let mut ceiling = base.min(max);
+    for _ in 0..attempt {
+        if ceiling >= max {
+            break;
+        }
+        ceiling = ceiling.saturating_mul(2).min(max);
+    }
+    let nanos = u64::try_from(ceiling.as_nanos()).unwrap_or(u64::MAX);
+    Duration::from_nanos(jitter(nanos))
 }
 
-/// The delay before the next retry: exponential backoff (so repeated 429s/5xx
-/// escalate), raised to a server-sent `Retry-After` as a floor when present, and
-/// clamped to [`MAX_RETRY_DELAY`] so a hostile header can't stall the client.
-fn retry_delay(response: &Response, attempt: u32) -> Duration {
-    let mut delay = backoff(attempt);
+/// The delay before the next retry: the exponential `backoff` (so repeated
+/// 429s/5xx escalate), raised to a server-sent `Retry-After` as a floor when
+/// present — that header clamped to [`MAX_RETRY_DELAY`] so a hostile one
+/// can't stall the client.
+fn retry_delay(response: &Response, backoff: Duration) -> Duration {
+    let mut delay = backoff;
     if let Some(value) = header_value(&response.headers, "retry-after") {
         if let Ok(secs) = value.trim().parse::<u64>() {
-            delay = delay.max(Duration::from_secs(secs));
+            delay = delay.max(Duration::from_secs(secs).min(MAX_RETRY_DELAY));
         }
     }
-    delay.min(MAX_RETRY_DELAY)
+    delay
 }
 
 /// A cheap, dependency-free full-jitter source: a uniform value in `[0, max]`
@@ -628,11 +809,103 @@ fn jitter(max: u64) -> u64 {
     x ^= x << 13;
     x ^= x >> 7;
     x ^= x << 17;
-    x % (max + 1)
+    x % max.saturating_add(1)
 }
 
 async fn sleep(duration: Duration) {
     tokio::time::sleep(duration).await;
+}
+
+/// The debug log's line for one attempt (see [`Client::with_debug_logging`]).
+fn debug_log_line(response: &ResponseInfo) -> String {
+    let request = &response.request;
+    let url = redact_url(&request.url);
+    let outcome = match (&response.error, response.status) {
+        (Some(error), _) => format!("error: {}", error.replace(&request.url, &url)),
+        (None, Some(status)) => status.to_string(),
+        (None, None) => "no response".to_string(),
+    };
+    format!(
+        "box: {} {url} -> {outcome} in {}ms (attempt {})",
+        request.method,
+        response.elapsed.as_millis(),
+        request.attempt
+    )
+}
+
+/// Query parameters whose value the debug log redacts: any name containing
+/// one of these, case-insensitively.
+const SECRET_PARAM_HINTS: [&str; 8] = [
+    "token",
+    "secret",
+    "password",
+    "code",
+    "assertion",
+    "key",
+    "signature",
+    "auth",
+];
+
+/// `raw` for a log line: any userinfo dropped, the fragment cut, and the value
+/// of every secret-looking query parameter replaced by `REDACTED`.
+fn redact_url(raw: &str) -> String {
+    let raw = raw.split_once('#').map_or(raw, |(url, _)| url);
+    let (base, query) = match raw.split_once('?') {
+        Some((base, query)) => (base, Some(query)),
+        None => (raw, None),
+    };
+    let mut out = base.to_string();
+    if let Some(scheme) = base.find("://") {
+        let start = scheme + 3;
+        let end = base[start..]
+            .find('/')
+            .map_or(base.len(), |slash| start + slash);
+        if let Some(at) = base[start..end].rfind('@') {
+            out = format!("{}{}", &base[..start], &base[start + at + 1..]);
+        }
+    }
+    let Some(query) = query else { return out };
+    let pairs: Vec<String> = query
+        .split('&')
+        .map(|pair| {
+            let name = pair.split_once('=').map_or(pair, |(name, _)| name);
+            let decoded = percent_decode(name).to_lowercase();
+            if SECRET_PARAM_HINTS.iter().any(|hint| decoded.contains(hint)) {
+                format!("{name}=REDACTED")
+            } else {
+                pair.to_string()
+            }
+        })
+        .collect();
+    format!("{out}?{}", pairs.join("&"))
+}
+
+/// Decode `%XX` escapes and `+` (lossily), enough to read a parameter name.
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes
+            .get(i + 1..i + 3)
+            .and_then(|hex| std::str::from_utf8(hex).ok())
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(byte)) => {
+                out.push(byte);
+                i += 3;
+            }
+            (b'+', _) => {
+                out.push(b' ');
+                i += 1;
+            }
+            (byte, _) => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Case-insensitive header lookup (HTTP header names are case-insensitive).
@@ -811,6 +1084,11 @@ mod tests {
         assert!(!should_retry(404, true));
     }
 
+    /// The default backoff: 500ms doubling to a 30s cap.
+    fn default_backoff(attempt: u32) -> Duration {
+        backoff(attempt, DEFAULT_RETRY_BASE_DELAY, DEFAULT_RETRY_MAX_DELAY)
+    }
+
     #[test]
     fn backoff_is_bounded_and_grows() {
         // Full jitter keeps every sample within [0, cap]; the cap climbs with
@@ -818,26 +1096,76 @@ mod tests {
         for attempt in 0..8u32 {
             let cap = (500u64 << attempt.min(20)).min(30_000);
             for _ in 0..64 {
-                assert!(backoff(attempt) <= Duration::from_millis(cap));
+                assert!(default_backoff(attempt) <= Duration::from_millis(cap));
             }
         }
         // At high attempts the cap saturates at 30s, never higher.
         for _ in 0..64 {
-            assert!(backoff(20) <= Duration::from_millis(30_000));
+            assert!(default_backoff(20) <= Duration::from_millis(30_000));
+            assert!(default_backoff(u32::MAX) <= Duration::from_millis(30_000));
+        }
+    }
+
+    #[test]
+    fn backoff_follows_the_configured_base_and_max() {
+        let ms = Duration::from_millis;
+        for (attempt, base, max, cap) in [
+            (0, ms(10), ms(35), ms(10)),
+            (1, ms(10), ms(35), ms(20)),
+            (2, ms(10), ms(35), ms(35)),
+            (9, ms(10), ms(35), ms(35)),
+            (3, ms(0), ms(0), ms(0)),
+            (40, Duration::MAX, Duration::MAX, Duration::MAX),
+        ] {
+            // Every sample is at or under the cap, and over 200 of them full
+            // jitter comes close to it.
+            let samples: Vec<Duration> = (0..200).map(|_| backoff(attempt, base, max)).collect();
+            assert!(
+                samples.iter().all(|wait| *wait <= cap),
+                "{attempt}: {samples:?}"
+            );
+            let largest = samples.iter().max().copied().unwrap_or_default();
+            assert!(
+                largest >= cap / 2 || cap == Duration::MAX,
+                "{attempt}: {largest:?}"
+            );
         }
     }
 
     #[test]
     fn retry_delay_uses_backoff_floored_by_retry_after_and_capped() {
-        // At attempt 0 backoff is <= 500ms, so a 2s Retry-After raises the floor.
+        // A 2s Retry-After raises a shorter backoff to the floor.
         let resp = response(429, &[("Retry-After", "2")], b"");
-        assert_eq!(retry_delay(&resp, 0), Duration::from_secs(2));
+        assert_eq!(
+            retry_delay(&resp, Duration::from_millis(400)),
+            Duration::from_secs(2)
+        );
         // A pathological Retry-After is clamped to the ceiling, never honored raw.
         let resp = response(429, &[("Retry-After", "100000")], b"");
-        assert_eq!(retry_delay(&resp, 0), MAX_RETRY_DELAY);
-        // A non-numeric Retry-After falls back to jittered backoff (<= cap).
+        assert_eq!(retry_delay(&resp, Duration::ZERO), MAX_RETRY_DELAY);
+        // A non-numeric Retry-After falls back to the backoff.
         let resp = response(503, &[("Retry-After", "soon")], b"");
-        assert!(retry_delay(&resp, 0) <= Duration::from_millis(500));
+        assert_eq!(
+            retry_delay(&resp, Duration::from_millis(400)),
+            Duration::from_millis(400)
+        );
+    }
+
+    #[tokio::test]
+    async fn with_retry_backoff_shortens_the_waits() {
+        const UNAVAILABLE: &[u8] =
+            b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
+        const OK: &[u8] = b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}";
+        let (url, heads) =
+            serve_sequence(&[UNAVAILABLE, UNAVAILABLE, UNAVAILABLE, UNAVAILABLE, OK]).await;
+        let client = Client::new(Auth::developer_token("t"))
+            .with_retry_backoff(Duration::from_millis(1), Duration::from_millis(4));
+        let started = std::time::Instant::now();
+        client.fetch(client.new_request("GET", &url)).await.unwrap();
+        // Four waits of at most 1, 2, 4, and 4ms, where the defaults allow 7.5s.
+        let elapsed = started.elapsed();
+        assert_eq!(heads.lock().unwrap().len(), 5);
+        assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
     }
 
     #[test]
@@ -1230,5 +1558,187 @@ mod tests {
         let sent = rx.await.unwrap().to_lowercase();
         assert!(!sent.contains("as-user"), "{sent}");
         assert!(sent.contains("x-trace-id: trace"), "{sent}");
+    }
+
+    /// Serve the canned responses in order, one connection each (every one
+    /// says `connection: close`); returns the URL and the request heads seen.
+    async fn serve_sequence(
+        responses: &'static [&'static [u8]],
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let heads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = heads.clone();
+        tokio::spawn(async move {
+            for raw in responses {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = socket.read(&mut chunk).await.unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                seen.lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&buf).to_lowercase());
+                let _ = socket.write_all(raw).await;
+            }
+        });
+        (format!("http://{addr}/files/1"), heads)
+    }
+
+    /// A 429 (`Retry-After: 0`), then a 401, then a 200.
+    const FLAKY: &[&[u8]] = &[
+        b"HTTP/1.1 429 Too Many Requests\r\nretry-after: 0\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}",
+    ];
+
+    #[tokio::test]
+    async fn hooks_observe_every_attempt_with_the_token_withheld() {
+        let (url, heads) = serve_sequence(FLAKY).await;
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let responses = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (seen_requests, seen_responses) = (requests.clone(), responses.clone());
+        let client = Client::new(Auth::developer_token("secret-token"))
+            .with_retry_backoff(Duration::ZERO, Duration::ZERO)
+            .with_request_hook(move |r| seen_requests.lock().unwrap().push(r.clone()))
+            .with_response_hook(move |r| seen_responses.lock().unwrap().push(r.clone()));
+        let request = with_query(client.new_request("GET", &url), "fields", "id");
+        client.fetch(request).await.unwrap();
+
+        let heads = heads.lock().unwrap();
+        assert_eq!(heads.len(), 3);
+        assert!(heads[2].contains("authorization: bearer secret-token"));
+        let requests = requests.lock().unwrap();
+        let responses = responses.lock().unwrap();
+        assert_eq!((requests.len(), responses.len()), (3, 3));
+        for (i, status) in [429, 401, 200].into_iter().enumerate() {
+            let attempt = i as u32 + 1;
+            let (request, response) = (&requests[i], &responses[i]);
+            assert_eq!(
+                (request.attempt, response.request.attempt),
+                (attempt, attempt)
+            );
+            assert_eq!(request.method, "GET");
+            assert_eq!(request.url, format!("{url}?fields=id"));
+            assert_eq!(
+                header_value(&request.headers, "authorization"),
+                Some("REDACTED")
+            );
+            assert_eq!(response.status, Some(status));
+            assert!(response.error.is_none());
+        }
+        assert_eq!(
+            header_value(&responses[0].headers, "retry-after"),
+            Some("0")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_debug_log_never_holds_a_secret() {
+        let (url, _) = serve_sequence(FLAKY).await;
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = lines.clone();
+        let client = Client::new(Auth::developer_token("secret-token"))
+            .with_retry_backoff(Duration::ZERO, Duration::ZERO)
+            .with_debug_logging(move |line| sink.lock().unwrap().push(line.to_string()));
+        let mut request = with_query(client.new_request("POST", &url), "fields", "id");
+        request = with_query(request, "access_token", "query-token");
+        request = with_query(request, "client_secret", "query-secret");
+        request = with_json_body(request, br#"{"password":"body-secret"}"#);
+        client.fetch(request).await.unwrap();
+
+        // A transport error's message carries the URL; it's redacted there too.
+        let addr = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let sink = lines.clone();
+        let refused = Client::new(Auth::developer_token("t"))
+            .with_max_retries(0)
+            .with_debug_logging(move |line| sink.lock().unwrap().push(line.to_string()));
+        let request = with_query(
+            refused.new_request("GET", &format!("http://{addr}/")),
+            "access_token",
+            "query-token",
+        );
+        assert!(refused.fetch(request).await.is_err());
+
+        let lines = lines.lock().unwrap();
+        assert_eq!(lines.len(), 4, "{lines:#?}");
+        for line in lines.iter() {
+            for secret in ["secret-token", "query-token", "query-secret", "body-secret"] {
+                assert!(!line.contains(secret), "leaked {secret}: {line}");
+            }
+        }
+        for (i, status) in ["429", "401", "200"].into_iter().enumerate() {
+            let want = format!(
+                "box: POST {url}?fields=id&access_token=REDACTED&client_secret=REDACTED -> {status} in "
+            );
+            assert!(lines[i].starts_with(&want), "{}", lines[i]);
+            assert!(
+                lines[i].ends_with(&format!("(attempt {})", i + 1)),
+                "{}",
+                lines[i]
+            );
+        }
+        assert!(lines[3].contains("-> error: "), "{}", lines[3]);
+    }
+
+    #[test]
+    fn redact_url_hides_secret_query_values_and_userinfo() {
+        for (raw, want) in [
+            (
+                "https://api.box.com/2.0/files/1",
+                "https://api.box.com/2.0/files/1",
+            ),
+            (
+                "https://api.box.com/2.0/files?fields=id&limit=5",
+                "https://api.box.com/2.0/files?fields=id&limit=5",
+            ),
+            (
+                "https://a.box.com/x?Access_Token=t&code=c&refresh%5Ftoken=r#frag",
+                "https://a.box.com/x?Access_Token=REDACTED&code=REDACTED&refresh%5Ftoken=REDACTED",
+            ),
+            (
+                "https://user:pass@box.example/x?api_key=k&q=a@b",
+                "https://box.example/x?api_key=REDACTED&q=a@b",
+            ),
+            (
+                "https://box.example/x?password",
+                "https://box.example/x?password=REDACTED",
+            ),
+        ] {
+            assert_eq!(redact_url(raw), want, "{raw}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_response_hook_sees_a_transport_error() {
+        // Bind and drop a listener, so its port refuses connections.
+        let addr = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let responses = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = responses.clone();
+        let client = Client::new(Auth::developer_token("t"))
+            .with_max_retries(0)
+            .with_response_hook(move |r| seen.lock().unwrap().push(r.clone()));
+        let request = client.new_request("GET", &format!("http://{addr}/"));
+        assert!(client.fetch(request).await.is_err());
+        let responses = responses.lock().unwrap();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(
+            (responses[0].status, responses[0].request.attempt),
+            (None, 1)
+        );
+        assert!(responses[0].error.is_some());
     }
 }

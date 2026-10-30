@@ -5,16 +5,19 @@
 package gantryruntime
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fixedToken string
@@ -288,5 +291,196 @@ func TestWithAsUserHeaderDerivesAClientActingAsTheUser(t *testing.T) {
 	want := []string{"12345|trace", "|trace", "12345|trace", "12345|trace"}
 	if strings.Join(seen, ",") != strings.Join(want, ",") {
 		t.Fatalf("As-User|X-Trace-Id seen %v, want %v", seen, want)
+	}
+}
+
+// flakyServer answers a 429 (Retry-After: 0), then a 401, then 200, and
+// records the Authorization header of each request it receives.
+func flakyServer(t *testing.T) (*httptest.Server, *[]string) {
+	t.Helper()
+	var auths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auths = append(auths, r.Header.Get("Authorization"))
+		switch len(auths) {
+		case 1:
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+		case 2:
+			w.WriteHeader(http.StatusUnauthorized)
+		default:
+			io.WriteString(w, `{"id":"1"}`)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server, &auths
+}
+
+// The request and response hooks see every attempt — the retried 429 and the
+// resend after a 401 refresh included — with the token withheld from them.
+func TestHooksObserveEveryAttempt(t *testing.T) {
+	server, auths := flakyServer(t)
+	var requests []RequestInfo
+	var responses []ResponseInfo
+	client := New(fixedToken("secret-token"),
+		WithRequestHook(func(_ context.Context, r RequestInfo) { requests = append(requests, r) }),
+		WithResponseHook(func(_ context.Context, r ResponseInfo) { responses = append(responses, r) }),
+	)
+	request := WithHeader(client.NewRequest("GET", server.URL+"/files/1"), "X-Trace-Id", "abc")
+	if _, err := client.Fetch(context.Background(), WithQuery(request, "fields", "id")); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+
+	if len(*auths) != 3 || (*auths)[2] != "Bearer secret-token" {
+		t.Fatalf("server saw %q, want three bearer-authenticated attempts", *auths)
+	}
+	if len(requests) != 3 || len(responses) != 3 {
+		t.Fatalf("hooks saw %d requests and %d responses, want 3 of each", len(requests), len(responses))
+	}
+	for i, want := range []int{429, 401, 200} {
+		req, resp := requests[i], responses[i]
+		if req.Attempt != i+1 || resp.Request.Attempt != i+1 || resp.Status != want || resp.Err != nil {
+			t.Fatalf("attempt %d: request %+v, response status %d err %v", i+1, req, resp.Status, resp.Err)
+		}
+		if req.Method != "GET" || req.URL != server.URL+"/files/1?fields=id" || req.Header.Get("X-Trace-Id") != "abc" {
+			t.Fatalf("attempt %d: request %+v", i+1, req)
+		}
+		if got := req.Header.Get("Authorization"); got != "REDACTED" {
+			t.Fatalf("attempt %d: hook saw Authorization %q, want it redacted", i+1, got)
+		}
+		if resp.Elapsed <= 0 {
+			t.Fatalf("attempt %d: elapsed %v", i+1, resp.Elapsed)
+		}
+	}
+	if responses[0].Header.Get("Retry-After") != "0" {
+		t.Fatalf("429 response headers %v", responses[0].Header)
+	}
+}
+
+// The debug log has a line per attempt and never the token, a secret query
+// value, or a body.
+func TestDebugLoggingRedactsSecrets(t *testing.T) {
+	server, _ := flakyServer(t)
+	var out bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&out, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	client := New(fixedToken("secret-token"), WithDebugLogging(logger))
+	request := client.NewRequest("POST", server.URL+"/files/1")
+	request = WithQuery(WithQuery(request, "fields", "id"), "access_token", "query-token")
+	request = WithJsonBody(WithQuery(request, "client_secret", "query-secret"), []byte(`{"password":"body-secret"}`))
+	if _, err := client.Fetch(context.Background(), request); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+
+	logged := out.String()
+	for _, secret := range []string{"secret-token", "query-token", "query-secret", "body-secret"} {
+		if strings.Contains(logged, secret) {
+			t.Fatalf("debug log leaked %q:\n%s", secret, logged)
+		}
+	}
+	lines := strings.Split(strings.TrimSpace(logged), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("want a line per attempt, got:\n%s", logged)
+	}
+	for i, status := range []string{"429", "401", "200"} {
+		for _, want := range []string{"method=POST", "access_token=REDACTED", "client_secret=REDACTED", "fields=id", "status=" + status, "attempt=" + strconv.Itoa(i+1)} {
+			if !strings.Contains(lines[i], want) {
+				t.Fatalf("line %d lacks %q: %s", i+1, want, lines[i])
+			}
+		}
+	}
+
+	// A transport error's message carries the URL; the log redacts it there too.
+	server.Close()
+	failing := WithQuery(client.NewRequest("GET", server.URL), "access_token", "query-token")
+	if _, err := New(fixedToken("t"), WithMaxRetries(0), WithDebugLogging(logger)).Fetch(context.Background(), failing); err == nil {
+		t.Fatal("fetch against a closed server should fail")
+	}
+	if logged := out.String(); strings.Contains(logged, "query-token") || !strings.Contains(logged, "error=") {
+		t.Fatalf("transport error line:\n%s", logged)
+	}
+}
+
+// The backoff ceiling doubles from the base up to the max; full jitter keeps
+// each wait at or under it, and over many samples close to it.
+func TestBackoffFollowsTheConfiguredBaseAndMax(t *testing.T) {
+	ms := time.Millisecond
+	for _, tc := range []struct {
+		opts    []Option
+		attempt int
+		ceiling time.Duration
+	}{
+		// The defaults, unchanged: 500ms doubling to a 30s cap.
+		{nil, 0, 500 * ms},
+		{nil, 1, time.Second},
+		{nil, 5, 16 * time.Second},
+		{nil, 6, 30 * time.Second},
+		{nil, 100, 30 * time.Second},
+		{[]Option{WithRetryBackoff(10*ms, 35*ms)}, 0, 10 * ms},
+		{[]Option{WithRetryBackoff(10*ms, 35*ms)}, 1, 20 * ms},
+		{[]Option{WithRetryBackoff(10*ms, 35*ms)}, 2, 35 * ms},
+		{[]Option{WithRetryBackoff(-ms, 0)}, 3, 0},
+	} {
+		client := New(fixedToken("t"), tc.opts...)
+		var largest time.Duration
+		for range 200 {
+			wait := client.backoff(tc.attempt)
+			if wait < 0 || wait > tc.ceiling {
+				t.Fatalf("backoff(%d) = %v, want within [0, %v]", tc.attempt, wait, tc.ceiling)
+			}
+			largest = max(largest, wait)
+		}
+		if largest < tc.ceiling/2 {
+			t.Fatalf("backoff(%d) never passed %v in 200 samples (largest %v)", tc.attempt, tc.ceiling/2, largest)
+		}
+	}
+}
+
+// A small backoff shortens the waits between retried 503s.
+func TestWithRetryBackoffShortensTheWaits(t *testing.T) {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits++; hits <= 4 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	}))
+	defer server.Close()
+
+	client := New(fixedToken("t"), WithRetryBackoff(time.Millisecond, 4*time.Millisecond))
+	started := time.Now()
+	if _, err := client.Fetch(context.Background(), client.NewRequest("GET", server.URL)); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	// Four waits of at most 1, 2, 4, and 4ms, where the defaults allow 7.5s.
+	if elapsed := time.Since(started); hits != 5 || elapsed > 2*time.Second {
+		t.Fatalf("%d attempts in %v, want 5 well under 2s", hits, elapsed)
+	}
+}
+
+func TestRedactURL(t *testing.T) {
+	for raw, want := range map[string]string{
+		"https://api.box.com/2.0/files/1":                                  "https://api.box.com/2.0/files/1",
+		"https://api.box.com/2.0/files?fields=id&limit=5":                  "https://api.box.com/2.0/files?fields=id&limit=5",
+		"https://a.box.com/x?Access_Token=t&code=c&refresh%5Ftoken=r#frag": "https://a.box.com/x?Access_Token=REDACTED&code=REDACTED&refresh%5Ftoken=REDACTED",
+		"https://user:pass@box.example/x?api_key=k&q=a@b":                  "https://box.example/x?api_key=REDACTED&q=a@b",
+		"https://box.example/x?password":                                   "https://box.example/x?password=REDACTED",
+	} {
+		if got := redactURL(raw); got != want {
+			t.Errorf("redactURL(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+// An attempt that fails in transport still reaches the response hook, with
+// the error and no status.
+func TestResponseHookSeesATransportError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	server.Close()
+	var responses []ResponseInfo
+	client := New(fixedToken("t"), WithMaxRetries(0),
+		WithResponseHook(func(_ context.Context, r ResponseInfo) { responses = append(responses, r) }))
+	if _, err := client.Fetch(context.Background(), client.NewRequest("GET", server.URL)); err == nil {
+		t.Fatal("fetch against a closed server should fail")
+	}
+	if len(responses) != 1 || responses[0].Err == nil || responses[0].Status != 0 || responses[0].Request.Attempt != 1 {
+		t.Fatalf("responses %+v, want one transport error", responses)
 	}
 }

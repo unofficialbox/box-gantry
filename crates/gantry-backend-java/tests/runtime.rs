@@ -98,6 +98,25 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 public final class RuntimeSmoke {
+    /** A System.Logger that keeps every DEBUG message, for the debug log test. */
+    record ListLogger(java.util.List<String> lines) implements System.Logger {
+        public String getName() {
+            return "test";
+        }
+
+        public boolean isLoggable(System.Logger.Level level) {
+            return true;
+        }
+
+        public void log(System.Logger.Level level, java.util.ResourceBundle bundle, String msg, Throwable thrown) {
+            lines.add(msg);
+        }
+
+        public void log(System.Logger.Level level, java.util.ResourceBundle bundle, String format, Object... params) {
+            lines.add(format);
+        }
+    }
+
     static void check(boolean cond, String msg) {
         if (!cond) {
             System.out.println("FAIL: " + msg);
@@ -213,6 +232,25 @@ public final class RuntimeSmoke {
             proxiedHost.set(ex.getRequestHeaders().getFirst("Host"));
             respond(ex, 200, "proxied");
         });
+        // A 429 (Retry-After: 0), then a 401, then 200, for the hook tests;
+        // records each request's Authorization header.
+        java.util.List<String> flakyAuths = new java.util.concurrent.CopyOnWriteArrayList<>();
+        server.createContext("/flaky", ex -> {
+            flakyAuths.add(ex.getRequestHeaders().getFirst("Authorization"));
+            if (flakyAuths.size() == 1) {
+                ex.getResponseHeaders().add("Retry-After", "0");
+                respond(ex, 429, "");
+            } else if (flakyAuths.size() == 2) {
+                respond(ex, 401, "");
+            } else {
+                respond(ex, 200, "{}");
+            }
+        });
+
+        // 503 twenty times, then 200, for the retry backoff test.
+        AtomicInteger unavailableHits = new AtomicInteger();
+        server.createContext("/unavailable", ex ->
+            respond(ex, unavailableHits.incrementAndGet() <= 20 ? 503 : 200, "{}"));
         // Revoke: /rv/oauth2/token mints rv-1, rv-2, … (with rotating refresh
         // tokens), /rv/oauth2/revoke records each form; /rvbad/oauth2/revoke
         // refuses. /revoke is the proxied CCG's revoke (its token URL is
@@ -396,6 +434,117 @@ public final class RuntimeSmoke {
         }
         check(proxyConflicted, "httpClient + proxy should be rejected at build()");
 
+        // Hooks see every attempt — the retried 429 and the resend after the
+        // 401 refresh — with the token withheld from them.
+        java.util.List<Runtime.RequestInfo> seenRequests = new java.util.ArrayList<>();
+        java.util.List<Runtime.ResponseInfo> seenResponses = new java.util.ArrayList<>();
+        Runtime.Session hooked = Runtime.Session.builder(Runtime.developerToken("secret-token"))
+            .onRequest(seenRequests::add)
+            .onResponse(seenResponses::add)
+            .build();
+        hooked.fetch(Runtime.withQuery(hooked.newRequest("GET", base + "/flaky"), "fields", "id"));
+        check(flakyAuths.size() == 3 && "Bearer secret-token".equals(flakyAuths.get(2)),
+            "flaky server saw " + flakyAuths);
+        check(seenRequests.size() == 3 && seenResponses.size() == 3,
+            "hooks saw " + seenRequests.size() + " requests, " + seenResponses.size() + " responses");
+        int[] statuses = {429, 401, 200};
+        for (int i = 0; i < 3; i++) {
+            Runtime.RequestInfo req = seenRequests.get(i);
+            Runtime.ResponseInfo resp = seenResponses.get(i);
+            check(req.attempt() == i + 1 && resp.request().attempt() == i + 1, "attempt " + (i + 1));
+            check(req.method().equals("GET") && req.url().equals(base + "/flaky?fields=id"), "request " + req);
+            check(java.util.List.of("REDACTED").equals(req.headers().get("authorization")),
+                "hook saw Authorization " + req.headers().get("authorization"));
+            check(resp.status() == statuses[i] && resp.error() == null, "response " + resp);
+        }
+        check(java.util.List.of("0").equals(seenResponses.get(0).headers().get("retry-after")),
+            "429 headers " + seenResponses.get(0).headers());
+
+        // A transport failure reaches the response hook as an error.
+        java.util.List<Runtime.ResponseInfo> failed = new java.util.ArrayList<>();
+        Runtime.Session refused = Runtime.Session.builder(Runtime.developerToken("t"))
+            .maxRetries(0)
+            .onResponse(failed::add)
+            .build();
+        boolean threw = false;
+        try {
+            refused.fetch(refused.newRequest("GET", "http://127.0.0.1:1/"));
+        } catch (Runtime.BoxApiException expected) {
+            threw = true;
+        }
+        check(threw && failed.size() == 1 && failed.get(0).status() == 0 && failed.get(0).error() != null,
+            "transport error hook: " + failed);
+
+        // The debug log has a line per attempt and never the token, a secret
+        // query value, or a body.
+        flakyAuths.clear();
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        Runtime.Session logged = Runtime.Session.builder(Runtime.developerToken("secret-token"))
+            .debugLogging(new ListLogger(lines))
+            .build();
+        Runtime.Request loggedReq = Runtime.withQuery(Runtime.withQuery(Runtime.withQuery(
+            logged.newRequest("POST", base + "/flaky"), "fields", "id"),
+            "access_token", "query-token"), "client_secret", "query-secret");
+        logged.fetch(Runtime.withJsonBody(loggedReq,
+            "{\"password\":\"body-secret\"}".getBytes(StandardCharsets.UTF_8)));
+        Runtime.Session loggedRefused = Runtime.Session.builder(Runtime.developerToken("t"))
+            .maxRetries(0)
+            .debugLogging(new ListLogger(lines))
+            .build();
+        try {
+            loggedRefused.fetch(Runtime.withQuery(
+                loggedRefused.newRequest("GET", "http://127.0.0.1:1/"), "access_token", "query-token"));
+        } catch (Runtime.BoxApiException expected) {
+            // Logged below.
+        }
+        check(lines.size() == 4, "debug log lines: " + lines);
+        for (String line : lines) {
+            for (String secret : new String[] {"secret-token", "query-token", "query-secret", "body-secret"}) {
+                check(!line.contains(secret), "debug log leaked " + secret + ": " + line);
+            }
+        }
+        String[] loggedStatuses = {"429", "401", "200"};
+        for (int i = 0; i < 3; i++) {
+            String want = "box: POST " + base
+                + "/flaky?fields=id&access_token=REDACTED&client_secret=REDACTED -> " + loggedStatuses[i] + " in ";
+            check(lines.get(i).startsWith(want) && lines.get(i).endsWith("(attempt " + (i + 1) + ")"),
+                "debug log line " + lines.get(i));
+        }
+        check(lines.get(3).startsWith("box: GET http://127.0.0.1:1/?access_token=REDACTED -> error: "),
+            "transport error line " + lines.get(3));
+        // Case-insensitive, percent-decoded parameter names; other values kept.
+        lines.clear();
+        Runtime.Session loggedProxied = Runtime.Session.builder(Runtime.developerToken("t"))
+            .proxy(viaServer)
+            .debugLogging(new ListLogger(lines))
+            .build();
+        loggedProxied.fetch(loggedProxied.newRequest("GET",
+            "http://box.invalid/proxied?Access_Token=t&code=c&refresh%5Ftoken=r&api_key=k&q=a@b&password"));
+        check(lines.size() == 1 && lines.get(0).startsWith("box: GET http://box.invalid/proxied?Access_Token=REDACTED"
+                + "&code=REDACTED&refresh%5Ftoken=REDACTED&api_key=REDACTED&q=a@b&password=REDACTED -> 200 in "),
+            "redacted line " + lines);
+
+        // retryBackoff sets the waits: twenty of them, each uniform in
+        // [0, 100ms], sum to about 1s — over 400ms all but certainly, and
+        // under the 2s cap, where the default 500ms-to-30s backoff would take
+        // minutes.
+        Runtime.Session quick = Runtime.Session.builder(Runtime.developerToken("t"))
+            .maxRetries(20)
+            .retryBackoff(java.time.Duration.ofMillis(100), java.time.Duration.ofMillis(100))
+            .build();
+        long backoffStarted = System.nanoTime();
+        quick.fetch(quick.newRequest("GET", base + "/unavailable"));
+        long backoffMs = (System.nanoTime() - backoffStarted) / 1_000_000;
+        check(unavailableHits.get() == 21 && backoffMs >= 400 && backoffMs < 5_000,
+            "retry backoff: " + unavailableHits.get() + " hits in " + backoffMs + "ms");
+        boolean negative = false;
+        try {
+            Runtime.Session.builder(Runtime.developerToken("t"))
+                .retryBackoff(java.time.Duration.ofMillis(-1), java.time.Duration.ZERO);
+        } catch (IllegalArgumentException expected) {
+            negative = true;
+        }
+        check(negative, "a negative retry delay should be rejected");
         // revokeToken: CCG posts the cached token with its own credentials to
         // the revoke endpoint beside the token URL, then re-acquires.
         Runtime.Auth rvCcg = Runtime.clientCredentials(
@@ -445,13 +594,13 @@ public final class RuntimeSmoke {
         Runtime.Auth rvBad = Runtime.clientCredentials(
             Runtime.CcgConfig.enterprise("c", "bad", "ent1").tokenUrl(base + "/rvbad/oauth2/token"));
         String kept = rvBad.accessToken();
-        boolean refused = false;
+        boolean revokeRefused = false;
         try {
             rvBad.revokeToken();
         } catch (Runtime.BoxApiException expected) {
-            refused = expected.getMessage().contains("400");
+            revokeRefused = expected.getMessage().contains("400");
         }
-        check(refused && rvBad.accessToken().equals(kept), "a failed revoke throws and keeps the token");
+        check(revokeRefused && rvBad.accessToken().equals(kept), "a failed revoke throws and keeps the token");
         boolean devRefused = false;
         try {
             Runtime.developerToken("devtok").revokeToken();

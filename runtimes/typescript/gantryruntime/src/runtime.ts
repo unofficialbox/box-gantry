@@ -63,10 +63,113 @@ export class Stream {
   }
 }
 
+/** One HTTP attempt as `Client.fetch` is about to send it, for a request
+ * hook. `headers` is a copy whose `Authorization` value reads `REDACTED`, so a
+ * hook that records every header never captures the access token. */
+export interface RequestInfo {
+  readonly method: string;
+  readonly url: string;
+  readonly headers: Headers;
+  /** Counts from 1: each retry, and the resend after a 401 token refresh, is
+   * its own attempt. */
+  readonly attempt: number;
+}
+
+/** How one HTTP attempt ended, for a response hook: the response's `status`
+ * and `headers`, or the transport `error` when none arrived. `elapsedMs` runs
+ * from sending the request to reading the whole body. */
+export interface ResponseInfo {
+  readonly request: RequestInfo;
+  readonly status?: number;
+  readonly headers?: Headers;
+  readonly elapsedMs: number;
+  readonly error?: unknown;
+}
+
+/** Callbacks around every HTTP attempt `Client.fetch` makes — each retry, the
+ * 401 before a token refresh, and an attempt that fails in transport
+ * included. They observe; they can't change the request (wrap the `fetch`
+ * option to do that). Token requests are not observed. */
+export interface ClientHooks {
+  onRequest?(request: RequestInfo): void;
+  onResponse?(response: ResponseInfo): void;
+}
+
+/** Hooks that log one line per HTTP attempt to `log.debug` (`console` by
+ * default, or any console-like logger): the method, the URL with
+ * secret-looking query values redacted, the status or transport error, the
+ * elapsed time, and the attempt number. They never log the `Authorization`
+ * header, a token, or a body. Pass them in `ClientOptions.hooks`. */
+export function debugLogger(log: { debug(message: string): void } = console): ClientHooks {
+  return {
+    onResponse(response: ResponseInfo): void {
+      const { method, url, attempt } = response.request;
+      const redacted = redactUrl(url);
+      let outcome: string;
+      if (response.error !== undefined) {
+        const message = response.error instanceof Error ? response.error.message : String(response.error);
+        outcome = `error: ${message.split(url).join(redacted)}`;
+      } else {
+        outcome = String(response.status);
+      }
+      log.debug(`box: ${method} ${redacted} -> ${outcome} in ${Math.round(response.elapsedMs)}ms (attempt ${attempt})`);
+    },
+  };
+}
+
+/** Query parameters whose value the debug log redacts: any name containing
+ * one of these, case-insensitively. */
+const SECRET_PARAM_HINTS = ['token', 'secret', 'password', 'code', 'assertion', 'key', 'signature', 'auth'];
+
+/** `raw` for a log line: any userinfo dropped, the fragment cut, and the value
+ * of every secret-looking query parameter replaced by `REDACTED`. */
+function redactUrl(raw: string): string {
+  const hash = raw.indexOf('#');
+  const url = hash >= 0 ? raw.slice(0, hash) : raw;
+  const question = url.indexOf('?');
+  let base = question >= 0 ? url.slice(0, question) : url;
+  const scheme = base.indexOf('://');
+  if (scheme >= 0) {
+    const start = scheme + 3;
+    const slash = base.indexOf('/', start);
+    const end = slash >= 0 ? slash : base.length;
+    const at = base.lastIndexOf('@', end - 1);
+    if (at >= start) {
+      base = base.slice(0, start) + base.slice(at + 1);
+    }
+  }
+  if (question < 0) {
+    return base;
+  }
+  const pairs = url
+    .slice(question + 1)
+    .split('&')
+    .map((pair) => {
+      const eq = pair.indexOf('=');
+      const name = eq >= 0 ? pair.slice(0, eq) : pair;
+      let decoded = name;
+      try {
+        decoded = decodeURIComponent(name.replace(/\+/g, ' '));
+      } catch {
+        // A malformed escape: match on the name as written.
+      }
+      decoded = decoded.toLowerCase();
+      return SECRET_PARAM_HINTS.some((hint) => decoded.includes(hint)) ? `${name}=REDACTED` : pair;
+    });
+  return `${base}?${pairs.join('&')}`;
+}
+
 /** Options for a runtime `Client`. */
 export interface ClientOptions {
   /** How many times a retriable failure is retried (default 5). */
   maxRetries?: number;
+  /** The exponential backoff between retries: the wait before retry `n` is
+   * uniform (full jitter) in `[0, min(retryBaseDelayMs·2ⁿ, retryMaxDelayMs)]`
+   * (defaults 500 and 30000). A Retry-After from Box still raises the wait,
+   * up to its own ceiling. */
+  retryBaseDelayMs?: number;
+  /** The cap on one backoff wait (see `retryBaseDelayMs`). */
+  retryMaxDelayMs?: number;
   /** Override individual base-URL classes (custom deployments). */
   baseUrls?: Record<string, string>;
   /** Override the platform `fetch` (same signature) — e.g. to inject an
@@ -77,6 +180,8 @@ export interface ClientOptions {
    * header set on an individual `Request` (via `withHeader`) takes
    * precedence over a same-named default. */
   headers?: Record<string, string>;
+  /** Hooks around every HTTP attempt, run in order (see `ClientHooks`). */
+  hooks?: ClientHooks[];
 }
 
 /** The runtime session: it holds the auth flow, base-URL configuration, and
@@ -85,8 +190,11 @@ export class Client {
   private readonly auth: Auth;
   private readonly baseUrls: Record<string, string>;
   private readonly maxRetries: number;
+  private readonly retryBaseDelayMs: number;
+  private readonly retryMaxDelayMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly defaultHeaders: Record<string, string>;
+  private readonly hooks: ClientHooks[];
 
   constructor(auth: Auth, options: ClientOptions = {}) {
     this.auth = auth;
@@ -95,9 +203,12 @@ export class Client {
       throw new RangeError('maxRetries must be a non-negative integer');
     }
     this.maxRetries = maxRetries;
+    this.retryBaseDelayMs = nonNegative('retryBaseDelayMs', options.retryBaseDelayMs ?? 500);
+    this.retryMaxDelayMs = nonNegative('retryMaxDelayMs', options.retryMaxDelayMs ?? 30_000);
     this.baseUrls = { ...DEFAULT_BASE_URLS, ...(options.baseUrls ?? {}) };
     this.fetchImpl = options.fetch ?? fetch;
     this.defaultHeaders = { ...(options.headers ?? {}) };
+    this.hooks = [...(options.hooks ?? [])];
   }
 
   /** A new client that sends `As-User: userId` with every API request, so Box
@@ -111,9 +222,12 @@ export class Client {
     );
     return new Client(this.auth, {
       maxRetries: this.maxRetries,
+      retryBaseDelayMs: this.retryBaseDelayMs,
+      retryMaxDelayMs: this.retryMaxDelayMs,
       baseUrls: this.baseUrls,
       fetch: this.fetchImpl,
       headers: { ...headers, 'As-User': userId },
+      hooks: this.hooks,
     });
   }
 
@@ -154,9 +268,12 @@ export class Client {
       request.headers.forEach((value, name) => headers.set(name, value));
       headers.set('Authorization', `Bearer ${token}`);
 
+      const info = this.observeRequest(request.method, url, headers, attempt + 1);
+      const started = performance.now();
       // `httpResponse` is the platform `Response` (via inference — the name is
       // shadowed by this module's `Response` class, so it is never annotated).
       let httpResponse;
+      let bodyBytes: Uint8Array;
       try {
         httpResponse = await this.fetchImpl(url, {
           method: request.method,
@@ -168,18 +285,28 @@ export class Client {
           signal,
         });
       } catch (err) {
+        this.observeResponse(info, started, { error: err });
         // A transport error gives no response, so a non-idempotent write may
         // already have committed — only retry idempotent methods.
         lastError = err;
         if (attempt === this.maxRetries || !idempotent) {
           break;
         }
-        await sleep(backoff(attempt), signal);
+        await sleep(backoff(attempt, this.retryBaseDelayMs, this.retryMaxDelayMs), signal);
         continue;
       }
 
-      const bodyBytes = new Uint8Array(await httpResponse.arrayBuffer());
+      try {
+        bodyBytes = new Uint8Array(await httpResponse.arrayBuffer());
+      } catch (err) {
+        this.observeResponse(info, started, { error: err });
+        throw err;
+      }
       const response = new Response(httpResponse.status, httpResponse.headers, bodyBytes);
+      this.observeResponse(info, started, {
+        status: response.status,
+        headers: new Headers(response.headers),
+      });
 
       // A single force-refresh on 401: re-acquire past the token cache so the
       // retry doesn't just resend the same rejected token.
@@ -189,7 +316,7 @@ export class Client {
         continue;
       }
       if (shouldRetry(response.status, idempotent) && attempt < this.maxRetries) {
-        await sleep(retryDelay(response, attempt), signal);
+        await sleep(retryDelay(response, backoff(attempt, this.retryBaseDelayMs, this.retryMaxDelayMs)), signal);
         continue;
       }
       if (response.status < 200 || response.status >= 300) {
@@ -201,11 +328,49 @@ export class Client {
       cause: lastError,
     });
   }
+
+  /** Run the request hooks for one attempt, returning what they saw for the
+   * response hooks to carry along. */
+  private observeRequest(method: string, url: string, sent: Headers, attempt: number): RequestInfo | undefined {
+    if (this.hooks.length === 0) {
+      return undefined;
+    }
+    const headers = new Headers(sent);
+    headers.set('Authorization', 'REDACTED');
+    const info: RequestInfo = { method, url, headers, attempt };
+    for (const hook of this.hooks) {
+      hook.onRequest?.(info);
+    }
+    return info;
+  }
+
+  /** Run the response hooks for one attempt. */
+  private observeResponse(
+    request: RequestInfo | undefined,
+    started: number,
+    outcome: { status?: number; headers?: Headers; error?: unknown },
+  ): void {
+    if (request === undefined) {
+      return;
+    }
+    const info: ResponseInfo = { request, elapsedMs: performance.now() - started, ...outcome };
+    for (const hook of this.hooks) {
+      hook.onResponse?.(info);
+    }
+  }
 }
 
-/** The safety ceiling on any single retry sleep, so a hostile server-sent
- * Retry-After can't stall the client indefinitely. */
+/** The safety ceiling on a server-sent Retry-After, so a hostile one can't
+ * stall the client indefinitely. */
 const MAX_RETRY_DELAY_MS = 30_000;
+
+/** `value`, if it is a finite, non-negative number of milliseconds. */
+function nonNegative(name: string, value: number): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new RangeError(`${name} must be a non-negative number of milliseconds`);
+  }
+  return value;
+}
 
 /** HTTP's idempotent methods: safe to replay after a transport error or 5xx. */
 const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'PUT', 'DELETE', 'OPTIONS', 'TRACE']);
@@ -221,23 +386,27 @@ function shouldRetry(status: number, idempotent: boolean): boolean {
   return status === 429 || (status >= 500 && idempotent);
 }
 
-/** Full-jitter exponential backoff, capped at the max retry delay. */
-function backoff(attempt: number): number {
-  const base = Math.min(2 ** attempt * 500, MAX_RETRY_DELAY_MS);
-  return Math.random() * base;
+/** Full-jitter exponential backoff from `baseMs`, doubling per attempt up to
+ * `maxMs`. */
+function backoff(attempt: number, baseMs: number, maxMs: number): number {
+  let ceiling = Math.min(baseMs, maxMs);
+  for (let i = 0; i < attempt && ceiling < maxMs; i++) {
+    ceiling = Math.min(ceiling * 2, maxMs);
+  }
+  return Math.random() * ceiling;
 }
 
-/** The delay before the next retry: exponential backoff, raised to a
- * (delay-seconds) Retry-After as a floor when present, and clamped to
+/** The delay before the next retry: the exponential backoff, raised to a
+ * (delay-seconds) Retry-After as a floor when present — that header clamped to
  * `MAX_RETRY_DELAY_MS`. HTTP-date Retry-After values fall back to backoff (the
  * same posture as the Rust runtime). */
-function retryDelay(response: Response, attempt: number): number {
-  let delay = backoff(attempt);
+function retryDelay(response: Response, backoffMs: number): number {
+  let delay = backoffMs;
   const header = response.headers.get('Retry-After');
   if (header && /^\d+$/.test(header.trim())) {
-    delay = Math.max(delay, Number(header.trim()) * 1000);
+    delay = Math.max(delay, Math.min(Number(header.trim()) * 1000, MAX_RETRY_DELAY_MS));
   }
-  return Math.min(delay, MAX_RETRY_DELAY_MS);
+  return delay;
 }
 
 /** Sleep for `ms`, rejecting promptly if the signal aborts. */

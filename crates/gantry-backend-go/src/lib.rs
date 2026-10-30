@@ -521,6 +521,40 @@ c := client.NewClient(ts, gantryruntime.WithProxy(proxy))
 
 `WithProxy` combines with `WithHTTPVersion`; `WithHTTPClient` replaces both.
 
+## Hooks and logging
+
+`WithRequestHook` and `WithResponseHook` observe every HTTP attempt — each
+retry and the resend after a token refresh included — with its method, URL,
+headers (the `Authorization` value withheld), status, elapsed time, and attempt
+number:
+
+```go
+c := client.NewClient(ts, gantryruntime.WithResponseHook(
+	func(ctx context.Context, r gantryruntime.ResponseInfo) {
+		fmt.Println(r.Request.Method, r.Status, r.Elapsed, r.Request.Attempt)
+	}))
+```
+
+Hooks observe only; to change requests, wrap the `Transport` of a client passed
+to `WithHTTPClient`. Token requests are not observed.
+
+`WithDebugLogging(logger)` logs one line per attempt to a `*slog.Logger` at
+debug level. Query values whose names look secret (`token`, `secret`,
+`password`, `code`, …) read `REDACTED`; the token and bodies are never logged.
+
+## Retries
+
+A 429, a 5xx, or a failed connection is retried up to five times, with
+exponential backoff and full jitter: the wait before retry *n* is up to
+500ms·2ⁿ, capped at 30s, unless Box sends a `Retry-After`. A 401 refreshes the
+token once. Tune the budget and the backoff:
+
+```go
+c := client.NewClient(ts,
+	gantryruntime.WithMaxRetries(3),
+	gantryruntime.WithRetryBackoff(200*time.Millisecond, 10*time.Second))
+```
+
 ## Documentation
 
 API reference on [pkg.go.dev](https://pkg.go.dev/@MODULE@); the [`docs/`](./docs)
