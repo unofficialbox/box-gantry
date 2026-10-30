@@ -761,6 +761,22 @@ public final class Runtime {
                 return this;
             }
 
+            /** Log one line per HTTP attempt to {@code logger} at {@code
+             * DEBUG} — e.g. {@code System.getLogger("dev.unofficialbox")}:
+             * the method, the URL with secret-looking query values redacted,
+             * the status or transport error, the elapsed time, and the
+             * attempt number. It never logs the {@code Authorization} header,
+             * a token, or a body. Like {@link #onResponse} it adds to any
+             * hooks already set. */
+            public Builder debugLogging(System.Logger logger) {
+                java.util.Objects.requireNonNull(logger, "logger");
+                return onResponse(response -> {
+                    if (logger.isLoggable(System.Logger.Level.DEBUG)) {
+                        logger.log(System.Logger.Level.DEBUG, debugLogLine(response));
+                    }
+                });
+            }
+
             /** Build the configured session. */
             public Session build() {
                 if (http != null && httpVersion != null) {
@@ -1667,6 +1683,68 @@ public final class Runtime {
     }
 
     // ---------------------------------------------------------------- helpers
+
+    /** Query parameters whose value the debug log redacts: any name
+     * containing one of these, case-insensitively. */
+    private static final List<String> SECRET_PARAM_HINTS =
+            List.of("token", "secret", "password", "code", "assertion", "key", "signature", "auth");
+
+    /** The debug log's line for one attempt (see {@link Session.Builder#debugLogging}). */
+    private static String debugLogLine(ResponseInfo response) {
+        RequestInfo request = response.request();
+        String url = redactUrl(request.url());
+        String outcome;
+        if (response.error() != null) {
+            String message = String.valueOf(response.error().getMessage());
+            outcome = "error: " + message.replace(request.url(), url);
+        } else {
+            outcome = Integer.toString(response.status());
+        }
+        return "box: " + request.method() + " " + url + " -> " + outcome
+                + " in " + response.elapsed().toMillis() + "ms (attempt " + request.attempt() + ")";
+    }
+
+    /** {@code raw} for a log line: any userinfo dropped, the fragment cut, and
+     * the value of every secret-looking query parameter replaced by {@code
+     * REDACTED}. */
+    private static String redactUrl(String raw) {
+        int hash = raw.indexOf('#');
+        String url = hash >= 0 ? raw.substring(0, hash) : raw;
+        int question = url.indexOf('?');
+        String base = question >= 0 ? url.substring(0, question) : url;
+        int scheme = base.indexOf("://");
+        if (scheme >= 0) {
+            int start = scheme + 3;
+            int slash = base.indexOf('/', start);
+            int end = slash >= 0 ? slash : base.length();
+            int at = base.lastIndexOf('@', end - 1);
+            if (at >= start) {
+                base = base.substring(0, start) + base.substring(at + 1);
+            }
+        }
+        if (question < 0) {
+            return base;
+        }
+        StringBuilder out = new StringBuilder(base).append('?');
+        String[] pairs = url.substring(question + 1).split("&", -1);
+        for (int i = 0; i < pairs.length; i++) {
+            if (i > 0) {
+                out.append('&');
+            }
+            int eq = pairs[i].indexOf('=');
+            String name = eq >= 0 ? pairs[i].substring(0, eq) : pairs[i];
+            String decoded;
+            try {
+                decoded = java.net.URLDecoder.decode(name, StandardCharsets.UTF_8);
+            } catch (IllegalArgumentException malformed) {
+                decoded = name;
+            }
+            String lower = decoded.toLowerCase(Locale.ROOT);
+            boolean secret = SECRET_PARAM_HINTS.stream().anyMatch(lower::contains);
+            out.append(secret ? name + "=REDACTED" : pairs[i]);
+        }
+        return out.toString();
+    }
 
     private static boolean isIdempotent(String method) {
         return switch (method.toUpperCase(Locale.ROOT)) {

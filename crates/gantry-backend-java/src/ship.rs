@@ -388,6 +388,10 @@ var session = Runtime.Session.builder(auth)
 Hooks observe only; they can't change a request. Token requests are not
 observed.
 
+`debugLogging(System.getLogger("dev.unofficialbox"))` logs one line per attempt
+at `DEBUG`. Query values whose names look secret (`token`, `secret`, `password`,
+`code`, …) read `REDACTED`; the token and bodies are never logged.
+
 ## Documentation
 
 The [`docs/`](./docs) tree carries the per-manager reference — a call snippet for

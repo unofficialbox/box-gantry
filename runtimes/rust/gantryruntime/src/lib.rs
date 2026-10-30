@@ -352,6 +352,17 @@ impl Client {
         self
     }
 
+    /// Log one line per HTTP attempt to `sink` (fluent): the method, the URL
+    /// with secret-looking query values redacted, the status or transport
+    /// error, the elapsed time, and the attempt number. It never logs the
+    /// `authorization` header, a token, or a body. The runtime has no logging
+    /// dependency, so the sink decides where lines go —
+    /// `|line| eprintln!("{line}")`, or a `log`/`tracing` macro. Like
+    /// [`Client::with_response_hook`] it adds to any hooks already set.
+    pub fn with_debug_logging(self, sink: impl Fn(&str) + Send + Sync + 'static) -> Client {
+        self.with_response_hook(move |response| sink(&debug_log_line(response)))
+    }
+
     /// Add a header sent with every request from this client (fluent) — e.g.
     /// a tracing or `User-Agent` header an embedding application wants on
     /// every call. Replaces any prior default with the same name
@@ -765,6 +776,98 @@ fn jitter(max: u64) -> u64 {
 
 async fn sleep(duration: Duration) {
     tokio::time::sleep(duration).await;
+}
+
+/// The debug log's line for one attempt (see [`Client::with_debug_logging`]).
+fn debug_log_line(response: &ResponseInfo) -> String {
+    let request = &response.request;
+    let url = redact_url(&request.url);
+    let outcome = match (&response.error, response.status) {
+        (Some(error), _) => format!("error: {}", error.replace(&request.url, &url)),
+        (None, Some(status)) => status.to_string(),
+        (None, None) => "no response".to_string(),
+    };
+    format!(
+        "box: {} {url} -> {outcome} in {}ms (attempt {})",
+        request.method,
+        response.elapsed.as_millis(),
+        request.attempt
+    )
+}
+
+/// Query parameters whose value the debug log redacts: any name containing
+/// one of these, case-insensitively.
+const SECRET_PARAM_HINTS: [&str; 8] = [
+    "token",
+    "secret",
+    "password",
+    "code",
+    "assertion",
+    "key",
+    "signature",
+    "auth",
+];
+
+/// `raw` for a log line: any userinfo dropped, the fragment cut, and the value
+/// of every secret-looking query parameter replaced by `REDACTED`.
+fn redact_url(raw: &str) -> String {
+    let raw = raw.split_once('#').map_or(raw, |(url, _)| url);
+    let (base, query) = match raw.split_once('?') {
+        Some((base, query)) => (base, Some(query)),
+        None => (raw, None),
+    };
+    let mut out = base.to_string();
+    if let Some(scheme) = base.find("://") {
+        let start = scheme + 3;
+        let end = base[start..]
+            .find('/')
+            .map_or(base.len(), |slash| start + slash);
+        if let Some(at) = base[start..end].rfind('@') {
+            out = format!("{}{}", &base[..start], &base[start + at + 1..]);
+        }
+    }
+    let Some(query) = query else { return out };
+    let pairs: Vec<String> = query
+        .split('&')
+        .map(|pair| {
+            let name = pair.split_once('=').map_or(pair, |(name, _)| name);
+            let decoded = percent_decode(name).to_lowercase();
+            if SECRET_PARAM_HINTS.iter().any(|hint| decoded.contains(hint)) {
+                format!("{name}=REDACTED")
+            } else {
+                pair.to_string()
+            }
+        })
+        .collect();
+    format!("{out}?{}", pairs.join("&"))
+}
+
+/// Decode `%XX` escapes and `+` (lossily), enough to read a parameter name.
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes
+            .get(i + 1..i + 3)
+            .and_then(|hex| std::str::from_utf8(hex).ok())
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(byte)) => {
+                out.push(byte);
+                i += 3;
+            }
+            (b'+', _) => {
+                out.push(b' ');
+                i += 1;
+            }
+            (byte, _) => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Case-insensitive header lookup (HTTP header names are case-insensitive).
@@ -1441,6 +1544,84 @@ mod tests {
             header_value(&responses[0].headers, "retry-after"),
             Some("0")
         );
+    }
+
+    #[tokio::test]
+    async fn the_debug_log_never_holds_a_secret() {
+        let (url, _) = serve_sequence(FLAKY).await;
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = lines.clone();
+        let client = Client::new(Auth::developer_token("secret-token"))
+            .with_debug_logging(move |line| sink.lock().unwrap().push(line.to_string()));
+        let mut request = with_query(client.new_request("POST", &url), "fields", "id");
+        request = with_query(request, "access_token", "query-token");
+        request = with_query(request, "client_secret", "query-secret");
+        request = with_json_body(request, br#"{"password":"body-secret"}"#);
+        client.fetch(request).await.unwrap();
+
+        // A transport error's message carries the URL; it's redacted there too.
+        let addr = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let sink = lines.clone();
+        let refused = Client::new(Auth::developer_token("t"))
+            .with_max_retries(0)
+            .with_debug_logging(move |line| sink.lock().unwrap().push(line.to_string()));
+        let request = with_query(
+            refused.new_request("GET", &format!("http://{addr}/")),
+            "access_token",
+            "query-token",
+        );
+        assert!(refused.fetch(request).await.is_err());
+
+        let lines = lines.lock().unwrap();
+        assert_eq!(lines.len(), 4, "{lines:#?}");
+        for line in lines.iter() {
+            for secret in ["secret-token", "query-token", "query-secret", "body-secret"] {
+                assert!(!line.contains(secret), "leaked {secret}: {line}");
+            }
+        }
+        for (i, status) in ["429", "401", "200"].into_iter().enumerate() {
+            let want = format!(
+                "box: POST {url}?fields=id&access_token=REDACTED&client_secret=REDACTED -> {status} in "
+            );
+            assert!(lines[i].starts_with(&want), "{}", lines[i]);
+            assert!(
+                lines[i].ends_with(&format!("(attempt {})", i + 1)),
+                "{}",
+                lines[i]
+            );
+        }
+        assert!(lines[3].contains("-> error: "), "{}", lines[3]);
+    }
+
+    #[test]
+    fn redact_url_hides_secret_query_values_and_userinfo() {
+        for (raw, want) in [
+            (
+                "https://api.box.com/2.0/files/1",
+                "https://api.box.com/2.0/files/1",
+            ),
+            (
+                "https://api.box.com/2.0/files?fields=id&limit=5",
+                "https://api.box.com/2.0/files?fields=id&limit=5",
+            ),
+            (
+                "https://a.box.com/x?Access_Token=t&code=c&refresh%5Ftoken=r#frag",
+                "https://a.box.com/x?Access_Token=REDACTED&code=REDACTED&refresh%5Ftoken=REDACTED",
+            ),
+            (
+                "https://user:pass@box.example/x?api_key=k&q=a@b",
+                "https://box.example/x?api_key=REDACTED&q=a@b",
+            ),
+            (
+                "https://box.example/x?password",
+                "https://box.example/x?password=REDACTED",
+            ),
+        ] {
+            assert_eq!(redact_url(raw), want, "{raw}");
+        }
     }
 
     #[tokio::test]

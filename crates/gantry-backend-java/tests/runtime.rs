@@ -98,6 +98,25 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 public final class RuntimeSmoke {
+    /** A System.Logger that keeps every DEBUG message, for the debug log test. */
+    record ListLogger(java.util.List<String> lines) implements System.Logger {
+        public String getName() {
+            return "test";
+        }
+
+        public boolean isLoggable(System.Logger.Level level) {
+            return true;
+        }
+
+        public void log(System.Logger.Level level, java.util.ResourceBundle bundle, String msg, Throwable thrown) {
+            lines.add(msg);
+        }
+
+        public void log(System.Logger.Level level, java.util.ResourceBundle bundle, String format, Object... params) {
+            lines.add(format);
+        }
+    }
+
     static void check(boolean cond, String msg) {
         if (!cond) {
             System.out.println("FAIL: " + msg);
@@ -414,6 +433,55 @@ public final class RuntimeSmoke {
         }
         check(threw && failed.size() == 1 && failed.get(0).status() == 0 && failed.get(0).error() != null,
             "transport error hook: " + failed);
+
+        // The debug log has a line per attempt and never the token, a secret
+        // query value, or a body.
+        flakyAuths.clear();
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        Runtime.Session logged = Runtime.Session.builder(Runtime.developerToken("secret-token"))
+            .debugLogging(new ListLogger(lines))
+            .build();
+        Runtime.Request loggedReq = Runtime.withQuery(Runtime.withQuery(Runtime.withQuery(
+            logged.newRequest("POST", base + "/flaky"), "fields", "id"),
+            "access_token", "query-token"), "client_secret", "query-secret");
+        logged.fetch(Runtime.withJsonBody(loggedReq,
+            "{\"password\":\"body-secret\"}".getBytes(StandardCharsets.UTF_8)));
+        Runtime.Session loggedRefused = Runtime.Session.builder(Runtime.developerToken("t"))
+            .maxRetries(0)
+            .debugLogging(new ListLogger(lines))
+            .build();
+        try {
+            loggedRefused.fetch(Runtime.withQuery(
+                loggedRefused.newRequest("GET", "http://127.0.0.1:1/"), "access_token", "query-token"));
+        } catch (Runtime.BoxApiException expected) {
+            // Logged below.
+        }
+        check(lines.size() == 4, "debug log lines: " + lines);
+        for (String line : lines) {
+            for (String secret : new String[] {"secret-token", "query-token", "query-secret", "body-secret"}) {
+                check(!line.contains(secret), "debug log leaked " + secret + ": " + line);
+            }
+        }
+        String[] loggedStatuses = {"429", "401", "200"};
+        for (int i = 0; i < 3; i++) {
+            String want = "box: POST " + base
+                + "/flaky?fields=id&access_token=REDACTED&client_secret=REDACTED -> " + loggedStatuses[i] + " in ";
+            check(lines.get(i).startsWith(want) && lines.get(i).endsWith("(attempt " + (i + 1) + ")"),
+                "debug log line " + lines.get(i));
+        }
+        check(lines.get(3).startsWith("box: GET http://127.0.0.1:1/?access_token=REDACTED -> error: "),
+            "transport error line " + lines.get(3));
+        // Case-insensitive, percent-decoded parameter names; other values kept.
+        lines.clear();
+        Runtime.Session loggedProxied = Runtime.Session.builder(Runtime.developerToken("t"))
+            .proxy(viaServer)
+            .debugLogging(new ListLogger(lines))
+            .build();
+        loggedProxied.fetch(loggedProxied.newRequest("GET",
+            "http://box.invalid/proxied?Access_Token=t&code=c&refresh%5Ftoken=r&api_key=k&q=a@b&password"));
+        check(lines.size() == 1 && lines.get(0).startsWith("box: GET http://box.invalid/proxied?Access_Token=REDACTED"
+                + "&code=REDACTED&refresh%5Ftoken=REDACTED&api_key=REDACTED&q=a@b&password=REDACTED -> 200 in "),
+            "redacted line " + lines);
 
         server.stop(0);
         System.out.println("RUNTIME_OK");

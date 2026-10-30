@@ -9,12 +9,14 @@ import { BoxApiError } from './src/errors.js';
 import {
   Client,
   Stream,
+  debugLogger,
   developerToken,
   eventStream,
   parseJsonExact,
   streamPosition,
   verifyWebhook,
   withHeader,
+  withJsonBody,
   withMultipartBody,
   withQuery,
 } from './src/runtime.js';
@@ -268,6 +270,57 @@ test('hooks observe every attempt, a retried 429 and a 401 refresh included, wit
   });
   assert.equal(responses[0]?.headers?.get('Retry-After'), '0');
   assert.ok(responses.every((r) => r.elapsedMs >= 0));
+});
+
+test('the debug logger writes a line per attempt and never a secret', async () => {
+  const lines: string[] = [];
+  const log = { debug: (line: string) => lines.push(line) };
+  let url = '';
+  await withServer(flaky([]), async (base) => {
+    url = `${base}files/1`;
+    const client = new Client(developerToken('secret-token'), { hooks: [debugLogger(log)] });
+    let request = withQuery(client.newRequest('POST', url), 'fields', 'id');
+    request = withQuery(withQuery(request, 'access_token', 'query-token'), 'client_secret', 'query-secret');
+    await client.fetch(withJsonBody(request, new TextEncoder().encode('{"password":"body-secret"}')));
+  });
+  // A transport error's message may carry the URL; it's redacted there too.
+  const failing = (async (input: string | URL | globalThis.Request) => {
+    throw new TypeError(`fetch failed: ${String(input)}`);
+  }) as typeof fetch;
+  const refused = new Client(developerToken('t'), { maxRetries: 0, fetch: failing, hooks: [debugLogger(log)] });
+  await assert.rejects(refused.fetch(withQuery(refused.newRequest('GET', url), 'access_token', 'query-token')), () => true);
+
+  assert.equal(lines.length, 4);
+  for (const line of lines) {
+    for (const secret of ['secret-token', 'query-token', 'query-secret', 'body-secret']) {
+      assert.ok(!line.includes(secret), `leaked ${secret}: ${line}`);
+    }
+  }
+  ['429', '401', '200'].forEach((status, i) => {
+    const want = `box: POST ${url}?fields=id&access_token=REDACTED&client_secret=REDACTED -> ${status} in `;
+    assert.ok(lines[i]?.startsWith(want), lines[i]);
+    assert.ok(lines[i]?.endsWith(`(attempt ${i + 1})`), lines[i]);
+  });
+  assert.ok(lines[3]?.includes(`-> error: fetch failed: ${url}?access_token=REDACTED in `), lines[3]);
+});
+
+test('the debug logger redacts secret query values and userinfo', () => {
+  const cases: [string, string][] = [
+    ['https://api.box.com/2.0/files/1', 'https://api.box.com/2.0/files/1'],
+    ['https://api.box.com/2.0/files?fields=id&limit=5', 'https://api.box.com/2.0/files?fields=id&limit=5'],
+    [
+      'https://a.box.com/x?Access_Token=t&code=c&refresh%5Ftoken=r#frag',
+      'https://a.box.com/x?Access_Token=REDACTED&code=REDACTED&refresh%5Ftoken=REDACTED',
+    ],
+    ['https://user:pass@box.example/x?api_key=k&q=a@b', 'https://box.example/x?api_key=REDACTED&q=a@b'],
+    ['https://box.example/x?password', 'https://box.example/x?password=REDACTED'],
+  ];
+  for (const [raw, want] of cases) {
+    const lines: string[] = [];
+    const request = { method: 'GET', url: raw, headers: new Headers(), attempt: 1 };
+    debugLogger({ debug: (line) => lines.push(line) }).onResponse?.({ request, status: 200, elapsedMs: 1 });
+    assert.equal(lines[0], `box: GET ${want} -> 200 in 1ms (attempt 1)`);
+  }
 });
 
 test('a response hook sees a transport error', async () => {

@@ -95,6 +95,70 @@ export interface ClientHooks {
   onResponse?(response: ResponseInfo): void;
 }
 
+/** Hooks that log one line per HTTP attempt to `log.debug` (`console` by
+ * default, or any console-like logger): the method, the URL with
+ * secret-looking query values redacted, the status or transport error, the
+ * elapsed time, and the attempt number. They never log the `Authorization`
+ * header, a token, or a body. Pass them in `ClientOptions.hooks`. */
+export function debugLogger(log: { debug(message: string): void } = console): ClientHooks {
+  return {
+    onResponse(response: ResponseInfo): void {
+      const { method, url, attempt } = response.request;
+      const redacted = redactUrl(url);
+      let outcome: string;
+      if (response.error !== undefined) {
+        const message = response.error instanceof Error ? response.error.message : String(response.error);
+        outcome = `error: ${message.split(url).join(redacted)}`;
+      } else {
+        outcome = String(response.status);
+      }
+      log.debug(`box: ${method} ${redacted} -> ${outcome} in ${Math.round(response.elapsedMs)}ms (attempt ${attempt})`);
+    },
+  };
+}
+
+/** Query parameters whose value the debug log redacts: any name containing
+ * one of these, case-insensitively. */
+const SECRET_PARAM_HINTS = ['token', 'secret', 'password', 'code', 'assertion', 'key', 'signature', 'auth'];
+
+/** `raw` for a log line: any userinfo dropped, the fragment cut, and the value
+ * of every secret-looking query parameter replaced by `REDACTED`. */
+function redactUrl(raw: string): string {
+  const hash = raw.indexOf('#');
+  const url = hash >= 0 ? raw.slice(0, hash) : raw;
+  const question = url.indexOf('?');
+  let base = question >= 0 ? url.slice(0, question) : url;
+  const scheme = base.indexOf('://');
+  if (scheme >= 0) {
+    const start = scheme + 3;
+    const slash = base.indexOf('/', start);
+    const end = slash >= 0 ? slash : base.length;
+    const at = base.lastIndexOf('@', end - 1);
+    if (at >= start) {
+      base = base.slice(0, start) + base.slice(at + 1);
+    }
+  }
+  if (question < 0) {
+    return base;
+  }
+  const pairs = url
+    .slice(question + 1)
+    .split('&')
+    .map((pair) => {
+      const eq = pair.indexOf('=');
+      const name = eq >= 0 ? pair.slice(0, eq) : pair;
+      let decoded = name;
+      try {
+        decoded = decodeURIComponent(name.replace(/\+/g, ' '));
+      } catch {
+        // A malformed escape: match on the name as written.
+      }
+      decoded = decoded.toLowerCase();
+      return SECRET_PARAM_HINTS.some((hint) => decoded.includes(hint)) ? `${name}=REDACTED` : pair;
+    });
+  return `${base}?${pairs.join('&')}`;
+}
+
 /** Options for a runtime `Client`. */
 export interface ClientOptions {
   /** How many times a retriable failure is retried (default 5). */

@@ -537,6 +537,12 @@ let session = runtime::Client::new(auth).with_response_hook(|r| {
 Hooks observe only; they can't change a request. Token requests are not
 observed.
 
+`with_debug_logging(sink)` logs one line per attempt to a `Fn(&str)` sink — the
+runtime has no logging dependency, so pass `|line| eprintln!("{line}")` or a
+`log` / `tracing` macro. Query values whose names look secret (`token`,
+`secret`, `password`, `code`, …) read `REDACTED`; the token and bodies are never
+logged.
+
 ## Documentation
 
 API reference on [docs.rs](https://docs.rs/box-open-sdk); the [`docs/`](./docs)

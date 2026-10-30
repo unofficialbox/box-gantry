@@ -538,6 +538,10 @@ c := client.NewClient(ts, gantryruntime.WithResponseHook(
 Hooks observe only; to change requests, wrap the `Transport` of a client passed
 to `WithHTTPClient`. Token requests are not observed.
 
+`WithDebugLogging(logger)` logs one line per attempt to a `*slog.Logger` at
+debug level. Query values whose names look secret (`token`, `secret`,
+`password`, `code`, …) read `REDACTED`; the token and bodies are never logged.
+
 ## Documentation
 
 API reference on [pkg.go.dev](https://pkg.go.dev/@MODULE@); the [`docs/`](./docs)

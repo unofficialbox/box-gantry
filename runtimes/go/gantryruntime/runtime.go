@@ -14,7 +14,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"io"
+	"log/slog"
 	"math/rand"
 	"mime/multipart"
 	"net/http"
@@ -168,6 +170,79 @@ func WithRequestHook(hook func(ctx context.Context, request RequestInfo)) Option
 // WithRequestHook it observes only, and may be given more than once.
 func WithResponseHook(hook func(ctx context.Context, response ResponseInfo)) Option {
 	return func(c *Client) { c.responseHooks = append(c.responseHooks, hook) }
+}
+
+// WithDebugLogging logs one line per HTTP attempt to logger (slog.Default()
+// when nil) at debug level: the method, the URL with secret-looking query
+// values redacted, the status or transport error, the elapsed time, and the
+// attempt number. It never logs the Authorization header, a token, or a body.
+// Like WithResponseHook it adds to any hooks already set.
+func WithDebugLogging(logger *slog.Logger) Option {
+	return WithResponseHook(func(ctx context.Context, r ResponseInfo) {
+		log := logger
+		if log == nil {
+			log = slog.Default()
+		}
+		redacted := redactURL(r.Request.URL)
+		attrs := []slog.Attr{slog.String("method", r.Request.Method), slog.String("url", redacted)}
+		if r.Err != nil {
+			attrs = append(attrs, slog.String("error", redactError(r.Err, r.Request.URL, redacted)))
+		} else {
+			attrs = append(attrs, slog.Int("status", r.Status))
+		}
+		attrs = append(attrs, slog.Duration("elapsed", r.Elapsed), slog.Int("attempt", r.Request.Attempt))
+		log.LogAttrs(ctx, slog.LevelDebug, "box: http attempt", attrs...)
+	})
+}
+
+// secretParamHints mark a query parameter whose value the debug log redacts:
+// any name containing one of them, case-insensitively.
+var secretParamHints = []string{"token", "secret", "password", "code", "assertion", "key", "signature", "auth"}
+
+// redactURL is raw for a log line: any userinfo dropped, the fragment cut,
+// and the value of every secret-looking query parameter replaced by REDACTED.
+func redactURL(raw string) string {
+	raw, _, _ = strings.Cut(raw, "#")
+	base, query, hasQuery := strings.Cut(raw, "?")
+	if scheme := strings.Index(base, "://"); scheme >= 0 {
+		start := scheme + 3
+		end := len(base)
+		if slash := strings.IndexByte(base[start:], '/'); slash >= 0 {
+			end = start + slash
+		}
+		if at := strings.LastIndexByte(base[start:end], '@'); at >= 0 {
+			base = base[:start] + base[start+at+1:]
+		}
+	}
+	if !hasQuery {
+		return base
+	}
+	pairs := strings.Split(query, "&")
+	for i, pair := range pairs {
+		name, _, _ := strings.Cut(pair, "=")
+		decoded, err := url.QueryUnescape(name)
+		if err != nil {
+			decoded = name
+		}
+		decoded = strings.ToLower(decoded)
+		for _, hint := range secretParamHints {
+			if strings.Contains(decoded, hint) {
+				pairs[i] = name + "=REDACTED"
+				break
+			}
+		}
+	}
+	return base + "?" + strings.Join(pairs, "&")
+}
+
+// redactError is err's message for a log line, with the raw request URL in it
+// (a *url.Error carries one) replaced by its redacted form.
+func redactError(err error, rawURL, redacted string) string {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return urlErr.Op + " " + redacted + ": " + urlErr.Err.Error()
+	}
+	return strings.ReplaceAll(err.Error(), rawURL, redacted)
 }
 
 // WithBaseURL overrides one base-URL class (custom deployments).

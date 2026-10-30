@@ -638,6 +638,11 @@ const client = new Client(auth.developerToken('DEVELOPER_TOKEN'), {
 Hooks observe only; to change requests, pass your own `fetch`. Token requests
 are not observed.
 
+`runtime.debugLogger(log)` is a ready-made hook that logs one line per attempt
+to `log.debug` (`console` by default): `hooks: [runtime.debugLogger()]`. Query
+values whose names look secret (`token`, `secret`, `password`, `code`, …) read
+`REDACTED`; the token and bodies are never logged.
+
 ## Documentation
 
 The [`docs/`](./docs/README.md) tree carries the per-manager reference and the

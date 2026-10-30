@@ -5,10 +5,12 @@
 package gantryruntime
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -350,6 +352,63 @@ func TestHooksObserveEveryAttempt(t *testing.T) {
 	}
 	if responses[0].Header.Get("Retry-After") != "0" {
 		t.Fatalf("429 response headers %v", responses[0].Header)
+	}
+}
+
+// The debug log has a line per attempt and never the token, a secret query
+// value, or a body.
+func TestDebugLoggingRedactsSecrets(t *testing.T) {
+	server, _ := flakyServer(t)
+	var out bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&out, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	client := New(fixedToken("secret-token"), WithDebugLogging(logger))
+	request := client.NewRequest("POST", server.URL+"/files/1")
+	request = WithQuery(WithQuery(request, "fields", "id"), "access_token", "query-token")
+	request = WithJsonBody(WithQuery(request, "client_secret", "query-secret"), []byte(`{"password":"body-secret"}`))
+	if _, err := client.Fetch(context.Background(), request); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+
+	logged := out.String()
+	for _, secret := range []string{"secret-token", "query-token", "query-secret", "body-secret"} {
+		if strings.Contains(logged, secret) {
+			t.Fatalf("debug log leaked %q:\n%s", secret, logged)
+		}
+	}
+	lines := strings.Split(strings.TrimSpace(logged), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("want a line per attempt, got:\n%s", logged)
+	}
+	for i, status := range []string{"429", "401", "200"} {
+		for _, want := range []string{"method=POST", "access_token=REDACTED", "client_secret=REDACTED", "fields=id", "status=" + status, "attempt=" + strconv.Itoa(i+1)} {
+			if !strings.Contains(lines[i], want) {
+				t.Fatalf("line %d lacks %q: %s", i+1, want, lines[i])
+			}
+		}
+	}
+
+	// A transport error's message carries the URL; the log redacts it there too.
+	server.Close()
+	failing := WithQuery(client.NewRequest("GET", server.URL), "access_token", "query-token")
+	if _, err := New(fixedToken("t"), WithMaxRetries(0), WithDebugLogging(logger)).Fetch(context.Background(), failing); err == nil {
+		t.Fatal("fetch against a closed server should fail")
+	}
+	if logged := out.String(); strings.Contains(logged, "query-token") || !strings.Contains(logged, "error=") {
+		t.Fatalf("transport error line:\n%s", logged)
+	}
+}
+
+func TestRedactURL(t *testing.T) {
+	for raw, want := range map[string]string{
+		"https://api.box.com/2.0/files/1":                                  "https://api.box.com/2.0/files/1",
+		"https://api.box.com/2.0/files?fields=id&limit=5":                  "https://api.box.com/2.0/files?fields=id&limit=5",
+		"https://a.box.com/x?Access_Token=t&code=c&refresh%5Ftoken=r#frag": "https://a.box.com/x?Access_Token=REDACTED&code=REDACTED&refresh%5Ftoken=REDACTED",
+		"https://user:pass@box.example/x?api_key=k&q=a@b":                  "https://box.example/x?api_key=REDACTED&q=a@b",
+		"https://box.example/x?password":                                   "https://box.example/x?password=REDACTED",
+	} {
+		if got := redactURL(raw); got != want {
+			t.Errorf("redactURL(%q) = %q, want %q", raw, got, want)
+		}
 	}
 }
 
