@@ -435,6 +435,77 @@ func TestBackoffFollowsTheConfiguredBaseAndMax(t *testing.T) {
 }
 
 // A small backoff shortens the waits between retried 503s.
+// A 5xx retries only idempotent requests: a POST may already have taken
+// effect. A 429 was never processed, so it retries for any method.
+func TestRetriesFollowIdempotency(t *testing.T) {
+	for _, tc := range []struct {
+		method string
+		status int
+		want   int // attempts
+	}{
+		{"GET", 500, 3},
+		{"PUT", 503, 3},
+		{"POST", 500, 1},
+		{"POST", 429, 3},
+	} {
+		hits := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hits++
+			w.WriteHeader(tc.status)
+		}))
+		client := New(fixedToken("t"), WithMaxRetries(2), WithRetryBackoff(0, 0))
+		_, err := client.Fetch(context.Background(), client.NewRequest(tc.method, server.URL))
+		server.Close()
+		if err == nil || hits != tc.want {
+			t.Errorf("%s %d: %d attempts (err %v), want %d and an error", tc.method, tc.status, hits, err, tc.want)
+		}
+	}
+}
+
+// A failed connection retries a GET but not a POST, which may have arrived.
+func TestTransportFailuresRetryOnlyIdempotentRequests(t *testing.T) {
+	for _, tc := range []struct {
+		method string
+		want   int
+	}{{"GET", 3}, {"POST", 1}} {
+		attempts := 0
+		client := New(fixedToken("t"), WithMaxRetries(2), WithRetryBackoff(0, 0),
+			WithRequestHook(func(context.Context, RequestInfo) { attempts++ }))
+		// Nothing listens on port 1.
+		if _, err := client.Fetch(context.Background(), client.NewRequest(tc.method, "http://127.0.0.1:1/")); err == nil {
+			t.Fatalf("%s: want a connection error", tc.method)
+		}
+		if attempts != tc.want {
+			t.Errorf("%s: %d attempts, want %d", tc.method, attempts, tc.want)
+		}
+	}
+}
+
+// Retry-After is a floor on the backoff, capped so a huge one can't stall
+// the client.
+func TestRetryAfterIsAFloorOnTheBackoff(t *testing.T) {
+	client := New(fixedToken("t"), WithRetryBackoff(0, 0))
+	for header, want := range map[string]time.Duration{
+		"":      0,
+		"2":     2 * time.Second,
+		"86400": maxRetryAfter,
+		"soon":  0,
+	} {
+		resp := &Response{status: 429, header: http.Header{}}
+		if header != "" {
+			resp.header.Set("Retry-After", header)
+		}
+		if got := client.retryAfter(resp, 0); got != want {
+			t.Errorf("Retry-After %q: waited %v, want %v", header, got, want)
+		}
+	}
+	// Whatever the jittered backoff draws, the wait never undercuts the header.
+	slow := New(fixedToken("t"), WithRetryBackoff(time.Hour, time.Hour))
+	if got := slow.retryAfter(&Response{status: 503, header: http.Header{"Retry-After": {"1"}}}, 0); got < time.Second {
+		t.Errorf("the wait undercut Retry-After: %v", got)
+	}
+}
+
 func TestWithRetryBackoffShortensTheWaits(t *testing.T) {
 	hits := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
