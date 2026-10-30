@@ -19,7 +19,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -267,6 +269,44 @@ func smokeUploadDownloadDelete(ctx context.Context, t *testing.T, client *gantry
 
 	smokeEtags(ctx, t, client, fileID)
 	smokeEvents(t, client, fileID)
+	smokeDownscope(ctx, t, client, fileID)
+}
+
+// smokeDownscope exchanges the session's token for one limited to renaming
+// and previewing the uploaded file — the form the generated DownscopeToken
+// posts — then proves the narrow token renames the file and Box refuses its
+// delete. The caller's cleanup still deletes with the original token.
+func smokeDownscope(ctx context.Context, t *testing.T, client *gantryruntime.Client, fileID string) {
+	subject, err := client.AccessToken(ctx)
+	if err != nil {
+		t.Fatalf("downscope: the session's token: %v", err)
+	}
+	fileURL := client.BaseUrl("api") + "/files/" + fileID
+	form := url.Values{
+		"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
+		"subject_token":      {subject},
+		"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
+		"scope":              {"item_rename item_preview"},
+		"resource":           {fileURL},
+	}
+	req := gantryruntime.WithFormBody(client.NewRequest("POST", client.BaseUrl("api_root")+"/oauth2/token"), []byte(form.Encode()))
+	var token struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(fetchOK(ctx, t, client, req), &token); err != nil || token.AccessToken == "" {
+		t.Fatalf("downscope: the exchange returned no access token (%v)", err)
+	}
+	narrow := gantryruntime.New(auth.DeveloperToken(token.AccessToken))
+
+	name, _ := json.Marshal(map[string]string{"name": fmt.Sprintf("box-gantry-smoke-downscoped-%d.txt", time.Now().UnixNano())})
+	fetchOK(ctx, t, narrow, gantryruntime.WithJsonBody(narrow.NewRequest("PUT", fileURL), name))
+
+	_, err = narrow.Fetch(ctx, narrow.NewRequest("DELETE", fileURL))
+	var refused *gantryruntime.APIError
+	if !errors.As(err, &refused) || (refused.Status != 401 && refused.Status != 403) {
+		t.Fatalf("downscope: deleting with the narrow token: err = %v, want a 401/403 refusal", err)
+	}
+	t.Logf("downscope: the narrow token renamed the file; its delete was refused (%d %s)", refused.Status, refused.Code)
 }
 
 // smokeEvents follows Box's long-poll event stream from "now" while the

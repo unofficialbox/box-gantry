@@ -72,8 +72,9 @@ export function apiErrorFromResponse(status: number, body: Uint8Array): BoxApiEr
     const value = (payload as Record<string, unknown>)[key];
     return typeof value === 'string' ? value : undefined;
   };
-  const code = field('code');
-  const boxMessage = field('message');
+  // A Box error object, or from the token endpoint an OAuth 2.0 error.
+  const code = field('code') ?? field('error');
+  const boxMessage = field('message') ?? field('error_description');
   const requestId = field('request_id');
   let message = `box: status ${status}`;
   if (code !== undefined) {

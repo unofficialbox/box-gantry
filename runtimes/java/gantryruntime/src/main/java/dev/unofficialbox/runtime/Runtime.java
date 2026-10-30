@@ -143,7 +143,8 @@ public final class Runtime {
         }
 
         /** The error for a non-2xx response, with Box's error fields read from
-         * the body when it is a Box error object. */
+         * the body when it is a Box error object — or, from the token endpoint,
+         * an OAuth 2.0 error ({@code error}, {@code error_description}). */
         static BoxApiException fromResponse(Response response) {
             Map<String, Object> payload;
             try {
@@ -151,8 +152,10 @@ public final class Runtime {
             } catch (RuntimeException notABoxError) {
                 payload = Map.of();
             }
-            String code = payload.get("code") instanceof String v ? v : null;
-            String boxMessage = payload.get("message") instanceof String v ? v : null;
+            String code = payload.get("code") instanceof String v ? v
+                    : payload.get("error") instanceof String v ? v : null;
+            String boxMessage = payload.get("message") instanceof String v ? v
+                    : payload.get("error_description") instanceof String v ? v : null;
             String requestId = payload.get("request_id") instanceof String v ? v : null;
             StringBuilder message = new StringBuilder("box: status ").append(response.status);
             if (code != null) {

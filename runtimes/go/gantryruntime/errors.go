@@ -41,16 +41,25 @@ func (e *APIError) Error() string {
 }
 
 // newAPIError builds the error for a non-2xx response, reading Box's error
-// fields from the body when it is a Box error object.
+// fields from the body when it is a Box error object — or, from the token
+// endpoint, an OAuth 2.0 error (error, error_description).
 func newAPIError(resp *Response) *APIError {
 	apiErr := &APIError{Status: resp.status, Header: resp.header, Body: resp.body}
 	var payload struct {
-		Code      string `json:"code"`
-		Message   string `json:"message"`
-		RequestID string `json:"request_id"`
+		Code             string `json:"code"`
+		Message          string `json:"message"`
+		RequestID        string `json:"request_id"`
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
 	}
 	if json.Unmarshal(resp.body, &payload) == nil {
 		apiErr.Code, apiErr.Message, apiErr.RequestID = payload.Code, payload.Message, payload.RequestID
+		if apiErr.Code == "" {
+			apiErr.Code = payload.Error
+		}
+		if apiErr.Message == "" {
+			apiErr.Message = payload.ErrorDescription
+		}
 	}
 	return apiErr
 }

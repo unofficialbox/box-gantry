@@ -382,6 +382,23 @@ reuse the stored refresh token on later runs:\n\n\
 // later runs: rebuild from the stored refresh token.\n\
 let auth = auth::Auth::oauth(\"CLIENT_ID\", \"CLIENT_SECRET\", stored_refresh_token);\n\
 let client = Client::new(auth);\n\
+```\n\n\
+## Downscoping a token\n\n\
+Exchange the session's access token for one limited to `scopes` and,\n\
+optionally, to one item (its API URL) or shared link — e.g. to hand a\n\
+browser-side preview a narrow token. The result has no refresh token; build\n\
+a client from it as a developer token:\n\n\
+```rust\n\
+let down = client\n\
+\x20   .authorization\n\
+\x20   .downscope_token(\n\
+\x20       &[\"item_preview\"],\n\
+\x20       Some(\"https://api.box.com/2.0/files/123\"),\n\
+\x20       None,\n\
+\x20   )\n\
+\x20   .await?;\n\
+let token = down.access_token.unwrap_or_default();\n\
+let preview = Client::new(auth::Auth::developer_token(token));\n\
 ```\n";
 
 const PAGINATION_GUIDE: &str = "# Pagination\n\n\

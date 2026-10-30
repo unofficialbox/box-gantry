@@ -414,6 +414,16 @@ Runtime.OAuthConfig oauth = new Runtime.OAuthConfig(\"CLIENT_ID\", \"CLIENT_SECR
 // Auth auth = oauth.exchangeCode(code, redirectUri);\n\
 // later runs: rebuild from the stored refresh token.\n\
 Client client = new Client(Auth.oauth(oauth, storedRefreshToken));\n\
+```\n\n\
+## Downscoping a token\n\n\
+Exchange the session's access token for one limited to `scopes` and,\n\
+optionally, to one item (its API URL) or shared link (pass `null` to skip\n\
+either) — e.g. to hand a browser-side preview a narrow token. The result has\n\
+no refresh token; build a client from it as a developer token:\n\n\
+```java\n\
+AccessToken down = client.authorization.downscopeToken(\n\
+\x20       List.of(\"item_preview\"), \"https://api.box.com/2.0/files/123\", null);\n\
+Client preview = new Client(Auth.developerToken(down.accessToken().orElseThrow()));\n\
 ```\n";
 
 const CHUNKED_UPLOAD_GUIDE: &str = "# Chunked upload\n\n\

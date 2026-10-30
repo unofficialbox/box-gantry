@@ -82,7 +82,8 @@ impl Error {
     }
 
     /// The error for a non-2xx response, reading Box's error fields from the
-    /// body when it is a Box error object.
+    /// body when it is a Box error object — or, from the token endpoint, an
+    /// OAuth 2.0 error (`error`, `error_description`).
     fn from_response(response: &Response) -> Error {
         let payload: serde_json::Value =
             serde_json::from_slice(&response.body).unwrap_or(serde_json::Value::Null);
@@ -94,8 +95,8 @@ impl Error {
         };
         let api = ApiError {
             status: response.status,
-            code: field("code"),
-            message: field("message"),
+            code: field("code").or_else(|| field("error")),
+            message: field("message").or_else(|| field("error_description")),
             request_id: field("request_id"),
             body: response.body.clone(),
         };
@@ -1076,6 +1077,26 @@ mod tests {
             err.to_string(),
             "box: status 404 not_found: Not Found (request_id abc123)"
         );
+    }
+
+    /// The token endpoint answers with an OAuth 2.0 error body; its `error`
+    /// and `error_description` fill the code and message.
+    #[tokio::test]
+    async fn an_oauth_error_body_fills_the_code_and_message() {
+        let url = serve_once(
+            b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 73\r\n\r\n\
+              {\"error\":\"invalid_grant\",\"error_description\":\"Grant credentials invalid\"}",
+        )
+        .await;
+        let client = Client::new(Auth::developer_token("t"));
+        let err = client
+            .fetch(client.new_request("POST", &url))
+            .await
+            .err()
+            .expect("a 400 is an error");
+        let api = err.api().expect("API error details");
+        assert_eq!(api.code.as_deref(), Some("invalid_grant"));
+        assert_eq!(api.message.as_deref(), Some("Grant credentials invalid"));
     }
 
     #[tokio::test]

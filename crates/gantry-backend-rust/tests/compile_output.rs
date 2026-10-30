@@ -560,6 +560,126 @@ async fn generated_methods_surface_consistency_outcomes_as_api_errors() {
     assert_api_error(&err, 404, Some("not_found"));
 }
 
+/// Answer `POST /oauth2/token` like Box: a downscoped token, or an OAuth 400
+/// when the form carries no scope. Each request's form body is recorded.
+fn serve_token(forms: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).unwrap();
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let Some((name, value)) = line.trim_end().split_once(':') else {
+                    break;
+                };
+                if name.eq_ignore_ascii_case("content-length") {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            let form = String::from_utf8(body).unwrap();
+            let (status, answer) = if !request_line.starts_with("POST /oauth2/token ") {
+                ("404 Not Found", box_error(404, "not_found"))
+            } else if form
+                .split('&')
+                .any(|pair| pair.starts_with("scope=") && pair.len() > "scope=".len())
+            {
+                (
+                    "200 OK",
+                    r#"{"access_token":"down","expires_in":3600,"token_type":"bearer","restricted_to":[{"scope":"item_preview","object":{"type":"file","id":"1"}}]}"#.to_string(),
+                )
+            } else {
+                (
+                    "400 Bad Request",
+                    r#"{"error":"invalid_scope","error_description":"no scope"}"#.to_string(),
+                )
+            };
+            forms.lock().unwrap().push(form);
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
+                answer.len()
+            )
+            .unwrap();
+        }
+    });
+    url
+}
+
+/// `downscope_token` exchanges the session's current token at the token
+/// endpoint through the generated token method: the form carries the exchange
+/// grant, the subject token and its type, the space-joined scopes, and the
+/// resource. Box's OAuth error comes back as an API error with its code.
+#[tokio::test]
+async fn generated_downscope_token_exchanges_the_session_token() {
+    let forms = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let session = runtime::Client::new(Auth::developer_token("parent"))
+        .with_base_url("api_root", &serve_token(forms.clone()));
+    let client = Client::from_session(session);
+
+    let resource = "https://api.box.com/2.0/files/1";
+    let token = client
+        .authorization
+        .downscope_token(&["item_preview", "item_rename"], Some(resource), None)
+        .await
+        .expect("the exchange succeeds");
+    assert_eq!(token.access_token.as_deref(), Some("down"));
+    assert_eq!(token.restricted_to.as_ref().map(Vec::len), Some(1));
+    // Decode the form (`+` or `%20` for a space, `%XX` escapes).
+    let decode = |text: &str| {
+        let bytes = text.replace('+', " ").into_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%' {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap();
+                out.push(u8::from_str_radix(hex, 16).unwrap());
+                i += 3;
+            } else {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+        String::from_utf8(out).unwrap()
+    };
+    let form = forms.lock().unwrap()[0].clone();
+    let mut pairs: Vec<(String, String)> = form
+        .split('&')
+        .map(|pair| {
+            let (key, value) = pair.split_once('=').unwrap();
+            (decode(key), decode(value))
+        })
+        .collect();
+    pairs.sort();
+    let want = [
+        ("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange"),
+        ("resource", resource),
+        ("scope", "item_preview item_rename"),
+        ("subject_token", "parent"),
+        ("subject_token_type", "urn:ietf:params:oauth:token-type:access_token"),
+    ];
+    let want: Vec<(String, String)> = want
+        .iter()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect();
+    assert_eq!(pairs, want, "{form}");
+
+    let err = client
+        .authorization
+        .downscope_token(&[], None, None)
+        .await
+        .expect_err("Box refuses an exchange with no scope");
+    let api = err.api().unwrap_or_else(|| panic!("{err}: not an API error"));
+    assert_eq!((api.status, api.code.as_deref()), (400, Some("invalid_scope")), "{err}");
+}
+
 /// The webhooks guide's verifier, reached through the shipped runtime module:
 /// a delivery signed in Box's own SDK tests verifies, and the same delivery
 /// with an altered body does not.

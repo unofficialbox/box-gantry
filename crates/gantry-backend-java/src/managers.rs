@@ -21,7 +21,8 @@ use gantry_ir as ir;
 use gantry_ir::naming::{append_without_repeating, camel, pascal, snake};
 use gantry_sema::Analysis;
 use gantry_synth::{
-    EventStream, PageStyle, PagedOperation, PositionShape, detect_event_streams, detect_pagination,
+    ACCESS_TOKEN_TYPE, EventStream, PageStyle, PagedOperation, PositionShape, TOKEN_EXCHANGE_GRANT,
+    TokenExchange, detect_event_streams, detect_pagination, detect_token_exchanges,
 };
 
 use crate::models::{
@@ -194,6 +195,7 @@ pub fn generate_managers(analysis: &Analysis<'_>, build: &BuildInfo) -> Vec<Gene
             .map(|p| (p.operation, p))
             .collect(),
         streams: detect_event_streams(analysis),
+        exchanges: detect_token_exchanges(analysis),
     };
     let plans = plan_managers(analysis);
 
@@ -265,6 +267,8 @@ struct ManagerPrinter<'p> {
     paged: HashMap<usize, PagedOperation>,
     /// Event streams, so a stream's manager gains `stream`.
     streams: Vec<EventStream>,
+    /// Token exchanges, so an exchange's manager gains `downscopeToken`.
+    exchanges: Vec<TokenExchange>,
 }
 
 impl ManagerPrinter<'_> {
@@ -349,6 +353,24 @@ impl ManagerPrinter<'_> {
             ));
             out.push('\n');
         }
+        for exchange in self
+            .exchanges
+            .iter()
+            .filter(|e| plan.ops.contains(&e.operation))
+        {
+            let method = methods
+                .iter()
+                .find(|(i, ..)| *i == exchange.operation)
+                .map(|(_, name, ..)| name.clone())
+                .expect("same manager");
+            assert!(
+                methods.iter().all(|(_, name, ..)| name != "downscopeToken"),
+                "{}: the manager already has a `downscopeToken` method for the token exchange",
+                plan.class
+            );
+            out.push_str(&self.downscope_token(exchange, &method));
+            out.push('\n');
+        }
         // Nested options classes, after the methods that reference them.
         for (i, name, _, _) in &methods {
             if let Some(options) = self.options_class(&self.program.operations[*i], name) {
@@ -359,6 +381,59 @@ impl ManagerPrinter<'_> {
         out.truncate(out.trim_end().len());
         out.push_str("\n}\n");
         (out, paginators)
+    }
+
+    /// `downscopeToken`: Box's token exchange over this manager's typed token
+    /// method, restricting the session's current access token.
+    fn downscope_token(&self, exchange: &TokenExchange, method: &str) -> String {
+        let op = &self.program.operations[exchange.operation];
+        let ir::ResponseShape::Json(ty) = &op.response else {
+            unreachable!("synth: a token exchange answers JSON");
+        };
+        let ret = self.java_type(unwrap_optionality(ty));
+        let body = self.java_type(&ir::Type::Decl(exchange.body));
+        let grant = self.java_type(&ir::Type::Decl(exchange.grant_type_enum));
+        let token_type = self.java_type(&ir::Type::Decl(exchange.subject_token_type_enum));
+        // The builder's setters are named like the record's components.
+        let ir::DeclKind::Struct(decl) = &self.program.decl(exchange.body).kind else {
+            unreachable!("synth: a token exchange's body is a struct");
+        };
+        let components = struct_components(decl);
+        let setter = |field: &ir::Field| {
+            components
+                .iter()
+                .find(|(_, f)| f.wire_name == field.wire_name)
+                .map(|(ident, _)| ident.clone())
+                .expect("synth: the field is the body's")
+        };
+        let mut out = String::new();
+        let _ = writeln!(
+            out,
+            "    /**\n\
+             \x20    * Exchange the session's current access token for one limited to {{@code scopes}} and,\n\
+             \x20    * when given (non-null), to one item ({{@code resource}}: its API URL, e.g.\n\
+             \x20    * {{@code https://api.box.com/2.0/files/123}}) or a shared link. The result is a plain\n\
+             \x20    * access token with no refresh token: build a client from it with\n\
+             \x20    * {{@code Runtime.developerToken}}.\n\
+             \x20    */\n\
+             \x20   public {ret} downscopeToken(java.util.List<String> scopes, String resource, String sharedLink) {{\n\
+             \x20       return {method}({body}.builder()\n\
+             \x20               .{grant_setter}(new {grant}({TOKEN_EXCHANGE_GRANT:?}))\n\
+             \x20               .{subject}(session.accessToken())\n\
+             \x20               .{subject_type}(new {token_type}({ACCESS_TOKEN_TYPE:?}))\n\
+             \x20               .{scope}(String.join(\" \", scopes))\n\
+             \x20               .{resource}(resource)\n\
+             \x20               .{shared_link}(sharedLink)\n\
+             \x20               .build());\n\
+             \x20   }}",
+            grant_setter = setter(&exchange.grant_type),
+            subject = setter(&exchange.subject_token),
+            subject_type = setter(&exchange.subject_token_type),
+            scope = setter(&exchange.scope),
+            resource = setter(&exchange.resource),
+            shared_link = setter(&exchange.shared_link),
+        );
+        out
     }
 
     /// `stream`: Box's long-poll event stream (`Runtime.EventStream`) over this

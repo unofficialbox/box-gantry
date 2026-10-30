@@ -124,6 +124,27 @@ test('a non-2xx response throws a BoxApiError with the Box error fields', async 
   );
 });
 
+// The token endpoint answers with an OAuth 2.0 error body; its `error` and
+// `error_description` fill the code and message.
+test('an OAuth error body fills the BoxApiError code and message', async () => {
+  await withServer(
+    (req, res) => {
+      res.statusCode = 400;
+      res.setHeader('Content-Type', 'application/json');
+      res.end('{"error":"invalid_grant","error_description":"Grant credentials are invalid"}');
+    },
+    async (url) => {
+      const client = new Client(developerToken('t'));
+      await assert.rejects(client.fetch(client.newRequest('POST', url)), (err: unknown) => {
+        assert.ok(err instanceof BoxApiError);
+        assert.equal(err.code, 'invalid_grant');
+        assert.equal(err.boxMessage, 'Grant credentials are invalid');
+        return true;
+      });
+    },
+  );
+});
+
 test('a non-JSON error body is kept raw on the BoxApiError', async () => {
   await withServer(
     (req, res) => {

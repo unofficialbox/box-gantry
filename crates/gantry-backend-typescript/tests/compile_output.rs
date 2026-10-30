@@ -802,6 +802,62 @@ try {
   server.close();
 }
 
+// downscopeToken exchanges the session's current token at the token endpoint
+// through the generated token method: the form carries the exchange grant, the
+// subject token and its type, the space-joined scopes, and the resource. Box's
+// OAuth error comes back as a BoxApiError with its code.
+const forms = [];
+const tokenServer = http.createServer((req, res) => {
+  let raw = '';
+  req.on('data', (chunk) => (raw += chunk));
+  req.on('end', () => {
+    const form = new URLSearchParams(raw);
+    forms.push(form);
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method !== 'POST' || req.url !== '/oauth2/token') {
+      res.writeHead(404);
+      res.end('{}');
+    } else if (!form.get('scope')) {
+      res.writeHead(400);
+      res.end('{"error":"invalid_scope","error_description":"no scope"}');
+    } else {
+      res.end('{"access_token":"down","expires_in":3600,"restricted_to":[{"scope":"item_preview","object":{"type":"file","id":"1"}}]}');
+    }
+  });
+});
+await new Promise((resolve) => tokenServer.listen(0, '127.0.0.1', resolve));
+try {
+  const apiRoot = `http://127.0.0.1:${tokenServer.address().port}`;
+  const parent = new Client(runtime.developerToken('parent'), { baseUrls: { api_root: apiRoot } });
+  const resource = 'https://api.box.com/2.0/files/1';
+  const token = await parent.authorization.downscopeToken(['item_preview', 'item_rename'], resource);
+  if (token.access_token !== 'down' || token.restricted_to?.length !== 1) {
+    throw new Error(`downscopeToken: ${JSON.stringify(token)}`);
+  }
+  const sent = Object.fromEntries(forms[0]);
+  const want = {
+    grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
+    subject_token: 'parent',
+    subject_token_type: 'urn:ietf:params:oauth:token-type:access_token',
+    scope: 'item_preview item_rename',
+    resource,
+  };
+  if (JSON.stringify(Object.entries(sent).sort()) !== JSON.stringify(Object.entries(want).sort())) {
+    throw new Error(`downscopeToken form: ${JSON.stringify(sent)}`);
+  }
+  try {
+    await parent.authorization.downscopeToken([]);
+    throw new Error('downscopeToken with no scope: resolved, want a BoxApiError(400)');
+  } catch (err) {
+    if (!(err instanceof runtime.BoxApiError) || err.status !== 400 || err.code !== 'invalid_scope') {
+      throw new Error(`downscopeToken with no scope: got ${err}`);
+    }
+  }
+} finally {
+  tokenServer.closeAllConnections();
+  tokenServer.close();
+}
+
 // The webhooks guide's verifier, reached through the package's `runtime`
 // namespace: a delivery signed in Box's own SDK tests verifies, and the same
 // delivery with an altered body does not.

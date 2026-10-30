@@ -34,6 +34,7 @@ import {
   parseJsonExact,
   streamPosition,
   isPreconditionFailed,
+  withFormBody,
   withHeader,
   withJsonBody,
   withMultipartBody,
@@ -218,6 +219,10 @@ async function smokeUploadDownloadDelete(client: Client): Promise<void> {
     () => undefined,
     (err: unknown) => err,
   );
+  const downscope = await smokeDownscope(client, fileId).then(
+    (refusal) => ({ refusal }),
+    (err: unknown) => ({ err }),
+  );
 
   // Delete unconditionally now that we hold the id.
   const deleted = await client.fetch(
@@ -237,6 +242,10 @@ async function smokeUploadDownloadDelete(client: Client): Promise<void> {
     throw events;
   }
   console.error(`events: the long poll reported ITEM_RENAME for file ${fileId}`);
+  if ('err' in downscope) {
+    throw downscope.err;
+  }
+  console.error(`downscope: the narrow token renamed the file; its delete was refused (${downscope.refusal})`);
 
   assert.equal(statusCode(deleted), 204, 'delete: expected 204');
   console.error(`delete: cleaned up file ${fileId}`);
@@ -275,6 +284,43 @@ async function smokeEtags(client: Client, fileId: string): Promise<void> {
     'etag: If-Match with a stale etag should be a 412',
   );
   await write(etag);
+}
+
+/// Exchange the session's token for one limited to renaming and previewing the
+/// uploaded file — the form the generated `downscopeToken` posts — then prove
+/// the narrow token renames the file and Box refuses its delete. Resolves to
+/// the refusal; the caller still deletes the file with the original token.
+async function smokeDownscope(client: Client, fileId: string): Promise<string> {
+  const url = `${client.baseUrl('api')}/files/${fileId}`;
+  const form = Object.entries({
+    grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
+    subject_token: await client.accessToken(),
+    subject_token_type: 'urn:ietf:params:oauth:token-type:access_token',
+    scope: 'item_rename item_preview',
+    resource: url,
+  })
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+    .join('&');
+  const exchange = withFormBody(
+    client.newRequest('POST', `${client.baseUrl('api_root')}/oauth2/token`),
+    new TextEncoder().encode(form),
+  );
+  const token = JSON.parse(new TextDecoder().decode(await fetchOk(client, exchange))).access_token;
+  assert.ok(typeof token === 'string' && token !== '', 'downscope: the exchange returned no access token');
+  const narrow = new Client(developerToken(token));
+
+  const name = new TextEncoder().encode(JSON.stringify({ name: `box-gantry-smoke-downscoped-${Date.now()}.txt` }));
+  await fetchOk(narrow, withJsonBody(narrow.newRequest('PUT', url), name));
+  let refusal = '';
+  await assert.rejects(
+    narrow.fetch(narrow.newRequest('DELETE', url)),
+    (err) => {
+      refusal = err instanceof Error ? err.message : String(err);
+      return err instanceof BoxApiError && (err.status === 401 || err.status === 403);
+    },
+    'downscope: deleting with the narrow token should be refused (401/403)',
+  );
+  return refusal;
 }
 
 /// GET a URL and decode a JSON object, failing on non-2xx.

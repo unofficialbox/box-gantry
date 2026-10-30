@@ -390,6 +390,19 @@ cfg := auth.OAuthConfig{ClientID: \"CLIENT_ID\", ClientSecret: \"CLIENT_SECRET\"
 src, err := cfg.ExchangeCode(ctx, code, redirectURI)\n\
 // later: src := auth.OAuth(cfg, storedRefreshToken)\n\
 c := client.NewClient(src)\n\
+```\n\n\
+## Downscoping a token\n\n\
+Exchange the session's access token for one limited to `scopes` and,\n\
+optionally, to one item (its API URL) or shared link — e.g. to hand a\n\
+browser-side preview a narrow token. The result has no refresh token; build\n\
+a client from it with `auth.DeveloperToken`:\n\n\
+```go\n\
+down, err := c.Authorization.DownscopeToken(ctx, []string{\"item_preview\"},\n\
+\t\"https://api.box.com/2.0/files/123\", \"\")\n\
+if err != nil {\n\
+\treturn err\n\
+}\n\
+preview := client.NewClient(auth.DeveloperToken(*down.AccessToken))\n\
 ```\n";
 
 const PAGINATION_GUIDE: &str = "# Pagination\n\n\

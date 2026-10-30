@@ -68,6 +68,12 @@ fn the_generated_go_sdk_is_conformant() {
     assert_eq!(by("managers").expected, 88);
     assert_eq!(by("operations").expected, 381);
     assert_eq!(by("operations").actual, 381, "one method per operation");
+    assert_eq!(by("token-downscoping").expected, 1);
+    assert_eq!(
+        by("token-downscoping").actual,
+        1,
+        "the authorization manager's downscope method"
+    );
     assert_eq!(by("conditional-reads").expected, 6);
     assert_eq!(
         by("conditional-reads").actual,
@@ -125,6 +131,12 @@ fn the_generated_apex_sdk_is_conformant() {
     assert_eq!(by("managers").actual, 88, "one class per manager");
     assert_eq!(by("operations").expected, 381);
     assert_eq!(by("operations").actual, 381, "one method per operation");
+    assert_eq!(by("token-downscoping").expected, 1);
+    assert_eq!(
+        by("token-downscoping").actual,
+        1,
+        "the authorization manager's downscope method"
+    );
     assert_eq!(by("conditional-reads").expected, 6);
     assert_eq!(
         by("conditional-reads").actual,
@@ -193,6 +205,12 @@ fn the_generated_typescript_sdk_is_conformant() {
     assert_eq!(by("managers").actual, 88, "one class per manager");
     assert_eq!(by("operations").expected, 381);
     assert_eq!(by("operations").actual, 381, "one method per operation");
+    assert_eq!(by("token-downscoping").expected, 1);
+    assert_eq!(
+        by("token-downscoping").actual,
+        1,
+        "the authorization manager's downscope method"
+    );
     assert_eq!(by("conditional-reads").expected, 6);
     assert_eq!(
         by("conditional-reads").actual,

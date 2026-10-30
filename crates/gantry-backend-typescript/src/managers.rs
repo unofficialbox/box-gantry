@@ -18,7 +18,8 @@ use gantry_ir as ir;
 use gantry_ir::naming::{append_without_repeating, pascal, snake};
 use gantry_sema::Analysis;
 use gantry_synth::{
-    EventStream, PageStyle, PagedOperation, PositionShape, detect_event_streams, detect_pagination,
+    ACCESS_TOKEN_TYPE, EventStream, PageStyle, PagedOperation, PositionShape, TOKEN_EXCHANGE_GRANT,
+    TokenExchange, detect_event_streams, detect_pagination, detect_token_exchanges,
 };
 
 use crate::models::{module_names, type_name};
@@ -120,6 +121,7 @@ pub fn generate_managers(analysis: &Analysis<'_>, _build: &BuildInfo) -> Vec<Gen
         .collect();
 
     let streams = detect_event_streams(analysis);
+    let exchanges = detect_token_exchanges(analysis);
 
     // Allocate one collision-free base per manager (shared with the docs).
     let named = plan_managers(analysis);
@@ -133,6 +135,7 @@ pub fn generate_managers(analysis: &Analysis<'_>, _build: &BuildInfo) -> Vec<Gen
             modules: &modules,
             paged: &paged,
             streams: &streams,
+            exchanges: &exchanges,
             exact_json: false,
             body: String::new(),
             uses_path_escape: false,
@@ -257,6 +260,8 @@ struct Printer<'p> {
     /// Event streams, so a stream's page operation decodes positions exactly
     /// and its manager gains `stream`.
     streams: &'p [EventStream],
+    /// Token exchanges, so an exchange's manager gains `downscopeToken`.
+    exchanges: &'p [TokenExchange],
     /// Set while emitting an operation whose JSON must keep large integers
     /// exact (an event stream's page: its position).
     exact_json: bool,
@@ -337,7 +342,57 @@ impl Printer<'_> {
                 &base_of(stream.options),
             );
         }
+        for exchange in self
+            .exchanges
+            .iter()
+            .filter(|e| indices.contains(&e.operation))
+        {
+            let pos = indices
+                .iter()
+                .position(|&i| i == exchange.operation)
+                .expect("same manager");
+            assert!(
+                bases.iter().all(|b| camel(&b.base) != "downscopeToken"),
+                "{key}: the manager already has a `downscopeToken` method for the token exchange"
+            );
+            self.downscope_token(exchange, &camel(&bases[pos].base));
+        }
         self.body.push_str("}\n");
+    }
+
+    /// `downscopeToken`: Box's token exchange over this manager's typed token
+    /// method, restricting the session's current access token.
+    fn downscope_token(&mut self, exchange: &TokenExchange, method: &str) {
+        let op = &self.program.operations[exchange.operation];
+        let ir::ResponseShape::Json(ty) = &op.response else {
+            unreachable!("synth: a token exchange answers JSON");
+        };
+        let ret = self.ts_type(unwrap_optionality(ty));
+        let key = |field: &ir::Field| field_key(&field.wire_name);
+        let _ = writeln!(
+            self.body,
+            "\n  /** Exchange the session's current access token for one limited to `scopes`\n\
+             \x20  * and, when given, to one item (`resource`: its API URL, e.g.\n\
+             \x20  * `https://api.box.com/2.0/files/123`) or a shared link. The result is a plain\n\
+             \x20  * access token with no refresh token: build a client from it with\n\
+             \x20  * `auth.developerToken`. */\n\
+             \x20 async downscopeToken(scopes: readonly string[], resource?: string, sharedLink?: string): Promise<{ret}> {{\n\
+             \x20   return this.{method}({{\n\
+             \x20     {grant}: {TOKEN_EXCHANGE_GRANT:?},\n\
+             \x20     {subject}: await this.session.accessToken(),\n\
+             \x20     {subject_type}: {ACCESS_TOKEN_TYPE:?},\n\
+             \x20     {scope}: scopes.join(' '),\n\
+             \x20     ...(resource === undefined ? {{}} : {{ {resource}: resource }}),\n\
+             \x20     ...(sharedLink === undefined ? {{}} : {{ {shared_link}: sharedLink }}),\n\
+             \x20   }});\n\
+             \x20 }}",
+            grant = key(&exchange.grant_type),
+            subject = key(&exchange.subject_token),
+            subject_type = key(&exchange.subject_token_type),
+            scope = key(&exchange.scope),
+            resource = key(&exchange.resource),
+            shared_link = key(&exchange.shared_link),
+        );
     }
 
     /// `stream`: Box's long-poll event stream (`runtime.eventStream`) over
@@ -1515,6 +1570,7 @@ mod tests {
             modules: &modules,
             paged: &paged,
             streams: &[],
+            exchanges: &[],
             exact_json: false,
             body: String::new(),
             uses_path_escape: false,
@@ -1662,6 +1718,7 @@ mod tests {
             modules: &modules,
             paged: &paged,
             streams: &[],
+            exchanges: &[],
             exact_json: false,
             body: String::new(),
             uses_path_escape: false,
@@ -1718,6 +1775,7 @@ mod tests {
             modules: &modules,
             paged: &paged,
             streams: &[],
+            exchanges: &[],
             exact_json: false,
             body: String::new(),
             uses_path_escape: false,
