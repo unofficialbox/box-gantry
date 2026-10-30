@@ -1,0 +1,109 @@
+# Confirm a fleet release actually landed: the version tag on all five
+# box-open-*-sdk repos, and the package on each registry this release
+# published to. release.yml calls it after every live release; it also runs
+# standalone (workflow_dispatch) to re-check a version later.
+#
+# Registries can lag the publish step: npm by a minute, Maven Central by up to
+# half an hour while the Portal deployment propagates. So each check polls
+# within a bound rather than failing on the first miss, and the whole job fails
+# only when something is still missing at the end, naming what.
+name: Verify a fleet release
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+      check_crates:
+        type: boolean
+        default: true
+      check_npm:
+        type: boolean
+        default: true
+      check_maven:
+        type: boolean
+        default: true
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to verify, e.g. 0.9.0'
+        type: string
+        required: true
+      check_crates:
+        description: 'Check crates.io'
+        type: boolean
+        default: true
+      check_npm:
+        description: 'Check npm'
+        type: boolean
+        default: true
+      check_maven:
+        description: 'Check Maven Central'
+        type: boolean
+        default: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check the tags and registries
+        env:
+          CHECK_CRATES: ${{ inputs.check_crates }}
+          CHECK_NPM: ${{ inputs.check_npm }}
+          CHECK_MAVEN: ${{ inputs.check_maven }}
+        run: |
+          set -uo pipefail
+          missing=()
+          rows=()
+
+          # Poll `$2` (a command) every `$3` seconds for up to `$4` tries.
+          poll() {
+            local what=$1 cmd=$2 every=$3 tries=$4
+            for ((i = 1; i <= tries; i++)); do
+              if bash -c "$cmd" >/dev/null 2>&1; then
+                rows+=("| $what | ✅ |")
+                return
+              fi
+              [ "$i" -lt "$tries" ] && sleep "$every"
+            done
+            rows+=("| $what | ❌ not found |")
+            missing+=("$what")
+          }
+
+          for repo in go rust ts java apex; do
+            poll "tag v$VERSION on box-open-$repo-sdk" \
+              "git ls-remote --exit-code --tags https://github.com/unofficialbox/box-open-$repo-sdk.git refs/tags/v$VERSION" 10 3
+          done
+          if [ "$CHECK_CRATES" = "true" ]; then
+            poll "crates.io box-open-sdk $VERSION" \
+              "curl -sf -A box-gantry-verify https://crates.io/api/v1/crates/box-open-sdk/$VERSION" 30 10
+          fi
+          if [ "$CHECK_NPM" = "true" ]; then
+            poll "npm @unofficialbox/box-open-sdk@$VERSION" \
+              "npm view @unofficialbox/box-open-sdk@$VERSION version --prefer-online | grep -qx '$VERSION'" 30 10
+          fi
+          if [ "$CHECK_MAVEN" = "true" ]; then
+            poll "Maven Central dev.unofficialbox:box-open-sdk:$VERSION" \
+              "curl -sfI https://repo.maven.apache.org/maven2/dev/unofficialbox/box-open-sdk/$VERSION/box-open-sdk-$VERSION.pom" 60 45
+          fi
+
+          {
+            echo "### Fleet release $VERSION"
+            echo ""
+            echo "| Check | Result |"
+            echo "|---|---|"
+            printf '%s\n' "${rows[@]}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "${rows[@]}"
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf '::error::missing: %s\n' "${missing[@]}"
+            exit 1
+          fi
