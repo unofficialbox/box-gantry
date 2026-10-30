@@ -381,11 +381,20 @@ let auth = auth::Auth::jwt(auth::JwtConfig {\n\
 let client = Client::new(auth);\n\
 ```\n\n\
 ## OAuth 2.0 (authorization code)\n\n\
-Redirect the user to the authorize URL, exchange the returned code, then\n\
-reuse the stored refresh token on later runs:\n\n\
-```rust\n\
-// later runs: rebuild from the stored refresh token.\n\
-let auth = auth::Auth::oauth(\"CLIENT_ID\", \"CLIENT_SECRET\", stored_refresh_token);\n\
+Redirect the user to `config.authorize_url(redirect_uri, state)` and exchange\n\
+the returned code. Box rotates the refresh token on every refresh and rejects\n\
+the old one, so pass a `RefreshTokenStore` that writes it somewhere durable; it\n\
+is called with the token the exchange issues and with every rotation after.\n\
+Later runs resume from the newest saved token:\n\n\
+```rust,ignore\n\
+let config = auth::OAuthConfig {\n\
+\x20   client_id: \"CLIENT_ID\".into(),\n\
+\x20   client_secret: \"CLIENT_SECRET\".into(),\n\
+\x20   token_url: None,\n\
+};\n\
+let auth = config.exchange_code_with_store(&code, redirect_uri, store.clone()).await?;\n\
+// later runs: resume from the newest saved refresh token.\n\
+let auth = auth::Auth::oauth_with_store(config, newest_saved_refresh_token, store);\n\
 let client = Client::new(auth);\n\
 ```\n\n\
 ## Revoking a token\n\n\

@@ -575,8 +575,32 @@ impl OAuthConfig {
     }
 
     /// Exchange an authorization code for an [`Auth`] that refreshes itself
-    /// thereafter.
+    /// thereafter. The refresh token stays in memory; use
+    /// [`OAuthConfig::exchange_code_with_store`] to persist it and every
+    /// rotation, so a restarted app can resume with [`Auth::oauth_with_store`].
     pub async fn exchange_code(&self, code: &str, redirect_uri: &str) -> Result<Auth, Error> {
+        self.exchange(code, redirect_uri, None).await
+    }
+
+    /// Like [`OAuthConfig::exchange_code`], but saves the refresh token Box
+    /// issues through `store` before returning, then each rotation as
+    /// [`Auth::oauth_with_store`] does. If that first save fails, this returns
+    /// the error and no `Auth`, and the user goes through consent again.
+    pub async fn exchange_code_with_store(
+        &self,
+        code: &str,
+        redirect_uri: &str,
+        store: Arc<dyn RefreshTokenStore>,
+    ) -> Result<Auth, Error> {
+        self.exchange(code, redirect_uri, Some(store)).await
+    }
+
+    async fn exchange(
+        &self,
+        code: &str,
+        redirect_uri: &str,
+        store: Option<Arc<dyn RefreshTokenStore>>,
+    ) -> Result<Auth, Error> {
         let http = auth_http_client();
         let token_url = self.token_url.clone().unwrap_or_else(default_token_url);
         let form = vec![
@@ -590,13 +614,16 @@ impl OAuthConfig {
         let refresh_token = response.refresh_token.clone().ok_or_else(|| {
             Error::new("gantryruntime: authorization-code exchange returned no refresh_token")
         })?;
+        if let Some(store) = &store {
+            store.save(&refresh_token).await?;
+        }
         let ttl = response.ttl();
         let source = OAuthSource {
             http,
             token_url,
             client_id: self.client_id.clone(),
             client_secret: self.client_secret.clone(),
-            store: None,
+            store,
             state: Mutex::new(OAuthState {
                 token: response.access_token,
                 expiry: Instant::now() + ttl,
@@ -941,6 +968,29 @@ mod tests {
         })
         .with_proxy(reqwest::Proxy::all(proxy).unwrap());
         assert_eq!(auth.access_token().await.unwrap(), "proxied");
+    }
+
+    #[tokio::test]
+    async fn exchange_code_with_store_saves_the_issued_refresh_token() {
+        let saved = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let store = Arc::new(Recorder {
+            saved: saved.clone(),
+            remaining_failures: std::sync::Mutex::new(0),
+        });
+        let url =
+            serve_one_token(r#"{"access_token":"at","refresh_token":"issued","expires_in":3600}"#)
+                .await;
+        let config = OAuthConfig {
+            client_id: "c".to_string(),
+            client_secret: "s".to_string(),
+            token_url: Some(url),
+        };
+        let auth = config
+            .exchange_code_with_store("code", "https://app.example/callback", store)
+            .await
+            .unwrap();
+        assert_eq!(auth.access_token().await.unwrap(), "at");
+        assert_eq!(saved.lock().unwrap().as_slice(), ["issued"]);
     }
 
     /// A `TokenSource` that hands out a fixed token and records `force_refresh`

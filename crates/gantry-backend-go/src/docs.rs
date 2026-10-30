@@ -388,12 +388,16 @@ if err != nil {\n\t// bad key: fails loudly at construction\n}\n\
 c := client.NewClient(src)\n\
 ```\n\n\
 ## OAuth 2.0 (authorization code)\n\n\
-Redirect the user to `cfg.AuthorizeURL(redirectURI, state)`, exchange the\n\
-returned code, then reuse the stored refresh token on later runs:\n\n\
+Redirect the user to `cfg.AuthorizeURL(redirectURI, state)` and exchange the\n\
+returned code. Box rotates the refresh token on every refresh and rejects the\n\
+old one, so give the config a `Store` (any type with\n\
+`SaveRefreshToken(ctx, token) error`) that writes it somewhere durable; it is\n\
+called with the token the exchange issues and with every rotation after. Later\n\
+runs resume from the newest saved token:\n\n\
 ```go\n\
-cfg := auth.OAuthConfig{ClientID: \"CLIENT_ID\", ClientSecret: \"CLIENT_SECRET\"}\n\
+cfg := auth.OAuthConfig{ClientID: \"CLIENT_ID\", ClientSecret: \"CLIENT_SECRET\", Store: tokenStore}\n\
 src, err := cfg.ExchangeCode(ctx, code, redirectURI)\n\
-// later: src := auth.OAuth(cfg, storedRefreshToken)\n\
+// later runs: src := auth.OAuth(cfg, newestSavedRefreshToken)\n\
 c := client.NewClient(src)\n\
 ```\n\n\
 ## Revoking a token\n\n\

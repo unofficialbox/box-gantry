@@ -1166,8 +1166,20 @@ public final class Runtime {
                     + "&state=" + encode(state);
         }
 
-        /** Exchange an authorization code for auth (seeded with the returned refresh token). */
+        /** Exchange an authorization code for auth (seeded with the returned
+         * refresh token). The refresh token stays in memory; use {@link
+         * #exchangeCode(String, String, RefreshTokenStore)} to persist it and
+         * every rotation, so a restarted app can resume with {@link
+         * Runtime#oauthWithStore}. */
         public Auth exchangeCode(String code, String redirectUri) {
+            return exchangeCode(code, redirectUri, null);
+        }
+
+        /** Like {@link #exchangeCode(String, String)}, but saves the refresh
+         * token Box issues through {@code store} before returning, then each
+         * rotation as {@link Runtime#oauthWithStore} does. If that first save
+         * throws, so does this, and the user goes through consent again. */
+        public Auth exchangeCode(String code, String redirectUri, RefreshTokenStore store) {
             Map<String, String> form = new LinkedHashMap<>();
             form.put("grant_type", "authorization_code");
             form.put("code", code);
@@ -1178,7 +1190,10 @@ public final class Runtime {
             if (result.refreshToken() == null) {
                 throw new BoxApiException("gantryruntime: code exchange returned no refresh_token");
             }
-            return new OAuthSource(this, result.refreshToken(), null);
+            if (store != null) {
+                store.save(result.refreshToken());
+            }
+            return new OAuthSource(this, result.refreshToken(), store);
         }
     }
 

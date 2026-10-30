@@ -263,6 +263,14 @@ public final class RuntimeSmoke {
         check(oauthSession.accessToken().equals("oauth-rt-0"), "oauth token from rt-0");
         check("rt-next".equals(savedRefresh.get()), "rotated refresh token persisted, got: " + savedRefresh.get());
 
+        // The code exchange saves the refresh token Box issues before returning.
+        AtomicReference<String> exchanged = new AtomicReference<>();
+        Runtime.Auth fromCode = new Runtime.OAuthConfig("cid", "csecret").tokenUrl(base + "/oauth")
+            .exchangeCode("code", "https://app.example/callback", exchanged::set);
+        check("rt-next".equals(exchanged.get()), "exchanged refresh token persisted, got: " + exchanged.get());
+        check(new Runtime.Session(fromCode).accessToken().equals("oauth-rt-next"),
+            "the exchanged auth refreshes with the saved token");
+
         // JWT: a signed assertion the server verifies against the key.
         Runtime.Auth jwt = Runtime.jwt(
             Runtime.JwtConfig.enterprise("cid", "csecret", "kid1", pem, null, "ent1")
