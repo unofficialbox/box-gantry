@@ -18,7 +18,8 @@ use gantry_ir::naming::{append_without_repeating, pascal, snake};
 use gantry_sema::Analysis;
 use gantry_synth::{
     ACCESS_TOKEN_TYPE, EventStream, PageStyle, PagedOperation, PositionShape, TOKEN_EXCHANGE_GRANT,
-    TokenExchange, detect_event_streams, detect_pagination, detect_token_exchanges,
+    TokenExchange, ZipDownload, detect_event_streams, detect_pagination, detect_token_exchanges,
+    detect_zip_downloads,
 };
 
 use crate::models::type_name;
@@ -77,6 +78,7 @@ pub fn generate_managers(analysis: &Analysis<'_>, _build: &BuildInfo) -> Vec<Gen
 
     let streams = detect_event_streams(analysis);
     let exchanges = detect_token_exchanges(analysis);
+    let zips = detect_zip_downloads(analysis);
 
     let named = plan_managers(analysis);
 
@@ -99,6 +101,7 @@ pub fn generate_managers(analysis: &Analysis<'_>, _build: &BuildInfo) -> Vec<Gen
             paged: &paged,
             streams: &streams,
             exchanges: &exchanges,
+            zips: &zips,
             body: String::new(),
             uses_path_escape: false,
         };
@@ -213,6 +216,8 @@ struct Printer<'p> {
     streams: &'p [EventStream],
     /// Token exchanges, so an exchange's manager gains `downscope_token`.
     exchanges: &'p [TokenExchange],
+    /// Zip downloads, so a zip's manager gains `download_zip`.
+    zips: &'p [ZipDownload],
     body: String,
     /// Whether any method escaped a path parameter, so the file imports
     /// `path_escape`.
@@ -329,6 +334,13 @@ impl Printer<'_> {
             );
             self.downscope_token(exchange, &method_of(exchange.operation));
         }
+        for zip in self.zips.iter().filter(|z| indices.contains(&z.create)) {
+            assert!(
+                !used.iter().any(|m| m == "download_zip"),
+                "{key}: the manager already has a `download_zip` method for the zip download"
+            );
+            self.download_zip(zip, &method_of(zip.create), &method_of(zip.content));
+        }
         self.body.push_str("}\n");
         for stream in &streams {
             self.stream_source(
@@ -338,6 +350,42 @@ impl Printer<'_> {
                 &method_of(stream.options),
             );
         }
+    }
+
+    /// `download_zip`: create the archive with this manager's typed `POST`, then
+    /// stream the `download_url` Box answers with, as returned.
+    fn download_zip(&mut self, zip: &ZipDownload, create: &str, content: &str) {
+        let op = &self.program.operations[zip.create];
+        let request = op
+            .request
+            .as_ref()
+            .expect("synth: a zip download's POST has a body");
+        let body = self.rust_type(unwrap_optionality(&request.ty));
+        let url = field_ident(zip.download_url.name.as_str());
+        let _ = writeln!(
+            self.body,
+            "\n    /// Pack the items in `body` into one zip archive ([`Self::{create}`]) and\n\
+             \x20   /// stream it from the download URL Box answers with, through this session\n\
+             \x20   /// (auth, retries, As-User). [`Self::{content}`] fetches the same archive by\n\
+             \x20   /// id."
+        );
+        self.signature(
+            "pub ",
+            "download_zip",
+            &["&self".to_string(), format!("body: {body}")],
+            &format!("Result<{RUNTIME}::Stream, Error>"),
+        );
+        let _ = writeln!(
+            self.body,
+            "        let zip = self.{create}(body).await?;\n\
+             \x20       let url = zip\n\
+             \x20           .{url}\n\
+             \x20           .ok_or_else(|| Error::new(\"box: the zip download has no download_url\"))?;\n\
+             \x20       let req = self.session.new_request(\"GET\", &url);\n\
+             \x20       let resp = self.session.fetch(req).await?;\n\
+             \x20       Ok({RUNTIME}::response_stream(&resp))\n\
+             \x20   }}"
+        );
     }
 
     /// `downscope_token`: Box's token exchange over this manager's typed token
@@ -1795,6 +1843,7 @@ mod tests {
             paged: &paged,
             streams: &[],
             exchanges: &[],
+            zips: &[],
             body: String::new(),
             uses_path_escape: false,
         };
@@ -1928,6 +1977,7 @@ mod tests {
             paged: &paged,
             streams: &[],
             exchanges: &[],
+            zips: &[],
             body: String::new(),
             uses_path_escape: false,
         };
@@ -1983,6 +2033,7 @@ mod tests {
             paged: &paged,
             streams: &[],
             exchanges: &[],
+            zips: &[],
             body: String::new(),
             uses_path_escape: false,
         };

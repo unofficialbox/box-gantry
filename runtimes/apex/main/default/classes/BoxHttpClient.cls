@@ -272,11 +272,15 @@ public with sharing class BoxHttpClient implements BoxClient {
     }
 
     private String buildUrl(BoxRequest request) {
-        String base = this.baseUrls.get(request.baseUrl);
-        if (base == null) {
-            throw new BoxApiException('Unknown base-URL class: ' + request.baseUrl);
+        // An absolute URL Box handed back (a zip's download_url) is used as is.
+        String url = request.url;
+        if (url == null) {
+            String base = this.baseUrls.get(request.baseUrl);
+            if (base == null) {
+                throw new BoxApiException('Unknown base-URL class: ' + request.baseUrl);
+            }
+            url = base + request.path;
         }
-        String url = base + request.path;
         if (request.query != null && !request.query.isEmpty()) {
             List<String> pairs = new List<String>();
             for (String key : request.query.keySet()) {

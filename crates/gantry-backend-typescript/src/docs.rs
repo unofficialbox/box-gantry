@@ -27,8 +27,9 @@ pub fn generate_docs(analysis: &Analysis<'_>) -> Vec<GeneratedFile> {
 
     let mut files = Vec::new();
     files.push(index_page(&planned));
+    let zips = gantry_synth::detect_zip_downloads(analysis);
     for (key, indices, name) in &planned {
-        files.push(manager_page(
+        let mut page = manager_page(
             program,
             &paged,
             key,
@@ -36,7 +37,11 @@ pub fn generate_docs(analysis: &Analysis<'_>) -> Vec<GeneratedFile> {
             &name.class,
             &name.field,
             &name.module,
-        ));
+        );
+        if zips.iter().any(|z| indices.contains(&z.create)) {
+            page.content.push_str(ZIP_DOWNLOAD_SECTION);
+        }
+        files.push(page);
     }
     files.push(guide("auth", AUTH_GUIDE));
     files.push(guide("pagination", PAGINATION_GUIDE));
@@ -524,3 +529,16 @@ if (!genuine) {\n\
 \x20\x20minutes ago (`maxAgeSeconds`) or in the future fails, which blocks replays.\n\
 - **Header names match in any case**, and the comparison takes the same time\n\
 \x20\x20wherever a signature differs.\n";
+
+/// Appended to the docs page of the manager that holds a detected zip download
+/// (`gantry_synth::detect_zip_downloads`), so the page documents its
+/// one-call helper.
+const ZIP_DOWNLOAD_SECTION: &str = "\n## downloadZip: downloading several items as a zip\n\n\
+`downloadZip` packs files and folders into one zip archive (`create`) and\n\
+streams it from the `download_url` Box answers with, through the client's\n\
+session, so auth, retries, and As-User apply:\n\n\
+**Example**\n\n\
+```ts\n\
+const archive = await client.zipDownloads.downloadZip(body); // body: ZipDownloadRequest\n\
+```\n\n\
+`getStatus` reports progress and skipped items while the download runs.\n";

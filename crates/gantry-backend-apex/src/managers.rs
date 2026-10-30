@@ -18,7 +18,9 @@ use gantry_ir as ir;
 use gantry_ir::naming::{camel, pascal};
 use gantry_manifest::CapabilityManifest;
 use gantry_sema::Analysis;
-use gantry_synth::{ACCESS_TOKEN_TYPE, EventStream, TOKEN_EXCHANGE_GRANT, TokenExchange};
+use gantry_synth::{
+    ACCESS_TOKEN_TYPE, EventStream, TOKEN_EXCHANGE_GRANT, TokenExchange, ZipDownload,
+};
 
 use crate::models::{ClassNames, apex_type, mint_unique};
 use crate::{CLASSES_DIR, GeneratedFile, safe_word};
@@ -42,17 +44,18 @@ pub fn generate_managers(
     let names = ClassNames::build(program, limit);
     let wire = crate::wire::Wire::build(program, &names);
     let infos = manager_infos(analysis, &names, limit);
-    let streams = gantry_synth::detect_event_streams(analysis);
-    let exchanges = gantry_synth::detect_token_exchanges(analysis);
+    let helpers = Helpers {
+        streams: gantry_synth::detect_event_streams(analysis),
+        exchanges: gantry_synth::detect_token_exchanges(analysis),
+        zips: gantry_synth::detect_zip_downloads(analysis),
+    };
 
     let mut files = Vec::new();
     for info in &infos {
         let op_indices = &analysis.managers[&info.manager];
         files.push(GeneratedFile {
             path: format!("{CLASSES_DIR}/{}.cls", info.class),
-            content: manager_class(
-                program, &names, &wire, info, op_indices, &streams, &exchanges,
-            ),
+            content: manager_class(program, &names, &wire, info, op_indices, &helpers),
         });
     }
 
@@ -108,14 +111,21 @@ pub(crate) fn manager_infos(
         .collect()
 }
 
+/// The helpers synthesized over the generated methods, each emitted on the
+/// manager that holds its operations.
+struct Helpers {
+    streams: Vec<EventStream>,
+    exchanges: Vec<TokenExchange>,
+    zips: Vec<ZipDownload>,
+}
+
 fn manager_class(
     program: &ir::Program,
     names: &ClassNames,
     wire: &crate::wire::Wire<'_>,
     info: &ManagerInfo,
     op_indices: &[usize],
-    streams: &[EventStream],
-    exchanges: &[TokenExchange],
+    helpers: &Helpers,
 ) -> String {
     let (class, manager) = (info.class.as_str(), info.manager.as_str());
     let mut out = header();
@@ -151,7 +161,11 @@ fn manager_class(
         }
         signatures.push((index, sig));
     }
-    for stream in streams.iter().filter(|s| op_indices.contains(&s.list)) {
+    for stream in helpers
+        .streams
+        .iter()
+        .filter(|s| op_indices.contains(&s.list))
+    {
         assert!(
             !used.contains("stream"),
             "{class}: the manager already has a `stream` method for the event stream"
@@ -164,7 +178,8 @@ fn manager_class(
         out.push('\n');
         render_stream(&mut out, program, names, class, stream, list);
     }
-    for exchange in exchanges
+    for exchange in helpers
+        .exchanges
         .iter()
         .filter(|e| op_indices.contains(&e.operation))
     {
@@ -180,9 +195,77 @@ fn manager_class(
         out.push('\n');
         render_downscope_token(&mut out, program, names, exchange, token);
     }
+    for zip in helpers
+        .zips
+        .iter()
+        .filter(|z| op_indices.contains(&z.create))
+    {
+        assert!(
+            !used.contains("downloadZip"),
+            "{class}: the manager already has a `downloadZip` method for the zip download"
+        );
+        let signature = |op: usize| {
+            signatures
+                .iter()
+                .find(|(i, _)| *i == op)
+                .map(|(_, sig)| sig)
+                .expect("same manager")
+        };
+        out.push('\n');
+        render_download_zip(
+            &mut out,
+            program,
+            names,
+            zip,
+            signature(zip.create),
+            signature(zip.content),
+        );
+    }
 
     let _ = writeln!(out, "}}");
     out
+}
+
+/// `downloadZip`: create the archive with this manager's typed `POST`, then
+/// fetch the `download_url` Box answers with, as returned (`BoxRequest.url`).
+fn render_download_zip(
+    out: &mut String,
+    program: &ir::Program,
+    names: &ClassNames,
+    zip: &ZipDownload,
+    create: &OpSignature,
+    content: &OpSignature,
+) {
+    let request = program.operations[zip.create]
+        .request
+        .as_ref()
+        .expect("synth: a zip download's POST has a body");
+    let body = request_type(program, names, request);
+    let _ = writeln!(
+        out,
+        "    /**\n\
+         \x20    * Pack the items in `body` into one zip archive (`{create}`) and fetch it\n\
+         \x20    * from the download URL Box answers with, through this client (auth,\n\
+         \x20    * retries, As-User). `{content}` fetches the same archive by id. The whole\n\
+         \x20    * archive arrives in one callout, so Apex's heap and callout-size limits\n\
+         \x20    * cap it (about 6 MB synchronous, 12 MB asynchronous).\n\
+         \x20    */\n\
+         \x20   public {ret} downloadZip({body} body) {{\n\
+         \x20       {zip_ty} zip = {create}(body);\n\
+         \x20       if (zip == null || String.isBlank(zip.{url})) {{\n\
+         \x20           throw new BoxApiException('box: the zip download has no download_url');\n\
+         \x20       }}\n\
+         \x20       BoxRequest request = new BoxRequest();\n\
+         \x20       request.method = 'GET';\n\
+         \x20       request.url = zip.{url};\n\
+         \x20       return client.send(request).binaryBody;\n\
+         \x20   }}",
+        ret = content.return_ty,
+        zip_ty = create.return_ty,
+        create = create.method_name,
+        content = content.method_name,
+        url = safe_word(zip.download_url.name.as_str()),
+    );
 }
 
 /// `downscopeToken`: Box's token exchange over this manager's typed token
@@ -822,6 +905,9 @@ fn runtime_stubs() -> Vec<GeneratedFile> {
          \x20   public String method;\n\
          \x20   public String baseUrl;\n\
          \x20   public String path;\n\
+         \x20   // An absolute URL Box handed back (a zip's download_url). When set,\n\
+         \x20   // it replaces baseUrl + path.\n\
+         \x20   public String url;\n\
          \x20   public Map<String, String> query = new Map<String, String>();\n\
          \x20   public Map<String, String> headers = new Map<String, String>();\n\
          \x20   public Object body;\n\

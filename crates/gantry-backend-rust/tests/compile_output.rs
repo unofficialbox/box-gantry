@@ -685,6 +685,90 @@ async fn generated_downscope_token_exchanges_the_session_token() {
     assert_eq!((api.status, api.code.as_deref()), (400, Some("invalid_scope")), "{err}");
 }
 
+/// Answer `POST /zip_downloads` with a `download_url` pointing back at this
+/// server under a path the content method would never build, and serve the
+/// archive there only to the session's bearer token. Each request line is
+/// recorded.
+fn serve_zip(seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let base = url.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).unwrap();
+            let (mut length, mut authorized) = (0, false);
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let Some((name, value)) = line.trim_end().split_once(':') else {
+                    break;
+                };
+                if name.eq_ignore_ascii_case("content-length") {
+                    length = value.trim().parse().unwrap();
+                }
+                if name.eq_ignore_ascii_case("authorization") && value.trim() == "Bearer t" {
+                    authorized = true;
+                }
+            }
+            reader.read_exact(&mut vec![0; length]).unwrap();
+            let target: Vec<&str> = request_line.split_whitespace().take(2).collect();
+            seen.lock().unwrap().push(target.join(" "));
+            let (status, answer) = match target[..] {
+                ["POST", "/zip_downloads"] => (
+                    "202 Accepted",
+                    format!(r#"{{"download_url":"{base}/opaque/archive.zip"}}"#),
+                ),
+                ["GET", "/opaque/archive.zip"] if authorized => {
+                    ("200 OK", "PK\u{3}\u{4}archive".to_string())
+                }
+                _ => ("404 Not Found", box_error(404, "not_found")),
+            };
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
+                answer.len()
+            )
+            .unwrap();
+        }
+    });
+    url
+}
+
+/// `download_zip` creates the zip through the generated `POST`, then streams
+/// the `download_url` Box answers with exactly as returned, with the session's
+/// auth.
+#[tokio::test]
+async fn generated_download_zip_follows_the_download_url() {
+    use box_open_sdk::models::schemas::{
+        EventSourceItemType, ZipDownloadRequest, ZipDownloadRequestItems,
+    };
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let session = runtime::Client::new(Auth::developer_token("t"))
+        .with_base_url("api", &serve_zip(seen.clone()));
+    let client = Client::from_session(session);
+
+    let body = ZipDownloadRequest {
+        items: vec![ZipDownloadRequestItems {
+            r#type: EventSourceItemType("file".into()),
+            id: "1".into(),
+        }],
+        download_file_name: None,
+    };
+    let archive = client
+        .zip_downloads
+        .download_zip(body)
+        .await
+        .expect("the zip downloads");
+    assert_eq!(archive.into_bytes(), b"PK\x03\x04archive");
+    assert_eq!(
+        *seen.lock().unwrap(),
+        ["POST /zip_downloads", "GET /opaque/archive.zip"]
+    );
+}
+
 /// The webhooks guide's verifier, reached through the shipped runtime module:
 /// a delivery signed in Box's own SDK tests verifies, and the same delivery
 /// with an altered body does not.
