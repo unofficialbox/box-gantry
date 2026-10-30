@@ -77,6 +77,32 @@ stage-by-stage overview; the crate layout under `crates/` mirrors it.
 4. Open the PR against `main`. Describe *what* and *why*.
 5. Address review feedback, keep CI green, and a maintainer will merge.
 
+## Releasing
+
+A release regenerates the five SDKs into their `box-open-*-sdk` repos, tags
+them, and publishes to crates.io, npm, Maven Central, and the Apex package. The
+version is `SDK_VERSION` in `crates/gantry-manifest/src/lib.rs`. Maintainers
+ship from a clean checkout with one command:
+
+```sh
+scripts/ship.sh 0.10.0            # add --dry-run to preflight only
+```
+
+It refuses a version that isn't newer than `main`'s, is already tagged, or
+would ship from a `main` whose CI isn't green. Then it runs these steps,
+stopping at the first failure:
+
+1. Bumps `SDK_VERSION` in a PR, waits for its CI, and squash-merges it.
+2. Runs the **Release** workflow as a dry run, which regenerates the SDKs
+   and runs every guard without publishing.
+3. Asks before going live (`--yes` skips the prompt), then runs the live
+   release. Its `verify` job confirms the tag on all five repos and the
+   package on each registry, polling while they propagate.
+
+Published versions can't be replaced on any registry, so the live step is the
+point of no return. To re-check a past release, run the **Verify a fleet
+release** workflow with its version.
+
 ## Code style
 
 Match the surrounding code — its naming, comment density, and idioms. Rust is

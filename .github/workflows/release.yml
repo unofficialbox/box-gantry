@@ -9,6 +9,10 @@
 # as an input: the tag and the stamped package manifests then cannot disagree.
 # Bump the constant, merge it, and run this.
 #
+# `scripts/ship.sh <version>` drives the whole sequence from a checkout: the
+# bump PR, its CI, the merge, this workflow's dry run, then the live run. The
+# `verify` job below then confirms every tag and registry.
+#
 # `scripts/release.sh` carries the guard that matters. If regenerating changes
 # any repo whose version tag already exists, it aborts the whole run before
 # anything is pushed — the 0.1.2 release shipped new content under an
@@ -299,6 +303,19 @@ jobs:
               echo "A registry left out still needs publishing at this version."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Confirms the release landed: the tag on all five repos and the package on
+  # each registry this run published to. Registries lag the publish step, so
+  # verify-release.yml polls within a bound before failing on what is missing.
+  verify:
+    needs: release
+    if: ${{ !cancelled() && needs.release.result == 'success' && inputs.dry_run == false && !inputs.notes_only }}
+    uses: ./.github/workflows/verify-release.yml
+    with:
+      version: ${{ needs.release.outputs.version }}
+      check_crates: ${{ inputs.publish_crates }}
+      check_npm: ${{ inputs.publish_npm }}
+      check_maven: ${{ inputs.publish_maven }}
 
   # Builds the installable unlocked package version against the Dev Hub, from
   # the exact source release just tagged and pushed above. Reusable so the
