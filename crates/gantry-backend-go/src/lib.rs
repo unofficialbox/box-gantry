@@ -544,10 +544,12 @@ debug level. Query values whose names look secret (`token`, `secret`,
 
 ## Retries
 
-A 429, a 5xx, or a failed connection is retried up to five times, with
-exponential backoff and full jitter: the wait before retry *n* is up to
-500ms·2ⁿ, capped at 30s, unless Box sends a `Retry-After`. A 401 refreshes the
-token once. Tune the budget and the backoff:
+A 429 is retried up to five times for any request. A 5xx or a failed
+connection is retried only for idempotent methods (GET, HEAD, PUT, DELETE), since
+a POST may already have taken effect. The wait before retry *n* is up to
+500ms·2ⁿ, capped at 30s, with full jitter, and never shorter than a
+`Retry-After` Box sends (itself capped at 5 minutes). A 401 refreshes the token
+once. Tune the budget and the backoff:
 
 ```go
 c := client.NewClient(ts,

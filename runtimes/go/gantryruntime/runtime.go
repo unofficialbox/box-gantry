@@ -334,7 +334,11 @@ func (c *Client) NewRequest(method string, rawURL string) *Request {
 }
 
 // Fetch executes the request with retries: exponential backoff + jitter,
-// a single 401 token refresh, and Retry-After on 429/503.
+// a single 401 token refresh, and Retry-After as a floor on the wait.
+//
+// Retries follow idempotency: a 429 (rate-limited, never processed) retries
+// for any method, but a 5xx or a failed connection may already have
+// committed a write, so those retry only for idempotent methods.
 func (c *Client) Fetch(ctx context.Context, request *Request) (*Response, error) {
 	token, err := c.AccessToken(ctx)
 	if err != nil {
@@ -350,6 +354,7 @@ func (c *Client) Fetch(ctx context.Context, request *Request) (*Response, error)
 		perRequest.Timeout = request.timeout
 		client = &perRequest
 	}
+	idempotent := isIdempotent(request.method)
 	refreshed := false
 	var lastErr error
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
@@ -384,7 +389,7 @@ func (c *Client) Fetch(ctx context.Context, request *Request) (*Response, error)
 		if err != nil {
 			c.observeResponse(ctx, info, nil, started, err)
 			lastErr = err
-			if attempt == c.maxRetries || !sleep(ctx, c.backoff(attempt)) {
+			if attempt == c.maxRetries || !idempotent || !sleep(ctx, c.backoff(attempt)) {
 				return nil, err
 			}
 			continue
@@ -404,7 +409,7 @@ func (c *Client) Fetch(ctx context.Context, request *Request) (*Response, error)
 			continue
 		}
 		// Backoff on rate-limit / server errors, honoring Retry-After.
-		if retriable(resp.status) && attempt < c.maxRetries {
+		if retriable(resp.status, idempotent) && attempt < c.maxRetries {
 			if sleep(ctx, c.retryAfter(resp, attempt)) {
 				continue
 			}
@@ -459,9 +464,25 @@ func readResponse(httpResp *http.Response) (*Response, error) {
 	return &Response{status: httpResp.StatusCode, header: httpResp.Header, body: body}, nil
 }
 
-func retriable(status int) bool {
-	return status == http.StatusTooManyRequests || status >= 500
+// retriable reports whether a response status warrants a retry for a request
+// of this idempotency.
+func retriable(status int, idempotent bool) bool {
+	return status == http.StatusTooManyRequests || (status >= 500 && idempotent)
 }
+
+// isIdempotent reports whether repeating a request with this method has the
+// same effect as sending it once (RFC 9110 §9.2.2).
+func isIdempotent(method string) bool {
+	switch strings.ToUpper(method) {
+	case http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete, http.MethodOptions, http.MethodTrace:
+		return true
+	}
+	return false
+}
+
+// maxRetryAfter caps a server-sent Retry-After, so a hostile or mistaken one
+// can't stall the client.
+const maxRetryAfter = 300 * time.Second
 
 // backoff is the wait before retrying after the given attempt: full jitter
 // over min(retryBase·2^attempt, retryMax).
@@ -477,13 +498,17 @@ func (c *Client) backoff(attempt int) time.Duration {
 	return time.Duration(rand.Int63n(int64(ceiling) + 1))
 }
 
+// retryAfter is the wait before the next retry: the exponential backoff (so
+// repeated 429s/5xx escalate), raised to a server-sent Retry-After as a floor,
+// that header capped at maxRetryAfter.
 func (c *Client) retryAfter(resp *Response, attempt int) time.Duration {
+	delay := c.backoff(attempt)
 	if v := resp.header.Get("Retry-After"); v != "" {
-		if secs, err := strconv.Atoi(v); err == nil {
-			return time.Duration(secs) * time.Second
+		if secs, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && secs >= 0 {
+			delay = max(delay, min(time.Duration(secs)*time.Second, maxRetryAfter))
 		}
 	}
-	return c.backoff(attempt)
+	return delay
 }
 
 func sleep(ctx context.Context, d time.Duration) bool {
