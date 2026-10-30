@@ -314,6 +314,7 @@ async fn smoke_upload_download_delete(client: &Arc<Client>) {
     // artifact in the account.
     let dl_url = format!("{}/files/{file_id}/content", client.base_url("api"));
     let download = client.fetch(client.new_request("GET", &dl_url)).await;
+    let zip = smoke_zip(client, &file_id, &name).await;
     let etags = smoke_etags(client, &file_id).await;
     let events = smoke_events(client, &file_id).await;
     let downscope = smoke_downscope(client, &file_id).await;
@@ -336,6 +337,8 @@ async fn smoke_upload_download_delete(client: &Arc<Client>) {
     );
     eprintln!("download: content round-tripped");
 
+    let size = zip.unwrap_or_else(|err| panic!("zip: {err}"));
+    eprintln!("zip: downloaded a {size}-byte archive holding {name}");
     etags.unwrap_or_else(|err| panic!("etag: {err}"));
     eprintln!("etag: 304 for the current etag, 412 for a stale If-Match, the current one writes");
     events.unwrap_or_else(|err| panic!("events: {err}"));
@@ -443,6 +446,42 @@ async fn smoke_events(client: &Arc<Client>, file_id: &str) -> Result<(), String>
         .map_err(|err| format!("the rename task: {err}"))?
         .map_err(|err| format!("renaming the file: {err}"))?;
     found
+}
+
+/// Pack the uploaded file into a zip the way the generated `download_zip` does:
+/// create it, then fetch the `download_url` Box answers with, as returned. The
+/// archive must be a zip holding the file under its name. Runs before any step
+/// that renames the file. Returns the archive's size.
+async fn smoke_zip(client: &Client, file_id: &str, name: &str) -> Result<usize, String> {
+    let request = serde_json::to_vec(&serde_json::json!({
+        "items": [{ "type": "file", "id": file_id }],
+        "download_file_name": "box-gantry-smoke",
+    }))
+    .unwrap();
+    let url = format!("{}/zip_downloads", client.base_url("api"));
+    let created = client
+        .fetch(with_json_body(client.new_request("POST", &url), &request))
+        .await
+        .map_err(|err| format!("creating the zip: {err}"))?;
+    let created: serde_json::Value =
+        serde_json::from_slice(&response_bytes(&created).unwrap_or_default())
+            .map_err(|err| format!("decoding the zip: {err}"))?;
+    let download_url = created["download_url"]
+        .as_str()
+        .ok_or_else(|| format!("no download_url in {created}"))?;
+    let archive = client
+        .fetch(client.new_request("GET", download_url))
+        .await
+        .map_err(|err| format!("fetching the archive: {err}"))?;
+    let archive = response_bytes(&archive).map_err(|err| format!("reading the archive: {err}"))?;
+    let holds_name = archive.windows(name.len()).any(|w| w == name.as_bytes());
+    if !archive.starts_with(b"PK\x03\x04") || !holds_name {
+        return Err(format!(
+            "{} bytes, want a zip holding {name}",
+            archive.len()
+        ));
+    }
+    Ok(archive.len())
 }
 
 /// Drive Box's etag flow on the uploaded file, as the generated

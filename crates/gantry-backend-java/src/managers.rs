@@ -22,7 +22,8 @@ use gantry_ir::naming::{append_without_repeating, camel, pascal, snake};
 use gantry_sema::Analysis;
 use gantry_synth::{
     ACCESS_TOKEN_TYPE, EventStream, PageStyle, PagedOperation, PositionShape, TOKEN_EXCHANGE_GRANT,
-    TokenExchange, detect_event_streams, detect_pagination, detect_token_exchanges,
+    TokenExchange, ZipDownload, detect_event_streams, detect_pagination, detect_token_exchanges,
+    detect_zip_downloads,
 };
 
 use crate::models::{
@@ -196,6 +197,7 @@ pub fn generate_managers(analysis: &Analysis<'_>, build: &BuildInfo) -> Vec<Gene
             .collect(),
         streams: detect_event_streams(analysis),
         exchanges: detect_token_exchanges(analysis),
+        zips: detect_zip_downloads(analysis),
     };
     let plans = plan_managers(analysis);
 
@@ -285,6 +287,8 @@ struct ManagerPrinter<'p> {
     streams: Vec<EventStream>,
     /// Token exchanges, so an exchange's manager gains `downscopeToken`.
     exchanges: Vec<TokenExchange>,
+    /// Zip downloads, so a zip's manager gains `downloadZip`.
+    zips: Vec<ZipDownload>,
 }
 
 impl ManagerPrinter<'_> {
@@ -387,6 +391,22 @@ impl ManagerPrinter<'_> {
             out.push_str(&self.downscope_token(exchange, &method));
             out.push('\n');
         }
+        for zip in self.zips.iter().filter(|z| plan.ops.contains(&z.create)) {
+            let method_of = |op: usize| {
+                methods
+                    .iter()
+                    .find(|(i, ..)| *i == op)
+                    .map(|(_, name, ..)| name.clone())
+                    .expect("same manager")
+            };
+            assert!(
+                methods.iter().all(|(_, name, ..)| name != "downloadZip"),
+                "{}: the manager already has a `downloadZip` method for the zip download",
+                plan.class
+            );
+            out.push_str(&self.download_zip(zip, &method_of(zip.create), &method_of(zip.content)));
+            out.push('\n');
+        }
         // Nested options classes, after the methods that reference them.
         for (i, name, _, _) in &methods {
             if let Some(options) = self.options_class(&self.program.operations[*i], name) {
@@ -401,6 +421,43 @@ impl ManagerPrinter<'_> {
 
     /// `downscopeToken`: Box's token exchange over this manager's typed token
     /// method, restricting the session's current access token.
+    /// `downloadZip`: create the archive with this manager's typed `POST`, then
+    /// stream the `download_url` Box answers with, as returned.
+    fn download_zip(&self, zip: &ZipDownload, create: &str, content: &str) -> String {
+        let op = &self.program.operations[zip.create];
+        let request = op
+            .request
+            .as_ref()
+            .expect("synth: a zip download's POST has a body");
+        let body = self.java_type(unwrap_optionality(&request.ty));
+        let ir::ResponseShape::Json(ir::Type::Decl(answer)) = op.response else {
+            unreachable!("synth: a zip download's POST answers a struct");
+        };
+        let ir::DeclKind::Struct(decl) = &self.program.decl(answer).kind else {
+            unreachable!("synth: a zip download's POST answers a struct");
+        };
+        let url = struct_components(decl)
+            .into_iter()
+            .find(|(_, f)| f.wire_name == zip.download_url.wire_name)
+            .map(|(ident, _)| ident)
+            .expect("synth: download_url is the answer's");
+        format!(
+            "    /**\n\
+             \x20    * Pack the items in {{@code body}} into one zip archive ({{@link #{create}}}) and stream\n\
+             \x20    * it from the download URL Box answers with, through this session (auth, retries,\n\
+             \x20    * As-User). {{@link #{content}}} fetches the same archive by id.\n\
+             \x20    */\n\
+             \x20   public dev.unofficialbox.runtime.Runtime.Stream downloadZip({body} body) {{\n\
+             \x20       var _zip = {create}(body);\n\
+             \x20       if (_zip == null || _zip.{url}().isEmpty()) {{\n\
+             \x20           throw new dev.unofficialbox.runtime.Runtime.BoxApiException(\"box: the zip download has no download_url\");\n\
+             \x20       }}\n\
+             \x20       dev.unofficialbox.runtime.Runtime.Request _req = session.newRequest(\"GET\", _zip.{url}().get());\n\
+             \x20       return dev.unofficialbox.runtime.Runtime.responseStream(session.fetch(_req));\n\
+             \x20   }}\n"
+        )
+    }
+
     fn downscope_token(&self, exchange: &TokenExchange, method: &str) -> String {
         let op = &self.program.operations[exchange.operation];
         let ir::ResponseShape::Json(ty) = &op.response else {

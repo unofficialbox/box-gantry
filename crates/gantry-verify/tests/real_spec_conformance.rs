@@ -75,6 +75,12 @@ fn the_generated_go_sdk_is_conformant() {
         1,
         "the authorization manager's downscope method"
     );
+    assert_eq!(by("zip-download").expected, 1);
+    assert_eq!(
+        by("zip-download").actual,
+        1,
+        "the zip_downloads manager's downloadZip method"
+    );
     assert_eq!(by("conditional-reads").expected, 6);
     assert_eq!(
         by("conditional-reads").actual,
@@ -138,6 +144,12 @@ fn the_generated_apex_sdk_is_conformant() {
         by("token-downscoping").actual,
         1,
         "the authorization manager's downscope method"
+    );
+    assert_eq!(by("zip-download").expected, 1);
+    assert_eq!(
+        by("zip-download").actual,
+        1,
+        "the zip_downloads manager's downloadZip method"
     );
     assert_eq!(by("conditional-reads").expected, 6);
     assert_eq!(
@@ -213,6 +225,12 @@ fn the_generated_typescript_sdk_is_conformant() {
         by("token-downscoping").actual,
         1,
         "the authorization manager's downscope method"
+    );
+    assert_eq!(by("zip-download").expected, 1);
+    assert_eq!(
+        by("zip-download").actual,
+        1,
+        "the zip_downloads manager's downloadZip method"
     );
     assert_eq!(by("conditional-reads").expected, 6);
     assert_eq!(
