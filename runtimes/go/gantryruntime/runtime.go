@@ -116,6 +116,18 @@ func WithDefaultHeader(name, value string) Option {
 	return func(c *Client) { c.defaultHeaders.Set(name, value) }
 }
 
+// WithAsUserHeader returns a new Client that sends As-User: userID with every
+// API request, so Box acts as that user (an admin or a service account whose
+// app may "make API calls using the as-user header"). It shares this client's
+// token source, HTTP client, base URLs, and retry policy; this client is
+// unchanged. Token requests never carry the header.
+func (c *Client) WithAsUserHeader(userID string) *Client {
+	derived := *c
+	derived.defaultHeaders = c.defaultHeaders.Clone()
+	derived.defaultHeaders.Set("As-User", userID)
+	return &derived
+}
+
 // New builds a runtime Client for a token source and options.
 func New(ts TokenSource, opts ...Option) *Client {
 	c := &Client{

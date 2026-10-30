@@ -148,7 +148,7 @@ fn generation_is_deterministic() {
     assert!(
         client
             .content
-            .contains("const session = new Session(auth, options);")
+            .contains("auth instanceof Session ? auth : new Session(auth, options);")
     );
     // Every manager method is `async` and reaches the network only via the
     // `this.session.fetch(...)` contract surface (FR-5.2).
@@ -728,6 +728,10 @@ const server = http.createServer((req, res) => {
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end('{"id":"1","type":"file","etag":"etag-2"}');
+  } else if (req.method === 'GET' && req.url === '/users/me') {
+    // Answers as the As-User user, or as "me" without one.
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ id: req.headers['as-user'] ?? 'me', type: 'user' }));
   } else {
     boxError(res, 404, 'not_found');
   }
@@ -797,6 +801,13 @@ try {
 
   // A missing item: 404 not_found, also from a method with no response body.
   await expectApiError('delete missing', c.files.delete_('2'), 404, 'not_found');
+
+  // withAsUserHeader: the derived client's calls carry As-User (the server
+  // answers /users/me as that user); the original client's carry none.
+  const asUser = await c.withAsUserHeader('12345').users.getMe();
+  if (asUser.id !== '12345') throw new Error(`getMe as the user: id ${asUser.id}`);
+  const me = await c.users.getMe();
+  if (me.id !== 'me') throw new Error(`getMe: id ${me.id}`);
 } finally {
   server.closeAllConnections();
   server.close();

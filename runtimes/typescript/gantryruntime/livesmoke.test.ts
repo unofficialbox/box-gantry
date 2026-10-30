@@ -26,6 +26,7 @@ import {
   developerToken,
   oauth,
   Request as BoxRequest,
+  type Response as BoxResponse,
   responseBytes,
   statusCode,
   Stream,
@@ -152,8 +153,65 @@ test('VR-7 live smoke: per-flow auth + paginate + upload/download/delete', async
   }
   await smokePaginate(primary);
   await smokeUploadDownloadDelete(primary);
+  await smokeAsUser(primary);
   assert.deepEqual(failed, [], `auth flow(s) failed: ${failed.join(', ')}`);
 });
+
+/// Act as a managed user through `withAsUserHeader`: `/users/me` must answer
+/// as that user. It needs an admin token from an app allowed to "make API
+/// calls using the as-user header" and a managed user to act as; without them
+/// Box answers 403 or lists no one, and the check is skipped with a notice
+/// rather than failed (the account's setup, not the runtime, is missing).
+async function smokeAsUser(client: Client): Promise<void> {
+  const me = await getJson(client, `${client.baseUrl('api')}/users/me`);
+  const listing = withQuery(
+    withQuery(client.newRequest('GET', `${client.baseUrl('api')}/users`), 'user_type', 'managed'),
+    'limit',
+    '100',
+  );
+  const users = await asUserCall('listing managed users', () => client.fetch(listing));
+  if (users === undefined) {
+    return;
+  }
+  const entries = JSON.parse(new TextDecoder().decode(responseBytes(users))).entries ?? [];
+  const target = entries.find(
+    (user: { id: string; status: string }) => user.status === 'active' && user.id !== me.id,
+  )?.id;
+  if (typeof target !== 'string') {
+    console.error('as-user: SKIPPED, no other active managed user to act as');
+    return;
+  }
+
+  const asUser = client.withAsUserHeader(target);
+  const acted = await asUserCall(`acting as user ${target}`, () =>
+    asUser.fetch(asUser.newRequest('GET', `${asUser.baseUrl('api')}/users/me`)),
+  );
+  if (acted === undefined) {
+    return;
+  }
+  const actedId = JSON.parse(new TextDecoder().decode(responseBytes(acted))).id;
+  assert.equal(actedId, target, `as-user: /users/me answered user ${actedId}`);
+  console.error(`as-user: acted as user ${target}`);
+}
+
+/// Run an as-user call; Box's 403 (the app or token may not act as users) is
+/// logged as a skip and yields `undefined`, any other failure throws.
+async function asUserCall(
+  what: string,
+  call: () => Promise<BoxResponse>,
+): Promise<BoxResponse | undefined> {
+  try {
+    return await call();
+  } catch (err) {
+    if (err instanceof BoxApiError && err.status === 403) {
+      console.error(
+        `as-user: SKIPPED, ${what} got ${err.message} (enable "Make API calls using the as-user header" and use an admin token)`,
+      );
+      return undefined;
+    }
+    throw err;
+  }
+}
 
 /// Walk the root folder's items, following the marker cursor across pages just
 /// like the generated paginators do.

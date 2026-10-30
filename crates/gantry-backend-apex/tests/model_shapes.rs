@@ -1210,7 +1210,9 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     // flow through the generated `BoxFiles`) makes 15 runtime classes:
     // 1120 + 90 + 1 + 5 = 1216 total. `BoxWebhookVerifier` and its test,
     // and the polled event stream and its test (`BoxEventStream`,
-    // `BoxEventStreamTest`), make 19: 1124 + 90 + 1 + 5 = 1220.
+    // `BoxEventStreamTest`), make 19: 1124 + 90 + 1 + 5 = 1220. The As-User
+    // decorator and its test (`BoxAsUserClient`, `BoxAsUserClientTest`) make
+    // 21: 1126 + 90 + 1 + 5 = 1222.
     let classes: Vec<&str> = files
         .iter()
         .filter(|f| f.path.ends_with(".cls"))
@@ -1218,7 +1220,7 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         .collect();
     assert_eq!(
         classes.len(),
-        1124 + 90 + 1 + 5,
+        1126 + 90 + 1 + 5,
         "models + managers + client + stubs + runtime + @isTest suite + BoxBuildInfo + wire-hook suite"
     );
     // The generated test suite ships with the deployable tree.
@@ -1313,9 +1315,9 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         "endpoint + manager + top-index + guide docs"
     );
     // 7 base scaffolding (sfdx-project, scratch-def, .forceignore, package.xml,
-    // README, LICENSE, assets/banner.svg) + 4 Remote Site Settings + 1220
-    // classes + 1220 metas + 474 docs.
-    assert_eq!(files.len(), 7 + 4 + (1124 + 90 + 1 + 5) * 2 + 474);
+    // README, LICENSE, assets/banner.svg) + 4 Remote Site Settings + 1222
+    // classes + 1222 metas + 474 docs.
+    assert_eq!(files.len(), 7 + 4 + (1126 + 90 + 1 + 5) * 2 + 474);
 
     // Deterministic and path-sorted.
     let sorted: Vec<&String> = {

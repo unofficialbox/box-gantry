@@ -89,13 +89,22 @@ fn client_file(analysis: &Analysis<'_>) -> GeneratedFile {
     }
     // NewClient builds every manager against one shared session, so
     // With* options (auth, base URLs, retry) apply everywhere (G-3).
+    let _ = writeln!(body, "\t{:<width$} *gantryruntime.Client", "session");
     body.push_str(
         "}\n\n\
          // NewClient wires every manager to a runtime session built from the\n\
          // token source and options.\n\
          func NewClient(ts gantryruntime.TokenSource, opts ...gantryruntime.Option) *Client {\n\
-         \tsession := gantryruntime.New(ts, opts...)\n\
-         \tc := &Client{}\n",
+         \treturn newClient(gantryruntime.New(ts, opts...))\n\
+         }\n\n\
+         // WithAsUserHeader returns a new Client whose every API call acts as the\n\
+         // user userID (Box's As-User header). It shares this client's auth and\n\
+         // configuration; this client is unchanged.\n\
+         func (c *Client) WithAsUserHeader(userID string) *Client {\n\
+         \treturn newClient(c.session.WithAsUserHeader(userID))\n\
+         }\n\n\
+         func newClient(session *gantryruntime.Client) *Client {\n\
+         \tc := &Client{session: session}\n",
     );
     for name in &names {
         let _ = writeln!(body, "\tc.{name} = managers.New{name}Manager(session)");

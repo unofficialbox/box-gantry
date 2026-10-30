@@ -181,6 +181,7 @@ fn param_type(ty: ContractType) -> &'static str {
         ContractType::Request => "Request",
         ContractType::Response => "&Response",
         ContractType::Stream => "Stream",
+        ContractType::Session => "&Client",
     }
 }
 
@@ -196,5 +197,6 @@ fn owned_type(ty: ContractType) -> String {
         ContractType::Request => "Request".to_string(),
         ContractType::Response => "Response".to_string(),
         ContractType::Stream => "Stream".to_string(),
+        ContractType::Session => "Client".to_string(),
     }
 }

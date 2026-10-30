@@ -90,6 +90,7 @@ pub struct TargetShape {
     pub count_traceability: fn(&[GeneratedView]) -> usize,
     pub count_guides: fn(&[GeneratedView]) -> usize,
     pub count_webhook_verification: fn(&[GeneratedView]) -> usize,
+    pub count_as_user: fn(&[GeneratedView]) -> usize,
     pub exclusions: &'static [Exclusion],
 }
 
@@ -251,6 +252,13 @@ pub fn conformance(
             (shape.count_webhook_verification)(files),
             "Box v2 webhook signature verification in the runtime",
         ),
+        capability(
+            shape,
+            "as-user",
+            1,
+            (shape.count_as_user)(files),
+            "a client that acts as another user (Box's As-User header)",
+        ),
     ];
 
     ConformanceReport {
@@ -324,6 +332,7 @@ pub fn go_shape() -> TargetShape {
         count_traceability: go_traceability,
         count_guides: go_guides,
         count_webhook_verification: go_webhook_verification,
+        count_as_user: go_as_user,
         exclusions: &[],
     }
 }
@@ -429,6 +438,14 @@ fn go_webhook_verification(files: &[GeneratedView]) -> usize {
     )
 }
 
+fn go_as_user(files: &[GeneratedView]) -> usize {
+    runtime_defines(
+        files,
+        "client/client.go",
+        "func (c *Client) WithAsUserHeader(userID string) *Client",
+    )
+}
+
 fn go_guides(files: &[GeneratedView]) -> usize {
     GUIDES
         .iter()
@@ -457,6 +474,7 @@ pub fn apex_shape() -> TargetShape {
         count_traceability: apex_traceability,
         count_guides: apex_guides,
         count_webhook_verification: apex_webhook_verification,
+        count_as_user: apex_as_user,
         exclusions: APEX_EXCLUSIONS,
     }
 }
@@ -613,6 +631,14 @@ fn apex_webhook_verification(files: &[GeneratedView]) -> usize {
     )
 }
 
+fn apex_as_user(files: &[GeneratedView]) -> usize {
+    runtime_defines(
+        files,
+        "force-app/main/default/classes/Box.cls",
+        "public Box withAsUserHeader(String userId)",
+    )
+}
+
 fn apex_guides(files: &[GeneratedView]) -> usize {
     GUIDES
         .iter()
@@ -647,6 +673,7 @@ pub fn rust_shape() -> TargetShape {
         count_traceability: rust_traceability,
         count_guides: rust_guides,
         count_webhook_verification: rust_webhook_verification,
+        count_as_user: rust_as_user,
         exclusions: &[],
     }
 }
@@ -773,6 +800,14 @@ fn rust_webhook_verification(files: &[GeneratedView]) -> usize {
     )
 }
 
+fn rust_as_user(files: &[GeneratedView]) -> usize {
+    runtime_defines(
+        files,
+        "src/client.rs",
+        "pub fn with_as_user_header(&self, user_id: &str) -> Self",
+    )
+}
+
 fn rust_guides(files: &[GeneratedView]) -> usize {
     GUIDES
         .iter()
@@ -810,6 +845,7 @@ pub fn typescript_shape() -> TargetShape {
         count_traceability: ts_traceability,
         count_guides: ts_guides,
         count_webhook_verification: ts_webhook_verification,
+        count_as_user: ts_as_user,
         exclusions: TYPESCRIPT_EXCLUSIONS,
     }
 }
@@ -940,6 +976,14 @@ fn ts_webhook_verification(files: &[GeneratedView]) -> usize {
     )
 }
 
+fn ts_as_user(files: &[GeneratedView]) -> usize {
+    runtime_defines(
+        files,
+        "src/client.ts",
+        "withAsUserHeader(userId: string): Client",
+    )
+}
+
 fn ts_guides(files: &[GeneratedView]) -> usize {
     GUIDES
         .iter()
@@ -960,8 +1004,8 @@ const GUIDES: [&str; 5] = [
     "docs/webhooks.md",
 ];
 
-/// Whether the vendored runtime file at `path` defines the webhook verifier
-/// named by `marker`.
+/// Whether the generated or vendored runtime file at `path` defines the
+/// capability named by `marker`.
 fn runtime_defines(files: &[GeneratedView], path: &str, marker: &str) -> usize {
     usize::from(
         files
@@ -1038,6 +1082,10 @@ mod tests {
             (
                 "gantryruntime/webhooks.go".into(),
                 "type WebhookVerifier struct{}\n".into(),
+            ),
+            (
+                "client/client.go".into(),
+                "func (c *Client) WithAsUserHeader(userID string) *Client {}\n".into(),
             ),
             (
                 "buildinfo/buildinfo.go".into(),
@@ -1210,6 +1258,10 @@ mod tests {
             (
                 "src/runtime/webhooks.rs".to_string(),
                 "pub struct WebhookVerifier {}\n".to_string(),
+            ),
+            (
+                "src/client.rs".to_string(),
+                "pub fn with_as_user_header(&self, user_id: &str) -> Self {}\n".to_string(),
             ),
             (
                 "src/serialization_tests.rs".to_string(),

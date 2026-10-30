@@ -733,6 +733,59 @@ void expectStatus(String what, int status, Runnable call) {
     throw new IllegalStateException("etag: " + what + ": succeeded, want " + status);
 }
 
+// Act as a managed user through `withAsUserHeader`: `/users/me` must answer as
+// that user. It needs an admin token from an app allowed to "make API calls
+// using the as-user header" and a managed user to act as; without them Box
+// answers 403 or lists no one, and the check is skipped with a notice rather
+// than failed (the account's setup, not the runtime, is missing).
+void asUser(Runtime.Session session) {
+    Object meId = field(getJson(session, session.baseUrl("api") + "/users/me"), "id");
+    Object users;
+    try {
+        users = getJson(session, session.baseUrl("api") + "/users?user_type=managed&limit=100");
+    } catch (Runtime.BoxApiException err) {
+        skipAsUser("listing managed users", err);
+        return;
+    }
+    String target = null;
+    if (field(users, "entries") instanceof java.util.List<?> entries) {
+        for (Object user : entries) {
+            if ("active".equals(field(user, "status")) && field(user, "id") instanceof String id
+                    && !id.equals(meId)) {
+                target = id;
+                break;
+            }
+        }
+    }
+    if (target == null) {
+        System.out.println("as-user: SKIPPED, no other active managed user to act as");
+        return;
+    }
+    Runtime.Session acting = session.withAsUserHeader(target);
+    Object acted;
+    try {
+        acted = getJson(acting, acting.baseUrl("api") + "/users/me");
+    } catch (Runtime.BoxApiException err) {
+        skipAsUser("acting as user " + target, err);
+        return;
+    }
+    if (!target.equals(field(acted, "id"))) {
+        throw new IllegalStateException("as-user: /users/me answered user " + field(acted, "id")
+            + ", want " + target);
+    }
+    System.out.println("as-user: acted as user " + target);
+}
+
+// Box's 403 means the app or token may not act as users: log a skip. Any other
+// failure fails the smoke.
+void skipAsUser(String what, Runtime.BoxApiException err) {
+    if (err.statusCode() != 403) {
+        throw err;
+    }
+    System.out.println("as-user: SKIPPED, " + what + " got " + err.getMessage()
+        + " (enable \"Make API calls using the as-user header\" and use an admin token)");
+}
+
 Object getJson(Runtime.Session session, String url) {
     return parseJson(fetchOk(session, session.newRequest("GET", url)));
 }
@@ -879,6 +932,7 @@ void main() throws Exception {
     }
     paginate(primary);
     uploadDownloadDelete(primary);
+    asUser(primary);
     if (!failed.isEmpty()) {
         System.out.println("LIVESMOKE_FAIL " + failed);
         System.exit(1);

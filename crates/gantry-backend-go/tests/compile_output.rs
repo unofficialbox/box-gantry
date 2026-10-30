@@ -541,6 +541,31 @@ func TestGeneratedMethodsSurfaceConsistencyOutcomesAsAPIErrors(t *testing.T) {
 	wantAPIError(t, "Delete", c.Files.Delete(ctx, "2", nil), http.StatusNotFound, "not_found")
 }
 
+// WithAsUserHeader: the derived client's calls carry As-User (the server
+// answers /users/me as that user); the original client's carry none.
+func TestWithAsUserHeaderActsAsTheUser(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := r.Header.Get("As-User")
+		if id == "" {
+			id = "me"
+		}
+		io.WriteString(w, `{"id":"`+id+`","type":"user"}`)
+	}))
+	defer server.Close()
+	c := client.NewClient(auth.DeveloperToken("t"), gantryruntime.WithBaseURL("api", server.URL))
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		client *client.Client
+		want   string
+	}{{c.WithAsUserHeader("12345"), "12345"}, {c, "me"}} {
+		user, err := tc.client.Users.GetMe(ctx, nil)
+		if err != nil || user.Id != tc.want {
+			t.Fatalf("GetMe: user=%+v err=%v, want id %q", user, err, tc.want)
+		}
+	}
+}
+
 func wantAPIError(t *testing.T, what string, err error, status int, code string) {
 	t.Helper()
 	var apiErr *gantryruntime.APIError

@@ -190,6 +190,7 @@ fn java_type(ty: ContractType) -> String {
         ContractType::Request => "Request".to_string(),
         ContractType::Response => "Response".to_string(),
         ContractType::Stream => "Stream".to_string(),
+        ContractType::Session => "Session".to_string(),
     }
 }
 
