@@ -100,6 +100,23 @@ export class Client {
     this.defaultHeaders = { ...(options.headers ?? {}) };
   }
 
+  /** A new client that sends `As-User: userId` with every API request, so Box
+   * acts as that user (an admin, or a service account whose app may "make API
+   * calls using the as-user header"). It shares this client's auth flow and
+   * token cache, `fetch`, base URLs, and retry policy; this client is
+   * unchanged. Token requests never carry the header. */
+  withAsUserHeader(userId: string): Client {
+    const headers = Object.fromEntries(
+      Object.entries(this.defaultHeaders).filter(([name]) => name.toLowerCase() !== 'as-user'),
+    );
+    return new Client(this.auth, {
+      maxRetries: this.maxRetries,
+      baseUrls: this.baseUrls,
+      fetch: this.fetchImpl,
+      headers: { ...headers, 'As-User': userId },
+    });
+  }
+
   /** The configured base URL for a D-106 class, without a trailing slash. */
   baseUrl(name: string): string {
     return this.baseUrls[name] ?? '';

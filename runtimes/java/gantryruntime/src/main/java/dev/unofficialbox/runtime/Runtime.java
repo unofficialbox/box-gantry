@@ -386,6 +386,34 @@ public final class Runtime {
             this.defaultHeaders = Map.copyOf(builder.defaultHeaders);
         }
 
+        private Session(Session base, Map<String, String> defaultHeaders) {
+            this.auth = base.auth;
+            this.http = base.http;
+            this.maxRetries = base.maxRetries;
+            this.baseUrls = base.baseUrls;
+            this.baseUrlOverrides = base.baseUrlOverrides;
+            this.defaultHeaders = Map.copyOf(defaultHeaders);
+        }
+
+        /**
+         * A new session that sends {@code As-User: userId} with every API
+         * request, so Box acts as that user (an admin, or a service account
+         * whose app may "make API calls using the as-user header"). It shares
+         * this session's auth flow and token cache, HTTP client, base URLs,
+         * and retry policy; this session is unchanged. Token requests never
+         * carry the header.
+         */
+        public Session withAsUserHeader(String userId) {
+            Map<String, String> headers = new LinkedHashMap<>();
+            defaultHeaders.forEach((name, value) -> {
+                if (!name.equalsIgnoreCase("As-User")) {
+                    headers.put(name, value);
+                }
+            });
+            headers.put("As-User", userId);
+            return new Session(this, headers);
+        }
+
         /**
          * Start a configurable {@link Session} build: an injected {@link
          * HttpClient}, a retry policy (0 disables retries), and per-session

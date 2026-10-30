@@ -773,6 +773,15 @@ fn client_class(fields: &[(String, String)]) -> String {
          * manager, e.g. `new Box(client).files.getById(...)`.\n */"
     );
     let _ = writeln!(out, "public with sharing class Box {{");
+    // The private client field backs `withAsUserHeader`; Apex names ignore
+    // case, so a manager field spelled `client` in any case would clash.
+    assert!(
+        fields
+            .iter()
+            .all(|(field, _)| !field.eq_ignore_ascii_case("client")),
+        "a manager field named `client` collides with Box's runtime client"
+    );
+    let _ = writeln!(out, "    private final BoxClient client;");
     for (field, class) in fields {
         let _ = writeln!(out, "    /** The `{field}` resource manager. */");
         let _ = writeln!(out, "    public final {class} {field};");
@@ -782,9 +791,22 @@ fn client_class(fields: &[(String, String)]) -> String {
         "    /** Wire every manager to one shared runtime client. */"
     );
     let _ = writeln!(out, "    public Box(BoxClient client) {{");
+    let _ = writeln!(out, "        this.client = client;");
     for (field, class) in fields {
         let _ = writeln!(out, "        this.{field} = new {class}(client);");
     }
+    let _ = writeln!(out, "    }}");
+    let _ = writeln!(
+        out,
+        "    /** A new `Box` whose every call acts as the user `userId` (Box's\n     \
+         * `As-User` header). It shares this client's auth and configuration;\n     \
+         * this `Box` is unchanged. */"
+    );
+    let _ = writeln!(out, "    public Box withAsUserHeader(String userId) {{");
+    let _ = writeln!(
+        out,
+        "        return new Box(new BoxAsUserClient(this.client, userId));"
+    );
     let _ = writeln!(out, "    }}");
     let _ = writeln!(out, "}}");
     out

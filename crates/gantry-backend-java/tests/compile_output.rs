@@ -726,6 +726,11 @@ public final class Consistency {
                 } else {
                     respond(ex, 412, boxError(412, "precondition_failed"));
                 }
+            } else if (method.equals("GET") && path.equals("/users/me")) {
+                // Answers as the As-User user, or as "me" without one.
+                String asUser = ex.getRequestHeaders().getFirst("As-User");
+                respond(ex, 200, "{\"id\":\"" + (asUser == null ? "me" : asUser)
+                    + "\",\"type\":\"user\"}");
             } else {
                 respond(ex, 404, boxError(404, "not_found"));
             }
@@ -793,6 +798,13 @@ public final class Consistency {
 
             // A missing item: 404 not_found, also from a method with no response body.
             expectApiError("delete missing", () -> c.files.delete("2", null), 404, "not_found");
+
+            // withAsUserHeader: the derived client's calls carry As-User (the
+            // server answers /users/me as that user); the original's carry none.
+            String asUser = c.withAsUserHeader("12345").users.getMe(null).id();
+            check("12345".equals(asUser), "getMe as the user: id " + asUser);
+            String me = c.users.getMe(null).id();
+            check("me".equals(me), "getMe: id " + me);
         } finally {
             server.stop(0);
         }

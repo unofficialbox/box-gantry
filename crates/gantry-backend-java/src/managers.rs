@@ -233,6 +233,13 @@ fn client_file(plans: &[ManagerPlan], build: &BuildInfo) -> String {
             plan.field, plan.class, plan.field
         );
     }
+    // The private session field backs `withAsUserHeader`; a manager field of
+    // the same name would clash with it, so refuse loudly rather than rename.
+    assert!(
+        plans.iter().all(|plan| plan.field != "session"),
+        "a manager field named `session` collides with Client's runtime session"
+    );
+    let _ = writeln!(out, "    private final {SESSION} session;");
     out.push('\n');
     out.push_str("    /** Build a client for an authentication flow. */\n");
     let _ = writeln!(out, "    public Client({AUTH} auth) {{");
@@ -244,6 +251,7 @@ fn client_file(plans: &[ManagerPlan], build: &BuildInfo) -> String {
          * ({@code Session.builder(auth)}). */\n",
     );
     let _ = writeln!(out, "    public Client({SESSION} session) {{");
+    out.push_str("        this.session = session;\n");
     for plan in plans {
         let _ = writeln!(
             out,
@@ -251,6 +259,14 @@ fn client_file(plans: &[ManagerPlan], build: &BuildInfo) -> String {
             plan.field, plan.class
         );
     }
+    out.push_str("    }\n\n");
+    out.push_str(
+        "    /** A new client whose every API call acts as the user {@code userId}\n     \
+         * (Box's {@code As-User} header). It shares this client's auth and\n     \
+         * configuration; this client is unchanged. */\n",
+    );
+    out.push_str("    public Client withAsUserHeader(String userId) {\n");
+    out.push_str("        return new Client(session.withAsUserHeader(userId));\n");
     out.push_str("    }\n}\n");
     out
 }

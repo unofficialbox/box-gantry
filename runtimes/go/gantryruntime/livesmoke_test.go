@@ -187,6 +187,71 @@ func TestLiveSmoke(t *testing.T) {
 	// The remaining flows exercise one shared client end to end.
 	smokePaginate(ctx, t, primary)
 	smokeUploadDownloadDelete(ctx, t, primary)
+	smokeAsUser(ctx, t, primary)
+}
+
+// smokeAsUser acts as a managed user through WithAsUserHeader: /users/me must
+// answer as that user. It needs an admin token from an app allowed to "make
+// API calls using the as-user header" and a managed user to act as; without
+// them Box answers 403 or lists no one, and the check is skipped with a notice
+// rather than failed (the account's setup, not the runtime, is missing).
+func smokeAsUser(ctx context.Context, t *testing.T, client *gantryruntime.Client) {
+	me := getJSON(ctx, t, client, client.BaseUrl("api")+"/users/me")
+	listing := gantryruntime.WithQuery(client.NewRequest("GET", client.BaseUrl("api")+"/users"), "user_type", "managed")
+	resp, err := client.Fetch(ctx, gantryruntime.WithQuery(listing, "limit", "100"))
+	if skipAsUser(t, "listing managed users", err) {
+		return
+	}
+	body, _ := gantryruntime.ResponseBytes(resp)
+	var users struct {
+		Entries []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(body, &users); err != nil {
+		t.Fatalf("as-user: decoding users: %v", err)
+	}
+	target := ""
+	for _, user := range users.Entries {
+		if user.Status == "active" && user.ID != fmt.Sprint(me["id"]) {
+			target = user.ID
+			break
+		}
+	}
+	if target == "" {
+		t.Logf("as-user: SKIPPED, no other active managed user to act as")
+		return
+	}
+
+	asUser := client.WithAsUserHeader(target)
+	resp, err = asUser.Fetch(ctx, asUser.NewRequest("GET", asUser.BaseUrl("api")+"/users/me"))
+	if skipAsUser(t, "acting as user "+target, err) {
+		return
+	}
+	body, _ = gantryruntime.ResponseBytes(resp)
+	var acted struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &acted); err != nil || acted.ID != target {
+		t.Fatalf("as-user: /users/me answered %s, want user %s", body, target)
+	}
+	t.Logf("as-user: acted as user %s", target)
+}
+
+// skipAsUser fails the smoke on any error but Box's 403 (the app or token may
+// not act as users), which it logs as a skip; it reports whether to stop.
+func skipAsUser(t *testing.T, what string, err error) bool {
+	t.Helper()
+	var apiErr *gantryruntime.APIError
+	if errors.As(err, &apiErr) && apiErr.Status == 403 {
+		t.Logf("as-user: SKIPPED, %s got 403 %s (enable \"Make API calls using the as-user header\" and use an admin token)", what, apiErr.Code)
+		return true
+	}
+	if err != nil {
+		t.Fatalf("as-user: %s: %v", what, err)
+	}
+	return false
 }
 
 // smokePaginate walks the root folder's items, following the marker cursor

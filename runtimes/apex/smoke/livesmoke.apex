@@ -145,6 +145,34 @@ List<Object> polled = events.poll();
 System.assertNotEquals('now', events.position, 'the poll took the position Box returned');
 System.debug(LoggingLevel.ERROR, 'SMOKE events polled=' + polled.size() + ' position=' + events.position);
 
+// 6) Acting as a managed user through Box.withAsUserHeader: /users/me must
+//    answer as that user. It needs an app allowed to "make API calls using the
+//    as-user header" and a managed user; without them Box answers 403 or lists
+//    no one, and the step logs SKIPPED instead of failing.
+try {
+    Users managed = client.users.list_r(null, 'managed', null, null, null, 100, null, null);
+    String target;
+    for (UserFull candidate : managed.entries == null ? new List<UserFull>() : managed.entries) {
+        if (candidate.status == 'active' && candidate.id != me.id) {
+            target = candidate.id;
+            break;
+        }
+    }
+    if (target == null) {
+        System.debug(LoggingLevel.ERROR, 'SMOKE as-user SKIPPED no other active managed user');
+    } else {
+        Box acting = client.withAsUserHeader(target);
+        UserFull actedAs = acting.users.getMe(null);
+        System.assertEquals(target, actedAs.id, 'getMe as the user answers as that user');
+        System.debug(LoggingLevel.ERROR, 'SMOKE as-user acted as ' + target);
+    }
+} catch (BoxApiException e) {
+    if (e.statusCode != 403) {
+        throw e;
+    }
+    System.debug(LoggingLevel.ERROR, 'SMOKE as-user SKIPPED 403 ' + e.code);
+}
+
 // The sentinel the workflow greps for — reached only if every call above
 // succeeded and no assertion or callout threw.
 System.debug(LoggingLevel.ERROR, 'SMOKE OK');

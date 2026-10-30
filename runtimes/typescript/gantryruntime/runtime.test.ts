@@ -81,6 +81,26 @@ test('a client default header is sent, and a per-request header overrides it', a
   assert.deepEqual(seen, ['default', 'override']);
 });
 
+test('withAsUserHeader derives a client acting as the user, leaving the original as it was', async () => {
+  const seen: string[] = [];
+  await withServer(
+    (req, res) => {
+      seen.push(`${req.headers['as-user'] ?? ''}|${req.headers['x-trace-id'] ?? ''}`);
+      res.end();
+    },
+    async (url) => {
+      const client = new Client(developerToken('t'), { headers: { 'X-Trace-Id': 'trace' } });
+      const user = client.withAsUserHeader('12345');
+      await user.fetch(user.newRequest('GET', url));
+      await client.fetch(client.newRequest('GET', url));
+      // Deriving again replaces the user rather than sending two.
+      const other = user.withAsUserHeader('678');
+      await other.fetch(other.newRequest('GET', url));
+    },
+  );
+  assert.deepEqual(seen, ['12345|trace', '|trace', '678|trace']);
+});
+
 test('a 401 with no retries left surfaces as a BoxApiError', async () => {
   await withServer(
     (req, res) => {

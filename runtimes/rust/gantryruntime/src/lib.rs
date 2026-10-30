@@ -219,7 +219,9 @@ fn api_http_client(version: HttpVersion) -> reqwest::Client {
 /// The runtime session: it holds the auth flow, HTTP client, base-URL
 /// configuration, and retry policy shared by every manager.
 pub struct Client {
-    auth: Auth,
+    // Shared, so a derived session (see `with_as_user_header`) reuses the
+    // token cache instead of acquiring its own token.
+    auth: std::sync::Arc<Auth>,
     http: reqwest::Client,
     base_urls: HashMap<String, String>,
     max_retries: u32,
@@ -231,7 +233,7 @@ impl Client {
     /// Box base URLs, a 60s HTTP timeout, and five retries.
     pub fn new(auth: Auth) -> Client {
         Client {
-            auth,
+            auth: std::sync::Arc::new(auth),
             http: api_http_client(HttpVersion::Http2),
             max_retries: 5,
             base_urls: default_base_urls(),
@@ -273,6 +275,22 @@ impl Client {
         self.default_headers
             .push((name.to_string(), value.to_string()));
         self
+    }
+
+    /// A new session that sends `As-User: user_id` with every API request, so
+    /// Box acts as that user (an admin, or a service account whose app may
+    /// "make API calls using the as-user header"). It shares this session's
+    /// auth flow and token cache, HTTP client, base URLs, and retry policy;
+    /// this session is unchanged. Token requests never carry the header.
+    pub fn with_as_user_header(&self, user_id: &str) -> Client {
+        Client {
+            auth: self.auth.clone(),
+            http: self.http.clone(),
+            base_urls: self.base_urls.clone(),
+            max_retries: self.max_retries,
+            default_headers: self.default_headers.clone(),
+        }
+        .with_header("As-User", user_id)
     }
 
     /// Override one base-URL class for custom deployments (fluent).
@@ -1124,5 +1142,23 @@ mod tests {
         let sent = rx.await.unwrap();
         assert!(sent.to_lowercase().contains("x-trace-id: override"));
         assert!(!sent.to_lowercase().contains("x-trace-id: default"));
+    }
+
+    #[tokio::test]
+    async fn as_user_header_rides_a_derived_session_only() {
+        let client = Client::new(Auth::developer_token("t")).with_header("X-Trace-Id", "trace");
+        let user = client.with_as_user_header("12345");
+
+        let (url, rx) = capture_request().await;
+        user.fetch(user.new_request("GET", &url)).await.unwrap();
+        let sent = rx.await.unwrap().to_lowercase();
+        assert!(sent.contains("as-user: 12345"), "{sent}");
+        assert!(sent.contains("x-trace-id: trace"), "{sent}");
+
+        let (url, rx) = capture_request().await;
+        client.fetch(client.new_request("GET", &url)).await.unwrap();
+        let sent = rx.await.unwrap().to_lowercase();
+        assert!(!sent.contains("as-user"), "{sent}");
+        assert!(sent.contains("x-trace-id: trace"), "{sent}");
     }
 }

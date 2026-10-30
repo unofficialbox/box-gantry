@@ -231,13 +231,19 @@ fn client_file(named: &[(&String, &Vec<usize>, ManagerName)]) -> String {
             class = name.class,
         );
     }
+    // An ES private field, so no manager name can collide with it.
+    out.push_str("  readonly #session: Session;\n");
     out.push('\n');
     out.push_str(
         "  /** Build a client for an authentication flow; `options` configures the\n   \
-         * runtime session (retries, `fetch`, default headers, base URLs). */\n",
+         * runtime session (retries, `fetch`, default headers, base URLs). An\n   \
+         * already configured runtime session is used as is. */\n",
     );
-    out.push_str("  constructor(auth: Auth, options: ClientOptions = {}) {\n");
-    out.push_str("    const session = new Session(auth, options);\n");
+    out.push_str("  constructor(auth: Auth | Session, options: ClientOptions = {}) {\n");
+    out.push_str(
+        "    const session = auth instanceof Session ? auth : new Session(auth, options);\n",
+    );
+    out.push_str("    this.#session = session;\n");
     for (_, _, name) in named {
         let _ = writeln!(
             out,
@@ -246,6 +252,14 @@ fn client_file(named: &[(&String, &Vec<usize>, ManagerName)]) -> String {
             class = name.class,
         );
     }
+    out.push_str("  }\n\n");
+    out.push_str(
+        "  /** A new client whose every API call acts as the user `userId` (Box's\n   \
+         * `As-User` header). It shares this client's auth and configuration;\n   \
+         * this client is unchanged. */\n",
+    );
+    out.push_str("  withAsUserHeader(userId: string): Client {\n");
+    out.push_str("    return new Client(this.#session.withAsUserHeader(userId));\n");
     out.push_str("  }\n}\n");
     out
 }
@@ -1813,10 +1827,20 @@ mod tests {
         assert!(out.contains("readonly files: FilesManager;"), "{out}");
         // Runtime options (retries, `fetch`, headers) reach the session.
         assert!(
-            out.contains("constructor(auth: Auth, options: ClientOptions = {}) {"),
+            out.contains("constructor(auth: Auth | Session, options: ClientOptions = {}) {"),
             "{out}"
         );
-        assert!(out.contains("const session = new Session(auth, options);"));
+        assert!(
+            out.contains(
+                "const session = auth instanceof Session ? auth : new Session(auth, options);"
+            ),
+            "{out}"
+        );
         assert!(out.contains("this.files = new FilesManager(session);"));
+        // As-User derives a client over a derived session.
+        assert!(
+            out.contains("return new Client(this.#session.withAsUserHeader(userId));"),
+            "{out}"
+        );
     }
 }

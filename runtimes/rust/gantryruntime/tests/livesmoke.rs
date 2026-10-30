@@ -168,7 +168,68 @@ async fn live_smoke() {
     );
     smoke_paginate(&client).await;
     smoke_upload_download_delete(&client).await;
+    smoke_as_user(&client).await;
     assert!(failed.is_empty(), "auth flow(s) failed: {failed:?}");
+}
+
+/// Act as a managed user through `with_as_user_header`: `/users/me` must
+/// answer as that user. It needs an admin token from an app allowed to "make
+/// API calls using the as-user header" and a managed user to act as; without
+/// them Box answers 403 or lists no one, and the check is skipped with a
+/// notice rather than failed (the account's setup, not the runtime, is
+/// missing).
+async fn smoke_as_user(client: &Client) {
+    let me = whoami(client).await.expect("whoami");
+    let listing = with_query(
+        client.new_request("GET", &format!("{}/users", client.base_url("api"))),
+        "user_type",
+        "managed",
+    );
+    let users = match client.fetch(with_query(listing, "limit", "100")).await {
+        Err(err) if err.status() == Some(403) => {
+            return skip_as_user("listing managed users", &err)
+        }
+        result => result.expect("as-user: listing managed users"),
+    };
+    let users: serde_json::Value =
+        serde_json::from_slice(&response_bytes(&users).expect("users body")).expect("users json");
+    let target = users["entries"].as_array().and_then(|entries| {
+        entries
+            .iter()
+            .filter(|user| user["status"] == "active")
+            .filter_map(|user| user["id"].as_str())
+            .find(|id| me != format!("\"{id}\""))
+            .map(str::to_string)
+    });
+    let Some(target) = target else {
+        eprintln!("as-user: SKIPPED, no other active managed user to act as");
+        return;
+    };
+
+    let as_user = client.with_as_user_header(&target);
+    let url = format!("{}/users/me", as_user.base_url("api"));
+    let acted = match as_user.fetch(as_user.new_request("GET", &url)).await {
+        Err(err) if err.status() == Some(403) => {
+            return skip_as_user(&format!("acting as user {target}"), &err);
+        }
+        result => result.expect("as-user: /users/me"),
+    };
+    let acted: serde_json::Value =
+        serde_json::from_slice(&response_bytes(&acted).expect("me body")).expect("me json");
+    assert_eq!(
+        acted["id"].as_str(),
+        Some(target.as_str()),
+        "as-user: /users/me answered {acted}"
+    );
+    eprintln!("as-user: acted as user {target}");
+}
+
+/// Log a skipped as-user check: Box's 403 means the app or token may not act
+/// as users.
+fn skip_as_user(what: &str, err: &gantryruntime::Error) {
+    eprintln!(
+        "as-user: SKIPPED, {what} got {err} (enable \"Make API calls using the as-user header\" and use an admin token)"
+    );
 }
 
 /// `GET /users/me`: the current user's id, or why the flow yielded no usable

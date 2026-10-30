@@ -391,6 +391,15 @@ src, err := cfg.ExchangeCode(ctx, code, redirectURI)\n\
 // later: src := auth.OAuth(cfg, storedRefreshToken)\n\
 c := client.NewClient(src)\n\
 ```\n\n\
+## Acting as another user\n\n\
+An admin, or a service account whose app may *make API calls using the as-user\n\
+header*, can act as another user. `WithAsUserHeader` returns a new client whose\n\
+every call sends Box's `As-User` header; it shares the original's auth and\n\
+configuration, and the original is unchanged:\n\n\
+```go\n\
+userClient := c.WithAsUserHeader(\"USER_ID\")\n\
+me, err := userClient.Users.GetMe(ctx, nil) // the user USER_ID\n\
+```\n\n\
 ## Downscoping a token\n\n\
 Exchange the session's access token for one limited to `scopes` and,\n\
 optionally, to one item (its API URL) or shared link — e.g. to hand a\n\

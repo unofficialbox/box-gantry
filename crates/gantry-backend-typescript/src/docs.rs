@@ -383,6 +383,15 @@ import { auth } from '@unofficialbox/box-open-sdk';\n\
 const source = auth.oauth({ clientId: 'CLIENT_ID', clientSecret: 'CLIENT_SECRET' }, storedRefreshToken);\n\
 const client = new Client(source);\n\
 ```\n\n\
+## Acting as another user\n\n\
+An admin, or a service account whose app may *make API calls using the as-user\n\
+header*, can act as another user. `withAsUserHeader` returns a new client whose\n\
+every call sends Box's `As-User` header; it shares the original's auth (and\n\
+token cache) and configuration, and the original is unchanged:\n\n\
+```ts\n\
+const userClient = client.withAsUserHeader('USER_ID');\n\
+const me = await userClient.users.getMe(); // the user USER_ID\n\
+```\n\n\
 ## Downscoping a token\n\n\
 Exchange the session's access token for one limited to `scopes` and,\n\
 optionally, to one item (its API URL) or shared link — e.g. to hand a\n\

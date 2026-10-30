@@ -415,6 +415,15 @@ Runtime.OAuthConfig oauth = new Runtime.OAuthConfig(\"CLIENT_ID\", \"CLIENT_SECR
 // later runs: rebuild from the stored refresh token.\n\
 Client client = new Client(Auth.oauth(oauth, storedRefreshToken));\n\
 ```\n\n\
+## Acting as another user\n\n\
+An admin, or a service account whose app may *make API calls using the as-user\n\
+header*, can act as another user. `withAsUserHeader` returns a new client whose\n\
+every call sends Box's `As-User` header; it shares the original's auth (and\n\
+token cache) and configuration, and the original is unchanged:\n\n\
+```java\n\
+Client userClient = client.withAsUserHeader(\"USER_ID\");\n\
+var me = userClient.users.getMe(null); // the user USER_ID\n\
+```\n\n\
 ## Downscoping a token\n\n\
 Exchange the session's access token for one limited to `scopes` and,\n\
 optionally, to one item (its API URL) or shared link (pass `null` to skip\n\
