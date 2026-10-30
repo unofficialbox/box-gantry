@@ -139,6 +139,7 @@ fn go_type(ty: ContractType) -> &'static str {
         ContractType::Request => "*Request",
         ContractType::Response => "*Response",
         ContractType::Stream => "io.Reader",
+        ContractType::Session => "*Client",
     }
 }
 

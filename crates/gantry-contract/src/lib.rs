@@ -43,6 +43,8 @@ pub enum ContractType {
     /// A streaming body where the platform allows; buffered otherwise
     /// (manifest `Streaming` axis).
     Stream,
+    /// The runtime session/client itself (a derived session).
+    Session,
 }
 
 /// Whether a runtime function needs the per-client session (config: auth,
@@ -134,6 +136,18 @@ pub const V1: RuntimeContract = RuntimeContract {
             fallible: false,
             takes_context: false,
             behavior: "Create a request envelope for the given method and fully built URL.",
+        },
+        ContractFn {
+            name: "with_as_user_header",
+            receiver: Receiver::Session,
+            params: &[("user_id", ContractType::String)],
+            ret: Some(ContractType::Session),
+            fallible: false,
+            takes_context: false,
+            behavior: "Return a new session that sends `As-User: user_id` with every API \
+                       request, sharing this session's auth (and token cache), HTTP client, \
+                       base URLs, and retry policy. This session is unchanged; token requests \
+                       never carry the header.",
         },
         ContractFn {
             name: "with_header",

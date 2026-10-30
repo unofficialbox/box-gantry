@@ -208,3 +208,35 @@ func TestWithHTTPVersionSelectsTheNegotiatedProtocol(t *testing.T) {
 		})
 	}
 }
+
+// WithAsUserHeader derives a client that acts as another user on every
+// request, including the retry after a 401 refresh, and leaves the original
+// client and its other default headers as they were.
+func TestWithAsUserHeaderDerivesAClientActingAsTheUser(t *testing.T) {
+	var seen []string
+	unauthorizedOnce := true
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Header.Get("As-User")+"|"+r.Header.Get("X-Trace-Id"))
+		if r.URL.Path == "/refresh" && unauthorizedOnce {
+			unauthorizedOnce = false
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	}))
+	defer server.Close()
+
+	client := New(fixedToken("t"), WithDefaultHeader("X-Trace-Id", "trace"))
+	user := client.WithAsUserHeader("12345")
+	for _, c := range []*Client{user, client} {
+		if _, err := c.Fetch(context.Background(), c.NewRequest("GET", server.URL)); err != nil {
+			t.Fatalf("fetch: %v", err)
+		}
+	}
+	if _, err := user.Fetch(context.Background(), user.NewRequest("GET", server.URL+"/refresh")); err != nil {
+		t.Fatalf("fetch after a 401: %v", err)
+	}
+
+	want := []string{"12345|trace", "|trace", "12345|trace", "12345|trace"}
+	if strings.Join(seen, ",") != strings.Join(want, ",") {
+		t.Fatalf("As-User|X-Trace-Id seen %v, want %v", seen, want)
+	}
+}

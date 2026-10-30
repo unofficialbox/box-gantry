@@ -157,6 +157,13 @@ fn client_file(named: &[(&String, &Vec<usize>, ManagerName)]) -> String {
             ty = name.struct_name,
         );
     }
+    // The private session field backs `with_as_user_header`; a manager field
+    // of the same name would clash with it, so refuse loudly rather than rename.
+    assert!(
+        named.iter().all(|(_, _, name)| name.field != "session"),
+        "a manager field named `session` collides with Client's runtime session"
+    );
+    out.push_str("    session: std::sync::Arc<crate::runtime::Client>,\n");
     out.push_str("}\n\n");
     out.push_str("impl Client {\n");
     out.push_str("    /// Build a client for an authentication flow.\n");
@@ -179,7 +186,16 @@ fn client_file(named: &[(&String, &Vec<usize>, ManagerName)]) -> String {
             ty = name.struct_name,
         );
     }
-    out.push_str("        }\n    }\n}\n");
+    out.push_str("            session,\n");
+    out.push_str("        }\n    }\n\n");
+    out.push_str(
+        "    /// A new client whose every API call acts as the user `user_id` (Box's\n    \
+         /// `As-User` header). It shares this client's auth and configuration;\n    \
+         /// this client is unchanged.\n",
+    );
+    out.push_str("    pub fn with_as_user_header(&self, user_id: &str) -> Self {\n");
+    out.push_str("        Self::from_session(self.session.with_as_user_header(user_id))\n");
+    out.push_str("    }\n}\n");
     out
 }
 

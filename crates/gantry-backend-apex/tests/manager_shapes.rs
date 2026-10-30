@@ -460,9 +460,10 @@ fn the_apex_live_smoke_calls_methods_the_sdk_generates() {
         calls += 1;
     }
     assert_eq!(
-        calls, 15,
+        calls, 16,
         "the smoke's SDK calls (getMe, listItems, then a scratch folder's and a scratch \
-         web link's create, getIfModified ×2, update_r ×2, delete_r, then events.stream)"
+         web link's create, getIfModified ×2, update_r ×2, delete_r, then events.stream, \
+         then users.list_r for the as-user step)"
     );
 }
 

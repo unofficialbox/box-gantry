@@ -382,6 +382,15 @@ reuse the stored refresh token on later runs:\n\n\
 // later runs: rebuild from the stored refresh token.\n\
 let auth = auth::Auth::oauth(\"CLIENT_ID\", \"CLIENT_SECRET\", stored_refresh_token);\n\
 let client = Client::new(auth);\n\
+```\n\n\
+## Acting as another user\n\n\
+An admin, or a service account whose app may *make API calls using the as-user\n\
+header*, can act as another user. `with_as_user_header` returns a new client\n\
+whose every call sends Box's `As-User` header; it shares the original's auth\n\
+(and token cache) and configuration, and the original is unchanged:\n\n\
+```rust,ignore\n\
+let user_client = client.with_as_user_header(\"USER_ID\");\n\
+let me = user_client.users.get_me(None).await?; // the user USER_ID\n\
 ```\n";
 
 const PAGINATION_GUIDE: &str = "# Pagination\n\n\

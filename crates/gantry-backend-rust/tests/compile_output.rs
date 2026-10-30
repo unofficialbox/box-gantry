@@ -453,6 +453,11 @@ fn serve() -> String {
                     ("200 OK", r#"{"id":"1","type":"file","etag":"etag-2"}"#.into())
                 }
                 ["PUT", "/files/1"] => ("412 Precondition Failed", box_error(412, "precondition_failed")),
+                // Answers as the As-User user, or as "me" without one.
+                ["GET", "/users/me"] => (
+                    "200 OK",
+                    format!(r#"{{"id":"{}","type":"user"}}"#, header("as-user").unwrap_or("me")),
+                ),
                 _ => ("404 Not Found", box_error(404, "not_found")),
             };
             write!(
@@ -576,6 +581,19 @@ fn the_webhook_verifier_ships_with_the_sdk() {
     let verifier = runtime::WebhookVerifier::new().primary_key("SamplePrimaryKey");
     assert!(verifier.verify_at(body.as_bytes(), headers, delivered));
     assert!(!verifier.verify_at(format!("{body} ").as_bytes(), headers, delivered));
+}
+
+/// `with_as_user_header`: the derived client's calls carry `As-User` (the
+/// server answers /users/me as that user); the original client's carry none.
+#[tokio::test]
+async fn with_as_user_header_acts_as_the_user() {
+    let session = runtime::Client::new(Auth::developer_token("t")).with_base_url("api", &serve());
+    let client = Client::from_session(session);
+    let as_user = client.with_as_user_header("12345");
+    let user = as_user.users.get_me(None).await.expect("get_me as the user");
+    assert_eq!(user.id, "12345");
+    let me = client.users.get_me(None).await.expect("get_me");
+    assert_eq!(me.id, "me");
 }
 "##;
 

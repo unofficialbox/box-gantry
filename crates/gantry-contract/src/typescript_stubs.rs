@@ -166,6 +166,7 @@ fn ts_type(ty: ContractType) -> String {
         ContractType::Request => "Request".to_string(),
         ContractType::Response => "Response".to_string(),
         ContractType::Stream => "Stream".to_string(),
+        ContractType::Session => "Client".to_string(),
     }
 }
 
