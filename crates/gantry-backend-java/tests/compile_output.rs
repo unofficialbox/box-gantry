@@ -809,6 +809,63 @@ public final class Consistency {
             server.stop(0);
         }
 
+        // downscopeToken exchanges the session's current token at the token
+        // endpoint through the generated token method: the form carries the
+        // exchange grant, the subject token and its type, the space-joined
+        // scopes, and the resource. Box's OAuth error comes back as a
+        // BoxApiException with its code.
+        java.util.List<java.util.Map<String, String>> forms = new java.util.ArrayList<>();
+        HttpServer tokenServer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        tokenServer.createContext("/", ex -> {
+            java.util.Map<String, String> form = new java.util.TreeMap<>();
+            String raw = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            for (String pair : raw.split("&")) {
+                String[] kv = pair.split("=", 2);
+                if (kv.length == 2) {
+                    form.put(java.net.URLDecoder.decode(kv[0], StandardCharsets.UTF_8),
+                        java.net.URLDecoder.decode(kv[1], StandardCharsets.UTF_8));
+                }
+            }
+            forms.add(form);
+            if (!ex.getRequestMethod().equals("POST") || !ex.getRequestURI().getPath().equals("/oauth2/token")) {
+                respond(ex, 404, boxError(404, "not_found"));
+            } else if (form.getOrDefault("scope", "").isEmpty()) {
+                respond(ex, 400, "{\"error\":\"invalid_scope\",\"error_description\":\"no scope\"}");
+            } else {
+                respond(ex, 200, "{\"access_token\":\"down\",\"expires_in\":3600,\"restricted_to\":"
+                    + "[{\"scope\":\"item_preview\",\"object\":{\"type\":\"file\",\"id\":\"1\"}}]}");
+            }
+        });
+        tokenServer.start();
+        try {
+            Runtime.Session parentSession = Runtime.Session.builder(Runtime.developerToken("parent"))
+                .baseUrl("api_root", "http://127.0.0.1:" + tokenServer.getAddress().getPort())
+                .build();
+            Client parent = new Client(parentSession);
+            String resource = "https://api.box.com/2.0/files/1";
+            var token = parent.authorization.downscopeToken(
+                java.util.List.of("item_preview", "item_rename"), resource, null);
+            check("down".equals(token.accessToken().orElse(null)), "downscopeToken: access token");
+            check(token.restrictedTo().map(java.util.List::size).orElse(0) == 1,
+                "downscopeToken: restricted_to");
+            java.util.Map<String, String> want = new java.util.TreeMap<>(java.util.Map.of(
+                "grant_type", "urn:ietf:params:oauth:grant-type:token-exchange",
+                "subject_token", "parent",
+                "subject_token_type", "urn:ietf:params:oauth:token-type:access_token",
+                "scope", "item_preview item_rename",
+                "resource", resource));
+            check(want.equals(forms.get(0)), "downscopeToken form: " + forms.get(0));
+            try {
+                parent.authorization.downscopeToken(java.util.List.of(), null, null);
+                throw new AssertionError("downscopeToken with no scope: returned, want a 400");
+            } catch (Runtime.BoxApiException err) {
+                check(err.statusCode() == 400 && "invalid_scope".equals(err.code()),
+                    "downscopeToken with no scope: got " + err.getMessage());
+            }
+        } finally {
+            tokenServer.stop(0);
+        }
+
         // The webhooks guide's verifier, reached through the shipped runtime: a
         // delivery signed in Box's own SDK tests verifies, and the same
         // delivery with an altered body does not.

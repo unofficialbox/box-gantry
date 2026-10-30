@@ -9,7 +9,7 @@
 // live reads exercise, in one flow: auth (a real token mint), URL building, the
 // bearer header, native typed deserialization, the wire key-remap, and
 // pagination. A scratch folder and a scratch web link then carry Box's etag
-// flow (304 and 412). The `${...}` placeholders are filled from repo secrets by
+// flow (304 and 412), and the folder a downscoped token. The `${...}` placeholders are filled from repo secrets by
 // the workflow — this file never contains real credentials.
 BoxTokenProvider auth = new BoxCcgTokenProvider(
     '${BOX_CLIENT_ID}',
@@ -71,6 +71,32 @@ try {
     }
     client.folders.update_r(folder.id, null, etag, change);
     System.debug(LoggingLevel.ERROR, 'SMOKE etags folder=' + folder.id + ' etag=' + etag);
+
+    // Token downscoping: exchange the session's token for one limited to
+    // renaming and previewing the scratch folder. The narrow token renames it
+    // and Box refuses its delete; the cleanup below uses the original token.
+    List<String> scopes = new List<String>{ 'item_rename', 'item_preview' };
+    AccessToken down = client.authorization.downscopeToken(
+        auth.getAccessToken(),
+        scopes,
+        'https://api.box.com/2.0/folders/' + folder.id,
+        null
+    );
+    System.assert(String.isNotBlank(down.access_token), 'the exchange returned no access token');
+    Box narrow = new Box(new BoxHttpClient(BoxAuth.developerToken(down.access_token)));
+    UpdateFolderRequest rename = new UpdateFolderRequest();
+    rename.name = 'box-gantry-smoke-downscoped-' + Datetime.now().getTime();
+    narrow.folders.update_r(folder.id, null, null, rename);
+    try {
+        narrow.folders.delete_r(folder.id, null, true);
+        System.assert(false, 'a delete with the downscoped token should be refused');
+    } catch (BoxApiException e) {
+        System.assert(
+            e.statusCode == 401 || e.statusCode == 403,
+            'a delete with the downscoped token should be a 401/403: ' + e.getMessage()
+        );
+        System.debug(LoggingLevel.ERROR, 'SMOKE downscope refused delete: ' + e.getMessage());
+    }
 } finally {
     client.folders.delete_r(folder.id, null, true);
 }

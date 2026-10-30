@@ -391,6 +391,18 @@ token cache) and configuration, and the original is unchanged:\n\n\
 ```ts\n\
 const userClient = client.withAsUserHeader('USER_ID');\n\
 const me = await userClient.users.getMe(); // the user USER_ID\n\
+```\n\n\
+## Downscoping a token\n\n\
+Exchange the session's access token for one limited to `scopes` and,\n\
+optionally, to one item (its API URL) or shared link — e.g. to hand a\n\
+browser-side preview a narrow token. The result has no refresh token; build\n\
+a client from it as a developer token:\n\n\
+```ts\n\
+const down = await client.authorization.downscopeToken(\n\
+\x20\x20['item_preview'],\n\
+\x20\x20'https://api.box.com/2.0/files/123',\n\
+);\n\
+const preview = new Client(auth.developerToken(down.access_token!));\n\
 ```\n";
 
 const PAGINATION_GUIDE: &str = "# Pagination\n\n\

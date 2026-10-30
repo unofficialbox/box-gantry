@@ -22,7 +22,7 @@
 use std::fmt::Write as _;
 
 use gantry_sema::Analysis;
-use gantry_synth::{detect_event_streams, detect_pagination};
+use gantry_synth::{detect_event_streams, detect_pagination, detect_token_exchanges};
 
 /// One generated file, decoupled from the backend's own type so the
 /// checklist depends only on the IR crates.
@@ -83,6 +83,7 @@ pub struct TargetShape {
     pub count_operations: fn(&[GeneratedView]) -> usize,
     pub count_conditional_reads: fn(&[GeneratedView]) -> usize,
     pub count_event_streams: fn(&[GeneratedView]) -> usize,
+    pub count_token_downscoping: fn(&[GeneratedView]) -> usize,
     pub count_pagination: fn(&[GeneratedView]) -> usize,
     pub count_serialization: fn(&[GeneratedView]) -> usize,
     pub count_round_trip_tests: fn(&[GeneratedView]) -> usize,
@@ -202,6 +203,13 @@ pub fn conformance(
             detect_event_streams(analysis).len(),
             (shape.count_event_streams)(files),
             "long-poll event streams → stream methods",
+        ),
+        capability(
+            shape,
+            "token-downscoping",
+            detect_token_exchanges(analysis).len(),
+            (shape.count_token_downscoping)(files),
+            "token-exchange endpoints → downscopeToken methods",
         ),
         capability(
             shape,
@@ -325,6 +333,7 @@ pub fn go_shape() -> TargetShape {
         count_operations: go_operations,
         count_conditional_reads: go_conditional_reads,
         count_event_streams: go_event_streams,
+        count_token_downscoping: go_token_downscoping,
         count_pagination: go_pagination,
         count_serialization: go_serialization,
         count_round_trip_tests: go_round_trip_tests,
@@ -357,7 +366,21 @@ fn go_operations(files: &[GeneratedView]) -> usize {
     // `(ctx context.Context`; subtract the paginators and variants to isolate
     // the plain per-operation methods.
     let ctx = count_marker(files, go_is_manager_file, "(ctx context.Context");
-    ctx.saturating_sub(go_pagination(files) + go_conditional_reads(files) + go_event_streams(files))
+    ctx.saturating_sub(
+        go_pagination(files)
+            + go_conditional_reads(files)
+            + go_event_streams(files)
+            + go_token_downscoping(files),
+    )
+}
+
+fn go_token_downscoping(files: &[GeneratedView]) -> usize {
+    // Each `DownscopeToken` method's doc comment.
+    count_marker(
+        files,
+        go_is_manager_file,
+        "// DownscopeToken exchanges the session's current access token",
+    )
 }
 
 fn go_event_streams(files: &[GeneratedView]) -> usize {
@@ -467,6 +490,7 @@ pub fn apex_shape() -> TargetShape {
         count_operations: apex_operations,
         count_conditional_reads: apex_conditional_reads,
         count_event_streams: apex_event_streams,
+        count_token_downscoping: apex_token_downscoping,
         count_pagination: apex_pagination,
         count_serialization: apex_serialization,
         count_round_trip_tests: apex_round_trip_tests,
@@ -560,6 +584,19 @@ fn apex_is_endpoint_doc(path: &str) -> bool {
         && path.ends_with(".md")
         && !path.ends_with("/README.md")
         && path["docs/".len()..].contains('/')
+}
+
+fn apex_token_downscoping(files: &[GeneratedView]) -> usize {
+    // Each `downscopeToken` method's ApexDoc.
+    files
+        .iter()
+        .filter(|f| apex_is_manager_class(f))
+        .map(|f| {
+            f.content
+                .matches("* Exchange `subjectToken` (the token the client sends")
+                .count()
+        })
+        .sum()
 }
 
 fn apex_event_streams(files: &[GeneratedView]) -> usize {
@@ -666,6 +703,7 @@ pub fn rust_shape() -> TargetShape {
         count_operations: rust_operations,
         count_conditional_reads: rust_conditional_reads,
         count_event_streams: rust_event_streams,
+        count_token_downscoping: rust_token_downscoping,
         count_pagination: rust_pagination,
         count_serialization: rust_serialization,
         count_round_trip_tests: rust_round_trip_tests,
@@ -722,7 +760,19 @@ fn rust_operations(files: &[GeneratedView]) -> usize {
     // `pub async fn next` to isolate the per-operation methods.
     let async_fns = count_marker(files, rust_is_manager_file, "async fn ");
     async_fns.saturating_sub(
-        rust_pagination(files) + rust_conditional_reads(files) + 2 * rust_event_streams(files),
+        rust_pagination(files)
+            + rust_conditional_reads(files)
+            + 2 * rust_event_streams(files)
+            + rust_token_downscoping(files),
+    )
+}
+
+fn rust_token_downscoping(files: &[GeneratedView]) -> usize {
+    // Each `downscope_token` method's doc comment.
+    count_marker(
+        files,
+        rust_is_manager_file,
+        "/// Exchange the session's current access token for one limited to",
     )
 }
 
@@ -838,6 +888,7 @@ pub fn typescript_shape() -> TargetShape {
         count_operations: ts_operations,
         count_conditional_reads: ts_conditional_reads,
         count_event_streams: ts_event_streams,
+        count_token_downscoping: ts_token_downscoping,
         count_pagination: ts_pagination,
         count_serialization: ts_serialization,
         count_round_trip_tests: ts_round_trip_tests,
@@ -888,7 +939,18 @@ fn ts_operations(files: &[GeneratedView]) -> usize {
     // which `  async ` doesn't match, so add those back.
     let public_async = count_marker(files, ts_is_manager_file, "  async ");
     let private_page = count_marker(files, ts_is_manager_file, "  private async ");
-    (public_async + private_page).saturating_sub(ts_pagination(files) + ts_conditional_reads(files))
+    (public_async + private_page).saturating_sub(
+        ts_pagination(files) + ts_conditional_reads(files) + ts_token_downscoping(files),
+    )
+}
+
+fn ts_token_downscoping(files: &[GeneratedView]) -> usize {
+    // Each `downscopeToken` method's doc comment.
+    count_marker(
+        files,
+        ts_is_manager_file,
+        "/** Exchange the session's current access token for one limited to",
+    )
 }
 
 fn ts_conditional_reads(files: &[GeneratedView]) -> usize {

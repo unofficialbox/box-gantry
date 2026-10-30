@@ -18,7 +18,7 @@ use gantry_ir as ir;
 use gantry_ir::naming::{camel, pascal};
 use gantry_manifest::CapabilityManifest;
 use gantry_sema::Analysis;
-use gantry_synth::EventStream;
+use gantry_synth::{ACCESS_TOKEN_TYPE, EventStream, TOKEN_EXCHANGE_GRANT, TokenExchange};
 
 use crate::models::{ClassNames, apex_type, mint_unique};
 use crate::{CLASSES_DIR, GeneratedFile, safe_word};
@@ -43,6 +43,7 @@ pub fn generate_managers(
     let wire = crate::wire::Wire::build(program, &names);
     let infos = manager_infos(analysis, &names, limit);
     let streams = gantry_synth::detect_event_streams(analysis);
+    let exchanges = gantry_synth::detect_token_exchanges(analysis);
 
     let mut files = Vec::new();
     for info in &infos {
@@ -50,13 +51,7 @@ pub fn generate_managers(
         files.push(GeneratedFile {
             path: format!("{CLASSES_DIR}/{}.cls", info.class),
             content: manager_class(
-                program,
-                &names,
-                &wire,
-                &info.class,
-                &info.manager,
-                op_indices,
-                &streams,
+                program, &names, &wire, info, op_indices, &streams, &exchanges,
             ),
         });
     }
@@ -117,11 +112,12 @@ fn manager_class(
     program: &ir::Program,
     names: &ClassNames,
     wire: &crate::wire::Wire<'_>,
-    class: &str,
-    manager: &str,
+    info: &ManagerInfo,
     op_indices: &[usize],
     streams: &[EventStream],
+    exchanges: &[TokenExchange],
 ) -> String {
+    let (class, manager) = (info.class.as_str(), info.manager.as_str());
     let mut out = header();
     let _ = writeln!(
         out,
@@ -168,9 +164,67 @@ fn manager_class(
         out.push('\n');
         render_stream(&mut out, program, names, class, stream, list);
     }
+    for exchange in exchanges
+        .iter()
+        .filter(|e| op_indices.contains(&e.operation))
+    {
+        assert!(
+            !used.contains("downscopeToken"),
+            "{class}: the manager already has a `downscopeToken` method for the token exchange"
+        );
+        let token = signatures
+            .iter()
+            .find(|(i, _)| *i == exchange.operation)
+            .map(|(_, sig)| sig)
+            .expect("same manager");
+        out.push('\n');
+        render_downscope_token(&mut out, program, names, exchange, token);
+    }
 
     let _ = writeln!(out, "}}");
     out
+}
+
+/// `downscopeToken`: Box's token exchange over this manager's typed token
+/// method. Apex takes the token to exchange as an argument: a manager reaches
+/// the runtime only through `BoxClient.send`, which exposes no token.
+fn render_downscope_token(
+    out: &mut String,
+    program: &ir::Program,
+    names: &ClassNames,
+    exchange: &TokenExchange,
+    token: &OpSignature,
+) {
+    let body = apex_type(program, names, &ir::Type::Decl(exchange.body));
+    let field = |f: &ir::Field| safe_word(f.name.as_str());
+    let _ = writeln!(
+        out,
+        "    /**\n\
+         \x20    * Exchange `subjectToken` (the token the client sends: your provider's\n\
+         \x20    * `getAccessToken()`) for one limited to `scopes` and, when non-null, to one\n\
+         \x20    * item (`resource`: its API URL, e.g. `https://api.box.com/2.0/files/123`)\n\
+         \x20    * or a shared link. The result is a plain access token with no refresh\n\
+         \x20    * token: build a client from it with `BoxAuth.developerToken`.\n\
+         \x20    */\n\
+         \x20   public {ret} downscopeToken(String subjectToken, List<String> scopes, String resource, String sharedLink) {{\n\
+         \x20       {body} body = new {body}();\n\
+         \x20       body.{grant} = '{TOKEN_EXCHANGE_GRANT}';\n\
+         \x20       body.{subject} = subjectToken;\n\
+         \x20       body.{subject_type} = '{ACCESS_TOKEN_TYPE}';\n\
+         \x20       body.{scope} = String.join(scopes, ' ');\n\
+         \x20       body.{resource} = resource;\n\
+         \x20       body.{shared_link} = sharedLink;\n\
+         \x20       return {method}(body);\n\
+         \x20   }}",
+        ret = token.return_ty,
+        method = token.method_name,
+        grant = field(&exchange.grant_type),
+        subject = field(&exchange.subject_token),
+        subject_type = field(&exchange.subject_token_type),
+        scope = field(&exchange.scope),
+        resource = field(&exchange.resource),
+        shared_link = field(&exchange.shared_link),
+    );
 }
 
 /// `stream`: Box's event stream, polled (`BoxEventStream`) — Apex can't hold
@@ -480,6 +534,10 @@ fn render_operation(
                 } else {
                     let _ = writeln!(out, "        request.body = body;");
                 }
+                // The client sends those same fields as a form, not JSON.
+                if body.media == ir::RequestMedia::UrlEncoded {
+                    let _ = writeln!(out, "        request.formEncoded = true;");
+                }
             }
             // Which field is the binary part vs. the JSON part is structural
             // (G-7), never a hardcoded field name.
@@ -772,6 +830,9 @@ fn runtime_stubs() -> Vec<GeneratedFile> {
          \x20   // body routed through denormalizeKeys sets this false so injected\n\
          \x20   // explicit nulls (D-138) survive; the map already omits unset keys.\n\
          \x20   public Boolean suppressNulls = true;\n\
+         \x20   // Send `body` as application/x-www-form-urlencoded (its non-null\n\
+         \x20   // fields as key=value pairs) instead of JSON.\n\
+         \x20   public Boolean formEncoded = false;\n\
          \x20   // A Box-style multipart body (G-7): a JSON part and/or a binary\n\
          \x20   // part, each present iff its name is non-null. Never both `body`/\n\
          \x20   // `binaryBody` and these on the same request.\n\

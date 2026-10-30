@@ -429,8 +429,13 @@ fn the_apex_live_smoke_calls_methods_the_sdk_generates() {
     let client = class_source("Box");
 
     let mut calls = 0;
-    for (at, _) in smoke.match_indices("client.") {
-        let rest = &smoke[at + "client.".len()..];
+    // `client` is the smoke's session; `narrow` the client built from a
+    // downscoped token.
+    let receivers = smoke
+        .match_indices("client.")
+        .chain(smoke.match_indices("narrow."));
+    for (at, receiver) in receivers {
+        let rest = &smoke[at + receiver.len()..];
         let Some((manager, rest)) = rest.split_once('.') else {
             continue;
         };
@@ -460,10 +465,11 @@ fn the_apex_live_smoke_calls_methods_the_sdk_generates() {
         calls += 1;
     }
     assert_eq!(
-        calls, 16,
+        calls, 19,
         "the smoke's SDK calls (getMe, listItems, then a scratch folder's and a scratch \
-         web link's create, getIfModified ×2, update_r ×2, delete_r, then events.stream, \
-         then users.list_r for the as-user step)"
+         web link's create, getIfModified ×2, update_r ×2, delete_r, the folder's \
+         downscopeToken and the narrow client's update_r and delete_r, then \
+         events.stream, then users.list_r for the as-user step)"
     );
 }
 

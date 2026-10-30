@@ -566,6 +566,60 @@ func TestWithAsUserHeaderActsAsTheUser(t *testing.T) {
 	}
 }
 
+// DownscopeToken exchanges the session's current token at the token endpoint
+// through the generated token method: the form carries the exchange grant,
+// the subject token and its type, the space-joined scopes, and the resource
+// (with no shared link unless given). Box's OAuth error comes back as an
+// APIError carrying the error code.
+func TestGeneratedDownscopeTokenExchangesTheSessionToken(t *testing.T) {
+	var form map[string][]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/oauth2/token" || r.ParseForm() != nil {
+			boxError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		form = r.PostForm
+		w.Header().Set("Content-Type", "application/json")
+		if r.PostForm.Get("scope") == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `{"error":"invalid_scope","error_description":"no scope"}`)
+			return
+		}
+		io.WriteString(w, `{"access_token":"down","expires_in":3600,"token_type":"bearer",`+
+			`"issued_token_type":"urn:ietf:params:oauth:token-type:access_token",`+
+			`"restricted_to":[{"scope":"item_preview","object":{"type":"file","id":"1"}}]}`)
+	}))
+	defer server.Close()
+	c := client.NewClient(auth.DeveloperToken("parent"), gantryruntime.WithBaseURL("api_root", server.URL))
+	ctx := context.Background()
+
+	token, err := c.Authorization.DownscopeToken(ctx, []string{"item_preview", "item_rename"}, "https://api.box.com/2.0/files/1", "")
+	if err != nil || token.AccessToken == nil || *token.AccessToken != "down" || len(token.RestrictedTo) != 1 {
+		t.Fatalf("DownscopeToken: token=%+v err=%v", token, err)
+	}
+	want := map[string]string{
+		"grant_type":         "urn:ietf:params:oauth:grant-type:token-exchange",
+		"subject_token":      "parent",
+		"subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
+		"scope":              "item_preview item_rename",
+		"resource":           "https://api.box.com/2.0/files/1",
+	}
+	for key, value := range want {
+		if got := form[key]; len(got) != 1 || got[0] != value {
+			t.Fatalf("form %s = %q, want %q (form %v)", key, got, value, form)
+		}
+	}
+	if _, sent := form["box_shared_link"]; sent || len(form) != len(want) {
+		t.Fatalf("form = %v, want exactly %v", form, want)
+	}
+
+	_, err = c.Authorization.DownscopeToken(ctx, nil, "", "")
+	var apiErr *gantryruntime.APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusBadRequest || apiErr.Code != "invalid_scope" {
+		t.Fatalf("DownscopeToken with no scope: err = %v, want a 400 invalid_scope APIError", err)
+	}
+}
+
 func wantAPIError(t *testing.T, what string, err error, status int, code string) {
 	t.Helper()
 	var apiErr *gantryruntime.APIError

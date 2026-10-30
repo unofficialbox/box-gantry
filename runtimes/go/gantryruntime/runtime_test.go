@@ -82,6 +82,24 @@ func TestFetchReturnsAnAPIErrorForANon2xxResponse(t *testing.T) {
 	}
 }
 
+// The token endpoint answers with an OAuth 2.0 error body; its error and
+// error_description fill Code and Message.
+func TestFetchReadsAnOAuthErrorIntoTheAPIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"error":"invalid_grant","error_description":"Grant credentials are invalid"}`)
+	}))
+	defer server.Close()
+
+	client := New(fixedToken("t"))
+	_, err := client.Fetch(context.Background(), client.NewRequest("POST", server.URL))
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != "invalid_grant" || apiErr.Message != "Grant credentials are invalid" {
+		t.Fatalf("err = %v (%+v), want invalid_grant with its description", err, apiErr)
+	}
+}
+
 // A non-JSON error body still surfaces as an APIError, with the raw body.
 func TestFetchReturnsAnAPIErrorForANonJSONErrorBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

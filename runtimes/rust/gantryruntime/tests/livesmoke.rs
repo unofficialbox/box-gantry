@@ -21,9 +21,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gantryruntime::{
-    response_bytes, status_code, stream_position, with_header, with_json_body, with_multipart_body,
-    with_query, Auth, CcgConfig, Client, Error, EventSource, EventStream, JwtConfig,
-    LongPollServer, OAuthConfig, Stream,
+    response_bytes, status_code, stream_position, with_form_body, with_header, with_json_body,
+    with_multipart_body, with_query, Auth, CcgConfig, Client, Error, EventSource, EventStream,
+    JwtConfig, LongPollServer, OAuthConfig, Stream,
 };
 
 /// The process environment, with any `.env` file filling gaps (real env vars
@@ -316,6 +316,7 @@ async fn smoke_upload_download_delete(client: &Arc<Client>) {
     let download = client.fetch(client.new_request("GET", &dl_url)).await;
     let etags = smoke_etags(client, &file_id).await;
     let events = smoke_events(client, &file_id).await;
+    let downscope = smoke_downscope(client, &file_id).await;
 
     // Delete unconditionally now that we hold the id.
     let del_url = format!("{}/files/{file_id}", client.base_url("api"));
@@ -339,6 +340,8 @@ async fn smoke_upload_download_delete(client: &Arc<Client>) {
     eprintln!("etag: 304 for the current etag, 412 for a stale If-Match, the current one writes");
     events.unwrap_or_else(|err| panic!("events: {err}"));
     eprintln!("events: the long poll reported ITEM_RENAME for file {file_id}");
+    let refused = downscope.unwrap_or_else(|err| panic!("downscope: {err}"));
+    eprintln!("downscope: the narrow token renamed the file; its delete was refused ({refused})");
 
     let resp = deleted.expect("delete request");
     assert_eq!(status_code(&resp), 204, "delete: expected 204");
@@ -504,6 +507,87 @@ async fn smoke_etags(client: &Client, file_id: &str) -> Result<(), String> {
         .await
         .map_err(|err| format!("If-Match with the current etag: {err}"))?;
     Ok(())
+}
+
+/// Exchange the session's token for one limited to renaming and previewing the
+/// uploaded file — the form the generated `downscope_token` posts — then prove
+/// the narrow token renames the file and Box refuses its delete. Returns the
+/// refusal, or why it didn't happen, so the caller still deletes the file with
+/// the original token first.
+async fn smoke_downscope(client: &Client, file_id: &str) -> Result<String, String> {
+    let subject = client
+        .access_token()
+        .await
+        .map_err(|err| format!("the session's token: {err}"))?;
+    let url = format!("{}/files/{file_id}", client.base_url("api"));
+    let form = form_encode(&[
+        (
+            "grant_type",
+            "urn:ietf:params:oauth:grant-type:token-exchange",
+        ),
+        ("subject_token", &subject),
+        (
+            "subject_token_type",
+            "urn:ietf:params:oauth:token-type:access_token",
+        ),
+        ("scope", "item_rename item_preview"),
+        ("resource", &url),
+    ]);
+    let token_url = format!("{}/oauth2/token", client.base_url("api_root"));
+    let resp = client
+        .fetch(with_form_body(
+            client.new_request("POST", &token_url),
+            form.as_bytes(),
+        ))
+        .await
+        .map_err(|err| format!("the exchange: {err}"))?;
+    let token: serde_json::Value =
+        serde_json::from_slice(&response_bytes(&resp).unwrap_or_default())
+            .map_err(|err| format!("decoding the exchange: {err}"))?;
+    let token = token["access_token"]
+        .as_str()
+        .ok_or("the exchange returned no access token")?;
+    let narrow = Client::new(Auth::developer_token(token));
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let name = serde_json::to_vec(&serde_json::json!({
+        "name": format!("box-gantry-smoke-downscoped-{nanos}.txt"),
+    }))
+    .unwrap();
+    narrow
+        .fetch(with_json_body(narrow.new_request("PUT", &url), &name))
+        .await
+        .map_err(|err| format!("renaming with the narrow token: {err}"))?;
+    match narrow.fetch(narrow.new_request("DELETE", &url)).await {
+        Err(err) if matches!(err.status(), Some(401 | 403)) => Ok(err.to_string()),
+        outcome => Err(format!(
+            "deleting with the narrow token: {}, want a 401/403 refusal",
+            describe(outcome)
+        )),
+    }
+}
+
+/// `application/x-www-form-urlencoded` pairs, percent-encoding all but RFC
+/// 3986's unreserved bytes (a space becomes `%20`, which Box accepts).
+fn form_encode(pairs: &[(&str, &str)]) -> String {
+    let encode = |text: &str| {
+        text.bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                    (b as char).to_string()
+                }
+                _ => format!("%{b:02X}"),
+            })
+            .collect::<String>()
+    };
+    pairs
+        .iter()
+        .map(|(key, value)| format!("{}={}", encode(key), encode(value)))
+        .collect::<Vec<_>>()
+        .join("&")
 }
 
 /// Run a request and return the body, failing on transport error or non-2xx.

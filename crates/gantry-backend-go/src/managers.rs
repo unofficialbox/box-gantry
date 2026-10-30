@@ -9,7 +9,10 @@ use std::fmt::Write as _;
 use gantry_ir as ir;
 use gantry_ir::naming::{append_without_repeating, camel, pascal};
 use gantry_sema::Analysis;
-use gantry_synth::{EventStream, PageStyle, PagedOperation, PositionShape};
+use gantry_synth::{
+    ACCESS_TOKEN_TYPE, EventStream, PageStyle, PagedOperation, PositionShape, TOKEN_EXCHANGE_GRANT,
+    TokenExchange,
+};
 
 use crate::models::GeneratedFile;
 use crate::{MODULE, RUNTIME_IMPORT, SERIALIZATION_IMPORT};
@@ -48,6 +51,7 @@ pub fn generate_managers(
     let paged_by_op: HashMap<usize, &PagedOperation> =
         paged.iter().map(|p| (p.operation, p)).collect();
     let streams = gantry_synth::detect_event_streams(analysis);
+    let exchanges = gantry_synth::detect_token_exchanges(analysis);
     let mut files = Vec::new();
     for (manager, op_indices) in &analysis.managers {
         let mut printer = ManagerPrinter {
@@ -55,6 +59,7 @@ pub fn generate_managers(
             base_version: base_version.clone(),
             paged: &paged_by_op,
             streams: &streams,
+            exchanges: &exchanges,
             body: String::new(),
             imports: BTreeSet::new(),
         };
@@ -121,6 +126,8 @@ struct ManagerPrinter<'a> {
     base_version: Option<ir::ApiVersion>,
     paged: &'a HashMap<usize, &'a PagedOperation>,
     streams: &'a [EventStream],
+    /// Token exchanges, so an exchange's manager gains `DownscopeToken`.
+    exchanges: &'a [TokenExchange],
     body: String,
     imports: BTreeSet<String>,
 }
@@ -211,6 +218,87 @@ impl ManagerPrinter<'_> {
             }
             self.event_stream(&type_name, stream)?;
         }
+        for exchange in self
+            .exchanges
+            .iter()
+            .filter(|e| op_indices.contains(&e.operation))
+        {
+            if used.iter().any(|name| name == "DownscopeToken") {
+                return Err(BackendError {
+                    context: format!("token exchange of {manager}"),
+                    detail: "the manager already has a `DownscopeToken` method".to_string(),
+                });
+            }
+            self.downscope_token(&type_name, exchange)?;
+        }
+        Ok(())
+    }
+
+    /// `DownscopeToken`: Box's token exchange over this manager's typed token
+    /// method, restricting the session's current access token.
+    fn downscope_token(
+        &mut self,
+        manager_type: &str,
+        exchange: &TokenExchange,
+    ) -> Result<(), BackendError> {
+        let op = self.analysis.program.operations[exchange.operation].clone();
+        let method = self.method_name(&op);
+        let ir::ResponseShape::Json(ty) = &op.response else {
+            unreachable!("synth: a token exchange answers JSON");
+        };
+        let go = self.go_type(unwrap_optionality(ty))?;
+        let ret = if nilable(&go) { go } else { format!("*{go}") };
+        let body = self.go_type(&ir::Type::Decl(exchange.body))?;
+        let grant = self.go_type(&ir::Type::Decl(exchange.grant_type_enum))?;
+        let token_type = self.go_type(&ir::Type::Decl(exchange.subject_token_type_enum))?;
+        let field = |field: &ir::Field| pascal(field.name.as_str());
+        let (grant_field, subject, subject_type, scope, resource, shared_link) = (
+            field(&exchange.grant_type),
+            field(&exchange.subject_token),
+            field(&exchange.subject_token_type),
+            field(&exchange.scope),
+            field(&exchange.resource),
+            field(&exchange.shared_link),
+        );
+        for import in ["context", "strings"] {
+            self.imports.insert(import.to_string());
+        }
+        // gofmt aligns a keyed literal's values.
+        let width = [&grant_field, &subject, &subject_type, &scope]
+            .iter()
+            .map(|key| key.len() + 1)
+            .max()
+            .unwrap_or(0);
+        let key = |name: &str| format!("{:<width$}", format!("{name}:"));
+        let (grant_key, subject_key, subject_type_key, scope_key) = (
+            key(&grant_field),
+            key(&subject),
+            key(&subject_type),
+            key(&scope),
+        );
+        let _ = writeln!(
+            self.body,
+            "// DownscopeToken exchanges the session's current access token for one\n\
+             // limited to scopes and, when set, to one item (resource: its API URL,\n\
+             // e.g. https://api.box.com/2.0/files/123) or a shared link. The result is a\n\
+             // plain access token with no refresh token: build a client from it with\n\
+             // auth.DeveloperToken.\n\
+             func (m *{manager_type}) DownscopeToken(ctx context.Context, scopes []string, resource string, sharedLink string) ({ret}, error) {{\n\
+             \tsubject, err := m.session.AccessToken(ctx)\n\
+             \tif err != nil {{\n\t\treturn nil, err\n\t}}\n\
+             \tsubjectType := {token_type}({ACCESS_TOKEN_TYPE:?})\n\
+             \tscope := strings.Join(scopes, \" \")\n\
+             \tbody := &{body}{{\n\
+             \t\t{grant_key} {grant}({TOKEN_EXCHANGE_GRANT:?}),\n\
+             \t\t{subject_key} &subject,\n\
+             \t\t{subject_type_key} &subjectType,\n\
+             \t\t{scope_key} &scope,\n\
+             \t}}\n\
+             \tif resource != \"\" {{\n\t\tbody.{resource} = &resource\n\t}}\n\
+             \tif sharedLink != \"\" {{\n\t\tbody.{shared_link} = &sharedLink\n\t}}\n\
+             \treturn m.{method}(ctx, body)\n\
+             }}\n"
+        );
         Ok(())
     }
 
@@ -1471,6 +1559,7 @@ mod tests {
             base_version: None,
             paged: &paged,
             streams: &[],
+            exchanges: &[],
             body: String::new(),
             imports: BTreeSet::new(),
         };

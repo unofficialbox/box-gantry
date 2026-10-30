@@ -30,8 +30,15 @@ public class BoxApiException extends Exception {
                 // A non-JSON body (a proxy's HTML page): keep it raw only.
             }
         }
+        // A Box error object, or from the token endpoint an OAuth 2.0 error.
         String code = stringField(fields, 'code');
+        if (code == null) {
+            code = stringField(fields, 'error');
+        }
         String boxMessage = stringField(fields, 'message');
+        if (boxMessage == null) {
+            boxMessage = stringField(fields, 'error_description');
+        }
         String requestId = stringField(fields, 'request_id');
 
         String message = 'box: status ' + status;

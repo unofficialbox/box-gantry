@@ -17,7 +17,8 @@ use gantry_ir as ir;
 use gantry_ir::naming::{append_without_repeating, pascal, snake};
 use gantry_sema::Analysis;
 use gantry_synth::{
-    EventStream, PageStyle, PagedOperation, PositionShape, detect_event_streams, detect_pagination,
+    ACCESS_TOKEN_TYPE, EventStream, PageStyle, PagedOperation, PositionShape, TOKEN_EXCHANGE_GRANT,
+    TokenExchange, detect_event_streams, detect_pagination, detect_token_exchanges,
 };
 
 use crate::models::type_name;
@@ -75,6 +76,7 @@ pub fn generate_managers(analysis: &Analysis<'_>, _build: &BuildInfo) -> Vec<Gen
         .collect();
 
     let streams = detect_event_streams(analysis);
+    let exchanges = detect_token_exchanges(analysis);
 
     let named = plan_managers(analysis);
 
@@ -96,6 +98,7 @@ pub fn generate_managers(analysis: &Analysis<'_>, _build: &BuildInfo) -> Vec<Gen
             modules: &modules,
             paged: &paged,
             streams: &streams,
+            exchanges: &exchanges,
             body: String::new(),
             uses_path_escape: false,
         };
@@ -208,6 +211,8 @@ struct Printer<'p> {
     paged: &'p HashMap<usize, PagedOperation>,
     /// Event streams, so a stream's manager gains `stream`.
     streams: &'p [EventStream],
+    /// Token exchanges, so an exchange's manager gains `downscope_token`.
+    exchanges: &'p [TokenExchange],
     body: String,
     /// Whether any method escaped a path parameter, so the file imports
     /// `path_escape`.
@@ -313,6 +318,17 @@ impl Printer<'_> {
             );
             self.stream_method(stream, ty, &method_of(stream.list));
         }
+        for exchange in self
+            .exchanges
+            .iter()
+            .filter(|e| indices.contains(&e.operation))
+        {
+            assert!(
+                !used.iter().any(|m| m == "downscope_token"),
+                "{key}: the manager already has a `downscope_token` method for the token exchange"
+            );
+            self.downscope_token(exchange, &method_of(exchange.operation));
+        }
         self.body.push_str("}\n");
         for stream in &streams {
             self.stream_source(
@@ -322,6 +338,71 @@ impl Printer<'_> {
                 &method_of(stream.options),
             );
         }
+    }
+
+    /// `downscope_token`: Box's token exchange over this manager's typed token
+    /// method, restricting the session's current access token. Local type
+    /// aliases keep every line short, so the output is rustfmt-clean.
+    fn downscope_token(&mut self, exchange: &TokenExchange, method: &str) {
+        let op = &self.program.operations[exchange.operation];
+        let ir::ResponseShape::Json(ty) = &op.response else {
+            unreachable!("synth: a token exchange answers JSON");
+        };
+        let ret = self.rust_type(unwrap_optionality(ty));
+        let body = self.rust_type(&ir::Type::Decl(exchange.body));
+        let grant = self.rust_type(&ir::Type::Decl(exchange.grant_type_enum));
+        let token_type = self.rust_type(&ir::Type::Decl(exchange.subject_token_type_enum));
+        let field = |f: &ir::Field| field_ident(f.name.as_str());
+        let (grant_field, subject, subject_type, scope, resource, shared_link) = (
+            field(&exchange.grant_type),
+            field(&exchange.subject_token),
+            field(&exchange.subject_token_type),
+            field(&exchange.scope),
+            field(&exchange.resource),
+            field(&exchange.shared_link),
+        );
+        let _ = writeln!(
+            self.body,
+            "\n    /// Exchange the session's current access token for one limited to `scopes`\n\
+             \x20   /// and, when given, to one item (`resource`: its API URL, e.g.\n\
+             \x20   /// `https://api.box.com/2.0/files/123`) or a shared link. The result is a\n\
+             \x20   /// plain access token with no refresh token: build a client from it with\n\
+             \x20   /// [`{RUNTIME}::Auth::developer_token`]."
+        );
+        self.signature(
+            "pub ",
+            "downscope_token",
+            &[
+                "&self".to_string(),
+                "scopes: &[&str]".to_string(),
+                "resource: Option<&str>".to_string(),
+                "shared_link: Option<&str>".to_string(),
+            ],
+            &format!("Result<{ret}, Error>"),
+        );
+        // `use … as` (a type alias can't construct a tuple struct), sorted by
+        // path as rustfmt orders consecutive imports.
+        let mut imports = [(body, "Body"), (grant, "Grant"), (token_type, "TokenType")];
+        imports.sort();
+        for (path, alias) in &imports {
+            let _ = writeln!(self.body, "        use {path} as {alias};");
+        }
+        let _ = writeln!(
+            self.body,
+            "        let exchange = {TOKEN_EXCHANGE_GRANT:?}.to_string();\n\
+             \x20       let access_token = {ACCESS_TOKEN_TYPE:?}.to_string();\n\
+             \x20       let body = Body {{\n\
+             \x20           {grant_field}: Grant(exchange),\n\
+             \x20           {subject}: Some(self.session.access_token().await?),\n\
+             \x20           {subject_type}: Some(TokenType(access_token)),\n\
+             \x20           {scope}: Some(scopes.join(\" \")),\n\
+             \x20           {resource}: resource.map(str::to_string),\n\
+             \x20           {shared_link}: shared_link.map(str::to_string),\n\
+             \x20           ..Default::default()\n\
+             \x20       }};\n\
+             \x20       self.{method}(body).await\n\
+             \x20   }}"
+        );
     }
 
     /// `stream`: Box's long-poll event stream ([`runtime::EventStream`]) over
@@ -1713,6 +1794,7 @@ mod tests {
             modules: &modules,
             paged: &paged,
             streams: &[],
+            exchanges: &[],
             body: String::new(),
             uses_path_escape: false,
         };
@@ -1845,6 +1927,7 @@ mod tests {
             modules: &modules,
             paged: &paged,
             streams: &[],
+            exchanges: &[],
             body: String::new(),
             uses_path_escape: false,
         };
@@ -1899,6 +1982,7 @@ mod tests {
             modules: &modules,
             paged: &paged,
             streams: &[],
+            exchanges: &[],
             body: String::new(),
             uses_path_escape: false,
         };

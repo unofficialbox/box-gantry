@@ -614,6 +614,7 @@ void uploadDownloadDelete(Runtime.Session session) {
         System.out.println("download: content round-tripped");
         etags(session, fileUrl);
         events(session, fileUrl, fileId);
+        downscope(session, fileUrl);
     } finally {
         long code = Runtime.statusCode(session.fetch(session.newRequest("DELETE", fileUrl)));
         if (code != 204) {
@@ -718,6 +719,43 @@ void events(Runtime.Session session, String fileUrl, String fileId) {
             Thread.currentThread().interrupt();
         }
     }
+}
+
+// Exchange the session's token for one limited to renaming and previewing the
+// uploaded file — the form the generated `downscopeToken` posts — then prove
+// the narrow token renames the file and Box refuses its delete. The caller's
+// cleanup still deletes the file with the original token.
+void downscope(Runtime.Session session, String fileUrl) {
+    java.util.function.Function<String, String> encode =
+        value -> java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8);
+    String form = "grant_type=" + encode.apply("urn:ietf:params:oauth:grant-type:token-exchange")
+        + "&subject_token=" + encode.apply(session.accessToken())
+        + "&subject_token_type=" + encode.apply("urn:ietf:params:oauth:token-type:access_token")
+        + "&scope=" + encode.apply("item_rename item_preview")
+        + "&resource=" + encode.apply(fileUrl);
+    Runtime.Request exchange = Runtime.withFormBody(
+        session.newRequest("POST", session.baseUrl("api_root") + "/oauth2/token"),
+        form.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    if (!(field(parseJson(fetchOk(session, exchange)), "access_token") instanceof String token) || token.isEmpty()) {
+        throw new IllegalStateException("downscope: the exchange returned no access token");
+    }
+    Runtime.Session narrow = new Runtime.Session(Runtime.developerToken(token));
+
+    byte[] name = ("{\"name\":\"box-gantry-smoke-downscoped-" + java.util.UUID.randomUUID() + ".txt\"}")
+        .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    fetchOk(narrow, Runtime.withJsonBody(narrow.newRequest("PUT", fileUrl), name));
+    try {
+        narrow.fetch(narrow.newRequest("DELETE", fileUrl));
+    } catch (Runtime.BoxApiException refused) {
+        if (refused.statusCode() != 401 && refused.statusCode() != 403) {
+            throw new IllegalStateException("downscope: deleting with the narrow token: "
+                + refused.getMessage() + ", want a 401/403 refusal");
+        }
+        System.out.println("downscope: the narrow token renamed the file; its delete was refused ("
+            + refused.getMessage() + ")");
+        return;
+    }
+    throw new IllegalStateException("downscope: deleting with the narrow token succeeded, want a refusal");
 }
 
 // Run a call that must throw the runtime's error for `status`.

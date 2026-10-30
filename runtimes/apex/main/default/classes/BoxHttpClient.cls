@@ -125,6 +125,11 @@ public with sharing class BoxHttpClient implements BoxClient {
             req.setBodyAsBlob(buildMultipartBody(request, boundary));
         } else if (request.binaryBody != null) {
             req.setBodyAsBlob(request.binaryBody);
+        } else if (request.body != null && request.formEncoded == true) {
+            // A form-encoded operation (Box's token endpoint): the same fields
+            // the JSON body would carry, sent as key=value pairs.
+            req.setHeader('Content-Type', 'application/x-www-form-urlencoded');
+            req.setBody(formEncode(request.body));
         } else if (request.body != null) {
             req.setHeader('Content-Type', 'application/json');
             // Box treats an absent key and an explicit null differently. The
@@ -136,6 +141,28 @@ public with sharing class BoxHttpClient implements BoxClient {
             req.setBody(JSON.serialize(request.body, request.suppressNulls));
         }
         return new Http().send(req);
+    }
+
+    // An application/x-www-form-urlencoded body: the body's serialized
+    // non-null fields, sorted by key so the encoding is deterministic.
+    @TestVisible
+    private static String formEncode(Object body) {
+        Map<String, Object> fields = (Map<String, Object>) JSON.deserializeUntyped(
+            JSON.serialize(body, true)
+        );
+        List<String> keys = new List<String>(fields.keySet());
+        keys.sort();
+        List<String> pairs = new List<String>();
+        for (String key : keys) {
+            Object value = fields.get(key);
+            if (value != null) {
+                pairs.add(
+                    EncodingUtil.urlEncode(key, 'UTF-8') + '=' +
+                    EncodingUtil.urlEncode(String.valueOf(value), 'UTF-8')
+                );
+            }
+        }
+        return String.join(pairs, '&');
     }
 
     // Salesforce's HttpRequest has no native multipart support, so this
