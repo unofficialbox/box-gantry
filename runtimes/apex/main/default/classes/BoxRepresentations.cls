@@ -80,13 +80,13 @@ public with sharing class BoxRepresentations {
         return request;
     }
 
-    /** `value.outer.inner` as a string, or null when absent. */
-    private static String nested(Map<String, Object> value, String outer, String inner) {
-        Object level = value.get(outer);
+    /** `value.parent.key` as a string, or null when absent. */
+    private static String nested(Map<String, Object> value, String parent, String key) {
+        Object level = value.get(parent);
         if (!(level instanceof Map<String, Object>)) {
             return null;
         }
-        Object found = ((Map<String, Object>) level).get(inner);
+        Object found = ((Map<String, Object>) level).get(key);
         return found == null ? null : String.valueOf(found);
     }
 }
