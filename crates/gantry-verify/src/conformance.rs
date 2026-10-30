@@ -22,7 +22,9 @@
 use std::fmt::Write as _;
 
 use gantry_sema::Analysis;
-use gantry_synth::{detect_event_streams, detect_pagination, detect_token_exchanges};
+use gantry_synth::{
+    detect_event_streams, detect_pagination, detect_representations, detect_token_exchanges,
+};
 
 /// One generated file, decoupled from the backend's own type so the
 /// checklist depends only on the IR crates.
@@ -84,6 +86,7 @@ pub struct TargetShape {
     pub count_conditional_reads: fn(&[GeneratedView]) -> usize,
     pub count_event_streams: fn(&[GeneratedView]) -> usize,
     pub count_token_downscoping: fn(&[GeneratedView]) -> usize,
+    pub count_representations: fn(&[GeneratedView]) -> usize,
     pub count_pagination: fn(&[GeneratedView]) -> usize,
     pub count_serialization: fn(&[GeneratedView]) -> usize,
     pub count_round_trip_tests: fn(&[GeneratedView]) -> usize,
@@ -213,6 +216,13 @@ pub fn conformance(
         ),
         capability(
             shape,
+            "representations",
+            detect_representations(analysis).len(),
+            (shape.count_representations)(files),
+            "representation sources → getRepresentationContent methods",
+        ),
+        capability(
+            shape,
             "pagination",
             paged,
             (shape.count_pagination)(files),
@@ -334,6 +344,7 @@ pub fn go_shape() -> TargetShape {
         count_conditional_reads: go_conditional_reads,
         count_event_streams: go_event_streams,
         count_token_downscoping: go_token_downscoping,
+        count_representations: go_representations,
         count_pagination: go_pagination,
         count_serialization: go_serialization,
         count_round_trip_tests: go_round_trip_tests,
@@ -370,7 +381,17 @@ fn go_operations(files: &[GeneratedView]) -> usize {
         go_pagination(files)
             + go_conditional_reads(files)
             + go_event_streams(files)
-            + go_token_downscoping(files),
+            + go_token_downscoping(files)
+            + go_representations(files),
+    )
+}
+
+fn go_representations(files: &[GeneratedView]) -> usize {
+    // Each `GetRepresentationContent` method's doc comment.
+    count_marker(
+        files,
+        go_is_manager_file,
+        "// GetRepresentationContent downloads a representation of the item",
     )
 }
 
@@ -491,6 +512,7 @@ pub fn apex_shape() -> TargetShape {
         count_conditional_reads: apex_conditional_reads,
         count_event_streams: apex_event_streams,
         count_token_downscoping: apex_token_downscoping,
+        count_representations: apex_representations,
         count_pagination: apex_pagination,
         count_serialization: apex_serialization,
         count_round_trip_tests: apex_round_trip_tests,
@@ -584,6 +606,19 @@ fn apex_is_endpoint_doc(path: &str) -> bool {
         && path.ends_with(".md")
         && !path.ends_with("/README.md")
         && path["docs/".len()..].contains('/')
+}
+
+fn apex_representations(files: &[GeneratedView]) -> usize {
+    // Each `getRepresentationContent` method's ApexDoc.
+    files
+        .iter()
+        .filter(|f| apex_is_manager_class(f))
+        .map(|f| {
+            f.content
+                .matches("* Fetch a representation of the item")
+                .count()
+        })
+        .sum()
 }
 
 fn apex_token_downscoping(files: &[GeneratedView]) -> usize {
@@ -704,6 +739,7 @@ pub fn rust_shape() -> TargetShape {
         count_conditional_reads: rust_conditional_reads,
         count_event_streams: rust_event_streams,
         count_token_downscoping: rust_token_downscoping,
+        count_representations: rust_representations,
         count_pagination: rust_pagination,
         count_serialization: rust_serialization,
         count_round_trip_tests: rust_round_trip_tests,
@@ -763,7 +799,17 @@ fn rust_operations(files: &[GeneratedView]) -> usize {
         rust_pagination(files)
             + rust_conditional_reads(files)
             + 2 * rust_event_streams(files)
-            + rust_token_downscoping(files),
+            + rust_token_downscoping(files)
+            + rust_representations(files),
+    )
+}
+
+fn rust_representations(files: &[GeneratedView]) -> usize {
+    // Each `get_representation_content` method's doc comment.
+    count_marker(
+        files,
+        rust_is_manager_file,
+        "/// Download a representation of the item",
     )
 }
 
@@ -889,6 +935,7 @@ pub fn typescript_shape() -> TargetShape {
         count_conditional_reads: ts_conditional_reads,
         count_event_streams: ts_event_streams,
         count_token_downscoping: ts_token_downscoping,
+        count_representations: ts_representations,
         count_pagination: ts_pagination,
         count_serialization: ts_serialization,
         count_round_trip_tests: ts_round_trip_tests,
@@ -940,7 +987,19 @@ fn ts_operations(files: &[GeneratedView]) -> usize {
     let public_async = count_marker(files, ts_is_manager_file, "  async ");
     let private_page = count_marker(files, ts_is_manager_file, "  private async ");
     (public_async + private_page).saturating_sub(
-        ts_pagination(files) + ts_conditional_reads(files) + ts_token_downscoping(files),
+        ts_pagination(files)
+            + ts_conditional_reads(files)
+            + ts_token_downscoping(files)
+            + ts_representations(files),
+    )
+}
+
+fn ts_representations(files: &[GeneratedView]) -> usize {
+    // Each `getRepresentationContent` method's doc comment.
+    count_marker(
+        files,
+        ts_is_manager_file,
+        "/** Download a representation of the item",
     )
 }
 

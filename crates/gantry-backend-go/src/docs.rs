@@ -435,6 +435,18 @@ that error:\n\n\
 ```go\n\
 for event, err := range client.Events.Stream(ctx, nil) {\n\
 \tif err != nil {\n\t\treturn err\n\t}\n\t// use event; break to stop\n}\n\
+```\n\n\
+## Representations (PDF, text, thumbnails)\n\n\
+`client.Files.GetRepresentationContent` downloads a rendering of a file that Box\n\
+generates on demand — a PDF, its extracted text, page images. `repHints` names it\n\
+as Box's `X-Rep-Hints` header does; `assetPath` picks one asset of a multi-asset\n\
+representation (`\"1.png\"` for a page) and is `\"\"` for a single-file one. It\n\
+waits while Box generates the representation, up to `ctx`'s deadline or\n\
+`gantryruntime.DefaultRepresentationWait`, and returns an error if Box fails to:\n\n\
+```go\n\
+text, err := client.Files.GetRepresentationContent(ctx, fileID, \"[extracted_text]\", \"\")\n\
+if err != nil {\n\treturn err\n}\n\
+body, err := io.ReadAll(text)\n\
 ```\n";
 
 const ERRORS_GUIDE: &str = "# Errors\n\

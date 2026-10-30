@@ -77,6 +77,7 @@ pub fn generate_managers(analysis: &Analysis<'_>, _build: &BuildInfo) -> Vec<Gen
 
     let streams = detect_event_streams(analysis);
     let exchanges = detect_token_exchanges(analysis);
+    let representations = gantry_synth::detect_representations(analysis);
 
     let named = plan_managers(analysis);
 
@@ -98,6 +99,7 @@ pub fn generate_managers(analysis: &Analysis<'_>, _build: &BuildInfo) -> Vec<Gen
             modules: &modules,
             paged: &paged,
             streams: &streams,
+            representations: &representations,
             exchanges: &exchanges,
             body: String::new(),
             uses_path_escape: false,
@@ -213,6 +215,9 @@ struct Printer<'p> {
     streams: &'p [EventStream],
     /// Token exchanges, so an exchange's manager gains `downscope_token`.
     exchanges: &'p [TokenExchange],
+    /// Representation sources, so a source's manager gains
+    /// `get_representation_content`.
+    representations: &'p [gantry_synth::Representation],
     body: String,
     /// Whether any method escaped a path parameter, so the file imports
     /// `path_escape`.
@@ -329,6 +334,17 @@ impl Printer<'_> {
             );
             self.downscope_token(exchange, &method_of(exchange.operation));
         }
+        for source in self
+            .representations
+            .iter()
+            .filter(|r| indices.contains(&r.operation))
+        {
+            assert!(
+                !used.iter().any(|m| m == "get_representation_content"),
+                "{key}: the manager already has a `get_representation_content` method"
+            );
+            self.representation_content(source);
+        }
         self.body.push_str("}\n");
         for stream in &streams {
             self.stream_source(
@@ -338,6 +354,60 @@ impl Printer<'_> {
                 &method_of(stream.options),
             );
         }
+    }
+
+    /// `get_representation_content`: Box's representation protocol
+    /// (`Client::representation_content`) over this manager's item `GET`.
+    fn representation_content(&mut self, source: &gantry_synth::Representation) {
+        let op = self.program.operations[source.operation].clone();
+        let _ = writeln!(
+            self.body,
+            "\n    /// Download a representation of the item — a PDF, its extracted text, page\n\
+             \x20   /// images. `rep_hints` names it as `X-Rep-Hints` does (`\"[pdf]\"`,\n\
+             \x20   /// `\"[extracted_text]\"`, `\"[jpg?dimensions=320x320]\"`); `asset_path` picks\n\
+             \x20   /// one asset of a multi-asset representation (`\"1.png\"`) and is `\"\"` for a\n\
+             \x20   /// single-file one. It waits while Box generates the representation, up to\n\
+             \x20   /// `max_wait` ([`{RUNTIME}::DEFAULT_REPRESENTATION_WAIT`] when `None`)."
+        );
+        let mut params = vec!["&self".to_string()];
+        for param in op
+            .params
+            .iter()
+            .filter(|p| p.location == ir::ParamLocation::Path)
+        {
+            params.push(format!(
+                "{}: {}",
+                field_ident(param.name.as_str()),
+                self.rust_type(&param.ty)
+            ));
+        }
+        params.extend([
+            "rep_hints: &str".to_string(),
+            "asset_path: &str".to_string(),
+            "max_wait: Option<std::time::Duration>".to_string(),
+        ]);
+        self.signature(
+            "pub ",
+            "get_representation_content",
+            &params,
+            &format!("Result<{RUNTIME}::Stream, Error>"),
+        );
+        self.url_and_request(&op);
+        let (fields, hints, field) = (
+            &source.fields_param.wire_name,
+            &source.hints_param.wire_name,
+            &source.field.wire_name,
+        );
+        let _ = writeln!(
+            self.body,
+            "        let req = self.session.new_request(\"GET\", &url);\n\
+             \x20       let req = {RUNTIME}::with_query(req, {fields:?}, {field:?});\n\
+             \x20       let req = {RUNTIME}::with_header(req, {hints:?}, rep_hints);\n\
+             \x20       self.session\n\
+             \x20           .representation_content(req, {field:?}, asset_path, max_wait)\n\
+             \x20           .await\n\
+             \x20   }}"
+        );
     }
 
     /// `downscope_token`: Box's token exchange over this manager's typed token
@@ -1795,6 +1865,7 @@ mod tests {
             paged: &paged,
             streams: &[],
             exchanges: &[],
+            representations: &[],
             body: String::new(),
             uses_path_escape: false,
         };
@@ -1928,6 +1999,7 @@ mod tests {
             paged: &paged,
             streams: &[],
             exchanges: &[],
+            representations: &[],
             body: String::new(),
             uses_path_escape: false,
         };
@@ -1983,6 +2055,7 @@ mod tests {
             paged: &paged,
             streams: &[],
             exchanges: &[],
+            representations: &[],
             body: String::new(),
             uses_path_escape: false,
         };

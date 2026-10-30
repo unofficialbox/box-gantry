@@ -436,6 +436,20 @@ while let Some(event) = events.next().await {\n\
 \x20   let event = event?;\n\
 \x20   // use event\n\
 }\n\
+```\n\n\
+## Representations (PDF, text, thumbnails)\n\n\
+`client.files.get_representation_content` downloads a rendering of a file that\n\
+Box generates on demand — a PDF, its extracted text, page images. `rep_hints`\n\
+names it as Box's `X-Rep-Hints` header does; `asset_path` picks one asset of a\n\
+multi-asset representation (`\"1.png\"` for a page) and is `\"\"` for a single-file\n\
+one. It waits while Box generates the representation, up to `max_wait`\n\
+(`runtime::DEFAULT_REPRESENTATION_WAIT` when `None`), and returns an error if Box\n\
+fails to:\n\n\
+```rust\n\
+let text = client\n\
+\x20   .files\n\
+\x20   .get_representation_content(file_id, \"[extracted_text]\", \"\", None)\n\
+\x20   .await?;\n\
 ```\n";
 
 const ERRORS_GUIDE: &str = "# Errors\n\

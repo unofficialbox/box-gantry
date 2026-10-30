@@ -10,8 +10,8 @@ use gantry_ir as ir;
 use gantry_ir::naming::{append_without_repeating, camel, pascal};
 use gantry_sema::Analysis;
 use gantry_synth::{
-    ACCESS_TOKEN_TYPE, EventStream, PageStyle, PagedOperation, PositionShape, TOKEN_EXCHANGE_GRANT,
-    TokenExchange,
+    ACCESS_TOKEN_TYPE, EventStream, PageStyle, PagedOperation, PositionShape, Representation,
+    TOKEN_EXCHANGE_GRANT, TokenExchange,
 };
 
 use crate::models::GeneratedFile;
@@ -52,6 +52,7 @@ pub fn generate_managers(
         paged.iter().map(|p| (p.operation, p)).collect();
     let streams = gantry_synth::detect_event_streams(analysis);
     let exchanges = gantry_synth::detect_token_exchanges(analysis);
+    let representations = gantry_synth::detect_representations(analysis);
     let mut files = Vec::new();
     for (manager, op_indices) in &analysis.managers {
         let mut printer = ManagerPrinter {
@@ -60,6 +61,7 @@ pub fn generate_managers(
             paged: &paged_by_op,
             streams: &streams,
             exchanges: &exchanges,
+            representations: &representations,
             body: String::new(),
             imports: BTreeSet::new(),
         };
@@ -128,6 +130,9 @@ struct ManagerPrinter<'a> {
     streams: &'a [EventStream],
     /// Token exchanges, so an exchange's manager gains `DownscopeToken`.
     exchanges: &'a [TokenExchange],
+    /// Representation sources, so a source's manager gains
+    /// `GetRepresentationContent`.
+    representations: &'a [Representation],
     body: String,
     imports: BTreeSet<String>,
 }
@@ -231,6 +236,67 @@ impl ManagerPrinter<'_> {
             }
             self.downscope_token(&type_name, exchange)?;
         }
+        for source in self
+            .representations
+            .iter()
+            .filter(|r| op_indices.contains(&r.operation))
+        {
+            if used.iter().any(|name| name == "GetRepresentationContent") {
+                return Err(BackendError {
+                    context: format!("representations of {manager}"),
+                    detail: "the manager already has a `GetRepresentationContent` method"
+                        .to_string(),
+                });
+            }
+            self.representation_content(&type_name, source)?;
+        }
+        Ok(())
+    }
+
+    /// `GetRepresentationContent`: Box's representation protocol
+    /// (`gantryruntime.RepresentationContent`) over this manager's item `GET`.
+    fn representation_content(
+        &mut self,
+        manager_type: &str,
+        source: &Representation,
+    ) -> Result<(), BackendError> {
+        let op = self.analysis.program.operations[source.operation].clone();
+        let context = format!("representations of {}", op.name.as_str());
+        let mut params = Vec::new();
+        for param in op
+            .params
+            .iter()
+            .filter(|p| p.location == ir::ParamLocation::Path)
+        {
+            params.push(format!("{} {}", arg_name(param), self.go_type(&param.ty)?));
+        }
+        for import in ["context", "io"] {
+            self.imports.insert(import.to_string());
+        }
+        let _ = writeln!(
+            self.body,
+            "// GetRepresentationContent downloads a representation of the item — a PDF,\n\
+             // its extracted text, page images. repHints names it as X-Rep-Hints does\n\
+             // (\"[pdf]\", \"[extracted_text]\", \"[jpg?dimensions=320x320]\"); assetPath\n\
+             // picks one asset of a multi-asset representation (\"1.png\") and is \"\"\n\
+             // for a single-file one. It waits while Box generates the representation,\n\
+             // up to ctx's deadline or gantryruntime.DefaultRepresentationWait.\n\
+             func (m *{manager_type}) GetRepresentationContent(ctx context.Context, {}, repHints string, assetPath string) (io.Reader, error) {{",
+            params.join(", ")
+        );
+        self.url_and_request(&op, &context)?;
+        let (fields, hints, field) = (
+            &source.fields_param.wire_name,
+            &source.hints_param.wire_name,
+            &source.field.wire_name,
+        );
+        let _ = writeln!(
+            self.body,
+            "\treq = gantryruntime.WithQuery(req, {fields:?}, {field:?})\n\
+             \treq = gantryruntime.WithHeader(req, {hints:?}, repHints)\n\
+             \treturn m.session.RepresentationContent(ctx, req, {field:?}, assetPath)\n\
+             }}\n"
+        );
         Ok(())
     }
 
@@ -1560,6 +1626,7 @@ mod tests {
             paged: &paged,
             streams: &[],
             exchanges: &[],
+            representations: &[],
             body: String::new(),
             imports: BTreeSet::new(),
         };

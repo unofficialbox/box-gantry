@@ -17,11 +17,13 @@
 mod auth;
 mod events;
 mod jwt;
+mod representations;
 mod webhooks;
 
 pub use auth::{Auth, CcgConfig, OAuthConfig, RefreshTokenStore, TokenSource};
 pub use events::{stream_position, EventSource, EventStream, LongPollServer};
 pub use jwt::JwtConfig;
+pub use representations::DEFAULT_REPRESENTATION_WAIT;
 pub use webhooks::{WebhookVerifier, DEFAULT_WEBHOOK_MAX_AGE};
 
 use std::collections::HashMap;

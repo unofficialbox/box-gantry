@@ -721,6 +721,77 @@ public final class Runtime {
         return Stream.fromBytes(response.body);
     }
 
+    /** How long {@link #representationContent} waits for Box to generate a
+     * representation unless the caller passes its own bound. */
+    public static final java.time.Duration DEFAULT_REPRESENTATION_WAIT = java.time.Duration.ofMinutes(5);
+
+    /**
+     * Run Box's representation protocol for the item {@code request} fetches,
+     * which already asks for {@code field} and carries the {@code X-Rep-Hints}
+     * header: take the first representation Box offers under {@code field},
+     * poll its info URL while Box generates it ({@code pending}, {@code none}),
+     * then download {@code assetPath} from its content URL template ({@code ""}
+     * for a single-file representation such as a PDF or extracted text). A
+     * representation Box fails to generate ({@code error}) throws, as does
+     * waiting past {@code maxWait} ({@link #DEFAULT_REPRESENTATION_WAIT} when
+     * null).
+     */
+    public static Stream representationContent(
+            Session session, Request request, String field, String assetPath, java.time.Duration maxWait) {
+        long deadline = System.nanoTime() + (maxWait == null ? DEFAULT_REPRESENTATION_WAIT : maxWait).toNanos();
+        Map<String, Object> item = JsonLite.parseObject(
+                new String(responseBytes(session.fetch(request)), StandardCharsets.UTF_8));
+        Object entries = item.get(field) instanceof Map<?, ?> set ? set.get("entries") : null;
+        if (!(entries instanceof List<?> list) || list.isEmpty() || !(list.get(0) instanceof Map<?, ?> first)) {
+            throw new BoxApiException("box: no representation matches the X-Rep-Hints requested");
+        }
+        Map<Object, Object> rep = new LinkedHashMap<>(first);
+        String name = String.valueOf(rep.get("representation"));
+        long delay = 250;
+        while (true) {
+            String state = nested(rep, "status", "state");
+            if ("success".equals(state) || "viewable".equals(state)) {
+                break;
+            }
+            if ("error".equals(state)) {
+                throw new BoxApiException("box: Box could not generate the " + name + " representation ("
+                        + nested(rep, "status", "code") + ")");
+            }
+            if (!"pending".equals(state) && !"none".equals(state)) {
+                throw new BoxApiException("box: unknown representation state " + state);
+            }
+            String info = nested(rep, "info", "url");
+            if (info == null) {
+                throw new BoxApiException("box: the " + name + " representation has no info URL to poll");
+            }
+            if ("pending".equals(state)) {
+                if (System.nanoTime() + delay * 1_000_000L > deadline) {
+                    throw new BoxApiException("box: timed out waiting for Box to generate the " + name
+                            + " representation");
+                }
+                sleep(delay);
+            }
+            delay = Math.min(delay * 2, 5000);
+            Map<String, Object> polled = JsonLite.parseObject(
+                    new String(responseBytes(session.fetch(session.newRequest("GET", info))), StandardCharsets.UTF_8));
+            rep.put("status", polled.get("status"));
+            if (nested(polled, "content", "url_template") != null) {
+                rep.put("content", polled.get("content"));
+            }
+        }
+        String template = nested(rep, "content", "url_template");
+        if (template == null) {
+            throw new BoxApiException("box: the " + name + " representation has no content URL");
+        }
+        String url = template.replace("{+asset_path}", assetPath == null ? "" : assetPath);
+        return responseStream(session.fetch(session.newRequest("GET", url)));
+    }
+
+    /** {@code object.outer.inner} as a string, or null when absent. */
+    private static String nested(Map<?, ?> object, String outer, String inner) {
+        return object.get(outer) instanceof Map<?, ?> map && map.get(inner) instanceof String value ? value : null;
+    }
+
     /** A response header value, empty when absent (case-insensitive lookup). */
     public static String responseHeader(Response response, String name) {
         for (String[] header : response.headers) {

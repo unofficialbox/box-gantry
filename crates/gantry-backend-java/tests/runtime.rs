@@ -613,6 +613,7 @@ void uploadDownloadDelete(Runtime.Session session) {
         }
         System.out.println("download: content round-tripped");
         etags(session, fileUrl);
+        representation(session, fileUrl, "box-gantry live smoke");
         events(session, fileUrl, fileId);
         downscope(session, fileUrl);
     } finally {
@@ -646,6 +647,34 @@ void etags(Runtime.Session session, String fileUrl) {
     fetchOk(session, Runtime.withHeader(
         Runtime.withJsonBody(session.newRequest("PUT", fileUrl), description), "If-Match", etag));
     System.out.println("etag: 304 for the current etag, 412 for a stale If-Match, the current one writes");
+}
+
+// Fetch the uploaded file's extracted text through representationContent —
+// the request the generated getRepresentationContent builds — and find the
+// uploaded text in it within two minutes. When Box says it has no such
+// representation for the file (none offered, or it could not generate one),
+// the check is skipped with a notice rather than failed.
+void representation(Runtime.Session session, String fileUrl, String want) {
+    Runtime.Request request = Runtime.withHeader(
+        Runtime.withQuery(session.newRequest("GET", fileUrl), "fields", "representations"),
+        "x-rep-hints", "[extracted_text]");
+    String text;
+    try {
+        text = new String(Runtime.representationContent(session, request, "representations", "",
+            java.time.Duration.ofMinutes(2)).toBytes(), java.nio.charset.StandardCharsets.UTF_8);
+    } catch (Runtime.BoxApiException err) {
+        if (err.getMessage().contains("no representation matches") || err.getMessage().contains("could not generate")) {
+            System.out.println("representation: SKIPPED, Box has no extracted text for " + fileUrl
+                + " (" + err.getMessage() + ")");
+            return;
+        }
+        throw err;
+    }
+    if (!text.contains(want)) {
+        throw new IllegalStateException("representation: extracted text \"" + text + "\", want it to contain \""
+            + want + "\"");
+    }
+    System.out.println("representation: Box's extracted text holds the uploaded text (" + text.length() + " chars)");
 }
 
 // Follow Box's long-poll event stream from "now" while the uploaded file is

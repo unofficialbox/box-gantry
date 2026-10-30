@@ -561,6 +561,11 @@ fn runtime_files() -> Vec<GeneratedFile> {
         ),
         (
             "gantryruntime",
+            "representations.go",
+            include_str!("../../../runtimes/go/gantryruntime/representations.go"),
+        ),
+        (
+            "gantryruntime",
             "webhooks.go",
             include_str!("../../../runtimes/go/gantryruntime/webhooks.go"),
         ),

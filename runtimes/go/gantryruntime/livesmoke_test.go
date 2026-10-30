@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -333,6 +334,7 @@ func smokeUploadDownloadDelete(ctx context.Context, t *testing.T, client *gantry
 	t.Logf("download: content round-tripped")
 
 	smokeEtags(ctx, t, client, fileID)
+	smokeRepresentation(t, client, fileID, string(content))
 	smokeEvents(t, client, fileID)
 	smokeDownscope(ctx, t, client, fileID)
 }
@@ -456,6 +458,31 @@ func smokeEvents(t *testing.T, client *gantryruntime.Client, fileID string) {
 			return
 		}
 	}
+}
+
+// smokeRepresentation fetches the uploaded file's extracted text through
+// RepresentationContent — the request the generated GetRepresentationContent
+// builds — and must find the uploaded text in it within two minutes. When Box
+// says it has no such representation for the file (none offered, or it could
+// not generate one), the check is skipped with a notice rather than failed.
+func smokeRepresentation(t *testing.T, client *gantryruntime.Client, fileID string, want string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	req := gantryruntime.WithQuery(client.NewRequest("GET", client.BaseUrl("api")+"/files/"+fileID), "fields", "representations")
+	req = gantryruntime.WithHeader(req, "x-rep-hints", "[extracted_text]")
+	text, err := client.RepresentationContent(ctx, req, "representations", "")
+	if err != nil && (strings.Contains(err.Error(), "no representation matches") || strings.Contains(err.Error(), "could not generate")) {
+		t.Logf("representation: SKIPPED, Box has no extracted text for file %s (%v)", fileID, err)
+		return
+	}
+	if err != nil {
+		t.Fatalf("representation: %v", err)
+	}
+	body, err := io.ReadAll(text)
+	if err != nil || !strings.Contains(string(body), want) {
+		t.Fatalf("representation: extracted text %q (%v), want it to contain %q", body, err, want)
+	}
+	t.Logf("representation: Box's extracted text holds the uploaded text (%d bytes)", len(body))
 }
 
 // smokeEtags drives Box's etag flow on the uploaded file, as the generated

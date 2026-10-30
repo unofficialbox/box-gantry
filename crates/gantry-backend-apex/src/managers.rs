@@ -18,7 +18,9 @@ use gantry_ir as ir;
 use gantry_ir::naming::{camel, pascal};
 use gantry_manifest::CapabilityManifest;
 use gantry_sema::Analysis;
-use gantry_synth::{ACCESS_TOKEN_TYPE, EventStream, TOKEN_EXCHANGE_GRANT, TokenExchange};
+use gantry_synth::{
+    ACCESS_TOKEN_TYPE, EventStream, Representation, TOKEN_EXCHANGE_GRANT, TokenExchange,
+};
 
 use crate::models::{ClassNames, apex_type, mint_unique};
 use crate::{CLASSES_DIR, GeneratedFile, safe_word};
@@ -42,17 +44,18 @@ pub fn generate_managers(
     let names = ClassNames::build(program, limit);
     let wire = crate::wire::Wire::build(program, &names);
     let infos = manager_infos(analysis, &names, limit);
-    let streams = gantry_synth::detect_event_streams(analysis);
-    let exchanges = gantry_synth::detect_token_exchanges(analysis);
+    let synthesized = Synthesized {
+        streams: gantry_synth::detect_event_streams(analysis),
+        exchanges: gantry_synth::detect_token_exchanges(analysis),
+        representations: gantry_synth::detect_representations(analysis),
+    };
 
     let mut files = Vec::new();
     for info in &infos {
         let op_indices = &analysis.managers[&info.manager];
         files.push(GeneratedFile {
             path: format!("{CLASSES_DIR}/{}.cls", info.class),
-            content: manager_class(
-                program, &names, &wire, info, op_indices, &streams, &exchanges,
-            ),
+            content: manager_class(program, &names, &wire, info, op_indices, &synthesized),
         });
     }
 
@@ -108,14 +111,21 @@ pub(crate) fn manager_infos(
         .collect()
 }
 
+/// The methods synthesized over the spec's operations, each emitted on the
+/// manager that owns its source operation.
+struct Synthesized {
+    streams: Vec<EventStream>,
+    exchanges: Vec<TokenExchange>,
+    representations: Vec<Representation>,
+}
+
 fn manager_class(
     program: &ir::Program,
     names: &ClassNames,
     wire: &crate::wire::Wire<'_>,
     info: &ManagerInfo,
     op_indices: &[usize],
-    streams: &[EventStream],
-    exchanges: &[TokenExchange],
+    synthesized: &Synthesized,
 ) -> String {
     let (class, manager) = (info.class.as_str(), info.manager.as_str());
     let mut out = header();
@@ -151,7 +161,11 @@ fn manager_class(
         }
         signatures.push((index, sig));
     }
-    for stream in streams.iter().filter(|s| op_indices.contains(&s.list)) {
+    for stream in synthesized
+        .streams
+        .iter()
+        .filter(|s| op_indices.contains(&s.list))
+    {
         assert!(
             !used.contains("stream"),
             "{class}: the manager already has a `stream` method for the event stream"
@@ -164,7 +178,8 @@ fn manager_class(
         out.push('\n');
         render_stream(&mut out, program, names, class, stream, list);
     }
-    for exchange in exchanges
+    for exchange in synthesized
+        .exchanges
         .iter()
         .filter(|e| op_indices.contains(&e.operation))
     {
@@ -180,9 +195,71 @@ fn manager_class(
         out.push('\n');
         render_downscope_token(&mut out, program, names, exchange, token);
     }
+    for source in synthesized
+        .representations
+        .iter()
+        .filter(|r| op_indices.contains(&r.operation))
+    {
+        assert!(
+            !used.contains("getRepresentationContent"),
+            "{class}: the manager already has a `getRepresentationContent` method"
+        );
+        out.push('\n');
+        render_representation_content(&mut out, program, names, source);
+    }
 
     let _ = writeln!(out, "}}");
     out
+}
+
+/// `getRepresentationContent`: one step of Box's representation protocol
+/// (`BoxRepresentations.fetch`) over this manager's item `GET` — Apex can't
+/// wait while Box generates a representation, so a call reports `pending`.
+fn render_representation_content(
+    out: &mut String,
+    program: &ir::Program,
+    names: &ClassNames,
+    source: &Representation,
+) {
+    let op = &program.operations[source.operation];
+    let params: Vec<String> = op
+        .params
+        .iter()
+        .filter(|p| p.location == ir::ParamLocation::Path)
+        .map(|p| {
+            format!(
+                "{} {}",
+                apex_type(program, names, &p.ty),
+                camel(p.name.as_str())
+            )
+        })
+        .collect();
+    let _ = writeln!(
+        out,
+        "    /**\n\
+         \x20    * Fetch a representation of the item — a PDF, its extracted text, page\n\
+         \x20    * images. `repHints` names it as `X-Rep-Hints` does (`'[pdf]'`,\n\
+         \x20    * `'[extracted_text]'`); `assetPath` picks one asset of a multi-asset\n\
+         \x20    * representation (`'1.png'`) and is `''` for a single-file one. Apex can't\n\
+         \x20    * wait while Box generates it: the result's `content` is set once Box has\n\
+         \x20    * it, and its `state` is `pending` until then — call again later.\n\
+         \x20    */\n\
+         \x20   public BoxRepresentations.Result getRepresentationContent({}, String repHints, String assetPath) {{\n\
+         \x20       BoxRequest request = new BoxRequest();\n\
+         \x20       request.method = 'GET';\n\
+         \x20       request.baseUrl = '{base}';\n\
+         \x20       request.path = {path};\n\
+         \x20       request.query.put('{fields}', '{field}');\n\
+         \x20       request.headers.put('{hints}', repHints);\n\
+         \x20       return BoxRepresentations.fetch(client, request, '{field}', assetPath);\n\
+         \x20   }}",
+        params.join(", "),
+        base = base_url_key(op.base_url),
+        path = path_expr(&op.path),
+        fields = escape(&source.fields_param.wire_name),
+        hints = escape(&source.hints_param.wire_name),
+        field = escape(&source.field.wire_name),
+    );
 }
 
 /// `downscopeToken`: Box's token exchange over this manager's typed token

@@ -122,6 +122,7 @@ pub fn generate_managers(analysis: &Analysis<'_>, _build: &BuildInfo) -> Vec<Gen
 
     let streams = detect_event_streams(analysis);
     let exchanges = detect_token_exchanges(analysis);
+    let representations = gantry_synth::detect_representations(analysis);
 
     // Allocate one collision-free base per manager (shared with the docs).
     let named = plan_managers(analysis);
@@ -136,6 +137,7 @@ pub fn generate_managers(analysis: &Analysis<'_>, _build: &BuildInfo) -> Vec<Gen
             paged: &paged,
             streams: &streams,
             exchanges: &exchanges,
+            representations: &representations,
             exact_json: false,
             body: String::new(),
             uses_path_escape: false,
@@ -276,6 +278,9 @@ struct Printer<'p> {
     streams: &'p [EventStream],
     /// Token exchanges, so an exchange's manager gains `downscopeToken`.
     exchanges: &'p [TokenExchange],
+    /// Representation sources, so a source's manager gains
+    /// `getRepresentationContent`.
+    representations: &'p [gantry_synth::Representation],
     /// Set while emitting an operation whose JSON must keep large integers
     /// exact (an event stream's page: its position).
     exact_json: bool,
@@ -371,7 +376,57 @@ impl Printer<'_> {
             );
             self.downscope_token(exchange, &camel(&bases[pos].base));
         }
+        for source in self
+            .representations
+            .iter()
+            .filter(|r| indices.contains(&r.operation))
+        {
+            assert!(
+                bases
+                    .iter()
+                    .all(|b| camel(&b.base) != "getRepresentationContent"),
+                "{key}: the manager already has a `getRepresentationContent` method"
+            );
+            self.representation_content(source);
+        }
         self.body.push_str("}\n");
+    }
+
+    /// `getRepresentationContent`: Box's representation protocol
+    /// (`runtime.representationContent`) over this manager's item `GET`.
+    fn representation_content(&mut self, source: &gantry_synth::Representation) {
+        let op = self.program.operations[source.operation].clone();
+        let params: Vec<String> = op
+            .params
+            .iter()
+            .filter(|p| p.location == ir::ParamLocation::Path)
+            .map(|p| format!("{}: {}", camel(p.name.as_str()), self.ts_type(&p.ty)))
+            .collect();
+        let _ = writeln!(
+            self.body,
+            "\n  /** Download a representation of the item — a PDF, its extracted text, page\n\
+             \x20  * images. `repHints` names it as `X-Rep-Hints` does (`'[pdf]'`,\n\
+             \x20  * `'[extracted_text]'`, `'[jpg?dimensions=320x320]'`); `assetPath` picks one\n\
+             \x20  * asset of a multi-asset representation (`'1.png'`) and is `''` for a\n\
+             \x20  * single-file one. It waits while Box generates the representation, up to\n\
+             \x20  * `options.maxWaitMs` (`runtime.DEFAULT_REPRESENTATION_WAIT_MS`). */\n\
+             \x20 async getRepresentationContent({}, repHints: string, assetPath: string = '', options?: runtime.RepresentationOptions): Promise<runtime.Stream> {{",
+            params.join(", ")
+        );
+        self.url_and_request(&op);
+        let (fields, hints, field) = (
+            &source.fields_param.wire_name,
+            &source.hints_param.wire_name,
+            &source.field.wire_name,
+        );
+        let _ = writeln!(
+            self.body,
+            "    let req = this.session.newRequest(\"GET\", url);\n\
+             \x20   req = runtime.withQuery(req, {fields:?}, {field:?});\n\
+             \x20   req = runtime.withHeader(req, {hints:?}, repHints);\n\
+             \x20   return runtime.representationContent(this.session, req, {field:?}, assetPath, options);\n\
+             \x20 }}"
+        );
     }
 
     /// `downscopeToken`: Box's token exchange over this manager's typed token
@@ -1585,6 +1640,7 @@ mod tests {
             paged: &paged,
             streams: &[],
             exchanges: &[],
+            representations: &[],
             exact_json: false,
             body: String::new(),
             uses_path_escape: false,
@@ -1733,6 +1789,7 @@ mod tests {
             paged: &paged,
             streams: &[],
             exchanges: &[],
+            representations: &[],
             exact_json: false,
             body: String::new(),
             uses_path_escape: false,
@@ -1790,6 +1847,7 @@ mod tests {
             paged: &paged,
             streams: &[],
             exchanges: &[],
+            representations: &[],
             exact_json: false,
             body: String::new(),
             uses_path_escape: false,

@@ -69,6 +69,12 @@ fn the_generated_go_sdk_is_conformant() {
     assert_eq!(by("operations").expected, 381);
     assert_eq!(by("operations").actual, 381, "one method per operation");
     assert_eq!(by("as-user").actual, 1, "Client.withAsUserHeader");
+    assert_eq!(by("representations").expected, 1);
+    assert_eq!(
+        by("representations").actual,
+        1,
+        "the files manager's representation method"
+    );
     assert_eq!(by("token-downscoping").expected, 1);
     assert_eq!(
         by("token-downscoping").actual,
@@ -133,6 +139,12 @@ fn the_generated_apex_sdk_is_conformant() {
     assert_eq!(by("operations").expected, 381);
     assert_eq!(by("operations").actual, 381, "one method per operation");
     assert_eq!(by("as-user").actual, 1, "Client.withAsUserHeader");
+    assert_eq!(by("representations").expected, 1);
+    assert_eq!(
+        by("representations").actual,
+        1,
+        "the files manager's representation method"
+    );
     assert_eq!(by("token-downscoping").expected, 1);
     assert_eq!(
         by("token-downscoping").actual,
@@ -208,6 +220,12 @@ fn the_generated_typescript_sdk_is_conformant() {
     assert_eq!(by("operations").expected, 381);
     assert_eq!(by("operations").actual, 381, "one method per operation");
     assert_eq!(by("as-user").actual, 1, "Client.withAsUserHeader");
+    assert_eq!(by("representations").expected, 1);
+    assert_eq!(
+        by("representations").actual,
+        1,
+        "the files manager's representation method"
+    );
     assert_eq!(by("token-downscoping").expected, 1);
     assert_eq!(
         by("token-downscoping").actual,

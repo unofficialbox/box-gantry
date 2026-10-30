@@ -809,6 +809,62 @@ public final class Consistency {
             server.stop(0);
         }
 
+        // getRepresentationContent runs Box's representation protocol: the item
+        // offers the representation pending, the info URL answers pending once
+        // and then success, and the asset comes from the content URL template.
+        // A representation Box failed to generate throws naming Box's code, and
+        // the wait is bounded.
+        java.util.concurrent.atomic.AtomicInteger polls = new java.util.concurrent.atomic.AtomicInteger();
+        HttpServer repServer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        String repBase = "http://127.0.0.1:" + repServer.getAddress().getPort();
+        java.util.function.Function<String, String> entry = state ->
+            "{\"representation\":\"extracted_text\",\"info\":{\"url\":\"" + repBase + "/rep/info\"},"
+                + "\"status\":{\"state\":\"" + state + "\",\"code\":\"" + state + "_code\"},"
+                + "\"content\":{\"url_template\":\"" + repBase + "/rep/content/{+asset_path}\"}}";
+        repServer.createContext("/", ex -> {
+            String path = ex.getRequestURI().getPath();
+            boolean asked = "fields=representations".equals(ex.getRequestURI().getRawQuery())
+                && "[extracted_text]".equals(ex.getRequestHeaders().getFirst("X-Rep-Hints"));
+            if (asked && (path.equals("/files/7") || path.equals("/files/8"))) {
+                String state = path.equals("/files/7") ? "pending" : "error";
+                respond(ex, 200, "{\"id\":\"7\",\"type\":\"file\",\"representations\":{\"entries\":["
+                    + entry.apply(state) + "]}}");
+            } else if (path.equals("/rep/info")) {
+                respond(ex, 200, entry.apply(polls.incrementAndGet() == 1 ? "pending" : "success"));
+            } else if (path.equals("/rep/content/page.txt")) {
+                respond(ex, 200, "extracted words");
+            } else {
+                respond(ex, 404, boxError(404, "not_found"));
+            }
+        });
+        repServer.start();
+        try {
+            Runtime.Session repSession = Runtime.Session.builder(Runtime.developerToken("t"))
+                .baseUrl("api", repBase)
+                .build();
+            Client c = new Client(repSession);
+            String text = new String(
+                c.files.getRepresentationContent("7", "[extracted_text]", "page.txt").toBytes(),
+                StandardCharsets.UTF_8);
+            check("extracted words".equals(text) && polls.get() == 2,
+                "getRepresentationContent: " + text + " after " + polls.get() + " info polls");
+            try {
+                c.files.getRepresentationContent("8", "[extracted_text]", "");
+                throw new AssertionError("an error state: returned, want a BoxApiException");
+            } catch (Runtime.BoxApiException err) {
+                check(err.getMessage().contains("error_code"), "an error state: got " + err.getMessage());
+            }
+            try {
+                c.files.getRepresentationContent("7", "[extracted_text]", "page.txt",
+                    java.time.Duration.ofMillis(1));
+                throw new AssertionError("a short wait: returned, want a BoxApiException");
+            } catch (Runtime.BoxApiException err) {
+                check(err.getMessage().contains("timed out"), "a short wait: got " + err.getMessage());
+            }
+        } finally {
+            repServer.stop(0);
+        }
+
         // downscopeToken exchanges the session's current token at the token
         // endpoint through the generated token method: the form carries the
         // exchange grant, the subject token and its type, the space-joined

@@ -196,6 +196,7 @@ pub fn generate_managers(analysis: &Analysis<'_>, build: &BuildInfo) -> Vec<Gene
             .collect(),
         streams: detect_event_streams(analysis),
         exchanges: detect_token_exchanges(analysis),
+        representations: gantry_synth::detect_representations(analysis),
     };
     let plans = plan_managers(analysis);
 
@@ -285,6 +286,9 @@ struct ManagerPrinter<'p> {
     streams: Vec<EventStream>,
     /// Token exchanges, so an exchange's manager gains `downscopeToken`.
     exchanges: Vec<TokenExchange>,
+    /// Representation sources, so a source's manager gains
+    /// `getRepresentationContent`.
+    representations: Vec<gantry_synth::Representation>,
 }
 
 impl ManagerPrinter<'_> {
@@ -387,6 +391,21 @@ impl ManagerPrinter<'_> {
             out.push_str(&self.downscope_token(exchange, &method));
             out.push('\n');
         }
+        for source in self
+            .representations
+            .iter()
+            .filter(|r| plan.ops.contains(&r.operation))
+        {
+            assert!(
+                methods
+                    .iter()
+                    .all(|(_, name, ..)| name != "getRepresentationContent"),
+                "{}: the manager already has a `getRepresentationContent` method",
+                plan.class
+            );
+            out.push_str(&self.representation_content(source));
+            out.push('\n');
+        }
         // Nested options classes, after the methods that reference them.
         for (i, name, _, _) in &methods {
             if let Some(options) = self.options_class(&self.program.operations[*i], name) {
@@ -397,6 +416,58 @@ impl ManagerPrinter<'_> {
         out.truncate(out.trim_end().len());
         out.push_str("\n}\n");
         (out, paginators)
+    }
+
+    /// `getRepresentationContent`: Box's representation protocol
+    /// (`Runtime.representationContent`) over this manager's item `GET`.
+    fn representation_content(&self, source: &gantry_synth::Representation) -> String {
+        let op = &self.program.operations[source.operation];
+        let params: Vec<String> = op
+            .params
+            .iter()
+            .filter(|p| p.location == ir::ParamLocation::Path)
+            .map(|p| format!("{} {}", self.java_type(&p.ty), camel(p.name.as_str())))
+            .collect();
+        let params = params.join(", ");
+        let args: Vec<String> = op
+            .params
+            .iter()
+            .filter(|p| p.location == ir::ParamLocation::Path)
+            .map(|p| camel(p.name.as_str()))
+            .collect();
+        let args = args.join(", ");
+        let (fields, hints, field) = (
+            &source.fields_param.wire_name,
+            &source.hints_param.wire_name,
+            &source.field.wire_name,
+        );
+        let mut out = format!(
+            "    /**\n\
+             \x20    * Download a representation of the item — a PDF, its extracted text, page\n\
+             \x20    * images. {{@code repHints}} names it as {{@code X-Rep-Hints}} does\n\
+             \x20    * ({{@code \"[pdf]\"}}, {{@code \"[extracted_text]\"}},\n\
+             \x20    * {{@code \"[jpg?dimensions=320x320]\"}}); {{@code assetPath}} picks one asset of a\n\
+             \x20    * multi-asset representation ({{@code \"1.png\"}}) and is {{@code \"\"}} for a\n\
+             \x20    * single-file one. It waits while Box generates the representation, up to\n\
+             \x20    * {{@code maxWait}} ({{@link {RUNTIME}#DEFAULT_REPRESENTATION_WAIT}} when null).\n\
+             \x20    */\n\
+             \x20   public {RUNTIME}.Stream getRepresentationContent({params}, String repHints, String assetPath, java.time.Duration maxWait) {{\n"
+        );
+        self.url(&mut out, op);
+        let _ = write!(
+            out,
+            "        {RUNTIME}.Request _req = session.newRequest(\"GET\", _url.toString());\n\
+             \x20       _req = {RUNTIME}.withQuery(_req, {fields:?}, {field:?});\n\
+             \x20       _req = {RUNTIME}.withHeader(_req, {hints:?}, repHints);\n\
+             \x20       return {RUNTIME}.representationContent(session, _req, {field:?}, assetPath, maxWait);\n\
+             \x20   }}\n\n\
+             \x20   /** {{@link #getRepresentationContent(String, String, String, java.time.Duration)}}\n\
+             \x20    * with the default wait. */\n\
+             \x20   public {RUNTIME}.Stream getRepresentationContent({params}, String repHints, String assetPath) {{\n\
+             \x20       return getRepresentationContent({args}, repHints, assetPath, null);\n\
+             \x20   }}\n"
+        );
+        out
     }
 
     /// `downscopeToken`: Box's token exchange over this manager's typed token

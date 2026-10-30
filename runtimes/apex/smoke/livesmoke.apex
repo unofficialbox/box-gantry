@@ -173,6 +173,43 @@ try {
     System.debug(LoggingLevel.ERROR, 'SMOKE as-user SKIPPED 403 ' + e.code);
 }
 
+// 7) A representation through files.getRepresentationContent, on a scratch
+//    .txt file that is deleted afterwards. Apex can't wait while Box generates
+//    the extracted text, so the step tries a bounded number of times and logs
+//    PENDING if Box hasn't finished; once Box has it, it must hold the uploaded
+//    text. When Box has no extracted text for the file, the step logs SKIPPED.
+String uploadedText = 'box-gantry live smoke';
+CreateFileContentRequest textFile = new CreateFileContentRequest();
+textFile.attributes = new PostFileContentAttributes();
+textFile.attributes.name = 'box-gantry-smoke-' + Datetime.now().getTime() + '.txt';
+textFile.attributes.parent = new AttributesParent();
+textFile.attributes.parent.id = '0';
+textFile.file = Blob.valueOf(uploadedText);
+String textFileId = client.uploads.uploadFile(null, null, textFile).entries[0].id;
+try {
+    BoxRepresentations.Result text;
+    for (Integer attempt = 0; attempt < 5 && (text == null || text.content == null); attempt++) {
+        text = client.files.getRepresentationContent(textFileId, '[extracted_text]', '');
+    }
+    if (text.content == null) {
+        System.debug(LoggingLevel.ERROR, 'SMOKE representation PENDING after 5 checks file=' + textFileId);
+    } else {
+        System.assert(
+            text.content.toString().contains(uploadedText),
+            'the extracted text should hold the uploaded text: ' + text.content.toString()
+        );
+        System.debug(LoggingLevel.ERROR, 'SMOKE representation extracted_text bytes=' + text.content.size());
+    }
+} catch (BoxApiException e) {
+    String message = e.getMessage();
+    if (!message.contains('no representation matches') && !message.contains('could not generate')) {
+        throw e;
+    }
+    System.debug(LoggingLevel.ERROR, 'SMOKE representation SKIPPED ' + message);
+} finally {
+    client.files.delete_r(textFileId, null);
+}
+
 // The sentinel the workflow greps for — reached only if every call above
 // succeeded and no assertion or callout threw.
 System.debug(LoggingLevel.ERROR, 'SMOKE OK');

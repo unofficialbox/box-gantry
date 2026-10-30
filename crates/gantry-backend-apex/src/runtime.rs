@@ -33,6 +33,8 @@ pub(crate) const RUNTIME_CLASS_NAMES: &[&str] = &[
     "BoxEventStreamTest",
     "BoxWebhookVerifier",
     "BoxWebhookVerifierTest",
+    "BoxRepresentations",
+    "BoxRepresentationsTest",
     "BoxAsUserClient",
     "BoxAsUserClientTest",
 ];
@@ -109,6 +111,14 @@ pub(crate) fn runtime_classes() -> Vec<GeneratedFile> {
         (
             "BoxEventStreamTest",
             include_str!("../../../runtimes/apex/main/default/classes/BoxEventStreamTest.cls"),
+        ),
+        (
+            "BoxRepresentations",
+            include_str!("../../../runtimes/apex/main/default/classes/BoxRepresentations.cls"),
+        ),
+        (
+            "BoxRepresentationsTest",
+            include_str!("../../../runtimes/apex/main/default/classes/BoxRepresentationsTest.cls"),
         ),
         (
             "BoxWebhookVerifier",

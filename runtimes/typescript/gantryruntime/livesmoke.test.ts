@@ -33,6 +33,7 @@ import {
   BoxApiError,
   eventStream,
   parseJsonExact,
+  representationContent,
   streamPosition,
   isPreconditionFailed,
   withFormBody,
@@ -277,6 +278,10 @@ async function smokeUploadDownloadDelete(client: Client): Promise<void> {
     () => undefined,
     (err: unknown) => err,
   );
+  const representation = await smokeRepresentation(client, fileId, 'box-gantry live smoke').then(
+    (length) => ({ length }),
+    (err: unknown) => ({ err }),
+  );
   const downscope = await smokeDownscope(client, fileId).then(
     (refusal) => ({ refusal }),
     (err: unknown) => ({ err }),
@@ -296,6 +301,12 @@ async function smokeUploadDownloadDelete(client: Client): Promise<void> {
     throw etags;
   }
   console.error('etag: 304 for the current etag, 412 for a stale If-Match, the current one writes');
+  if ('err' in representation) {
+    throw representation.err;
+  }
+  if (representation.length !== undefined) {
+    console.error(`representation: Box's extracted text holds the uploaded text (${representation.length} bytes)`);
+  }
   if (events !== undefined) {
     throw events;
   }
@@ -307,6 +318,30 @@ async function smokeUploadDownloadDelete(client: Client): Promise<void> {
 
   assert.equal(statusCode(deleted), 204, 'delete: expected 204');
   console.error(`delete: cleaned up file ${fileId}`);
+}
+
+/// Fetch the uploaded file's extracted text through `representationContent` —
+/// the request the generated `getRepresentationContent` builds — and find the
+/// uploaded text in it within two minutes. Resolves to its length, or to
+/// undefined when Box says it has no such representation for the file (none
+/// offered, or it could not generate one: logged as a skip).
+async function smokeRepresentation(client: Client, fileId: string, want: string): Promise<number | undefined> {
+  let request = withQuery(client.newRequest('GET', `${client.baseUrl('api')}/files/${fileId}`), 'fields', 'representations');
+  request = withHeader(request, 'x-rep-hints', '[extracted_text]');
+  let text: string;
+  try {
+    const stream = await representationContent(client, request, 'representations', '', { maxWaitMs: 120_000 });
+    text = new TextDecoder().decode(stream.data);
+  } catch (err) {
+    const message = String(err);
+    if (message.includes('no representation matches') || message.includes('could not generate')) {
+      console.error(`representation: SKIPPED, Box has no extracted text for file ${fileId} (${message})`);
+      return undefined;
+    }
+    throw err;
+  }
+  assert.ok(text.includes(want), `representation: extracted text ${JSON.stringify(text)}, want it to contain ${JSON.stringify(want)}`);
+  return text.length;
 }
 
 /// Drive Box's etag flow on the uploaded file, as the generated `…IfModified`

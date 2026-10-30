@@ -315,6 +315,7 @@ async fn smoke_upload_download_delete(client: &Arc<Client>) {
     let dl_url = format!("{}/files/{file_id}/content", client.base_url("api"));
     let download = client.fetch(client.new_request("GET", &dl_url)).await;
     let etags = smoke_etags(client, &file_id).await;
+    let representation = smoke_representation(client, &file_id, &content).await;
     let events = smoke_events(client, &file_id).await;
     let downscope = smoke_downscope(client, &file_id).await;
 
@@ -338,6 +339,9 @@ async fn smoke_upload_download_delete(client: &Arc<Client>) {
 
     etags.unwrap_or_else(|err| panic!("etag: {err}"));
     eprintln!("etag: 304 for the current etag, 412 for a stale If-Match, the current one writes");
+    if let Some(bytes) = representation.unwrap_or_else(|err| panic!("representation: {err}")) {
+        eprintln!("representation: Box's extracted text holds the uploaded text ({bytes} bytes)");
+    }
     events.unwrap_or_else(|err| panic!("events: {err}"));
     eprintln!("events: the long poll reported ITEM_RENAME for file {file_id}");
     let refused = downscope.unwrap_or_else(|err| panic!("downscope: {err}"));
@@ -507,6 +511,45 @@ async fn smoke_etags(client: &Client, file_id: &str) -> Result<(), String> {
         .await
         .map_err(|err| format!("If-Match with the current etag: {err}"))?;
     Ok(())
+}
+
+/// Fetch the uploaded file's extracted text through `representation_content`
+/// — the request the generated `get_representation_content` builds — and find
+/// the uploaded text in it within two minutes. Returns its length, `None` when
+/// Box says it has no such representation for the file (none offered, or it
+/// could not generate one: logged as a skip), or why it failed, so the caller
+/// can still clean up first.
+async fn smoke_representation(
+    client: &Client,
+    file_id: &str,
+    want: &[u8],
+) -> Result<Option<usize>, String> {
+    let url = format!("{}/files/{file_id}", client.base_url("api"));
+    let req = with_query(client.new_request("GET", &url), "fields", "representations");
+    let req = with_header(req, "x-rep-hints", "[extracted_text]");
+    let text = match client
+        .representation_content(req, "representations", "", Some(Duration::from_secs(120)))
+        .await
+    {
+        Err(err)
+            if err.to_string().contains("no representation matches")
+                || err.to_string().contains("could not generate") =>
+        {
+            eprintln!(
+                "representation: SKIPPED, Box has no extracted text for file {file_id} ({err})"
+            );
+            return Ok(None);
+        }
+        outcome => outcome.map_err(|err| err.to_string())?.into_bytes(),
+    };
+    if !text.windows(want.len()).any(|window| window == want) {
+        return Err(format!(
+            "extracted text {:?}, want it to contain {:?}",
+            String::from_utf8_lossy(&text),
+            String::from_utf8_lossy(want)
+        ));
+    }
+    Ok(Some(text.len()))
 }
 
 /// Exchange the session's token for one limited to renaming and previewing the
