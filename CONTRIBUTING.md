@@ -85,23 +85,30 @@ version is `SDK_VERSION` in `crates/gantry-manifest/src/lib.rs`. Maintainers
 ship from a clean checkout with one command:
 
 ```sh
-scripts/ship.sh 0.10.0            # add --dry-run to preflight only
+scripts/ship.sh 0.11.0            # add --dry-run to see where it stands, changing nothing
 ```
 
-It refuses a version that isn't newer than `main`'s, is already tagged, or
-would ship from a `main` whose CI isn't green. Then it runs these steps,
-stopping at the first failure:
+It refuses a version older than `main`'s. Otherwise it works out from GitHub
+how far the release already got and continues from there, stopping at the first
+failure:
 
 1. Bumps `SDK_VERSION` in a PR, waits for its CI, and squash-merges it.
-2. Runs the **Release** workflow as a dry run, which regenerates the SDKs
-   and runs every guard without publishing.
+2. Waits for CI on `main`, then runs the **Release** workflow as a dry run,
+   which regenerates the SDKs and runs every guard without publishing.
 3. Asks before going live (`--yes` skips the prompt), then runs the live
    release. Its `verify` job confirms the tag on all five repos and the
    package on each registry, polling while they propagate.
 
+So after any interruption, run the same command again. An open `ship-<version>`
+PR is picked up where it was. A merged bump goes straight to the release. A
+version already tagged on all five repos only re-runs the registry check (the
+**Verify a fleet release** workflow, which you can also run on its own). A
+version tagged on only some repos stops the script, since that needs a person.
+
 Published versions can't be replaced on any registry, so the live step is the
-point of no return. To re-check a past release, run the **Verify a fleet
-release** workflow with its version.
+point of no return. The script talks to GitHub only through its REST API
+(`gh api`, `gh run`, `gh workflow`), so it also works where GraphQL isn't
+reachable.
 
 ## Code style
 
