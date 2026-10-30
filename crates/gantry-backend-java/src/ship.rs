@@ -354,6 +354,24 @@ The builder also takes `maxRetries`, default headers, base URLs, or your own
 `HttpClient` (which carries its own version — set one or the other). Token
 requests keep their own client.
 
+## Proxies
+
+Requests follow the JVM's default proxy selector: the `https.proxyHost` /
+`https.proxyPort` / `http.nonProxyHosts` system properties, not the
+`HTTPS_PROXY` environment variable. To set one in code instead, give it to both
+the auth config and the session:
+
+```java
+var proxy = java.net.ProxySelector.of(new java.net.InetSocketAddress("proxy.internal", 3128));
+var auth = Runtime.clientCredentials(
+    Runtime.CcgConfig.enterprise(clientId, clientSecret, enterpriseId).proxy(proxy));
+var session = Runtime.Session.builder(auth).proxy(proxy).build();
+```
+
+With a proxy, the built-in client prefers HTTP/2: HTTP/3 runs over UDP, which an
+HTTP proxy can't carry. An injected `HttpClient` carries its own proxy — set one
+or the other.
+
 ## Documentation
 
 The [`docs/`](./docs) tree carries the per-manager reference — a call snippet for

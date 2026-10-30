@@ -206,6 +206,13 @@ public final class RuntimeSmoke {
             ex.close();
         });
         server.createContext("/content-host", ex -> respond(ex, 200, "file bytes"));
+        // Reached through the proxy tests below: records the Host the client
+        // asked the proxy (this server) for.
+        AtomicReference<String> proxiedHost = new AtomicReference<>();
+        server.createContext("/proxied", ex -> {
+            proxiedHost.set(ex.getRequestHeaders().getFirst("Host"));
+            respond(ex, 200, "proxied");
+        });
 
         server.start();
         String base = "http://127.0.0.1:" + server.getAddress().getPort();
@@ -328,6 +335,30 @@ public final class RuntimeSmoke {
             conflicted = true;
         }
         check(conflicted, "httpClient + httpVersion should be rejected at build()");
+
+        // proxy sends API and token requests through the given proxy — here
+        // this server, which answers for a host that doesn't resolve.
+        java.net.ProxySelector viaServer = java.net.ProxySelector.of(server.getAddress());
+        Runtime.Session proxied = Runtime.Session.builder(Runtime.clientCredentials(
+                Runtime.CcgConfig.enterprise("cid", "csecret", "ent1")
+                    .tokenUrl("http://box.invalid/token")
+                    .proxy(viaServer)))
+            .proxy(viaServer)
+            .build();
+        check(proxied.accessToken().equals("tok123"), "token request through the proxy");
+        Runtime.Response rp = proxied.fetch(proxied.newRequest("GET", "http://box.invalid/proxied"));
+        check(Runtime.statusCode(rp) == 200 && "box.invalid".equals(proxiedHost.get()),
+            "API request through the proxy, Host: " + proxiedHost.get());
+        boolean proxyConflicted = false;
+        try {
+            Runtime.Session.builder(Runtime.developerToken("devtok"))
+                .httpClient(java.net.http.HttpClient.newHttpClient())
+                .proxy(viaServer)
+                .build();
+        } catch (IllegalStateException expected) {
+            proxyConflicted = true;
+        }
+        check(proxyConflicted, "httpClient + proxy should be rejected at build()");
 
         server.stop(0);
         System.out.println("RUNTIME_OK");

@@ -113,11 +113,20 @@ func postTokenForm(ctx context.Context, httpc *http.Client, tokenURL string, for
 	return tr, nil
 }
 
-func authHTTPClient(c *http.Client) *http.Client {
+// authHTTPClient is the token-request client: the config's HTTPClient if set,
+// else a built-in one that goes through proxy, or through the proxy the
+// HTTPS_PROXY / NO_PROXY environment selects when proxy is nil.
+func authHTTPClient(c *http.Client, proxy *url.URL) *http.Client {
 	if c != nil {
 		return c
 	}
-	return &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second}
+	if proxy != nil {
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = http.ProxyURL(proxy)
+		client.Transport = transport
+	}
+	return client
 }
 
 func orDefault(v, fallback string) string {
@@ -137,11 +146,12 @@ type CCGConfig struct {
 	UserID       string
 	TokenURL     string       // optional; defaults to Box's token endpoint
 	HTTPClient   *http.Client // optional
+	Proxy        *url.URL     // optional; overrides the HTTPS_PROXY environment (ignored with HTTPClient)
 }
 
 // ClientCredentials builds a CCG gantryruntime.TokenSource.
 func ClientCredentials(cfg CCGConfig) gantryruntime.TokenSource {
-	httpc := authHTTPClient(cfg.HTTPClient)
+	httpc := authHTTPClient(cfg.HTTPClient, cfg.Proxy)
 	tokenURL := orDefault(cfg.TokenURL, defaultTokenURL)
 	subjectType, subjectID := "enterprise", cfg.EnterpriseID
 	if cfg.UserID != "" {
@@ -173,6 +183,7 @@ type OAuthConfig struct {
 	ClientSecret string
 	TokenURL     string       // optional; defaults to Box's token endpoint
 	HTTPClient   *http.Client // optional
+	Proxy        *url.URL     // optional; overrides the HTTPS_PROXY environment (ignored with HTTPClient)
 }
 
 // AuthorizeURL builds the URL to redirect a user to so they can grant
@@ -190,7 +201,7 @@ func (cfg OAuthConfig) AuthorizeURL(redirectURI, state string) string {
 // ExchangeCode exchanges an authorization code for a gantryruntime.TokenSource that
 // refreshes itself thereafter.
 func (cfg OAuthConfig) ExchangeCode(ctx context.Context, code, redirectURI string) (gantryruntime.TokenSource, error) {
-	httpc := authHTTPClient(cfg.HTTPClient)
+	httpc := authHTTPClient(cfg.HTTPClient, cfg.Proxy)
 	tokenURL := orDefault(cfg.TokenURL, defaultTokenURL)
 	tr, err := postTokenForm(ctx, httpc, tokenURL, url.Values{
 		"grant_type":    {"authorization_code"},
@@ -213,7 +224,7 @@ func (cfg OAuthConfig) ExchangeCode(ctx context.Context, code, redirectURI strin
 // OAuth resumes the authorization-code flow from a previously stored
 // refresh token, exchanging it for access tokens as needed.
 func OAuth(cfg OAuthConfig, refreshToken string) gantryruntime.TokenSource {
-	return newOAuthSource(cfg, authHTTPClient(cfg.HTTPClient), orDefault(cfg.TokenURL, defaultTokenURL), refreshToken)
+	return newOAuthSource(cfg, authHTTPClient(cfg.HTTPClient, cfg.Proxy), orDefault(cfg.TokenURL, defaultTokenURL), refreshToken)
 }
 
 // oauthSource refreshes access tokens with a refresh token and rotates the
@@ -274,6 +285,7 @@ type JWTConfig struct {
 	UserID        string
 	TokenURL      string       // optional; defaults to Box's token endpoint
 	HTTPClient    *http.Client // optional
+	Proxy         *url.URL     // optional; overrides the HTTPS_PROXY environment (ignored with HTTPClient)
 }
 
 // JWTAuth builds a JWT-assertion gantryruntime.TokenSource, parsing (and if needed
@@ -284,7 +296,7 @@ func JWTAuth(cfg JWTConfig) (gantryruntime.TokenSource, error) {
 	if err != nil {
 		return nil, err
 	}
-	httpc := authHTTPClient(cfg.HTTPClient)
+	httpc := authHTTPClient(cfg.HTTPClient, cfg.Proxy)
 	tokenURL := orDefault(cfg.TokenURL, defaultTokenURL)
 	subjectType, subjectID := "enterprise", cfg.EnterpriseID
 	if cfg.UserID != "" {

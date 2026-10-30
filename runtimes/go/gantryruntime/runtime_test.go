@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -224,6 +225,37 @@ func TestWithHTTPVersionSelectsTheNegotiatedProtocol(t *testing.T) {
 				t.Fatalf("negotiated HTTP/%s, want HTTP/%s", got, tc.want)
 			}
 		})
+	}
+}
+
+// WithProxy sends API requests through the given proxy, alone or alongside
+// WithHTTPVersion; a later WithHTTPClient replaces the built-in client.
+func TestWithProxyRoutesRequestsThroughTheProxy(t *testing.T) {
+	var proxied []string
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A forward proxy sees the absolute target URL, not just its path.
+		proxied = append(proxied, r.URL.String())
+	}))
+	defer proxy.Close()
+	proxyURL, _ := url.Parse(proxy.URL)
+
+	for _, opts := range [][]Option{
+		{WithProxy(proxyURL)},
+		{WithHTTPVersion(HTTP1), WithProxy(proxyURL)},
+		{WithProxy(proxyURL), WithHTTPVersion(HTTP1)},
+	} {
+		client := New(fixedToken("t"), append(opts, WithMaxRetries(0))...)
+		if _, err := client.Fetch(context.Background(), client.NewRequest("GET", "http://box.invalid/2.0/users/me")); err != nil {
+			t.Fatalf("fetch through the proxy: %v", err)
+		}
+	}
+	if len(proxied) != 3 || proxied[0] != "http://box.invalid/2.0/users/me" {
+		t.Fatalf("proxy saw %q, want the target URL three times", proxied)
+	}
+
+	injected := &http.Client{}
+	if client := New(fixedToken("t"), WithProxy(proxyURL), WithHTTPClient(injected)); client.http != injected {
+		t.Fatal("WithHTTPClient after WithProxy should win")
 	}
 }
 

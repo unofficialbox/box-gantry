@@ -609,6 +609,20 @@ const client = new Client(auth.developerToken('DEVELOPER_TOKEN'), { fetch: h2Fet
 
 The same options set `maxRetries`, default `headers`, and `baseUrls`.
 
+## Proxies
+
+Node's built-in `fetch` ignores `HTTPS_PROXY` unless proxy support is switched
+on. Recent Node 22 and 24 releases do that with `NODE_USE_ENV_PROXY=1` (or
+`node --use-env-proxy`), which covers API and token requests alike:
+
+```sh
+NODE_USE_ENV_PROXY=1 HTTPS_PROXY=http://proxy.internal:3128 node app.js
+```
+
+Otherwise pass a `fetch` that dispatches through an undici `ProxyAgent`, as for
+HTTP/2 above, to both the client and the auth config (its `fetch` option).
+Browsers, Deno, and Bun use the platform's own proxy settings.
+
 ## Documentation
 
 The [`docs/`](./docs/README.md) tree carries the per-manager reference and the

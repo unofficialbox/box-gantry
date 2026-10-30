@@ -89,6 +89,29 @@ func TestClientCredentialsGrant(t *testing.T) {
 	}
 }
 
+// A config's Proxy routes token requests through that proxy.
+func TestTokenRequestsUseTheConfiguredProxy(t *testing.T) {
+	var proxied string
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxied = r.URL.String()
+		_, _ = w.Write([]byte(`{"access_token":"proxied","expires_in":3600}`))
+	}))
+	defer proxy.Close()
+	proxyURL, _ := url.Parse(proxy.URL)
+
+	ts := ClientCredentials(CCGConfig{
+		ClientID: "id", ClientSecret: "secret", EnterpriseID: "1",
+		TokenURL: "http://box.invalid/oauth2/token", Proxy: proxyURL,
+	})
+	token, err := ts.AccessToken(context.Background())
+	if err != nil {
+		t.Fatalf("token through the proxy: %v", err)
+	}
+	if token != "proxied" || proxied != "http://box.invalid/oauth2/token" {
+		t.Fatalf("got token %q via %q", token, proxied)
+	}
+}
+
 func TestClientCredentialsUserSubject(t *testing.T) {
 	srv := newTokenServer(t, func(url.Values) string {
 		return `{"access_token":"u","expires_in":3600}`

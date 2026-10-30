@@ -349,7 +349,9 @@ every endpoint.
 
 ## HTTP versions
 
-Salesforce's callout layer chooses the protocol; Apex can't configure it.
+Salesforce's callout layer chooses the protocol; Apex can't configure it. The
+same goes for proxies: callouts leave from Salesforce's network, so a corporate
+proxy never applies.
 
 ## Deploy
 

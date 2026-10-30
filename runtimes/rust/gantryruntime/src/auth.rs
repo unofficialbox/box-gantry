@@ -171,6 +171,23 @@ impl Auth {
         }
     }
 
+    /// Send token requests through `proxy` (fluent), e.g.
+    /// `reqwest::Proxy::all("http://proxy.internal:3128")?`, instead of the
+    /// proxy `HTTPS_PROXY` / `NO_PROXY` select, which is the default. A
+    /// developer token or custom source makes no token requests, so it is
+    /// unchanged. API requests take theirs from
+    /// [`Client::with_proxy`](crate::Client::with_proxy).
+    pub fn with_proxy(mut self, proxy: reqwest::Proxy) -> Auth {
+        let http = auth_http_client_via(Some(proxy));
+        match &mut self.source {
+            Source::Form(source) => source.http = http,
+            Source::OAuth(source) => source.http = http,
+            Source::Jwt(source) => source.http = http,
+            Source::Developer(_) | Source::Custom(_) => {}
+        }
+        self
+    }
+
     /// A valid access token for the configured flow.
     pub(crate) async fn access_token(&self) -> Result<String, Error> {
         match &self.source {
@@ -556,10 +573,18 @@ async fn post_token_form(
 
 /// The dedicated auth HTTP client (a shorter timeout than the API client).
 fn auth_http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .unwrap_or_default()
+    auth_http_client_via(None)
+}
+
+/// The auth HTTP client through `proxy`, or through the proxy the environment
+/// selects when `None`.
+fn auth_http_client_via(proxy: Option<reqwest::Proxy>) -> reqwest::Client {
+    let builder = reqwest::Client::builder().timeout(Duration::from_secs(30));
+    let builder = match proxy {
+        Some(proxy) => builder.proxy(proxy),
+        None => builder,
+    };
+    builder.build().unwrap_or_default()
 }
 
 fn default_token_url() -> String {
@@ -748,6 +773,21 @@ mod tests {
         let auth = oauth_with(url, store);
         assert_eq!(auth.access_token().await.unwrap(), "at");
         assert_eq!(saved.lock().unwrap().as_slice(), ["rotated"]);
+    }
+
+    #[tokio::test]
+    async fn with_proxy_sends_token_requests_through_the_proxy() {
+        // The token URL can't resolve; only the proxy can answer it.
+        let proxy = serve_one_token(r#"{"access_token":"proxied","expires_in":3600}"#).await;
+        let auth = Auth::client_credentials(CcgConfig {
+            client_id: "c".to_string(),
+            client_secret: "s".to_string(),
+            enterprise_id: "1".to_string(),
+            token_url: Some("http://box.invalid/oauth2/token".to_string()),
+            ..Default::default()
+        })
+        .with_proxy(reqwest::Proxy::all(proxy).unwrap());
+        assert_eq!(auth.access_token().await.unwrap(), "proxied");
     }
 
     /// A `TokenSource` that hands out a fixed token and records `force_refresh`
