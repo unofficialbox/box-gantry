@@ -430,14 +430,23 @@ func smokeEvents(t *testing.T, client *gantryruntime.Client, fileID string) {
 
 	// Rename the file once the stream is waiting, so the long poll is what
 	// reports it.
+	renamed := make(chan struct{})
 	rename := time.AfterFunc(3*time.Second, func() {
+		defer close(renamed)
 		name, _ := json.Marshal(map[string]string{"name": fmt.Sprintf("box-gantry-smoke-renamed-%d.txt", time.Now().UnixNano())})
 		req := gantryruntime.WithJsonBody(client.NewRequest("PUT", api+"/files/"+fileID), name)
 		if _, err := client.Fetch(ctx, req); err != nil {
 			t.Errorf("events: renaming the file: %v", err)
 		}
 	})
-	defer rename.Stop()
+	// Box can deliver the rename's event before the PUT's own response, so
+	// wait for that rename to finish before cancelling ctx: cancelling first
+	// fails a rename that already happened.
+	defer func() {
+		if !rename.Stop() {
+			<-renamed
+		}
+	}()
 	for e, err := range gantryruntime.EventStream(ctx, client, "now", source) {
 		if err != nil {
 			t.Fatalf("events: no ITEM_RENAME for file %s from the long poll: %v", fileID, err)
