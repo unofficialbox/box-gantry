@@ -30,6 +30,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /** The hand-written runtime surface (FR-5). */
@@ -342,6 +343,25 @@ public final class Runtime {
         }
     }
 
+    /**
+     * One HTTP attempt as {@link Session#fetch} is about to send it, for a
+     * {@link Session.Builder#onRequest} hook. The headers are those sent,
+     * except that the {@code Authorization} value reads {@code REDACTED}, so a
+     * hook that records every header never captures the access token. {@code
+     * attempt} counts from 1: each retry, and the resend after a 401 token
+     * refresh, is its own attempt.
+     */
+    public record RequestInfo(String method, String url, Map<String, List<String>> headers, int attempt) {}
+
+    /**
+     * How one HTTP attempt ended, for a {@link Session.Builder#onResponse}
+     * hook: the response's status and headers, or the transport {@code error}
+     * when none arrived ({@code status} is then 0). {@code elapsed} runs from
+     * sending the request to reading the whole body.
+     */
+    public record ResponseInfo(
+            RequestInfo request, int status, Map<String, List<String>> headers, Duration elapsed, Throwable error) {}
+
     /** A source of access tokens for the configured auth flow. */
     public interface Auth {
         /** A valid access token, acquired or refreshed as needed. */
@@ -368,6 +388,8 @@ public final class Runtime {
         private final Map<String, String> baseUrls;
         private final Map<String, String> baseUrlOverrides;
         private final Map<String, String> defaultHeaders;
+        private final List<Consumer<RequestInfo>> requestHooks;
+        private final List<Consumer<ResponseInfo>> responseHooks;
 
         /** Build a runtime session for an authentication flow, with the default
          * HTTP client, retry policy, and base URLs. Equivalent to
@@ -385,6 +407,8 @@ public final class Runtime {
             this.baseUrls = defaultBaseUrls();
             this.baseUrlOverrides = Map.copyOf(builder.baseUrlOverrides);
             this.defaultHeaders = Map.copyOf(builder.defaultHeaders);
+            this.requestHooks = List.copyOf(builder.requestHooks);
+            this.responseHooks = List.copyOf(builder.responseHooks);
         }
 
         private Session(Session base, Map<String, String> defaultHeaders) {
@@ -394,6 +418,8 @@ public final class Runtime {
             this.baseUrls = base.baseUrls;
             this.baseUrlOverrides = base.baseUrlOverrides;
             this.defaultHeaders = Map.copyOf(defaultHeaders);
+            this.requestHooks = base.requestHooks;
+            this.responseHooks = base.responseHooks;
         }
 
         /**
@@ -478,7 +504,7 @@ public final class Runtime {
             for (int attempt = 0; attempt <= maxRetries; attempt++) {
                 Response response;
                 try {
-                    response = send(request, token);
+                    response = send(request, token, attempt + 1);
                 } catch (IOException | InterruptedException err) {
                     if (err instanceof InterruptedException) {
                         Thread.currentThread().interrupt();
@@ -508,7 +534,7 @@ public final class Runtime {
             throw new BoxApiException("gantryruntime: retries exhausted");
         }
 
-        private Response send(Request request, String token) throws IOException, InterruptedException {
+        private Response send(Request request, String token, int attempt) throws IOException, InterruptedException {
             HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(buildUrl(request)))
                     .timeout(request.timeout != null ? request.timeout : API_TIMEOUT);
             HttpRequest.BodyPublisher body = request.body == null
@@ -530,7 +556,17 @@ public final class Runtime {
             for (String[] header : request.headers) {
                 builder.header(header[0], header[1]);
             }
-            HttpResponse<byte[]> response = http.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
+            HttpRequest httpRequest = builder.build();
+            RequestInfo info = observeRequest(httpRequest, attempt);
+            long started = System.nanoTime();
+            HttpResponse<byte[]> response;
+            try {
+                response = http.send(httpRequest, HttpResponse.BodyHandlers.ofByteArray());
+            } catch (IOException | InterruptedException | RuntimeException err) {
+                observeResponse(info, 0, Map.of(), started, err);
+                throw err;
+            }
+            observeResponse(info, response.statusCode(), response.headers().map(), started, null);
             List<String[]> headers = new ArrayList<>();
             response.headers().map().forEach((name, values) -> {
                 for (String value : values) {
@@ -538,6 +574,36 @@ public final class Runtime {
                 }
             });
             return new Response(response.statusCode(), headers, response.body());
+        }
+
+        /** Run the request hooks for one attempt, returning what they saw for
+         * the response hooks to carry along ({@code null} with no hooks). */
+        private RequestInfo observeRequest(HttpRequest request, int attempt) {
+            if (requestHooks.isEmpty() && responseHooks.isEmpty()) {
+                return null;
+            }
+            Map<String, List<String>> headers = new java.util.TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+            headers.putAll(request.headers().map());
+            headers.put("Authorization", List.of("REDACTED"));
+            RequestInfo info = new RequestInfo(
+                    request.method(), request.uri().toString(), java.util.Collections.unmodifiableMap(headers), attempt);
+            for (Consumer<RequestInfo> hook : requestHooks) {
+                hook.accept(info);
+            }
+            return info;
+        }
+
+        /** Run the response hooks for one attempt. */
+        private void observeResponse(
+                RequestInfo request, int status, Map<String, List<String>> headers, long startedNanos, Throwable error) {
+            if (request == null || responseHooks.isEmpty()) {
+                return;
+            }
+            ResponseInfo info = new ResponseInfo(
+                    request, status, headers, Duration.ofNanos(System.nanoTime() - startedNanos), error);
+            for (Consumer<ResponseInfo> hook : responseHooks) {
+                hook.accept(info);
+            }
         }
 
         private static String buildUrl(Request request) {
@@ -604,6 +670,8 @@ public final class Runtime {
             private int maxRetries = DEFAULT_MAX_RETRIES;
             private final Map<String, String> baseUrlOverrides = new LinkedHashMap<>();
             private final Map<String, String> defaultHeaders = new LinkedHashMap<>();
+            private final List<Consumer<RequestInfo>> requestHooks = new ArrayList<>();
+            private final List<Consumer<ResponseInfo>> responseHooks = new ArrayList<>();
 
             private Builder(Auth auth) {
                 this.auth = auth;
@@ -669,6 +737,27 @@ public final class Runtime {
             public Builder header(String name, String value) {
                 defaultHeaders.keySet().removeIf(key -> key.equalsIgnoreCase(name));
                 defaultHeaders.put(name, value);
+                return this;
+            }
+
+            /** Call {@code hook} before every HTTP attempt {@link
+             * Session#fetch} makes, retries included. Hooks observe; they
+             * can't change the request. Call again to add more hooks, which
+             * run in order. Token requests are not observed. This is the way
+             * in for instrumentation, since {@link HttpClient} has no
+             * interceptors to wrap. */
+            public Builder onRequest(Consumer<RequestInfo> hook) {
+                requestHooks.add(java.util.Objects.requireNonNull(hook, "hook"));
+                return this;
+            }
+
+            /** Call {@code hook} after every HTTP attempt {@link
+             * Session#fetch} makes — a retried 429 or 5xx, the 401 before a
+             * token refresh, and the final answer alike — and after an
+             * attempt that failed in transport. Like {@link #onRequest} it
+             * observes only, and adds to any hooks already set. */
+            public Builder onResponse(Consumer<ResponseInfo> hook) {
+                responseHooks.add(java.util.Objects.requireNonNull(hook, "hook"));
                 return this;
             }
 

@@ -223,6 +223,38 @@ fn api_http_client(version: HttpVersion, proxy: Option<&reqwest::Proxy>) -> reqw
     builder.build().unwrap_or_default()
 }
 
+/// One HTTP attempt as [`Client::fetch`] is about to send it, for a request
+/// hook (see [`Client::with_request_hook`]). The headers are those sent, except
+/// that the `authorization` value reads `REDACTED`, so a hook that records
+/// every header never captures the access token.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct RequestInfo {
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    /// Counts from 1: each retry, and the resend after a 401 token refresh, is
+    /// its own attempt.
+    pub attempt: u32,
+}
+
+/// How one HTTP attempt ended, for a response hook (see
+/// [`Client::with_response_hook`]): the response's status and headers, or the
+/// transport `error` when none arrived. `elapsed` runs from sending the
+/// request to reading the whole body.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct ResponseInfo {
+    pub request: RequestInfo,
+    pub status: Option<i64>,
+    pub headers: Vec<(String, String)>,
+    pub elapsed: Duration,
+    pub error: Option<String>,
+}
+
+type RequestHook = std::sync::Arc<dyn Fn(&RequestInfo) + Send + Sync>;
+type ResponseHook = std::sync::Arc<dyn Fn(&ResponseInfo) + Send + Sync>;
+
 /// The runtime session: it holds the auth flow, HTTP client, base-URL
 /// configuration, and retry policy shared by every manager.
 pub struct Client {
@@ -237,6 +269,8 @@ pub struct Client {
     // `with_proxy` combine.
     http_version: HttpVersion,
     proxy: Option<reqwest::Proxy>,
+    request_hooks: Vec<RequestHook>,
+    response_hooks: Vec<ResponseHook>,
 }
 
 impl Client {
@@ -251,6 +285,8 @@ impl Client {
             default_headers: Vec::new(),
             http_version: HttpVersion::Http2,
             proxy: None,
+            request_hooks: Vec::new(),
+            response_hooks: Vec::new(),
         }
     }
 
@@ -290,6 +326,32 @@ impl Client {
         self
     }
 
+    /// Call `hook` before every HTTP attempt `fetch` makes, retries included
+    /// (fluent). Hooks observe; they can't change the request. Call again to
+    /// add more hooks, which run in order. Token requests are not observed.
+    /// This is the way in for instrumentation: a `reqwest::Client` has no
+    /// middleware to wrap.
+    pub fn with_request_hook(
+        mut self,
+        hook: impl Fn(&RequestInfo) + Send + Sync + 'static,
+    ) -> Client {
+        self.request_hooks.push(std::sync::Arc::new(hook));
+        self
+    }
+
+    /// Call `hook` after every HTTP attempt `fetch` makes (fluent) — a retried
+    /// 429 or 5xx, the 401 before a token refresh, and the final answer alike —
+    /// and after an attempt that failed in transport. Like
+    /// [`Client::with_request_hook`] it observes only, and adds to any hooks
+    /// already set.
+    pub fn with_response_hook(
+        mut self,
+        hook: impl Fn(&ResponseInfo) + Send + Sync + 'static,
+    ) -> Client {
+        self.response_hooks.push(std::sync::Arc::new(hook));
+        self
+    }
+
     /// Add a header sent with every request from this client (fluent) — e.g.
     /// a tracing or `User-Agent` header an embedding application wants on
     /// every call. Replaces any prior default with the same name
@@ -317,6 +379,8 @@ impl Client {
             default_headers: self.default_headers.clone(),
             http_version: self.http_version,
             proxy: self.proxy.clone(),
+            request_hooks: self.request_hooks.clone(),
+            response_hooks: self.response_hooks.clone(),
         }
         .with_header("As-User", user_id)
     }
@@ -391,9 +455,19 @@ impl Client {
                 builder = builder.timeout(timeout);
             }
 
-            let response = match builder.send().await {
+            let mut info = None;
+            let started = std::time::Instant::now();
+            let sent = match builder.build() {
+                Ok(http_request) => {
+                    info = self.observe_request(&http_request, attempt + 1);
+                    self.http.execute(http_request).await
+                }
+                Err(err) => Err(err),
+            };
+            let response = match sent {
                 Ok(response) => response,
                 Err(err) => {
+                    self.observe_response(info, started, Err(&err.to_string()));
                     // A transport error gives no response, so a non-idempotent
                     // request may or may not have committed — don't replay it.
                     if attempt == self.max_retries || !idempotent {
@@ -403,7 +477,12 @@ impl Client {
                     continue;
                 }
             };
-            let response = read_response(response).await?;
+            let response = read_response(response).await;
+            match &response {
+                Ok(response) => self.observe_response(info, started, Ok(response)),
+                Err(err) => self.observe_response(info, started, Err(&err.to_string())),
+            }
+            let response = response?;
 
             // A single force-refresh on 401: re-acquire past the token cache so
             // the retry doesn't just resend the same rejected token.
@@ -423,6 +502,66 @@ impl Client {
             return Ok(response);
         }
         Err(Error::new("gantryruntime: retries exhausted"))
+    }
+}
+
+impl Client {
+    /// Run the request hooks for one attempt, returning what they saw for the
+    /// response hooks to carry along (`None` when there are no hooks at all).
+    fn observe_request(&self, request: &reqwest::Request, attempt: u32) -> Option<RequestInfo> {
+        if self.request_hooks.is_empty() && self.response_hooks.is_empty() {
+            return None;
+        }
+        let headers = request
+            .headers()
+            .iter()
+            .map(|(name, value)| {
+                let value = if name == reqwest::header::AUTHORIZATION {
+                    "REDACTED"
+                } else {
+                    value.to_str().unwrap_or_default()
+                };
+                (name.as_str().to_string(), value.to_string())
+            })
+            .collect();
+        let info = RequestInfo {
+            method: request.method().as_str().to_string(),
+            url: request.url().as_str().to_string(),
+            headers,
+            attempt,
+        };
+        for hook in &self.request_hooks {
+            hook(&info);
+        }
+        Some(info)
+    }
+
+    /// Run the response hooks for one attempt: the response when it arrived,
+    /// the error's message when it didn't.
+    fn observe_response(
+        &self,
+        request: Option<RequestInfo>,
+        started: std::time::Instant,
+        outcome: Result<&Response, &str>,
+    ) {
+        let Some(request) = request else { return };
+        if self.response_hooks.is_empty() {
+            return;
+        }
+        let (status, headers, error) = match outcome {
+            Ok(response) => (Some(response.status), response.headers.clone(), None),
+            Err(message) => (None, Vec::new(), Some(message.to_string())),
+        };
+        let info = ResponseInfo {
+            request,
+            status,
+            headers,
+            elapsed: started.elapsed(),
+            error,
+        };
+        for hook in &self.response_hooks {
+            hook(&info);
+        }
     }
 }
 
@@ -1223,5 +1362,107 @@ mod tests {
         let sent = rx.await.unwrap().to_lowercase();
         assert!(!sent.contains("as-user"), "{sent}");
         assert!(sent.contains("x-trace-id: trace"), "{sent}");
+    }
+
+    /// Serve the canned responses in order, one connection each (every one
+    /// says `connection: close`); returns the URL and the request heads seen.
+    async fn serve_sequence(
+        responses: &'static [&'static [u8]],
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let heads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = heads.clone();
+        tokio::spawn(async move {
+            for raw in responses {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = socket.read(&mut chunk).await.unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                seen.lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&buf).to_lowercase());
+                let _ = socket.write_all(raw).await;
+            }
+        });
+        (format!("http://{addr}/files/1"), heads)
+    }
+
+    /// A 429 (`Retry-After: 0`), then a 401, then a 200.
+    const FLAKY: &[&[u8]] = &[
+        b"HTTP/1.1 429 Too Many Requests\r\nretry-after: 0\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}",
+    ];
+
+    #[tokio::test]
+    async fn hooks_observe_every_attempt_with_the_token_withheld() {
+        let (url, heads) = serve_sequence(FLAKY).await;
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let responses = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (seen_requests, seen_responses) = (requests.clone(), responses.clone());
+        let client = Client::new(Auth::developer_token("secret-token"))
+            .with_request_hook(move |r| seen_requests.lock().unwrap().push(r.clone()))
+            .with_response_hook(move |r| seen_responses.lock().unwrap().push(r.clone()));
+        let request = with_query(client.new_request("GET", &url), "fields", "id");
+        client.fetch(request).await.unwrap();
+
+        let heads = heads.lock().unwrap();
+        assert_eq!(heads.len(), 3);
+        assert!(heads[2].contains("authorization: bearer secret-token"));
+        let requests = requests.lock().unwrap();
+        let responses = responses.lock().unwrap();
+        assert_eq!((requests.len(), responses.len()), (3, 3));
+        for (i, status) in [429, 401, 200].into_iter().enumerate() {
+            let attempt = i as u32 + 1;
+            let (request, response) = (&requests[i], &responses[i]);
+            assert_eq!(
+                (request.attempt, response.request.attempt),
+                (attempt, attempt)
+            );
+            assert_eq!(request.method, "GET");
+            assert_eq!(request.url, format!("{url}?fields=id"));
+            assert_eq!(
+                header_value(&request.headers, "authorization"),
+                Some("REDACTED")
+            );
+            assert_eq!(response.status, Some(status));
+            assert!(response.error.is_none());
+        }
+        assert_eq!(
+            header_value(&responses[0].headers, "retry-after"),
+            Some("0")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_response_hook_sees_a_transport_error() {
+        // Bind and drop a listener, so its port refuses connections.
+        let addr = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let responses = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = responses.clone();
+        let client = Client::new(Auth::developer_token("t"))
+            .with_max_retries(0)
+            .with_response_hook(move |r| seen.lock().unwrap().push(r.clone()));
+        let request = client.new_request("GET", &format!("http://{addr}/"));
+        assert!(client.fetch(request).await.is_err());
+        let responses = responses.lock().unwrap();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(
+            (responses[0].status, responses[0].request.attempt),
+            (None, 1)
+        );
+        assert!(responses[0].error.is_some());
     }
 }

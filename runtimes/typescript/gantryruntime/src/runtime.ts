@@ -63,6 +63,38 @@ export class Stream {
   }
 }
 
+/** One HTTP attempt as `Client.fetch` is about to send it, for a request
+ * hook. `headers` is a copy whose `Authorization` value reads `REDACTED`, so a
+ * hook that records every header never captures the access token. */
+export interface RequestInfo {
+  readonly method: string;
+  readonly url: string;
+  readonly headers: Headers;
+  /** Counts from 1: each retry, and the resend after a 401 token refresh, is
+   * its own attempt. */
+  readonly attempt: number;
+}
+
+/** How one HTTP attempt ended, for a response hook: the response's `status`
+ * and `headers`, or the transport `error` when none arrived. `elapsedMs` runs
+ * from sending the request to reading the whole body. */
+export interface ResponseInfo {
+  readonly request: RequestInfo;
+  readonly status?: number;
+  readonly headers?: Headers;
+  readonly elapsedMs: number;
+  readonly error?: unknown;
+}
+
+/** Callbacks around every HTTP attempt `Client.fetch` makes — each retry, the
+ * 401 before a token refresh, and an attempt that fails in transport
+ * included. They observe; they can't change the request (wrap the `fetch`
+ * option to do that). Token requests are not observed. */
+export interface ClientHooks {
+  onRequest?(request: RequestInfo): void;
+  onResponse?(response: ResponseInfo): void;
+}
+
 /** Options for a runtime `Client`. */
 export interface ClientOptions {
   /** How many times a retriable failure is retried (default 5). */
@@ -77,6 +109,8 @@ export interface ClientOptions {
    * header set on an individual `Request` (via `withHeader`) takes
    * precedence over a same-named default. */
   headers?: Record<string, string>;
+  /** Hooks around every HTTP attempt, run in order (see `ClientHooks`). */
+  hooks?: ClientHooks[];
 }
 
 /** The runtime session: it holds the auth flow, base-URL configuration, and
@@ -87,6 +121,7 @@ export class Client {
   private readonly maxRetries: number;
   private readonly fetchImpl: typeof fetch;
   private readonly defaultHeaders: Record<string, string>;
+  private readonly hooks: ClientHooks[];
 
   constructor(auth: Auth, options: ClientOptions = {}) {
     this.auth = auth;
@@ -98,6 +133,7 @@ export class Client {
     this.baseUrls = { ...DEFAULT_BASE_URLS, ...(options.baseUrls ?? {}) };
     this.fetchImpl = options.fetch ?? fetch;
     this.defaultHeaders = { ...(options.headers ?? {}) };
+    this.hooks = [...(options.hooks ?? [])];
   }
 
   /** A new client that sends `As-User: userId` with every API request, so Box
@@ -114,6 +150,7 @@ export class Client {
       baseUrls: this.baseUrls,
       fetch: this.fetchImpl,
       headers: { ...headers, 'As-User': userId },
+      hooks: this.hooks,
     });
   }
 
@@ -154,9 +191,12 @@ export class Client {
       request.headers.forEach((value, name) => headers.set(name, value));
       headers.set('Authorization', `Bearer ${token}`);
 
+      const info = this.observeRequest(request.method, url, headers, attempt + 1);
+      const started = performance.now();
       // `httpResponse` is the platform `Response` (via inference — the name is
       // shadowed by this module's `Response` class, so it is never annotated).
       let httpResponse;
+      let bodyBytes: Uint8Array;
       try {
         httpResponse = await this.fetchImpl(url, {
           method: request.method,
@@ -168,6 +208,7 @@ export class Client {
           signal,
         });
       } catch (err) {
+        this.observeResponse(info, started, { error: err });
         // A transport error gives no response, so a non-idempotent write may
         // already have committed — only retry idempotent methods.
         lastError = err;
@@ -178,8 +219,17 @@ export class Client {
         continue;
       }
 
-      const bodyBytes = new Uint8Array(await httpResponse.arrayBuffer());
+      try {
+        bodyBytes = new Uint8Array(await httpResponse.arrayBuffer());
+      } catch (err) {
+        this.observeResponse(info, started, { error: err });
+        throw err;
+      }
       const response = new Response(httpResponse.status, httpResponse.headers, bodyBytes);
+      this.observeResponse(info, started, {
+        status: response.status,
+        headers: new Headers(response.headers),
+      });
 
       // A single force-refresh on 401: re-acquire past the token cache so the
       // retry doesn't just resend the same rejected token.
@@ -200,6 +250,36 @@ export class Client {
     throw new BoxApiError(`request failed after ${this.maxRetries + 1} attempts`, {
       cause: lastError,
     });
+  }
+
+  /** Run the request hooks for one attempt, returning what they saw for the
+   * response hooks to carry along. */
+  private observeRequest(method: string, url: string, sent: Headers, attempt: number): RequestInfo | undefined {
+    if (this.hooks.length === 0) {
+      return undefined;
+    }
+    const headers = new Headers(sent);
+    headers.set('Authorization', 'REDACTED');
+    const info: RequestInfo = { method, url, headers, attempt };
+    for (const hook of this.hooks) {
+      hook.onRequest?.(info);
+    }
+    return info;
+  }
+
+  /** Run the response hooks for one attempt. */
+  private observeResponse(
+    request: RequestInfo | undefined,
+    started: number,
+    outcome: { status?: number; headers?: Headers; error?: unknown },
+  ): void {
+    if (request === undefined) {
+      return;
+    }
+    const info: ResponseInfo = { request, elapsedMs: performance.now() - started, ...outcome };
+    for (const hook of this.hooks) {
+      hook.onResponse?.(info);
+    }
   }
 }
 

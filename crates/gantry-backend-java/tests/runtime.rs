@@ -213,6 +213,20 @@ public final class RuntimeSmoke {
             proxiedHost.set(ex.getRequestHeaders().getFirst("Host"));
             respond(ex, 200, "proxied");
         });
+        // A 429 (Retry-After: 0), then a 401, then 200, for the hook tests;
+        // records each request's Authorization header.
+        java.util.List<String> flakyAuths = new java.util.concurrent.CopyOnWriteArrayList<>();
+        server.createContext("/flaky", ex -> {
+            flakyAuths.add(ex.getRequestHeaders().getFirst("Authorization"));
+            if (flakyAuths.size() == 1) {
+                ex.getResponseHeaders().add("Retry-After", "0");
+                respond(ex, 429, "");
+            } else if (flakyAuths.size() == 2) {
+                respond(ex, 401, "");
+            } else {
+                respond(ex, 200, "{}");
+            }
+        });
 
         server.start();
         String base = "http://127.0.0.1:" + server.getAddress().getPort();
@@ -359,6 +373,47 @@ public final class RuntimeSmoke {
             proxyConflicted = true;
         }
         check(proxyConflicted, "httpClient + proxy should be rejected at build()");
+
+        // Hooks see every attempt — the retried 429 and the resend after the
+        // 401 refresh — with the token withheld from them.
+        java.util.List<Runtime.RequestInfo> seenRequests = new java.util.ArrayList<>();
+        java.util.List<Runtime.ResponseInfo> seenResponses = new java.util.ArrayList<>();
+        Runtime.Session hooked = Runtime.Session.builder(Runtime.developerToken("secret-token"))
+            .onRequest(seenRequests::add)
+            .onResponse(seenResponses::add)
+            .build();
+        hooked.fetch(Runtime.withQuery(hooked.newRequest("GET", base + "/flaky"), "fields", "id"));
+        check(flakyAuths.size() == 3 && "Bearer secret-token".equals(flakyAuths.get(2)),
+            "flaky server saw " + flakyAuths);
+        check(seenRequests.size() == 3 && seenResponses.size() == 3,
+            "hooks saw " + seenRequests.size() + " requests, " + seenResponses.size() + " responses");
+        int[] statuses = {429, 401, 200};
+        for (int i = 0; i < 3; i++) {
+            Runtime.RequestInfo req = seenRequests.get(i);
+            Runtime.ResponseInfo resp = seenResponses.get(i);
+            check(req.attempt() == i + 1 && resp.request().attempt() == i + 1, "attempt " + (i + 1));
+            check(req.method().equals("GET") && req.url().equals(base + "/flaky?fields=id"), "request " + req);
+            check(java.util.List.of("REDACTED").equals(req.headers().get("authorization")),
+                "hook saw Authorization " + req.headers().get("authorization"));
+            check(resp.status() == statuses[i] && resp.error() == null, "response " + resp);
+        }
+        check(java.util.List.of("0").equals(seenResponses.get(0).headers().get("retry-after")),
+            "429 headers " + seenResponses.get(0).headers());
+
+        // A transport failure reaches the response hook as an error.
+        java.util.List<Runtime.ResponseInfo> failed = new java.util.ArrayList<>();
+        Runtime.Session refused = Runtime.Session.builder(Runtime.developerToken("t"))
+            .maxRetries(0)
+            .onResponse(failed::add)
+            .build();
+        boolean threw = false;
+        try {
+            refused.fetch(refused.newRequest("GET", "http://127.0.0.1:1/"));
+        } catch (Runtime.BoxApiException expected) {
+            threw = true;
+        }
+        check(threw && failed.size() == 1 && failed.get(0).status() == 0 && failed.get(0).error() != null,
+            "transport error hook: " + failed);
 
         server.stop(0);
         System.out.println("RUNTIME_OK");

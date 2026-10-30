@@ -623,6 +623,21 @@ Otherwise pass a `fetch` that dispatches through an undici `ProxyAgent`, as for
 HTTP/2 above, to both the client and the auth config (its `fetch` option).
 Browsers, Deno, and Bun use the platform's own proxy settings.
 
+## Hooks and logging
+
+`hooks` observe every HTTP attempt — each retry and the resend after a token
+refresh included — with its method, URL, headers (the `Authorization` value
+withheld), status, elapsed time, and attempt number:
+
+```ts
+const client = new Client(auth.developerToken('DEVELOPER_TOKEN'), {
+  hooks: [{ onResponse: (r) => console.log(r.request.method, r.status, r.elapsedMs, r.request.attempt) }],
+});
+```
+
+Hooks observe only; to change requests, pass your own `fetch`. Token requests
+are not observed.
+
 ## Documentation
 
 The [`docs/`](./docs/README.md) tree carries the per-manager reference and the

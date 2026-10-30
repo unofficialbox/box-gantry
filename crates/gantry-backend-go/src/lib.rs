@@ -521,6 +521,23 @@ c := client.NewClient(ts, gantryruntime.WithProxy(proxy))
 
 `WithProxy` combines with `WithHTTPVersion`; `WithHTTPClient` replaces both.
 
+## Hooks and logging
+
+`WithRequestHook` and `WithResponseHook` observe every HTTP attempt — each
+retry and the resend after a token refresh included — with its method, URL,
+headers (the `Authorization` value withheld), status, elapsed time, and attempt
+number:
+
+```go
+c := client.NewClient(ts, gantryruntime.WithResponseHook(
+	func(ctx context.Context, r gantryruntime.ResponseInfo) {
+		fmt.Println(r.Request.Method, r.Status, r.Elapsed, r.Request.Attempt)
+	}))
+```
+
+Hooks observe only; to change requests, wrap the `Transport` of a client passed
+to `WithHTTPClient`. Token requests are not observed.
+
 ## Documentation
 
 API reference on [pkg.go.dev](https://pkg.go.dev/@MODULE@); the [`docs/`](./docs)

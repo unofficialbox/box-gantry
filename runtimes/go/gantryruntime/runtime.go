@@ -56,6 +56,8 @@ type Client struct {
 	baseURLs       map[string]string
 	maxRetries     int
 	defaultHeaders http.Header
+	requestHooks   []func(context.Context, RequestInfo)
+	responseHooks  []func(context.Context, ResponseInfo)
 
 	// The built-in API client's settings (WithHTTPVersion, WithProxy); New
 	// builds it from them unless WithHTTPClient injected one.
@@ -127,6 +129,46 @@ func apiHTTPClient(v HTTPVersion, proxy *url.URL) *http.Client {
 
 // WithMaxRetries sets how many times a retriable failure is retried.
 func WithMaxRetries(n int) Option { return func(c *Client) { c.maxRetries = n } }
+
+// RequestInfo describes one HTTP attempt as Fetch is about to send it. The
+// Header is a copy whose Authorization value reads "REDACTED", so a hook that
+// records every header never captures the access token.
+type RequestInfo struct {
+	Method string
+	URL    string
+	Header http.Header
+	// Attempt counts from 1: each retry, and the resend after a 401 token
+	// refresh, is its own attempt.
+	Attempt int
+}
+
+// ResponseInfo describes how one HTTP attempt ended: the response's status
+// and headers, or Err when no response arrived (Status is then 0). Elapsed
+// runs from sending the request to reading the whole body.
+type ResponseInfo struct {
+	Request RequestInfo
+	Status  int
+	Header  http.Header
+	Elapsed time.Duration
+	Err     error
+}
+
+// WithRequestHook calls hook before every HTTP attempt Fetch makes, retries
+// included. Hooks observe; they can't change the request. Give the option
+// more than once to add more hooks, which run in order. Token requests are
+// not observed. To change requests in flight, wrap the transport of a client
+// passed to WithHTTPClient instead.
+func WithRequestHook(hook func(ctx context.Context, request RequestInfo)) Option {
+	return func(c *Client) { c.requestHooks = append(c.requestHooks, hook) }
+}
+
+// WithResponseHook calls hook after every HTTP attempt Fetch makes — a
+// retried 429 or 5xx, the 401 before a token refresh, and the final answer
+// alike — and after an attempt that failed in transport. Like
+// WithRequestHook it observes only, and may be given more than once.
+func WithResponseHook(hook func(ctx context.Context, response ResponseInfo)) Option {
+	return func(c *Client) { c.responseHooks = append(c.responseHooks, hook) }
+}
 
 // WithBaseURL overrides one base-URL class (custom deployments).
 func WithBaseURL(name, base string) Option {
@@ -235,8 +277,11 @@ func (c *Client) Fetch(ctx context.Context, request *Request) (*Response, error)
 		}
 		httpReq.Header.Set("Authorization", "Bearer "+token)
 
+		info := c.observeRequest(ctx, httpReq, attempt+1)
+		started := time.Now()
 		httpResp, err := client.Do(httpReq)
 		if err != nil {
+			c.observeResponse(ctx, info, nil, started, err)
 			lastErr = err
 			if attempt == c.maxRetries || !sleep(ctx, backoff(attempt)) {
 				return nil, err
@@ -244,6 +289,7 @@ func (c *Client) Fetch(ctx context.Context, request *Request) (*Response, error)
 			continue
 		}
 		resp, err := readResponse(httpResp)
+		c.observeResponse(ctx, info, resp, started, err)
 		if err != nil {
 			return nil, err
 		}
@@ -271,6 +317,36 @@ func (c *Client) Fetch(ctx context.Context, request *Request) (*Response, error)
 		return nil, lastErr
 	}
 	return nil, context.DeadlineExceeded
+}
+
+// observeRequest runs the request hooks for one attempt and returns what they
+// saw, for the response hooks to carry along.
+func (c *Client) observeRequest(ctx context.Context, httpReq *http.Request, attempt int) RequestInfo {
+	if len(c.requestHooks) == 0 && len(c.responseHooks) == 0 {
+		return RequestInfo{}
+	}
+	header := httpReq.Header.Clone()
+	header.Set("Authorization", "REDACTED")
+	info := RequestInfo{Method: httpReq.Method, URL: httpReq.URL.String(), Header: header, Attempt: attempt}
+	for _, hook := range c.requestHooks {
+		hook(ctx, info)
+	}
+	return info
+}
+
+// observeResponse runs the response hooks for one attempt: resp when it
+// arrived, err when it didn't.
+func (c *Client) observeResponse(ctx context.Context, request RequestInfo, resp *Response, started time.Time, err error) {
+	if len(c.responseHooks) == 0 {
+		return
+	}
+	info := ResponseInfo{Request: request, Elapsed: time.Since(started), Err: err}
+	if resp != nil {
+		info.Status, info.Header = resp.status, resp.header.Clone()
+	}
+	for _, hook := range c.responseHooks {
+		hook(ctx, info)
+	}
 }
 
 func readResponse(httpResp *http.Response) (*Response, error) {

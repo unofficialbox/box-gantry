@@ -521,6 +521,22 @@ let session = runtime::Client::new(auth).with_proxy(proxy);
 `with_proxy` combines with `with_http_version`; `with_http_client` replaces
 both. HTTP and HTTPS proxies are supported.
 
+## Hooks and logging
+
+`with_request_hook` and `with_response_hook` observe every HTTP attempt — each
+retry and the resend after a token refresh included — with its method, URL,
+headers (the `authorization` value withheld), status, elapsed time, and attempt
+number:
+
+```rust,ignore
+let session = runtime::Client::new(auth).with_response_hook(|r| {
+    println!("{} {:?} {:?} (attempt {})", r.request.method, r.status, r.elapsed, r.request.attempt)
+});
+```
+
+Hooks observe only; they can't change a request. Token requests are not
+observed.
+
 ## Documentation
 
 API reference on [docs.rs](https://docs.rs/box-open-sdk); the [`docs/`](./docs)

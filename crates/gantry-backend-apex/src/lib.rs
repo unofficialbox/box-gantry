@@ -353,6 +353,11 @@ Salesforce's callout layer chooses the protocol; Apex can't configure it. The
 same goes for proxies: callouts leave from Salesforce's network, so a corporate
 proxy never applies.
 
+## Hooks and logging
+
+Apex has no request hooks: Salesforce's debug logs already record every callout
+(`CALLOUT_REQUEST` / `CALLOUT_RESPONSE`), retries included.
+
 ## Deploy
 
 ```bash

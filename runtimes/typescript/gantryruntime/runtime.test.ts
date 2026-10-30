@@ -16,7 +16,9 @@ import {
   verifyWebhook,
   withHeader,
   withMultipartBody,
+  withQuery,
 } from './src/runtime.js';
+import type { RequestInfo, ResponseInfo } from './src/runtime.js';
 
 /** Concatenate byte chunks into one buffer (no `Buffer` — see node-live.d.ts). */
 function concatBytes(chunks: Uint8Array[]): Uint8Array {
@@ -219,6 +221,69 @@ test('withMultipartBody omits an absent JSON part', async () => {
   });
   assert.ok(!body.includes('application/json'));
   assert.ok(body.includes('name="pic"; filename="pic"'));
+});
+
+/** A server answering a 429 (`Retry-After: 0`), then a 401, then 200; it
+ * records the Authorization header of each request. */
+function flaky(auths: string[]) {
+  return (req: http.IncomingMessage, res: http.ServerResponse) => {
+    auths.push(String(req.headers.authorization ?? ''));
+    if (auths.length === 1) {
+      res.statusCode = 429;
+      res.setHeader('Retry-After', '0');
+    } else if (auths.length === 2) {
+      res.statusCode = 401;
+    }
+    res.end('{}');
+  };
+}
+
+test('hooks observe every attempt, a retried 429 and a 401 refresh included, without the token', async () => {
+  const auths: string[] = [];
+  const requests: RequestInfo[] = [];
+  const responses: ResponseInfo[] = [];
+  let url = '';
+  await withServer(flaky(auths), async (base) => {
+    url = `${base}files/1`;
+    const client = new Client(developerToken('secret-token'), {
+      hooks: [{ onRequest: (r) => requests.push(r) }, { onResponse: (r) => responses.push(r) }],
+    });
+    await client.fetch(withQuery(client.newRequest('GET', url), 'fields', 'id'));
+  });
+  assert.deepEqual(auths, ['Bearer secret-token', 'Bearer secret-token', 'Bearer secret-token']);
+  assert.equal(requests.length, 3);
+  assert.deepEqual(
+    responses.map((r) => [r.request.attempt, r.status, r.error]),
+    [
+      [1, 429, undefined],
+      [2, 401, undefined],
+      [3, 200, undefined],
+    ],
+  );
+  requests.forEach((r, i) => {
+    assert.equal(r.attempt, i + 1);
+    assert.equal(r.method, 'GET');
+    assert.equal(r.url, `${url}?fields=id`);
+    assert.equal(r.headers.get('Authorization'), 'REDACTED');
+  });
+  assert.equal(responses[0]?.headers?.get('Retry-After'), '0');
+  assert.ok(responses.every((r) => r.elapsedMs >= 0));
+});
+
+test('a response hook sees a transport error', async () => {
+  const responses: ResponseInfo[] = [];
+  const failing = (async () => {
+    throw new TypeError('fetch failed');
+  }) as typeof fetch;
+  const client = new Client(developerToken('t'), {
+    maxRetries: 0,
+    fetch: failing,
+    hooks: [{ onResponse: (r) => responses.push(r) }],
+  });
+  await assert.rejects(client.fetch(client.newRequest('GET', 'http://box.invalid/')), () => true);
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0]?.status, undefined);
+  assert.ok(responses[0]?.error instanceof TypeError);
 });
 
 /** A real-time server answering long polls from a script, one answer per

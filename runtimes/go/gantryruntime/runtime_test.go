@@ -290,3 +290,81 @@ func TestWithAsUserHeaderDerivesAClientActingAsTheUser(t *testing.T) {
 		t.Fatalf("As-User|X-Trace-Id seen %v, want %v", seen, want)
 	}
 }
+
+// flakyServer answers a 429 (Retry-After: 0), then a 401, then 200, and
+// records the Authorization header of each request it receives.
+func flakyServer(t *testing.T) (*httptest.Server, *[]string) {
+	t.Helper()
+	var auths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auths = append(auths, r.Header.Get("Authorization"))
+		switch len(auths) {
+		case 1:
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+		case 2:
+			w.WriteHeader(http.StatusUnauthorized)
+		default:
+			io.WriteString(w, `{"id":"1"}`)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server, &auths
+}
+
+// The request and response hooks see every attempt — the retried 429 and the
+// resend after a 401 refresh included — with the token withheld from them.
+func TestHooksObserveEveryAttempt(t *testing.T) {
+	server, auths := flakyServer(t)
+	var requests []RequestInfo
+	var responses []ResponseInfo
+	client := New(fixedToken("secret-token"),
+		WithRequestHook(func(_ context.Context, r RequestInfo) { requests = append(requests, r) }),
+		WithResponseHook(func(_ context.Context, r ResponseInfo) { responses = append(responses, r) }),
+	)
+	request := WithHeader(client.NewRequest("GET", server.URL+"/files/1"), "X-Trace-Id", "abc")
+	if _, err := client.Fetch(context.Background(), WithQuery(request, "fields", "id")); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+
+	if len(*auths) != 3 || (*auths)[2] != "Bearer secret-token" {
+		t.Fatalf("server saw %q, want three bearer-authenticated attempts", *auths)
+	}
+	if len(requests) != 3 || len(responses) != 3 {
+		t.Fatalf("hooks saw %d requests and %d responses, want 3 of each", len(requests), len(responses))
+	}
+	for i, want := range []int{429, 401, 200} {
+		req, resp := requests[i], responses[i]
+		if req.Attempt != i+1 || resp.Request.Attempt != i+1 || resp.Status != want || resp.Err != nil {
+			t.Fatalf("attempt %d: request %+v, response status %d err %v", i+1, req, resp.Status, resp.Err)
+		}
+		if req.Method != "GET" || req.URL != server.URL+"/files/1?fields=id" || req.Header.Get("X-Trace-Id") != "abc" {
+			t.Fatalf("attempt %d: request %+v", i+1, req)
+		}
+		if got := req.Header.Get("Authorization"); got != "REDACTED" {
+			t.Fatalf("attempt %d: hook saw Authorization %q, want it redacted", i+1, got)
+		}
+		if resp.Elapsed <= 0 {
+			t.Fatalf("attempt %d: elapsed %v", i+1, resp.Elapsed)
+		}
+	}
+	if responses[0].Header.Get("Retry-After") != "0" {
+		t.Fatalf("429 response headers %v", responses[0].Header)
+	}
+}
+
+// An attempt that fails in transport still reaches the response hook, with
+// the error and no status.
+func TestResponseHookSeesATransportError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	server.Close()
+	var responses []ResponseInfo
+	client := New(fixedToken("t"), WithMaxRetries(0),
+		WithResponseHook(func(_ context.Context, r ResponseInfo) { responses = append(responses, r) }))
+	if _, err := client.Fetch(context.Background(), client.NewRequest("GET", server.URL)); err == nil {
+		t.Fatal("fetch against a closed server should fail")
+	}
+	if len(responses) != 1 || responses[0].Err == nil || responses[0].Status != 0 || responses[0].Request.Attempt != 1 {
+		t.Fatalf("responses %+v, want one transport error", responses)
+	}
+}

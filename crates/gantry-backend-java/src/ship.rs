@@ -372,6 +372,22 @@ With a proxy, the built-in client prefers HTTP/2: HTTP/3 runs over UDP, which an
 HTTP proxy can't carry. An injected `HttpClient` carries its own proxy — set one
 or the other.
 
+## Hooks and logging
+
+`onRequest` and `onResponse` observe every HTTP attempt — each retry and the
+resend after a token refresh included — with its method, URL, headers (the
+`Authorization` value withheld), status, elapsed time, and attempt number:
+
+```java
+var session = Runtime.Session.builder(auth)
+    .onResponse(r -> System.out.println(
+        r.request().method() + " " + r.status() + " " + r.elapsed() + " #" + r.request().attempt()))
+    .build();
+```
+
+Hooks observe only; they can't change a request. Token requests are not
+observed.
+
 ## Documentation
 
 The [`docs/`](./docs) tree carries the per-manager reference — a call snippet for
