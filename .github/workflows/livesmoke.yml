@@ -12,6 +12,9 @@ on:
     - cron: '37 4 * * 1'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   live-smoke:
     runs-on: ubuntu-latest
@@ -94,3 +97,27 @@ jobs:
         run: >
           cargo test -p gantry-backend-java --test runtime
           the_live_smoke_compiles_and_runs_when_credentialed -- --nocapture
+
+  # A failed scheduled run would otherwise go unseen: keep one
+  # `live-smoke-failure` issue for this workflow in step with its latest run on
+  # main (opened or commented on a failure, closed once it passes again).
+  alert:
+    needs: live-smoke
+    if: ${{ always() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+      - name: Open, update, or close the live-smoke issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          WORKFLOW: ${{ github.workflow }}
+          RESULT: ${{ needs.live-smoke.result }}
+        run: scripts/live-smoke-alert.sh "$WORKFLOW" "$GITHUB_RUN_ID" "$RESULT"
