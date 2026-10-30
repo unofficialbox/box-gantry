@@ -56,13 +56,21 @@ type Client struct {
 	baseURLs       map[string]string
 	maxRetries     int
 	defaultHeaders http.Header
+
+	// The built-in API client's settings (WithHTTPVersion, WithProxy); New
+	// builds it from them unless WithHTTPClient injected one.
+	httpVersion HTTPVersion
+	proxy       *url.URL
+	injected    bool
 }
 
 // Option configures a Client at construction (the With* surface, G-3).
 type Option func(*Client)
 
 // WithHTTPClient overrides the HTTP client (timeouts, transport, proxies).
-func WithHTTPClient(h *http.Client) Option { return func(c *Client) { c.http = h } }
+func WithHTTPClient(h *http.Client) Option {
+	return func(c *Client) { c.http, c.injected = h, true }
+}
 
 // HTTPVersion selects the HTTP protocol the built-in client uses for API
 // requests (see WithHTTPVersion). The standard library has no HTTP/3.
@@ -76,27 +84,44 @@ const (
 	HTTP1
 )
 
-// WithHTTPVersion chooses the HTTP protocol for API requests. It replaces the
-// HTTP client with a fresh built-in one for that version, so it and
-// WithHTTPClient are alternatives: whichever option comes last wins. To pick
-// the protocol of an injected client, configure its Transport directly. Token
-// requests keep their own client.
-func WithHTTPVersion(v HTTPVersion) Option { return func(c *Client) { c.http = apiHTTPClient(v) } }
+// WithHTTPVersion chooses the HTTP protocol for API requests. It configures
+// the built-in HTTP client, so it and WithHTTPClient are alternatives:
+// whichever option comes last wins. To pick the protocol of an injected
+// client, configure its Transport directly. Token requests keep their own
+// client.
+func WithHTTPVersion(v HTTPVersion) Option {
+	return func(c *Client) { c.httpVersion, c.injected = v, false }
+}
 
-// apiHTTPClient is the built-in API client: a 60s timeout and the requested
-// protocol. HTTP2 keeps the shared DefaultTransport, which already negotiates
-// HTTP/2.
-func apiHTTPClient(v HTTPVersion) *http.Client {
+// WithProxy sends API requests through the proxy at u (http://, https://, or
+// socks5://, with any credentials in its userinfo) instead of the one the
+// HTTPS_PROXY / NO_PROXY environment selects, which is the default. Like
+// WithHTTPVersion it configures the built-in HTTP client, and the two
+// combine; WithHTTPClient replaces both. Token requests take their proxy from
+// the auth config's Proxy field.
+func WithProxy(u *url.URL) Option {
+	return func(c *Client) { c.proxy, c.injected = u, false }
+}
+
+// apiHTTPClient is the built-in API client: a 60s timeout, the requested
+// protocol, and the proxy, if one is set. HTTP2 with no proxy keeps the
+// shared DefaultTransport, which already negotiates HTTP/2 and reads the
+// proxy from the environment.
+func apiHTTPClient(v HTTPVersion, proxy *url.URL) *http.Client {
 	client := &http.Client{Timeout: 60 * time.Second}
-	switch v {
-	case HTTP1:
-		transport := http.DefaultTransport.(*http.Transport).Clone()
+	if v == HTTP2 && proxy == nil {
+		return client
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if v == HTTP1 {
 		// A non-nil, empty TLSNextProto disables HTTP/2 (net/http docs).
 		transport.ForceAttemptHTTP2 = false
 		transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
-		client.Transport = transport
-	case HTTP2:
 	}
+	if proxy != nil {
+		transport.Proxy = http.ProxyURL(proxy)
+	}
+	client.Transport = transport
 	return client
 }
 
@@ -132,7 +157,6 @@ func (c *Client) WithAsUserHeader(userID string) *Client {
 func New(ts TokenSource, opts ...Option) *Client {
 	c := &Client{
 		ts:             ts,
-		http:           apiHTTPClient(HTTP2),
 		maxRetries:     5,
 		defaultHeaders: http.Header{},
 		baseURLs: map[string]string{
@@ -146,6 +170,9 @@ func New(ts TokenSource, opts ...Option) *Client {
 	}
 	for _, o := range opts {
 		o(c)
+	}
+	if !c.injected {
+		c.http = apiHTTPClient(c.httpVersion, c.proxy)
 	}
 	return c
 }

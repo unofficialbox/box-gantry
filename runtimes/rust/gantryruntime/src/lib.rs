@@ -208,12 +208,17 @@ pub enum HttpVersion {
     Http2,
 }
 
-/// The built-in API client: a 60s timeout and the requested protocol.
-fn api_http_client(version: HttpVersion) -> reqwest::Client {
+/// The built-in API client: a 60s timeout, the requested protocol, and the
+/// proxy, if one is set (otherwise reqwest reads `HTTPS_PROXY` / `NO_PROXY`).
+fn api_http_client(version: HttpVersion, proxy: Option<&reqwest::Proxy>) -> reqwest::Client {
     let builder = reqwest::Client::builder().timeout(Duration::from_secs(60));
     let builder = match version {
         HttpVersion::Http1 => builder.http1_only(),
         HttpVersion::Http2 => builder,
+    };
+    let builder = match proxy {
+        Some(proxy) => builder.proxy(proxy.clone()),
+        None => builder,
     };
     builder.build().unwrap_or_default()
 }
@@ -228,6 +233,10 @@ pub struct Client {
     base_urls: HashMap<String, String>,
     max_retries: u32,
     default_headers: Vec<(String, String)>,
+    // The built-in HTTP client's settings, kept so `with_http_version` and
+    // `with_proxy` combine.
+    http_version: HttpVersion,
+    proxy: Option<reqwest::Proxy>,
 }
 
 impl Client {
@@ -236,10 +245,12 @@ impl Client {
     pub fn new(auth: Auth) -> Client {
         Client {
             auth: std::sync::Arc::new(auth),
-            http: api_http_client(HttpVersion::Http2),
+            http: api_http_client(HttpVersion::Http2, None),
             max_retries: 5,
             base_urls: default_base_urls(),
             default_headers: Vec::new(),
+            http_version: HttpVersion::Http2,
+            proxy: None,
         }
     }
 
@@ -262,7 +273,20 @@ impl Client {
     /// last wins. To pick the protocol of an injected client, configure that
     /// client directly. Token requests keep their own client.
     pub fn with_http_version(mut self, version: HttpVersion) -> Client {
-        self.http = api_http_client(version);
+        self.http_version = version;
+        self.http = api_http_client(version, self.proxy.as_ref());
+        self
+    }
+
+    /// Send API requests through `proxy` (fluent), e.g.
+    /// `reqwest::Proxy::all("http://proxy.internal:3128")?`, instead of the
+    /// proxy `HTTPS_PROXY` / `NO_PROXY` select, which is the default. Like
+    /// [`Client::with_http_version`] it rebuilds the default HTTP client, and
+    /// the two combine; [`Client::with_http_client`] replaces both. Token
+    /// requests take their proxy from [`Auth::with_proxy`].
+    pub fn with_proxy(mut self, proxy: reqwest::Proxy) -> Client {
+        self.http = api_http_client(self.http_version, Some(&proxy));
+        self.proxy = Some(proxy);
         self
     }
 
@@ -291,6 +315,8 @@ impl Client {
             base_urls: self.base_urls.clone(),
             max_retries: self.max_retries,
             default_headers: self.default_headers.clone(),
+            http_version: self.http_version,
+            proxy: self.proxy.clone(),
         }
         .with_header("As-User", user_id)
     }
@@ -911,6 +937,41 @@ mod tests {
             .expect("the local server answers");
         let request_line = server.await.unwrap();
         assert_eq!(request_line, "GET /ping HTTP/1.1");
+    }
+
+    #[tokio::test]
+    async fn with_proxy_sends_requests_through_the_proxy() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let proxy = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let mut read = 0;
+            while !buf[..read].windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = socket.read(&mut buf[read..]).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                read += n;
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}")
+                .await
+                .unwrap();
+            let head = String::from_utf8_lossy(&buf[..read]).to_string();
+            head.lines().next().unwrap_or_default().to_string()
+        });
+        // Set before the HTTP version: the version rebuild keeps the proxy.
+        let client = Client::new(Auth::developer_token("t"))
+            .with_proxy(reqwest::Proxy::all(format!("http://{addr}")).unwrap())
+            .with_http_version(HttpVersion::Http1)
+            .with_max_retries(0);
+        let request = client.new_request("GET", "http://box.invalid/2.0/users/me");
+        client.fetch(request).await.expect("the proxy answers");
+        // A forward proxy sees the absolute target URL.
+        let request_line = proxy.await.unwrap();
+        assert_eq!(request_line, "GET http://box.invalid/2.0/users/me HTTP/1.1");
     }
 
     #[tokio::test]

@@ -507,6 +507,20 @@ c := client.NewClient(tokenSource, gantryruntime.WithHTTPVersion(gantryruntime.H
 
 `gantryruntime` is `@MODULE@/gantryruntime`. Token requests keep their own client.
 
+## Proxies
+
+API and token requests go through the proxy that `HTTPS_PROXY` / `NO_PROXY`
+select, as everywhere in Go. To set one in code instead, pass it to both the
+client and the auth config:
+
+```go
+proxy, _ := url.Parse("http://proxy.internal:3128")
+ts := auth.ClientCredentials(auth.CCGConfig{ /* … */ Proxy: proxy })
+c := client.NewClient(ts, gantryruntime.WithProxy(proxy))
+```
+
+`WithProxy` combines with `WithHTTPVersion`; `WithHTTPClient` replaces both.
+
 ## Documentation
 
 API reference on [pkg.go.dev](https://pkg.go.dev/@MODULE@); the [`docs/`](./docs)
