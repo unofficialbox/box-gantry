@@ -42,6 +42,7 @@ pub fn generate_docs(analysis: &Analysis<'_>, manifest: &CapabilityManifest) -> 
     let paged: HashMap<usize, &PagedOperation> =
         paged_ops.iter().map(|p| (p.operation, p)).collect();
 
+    let zips = gantry_synth::detect_zip_downloads(analysis);
     let mut files = Vec::new();
     let mut index_rows: Vec<(String, usize)> = Vec::new();
 
@@ -67,9 +68,13 @@ pub fn generate_docs(analysis: &Analysis<'_>, manifest: &CapabilityManifest) -> 
                 content: endpoint_page(info, sig, *page),
             });
         }
+        let mut readme = manager_index(info, &endpoints);
+        if zips.iter().any(|z| op_indices.contains(&z.create)) {
+            readme.push_str(ZIP_DOWNLOAD_SECTION);
+        }
         files.push(GeneratedFile {
             path: format!("docs/{}/README.md", info.manager),
-            content: manager_index(info, &endpoints),
+            content: readme,
         });
         index_rows.push((info.manager.clone(), endpoints.len()));
     }
@@ -564,3 +569,17 @@ fn location_label(loc: gantry_ir::ParamLocation) -> &'static str {
         gantry_ir::ParamLocation::Header => "header",
     }
 }
+
+/// Appended to the docs page of the manager that holds a detected zip download
+/// (`gantry_synth::detect_zip_downloads`), so the page documents its
+/// one-call helper.
+const ZIP_DOWNLOAD_SECTION: &str = "\n## downloadZip: downloading several items as a zip\n\n\
+`downloadZip` packs files and folders into one zip archive (`create`) and\n\
+fetches it from the `download_url` Box answers with, through the client, so\n\
+auth, retries, and As-User apply. The archive arrives in one callout as a\n\
+`Blob`, so Apex's heap and callout-size limits cap it (about 6 MB synchronous,\n\
+12 MB asynchronous):\n\n\
+**Example**\n\n\
+```apex\n\
+Blob archive = client.zipDownloads.downloadZip(body); // body: ZipDownloadRequest\n\
+```\n";

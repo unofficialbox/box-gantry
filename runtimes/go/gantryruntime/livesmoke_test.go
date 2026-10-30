@@ -333,10 +333,34 @@ func smokeUploadDownloadDelete(ctx context.Context, t *testing.T, client *gantry
 	}
 	t.Logf("download: content round-tripped")
 
+	smokeZip(ctx, t, client, fileID, name)
 	smokeEtags(ctx, t, client, fileID)
 	smokeRepresentation(t, client, fileID, string(content))
 	smokeEvents(t, client, fileID)
 	smokeDownscope(ctx, t, client, fileID)
+}
+
+// smokeZip packs the uploaded file into a zip the way the generated
+// DownloadZip does: create it, then fetch the download_url Box answers with,
+// as returned. The archive must be a zip holding the file under its name.
+// It runs before any step that renames the file.
+func smokeZip(ctx context.Context, t *testing.T, client *gantryruntime.Client, fileID, name string) {
+	request, _ := json.Marshal(map[string]any{
+		"items":              []map[string]string{{"type": "file", "id": fileID}},
+		"download_file_name": "box-gantry-smoke",
+	})
+	created := fetchOK(ctx, t, client, gantryruntime.WithJsonBody(client.NewRequest("POST", client.BaseUrl("api")+"/zip_downloads"), request))
+	var zip struct {
+		DownloadURL string `json:"download_url"`
+	}
+	if err := json.Unmarshal(created, &zip); err != nil || zip.DownloadURL == "" {
+		t.Fatalf("zip: no download_url in %s", created)
+	}
+	archive := fetchOK(ctx, t, client, client.NewRequest("GET", zip.DownloadURL))
+	if !bytes.HasPrefix(archive, []byte("PK\x03\x04")) || !bytes.Contains(archive, []byte(name)) {
+		t.Fatalf("zip: %d bytes, want a zip holding %s", len(archive), name)
+	}
+	t.Logf("zip: downloaded a %d-byte archive holding %s", len(archive), name)
 }
 
 // smokeDownscope exchanges the session's token for one limited to renaming

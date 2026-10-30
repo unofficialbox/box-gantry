@@ -926,6 +926,41 @@ try {
   tokenServer.close();
 }
 
+// downloadZip creates the zip through the generated POST, then streams the
+// download_url Box answers with exactly as returned, with the session's auth.
+// The URL points back at this server under a path the content method would
+// never build, so the archive can only come from following it.
+const zipSeen = [];
+const zipServer = http.createServer((req, res) => {
+  zipSeen.push(`${req.method} ${req.url}`);
+  req.resume();
+  req.on('end', () => {
+    if (req.method === 'POST' && req.url === '/zip_downloads') {
+      res.writeHead(202, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ download_url: `${zipBase}/opaque/archive.zip` }));
+    } else if (req.method === 'GET' && req.url === '/opaque/archive.zip' && req.headers.authorization === 'Bearer t') {
+      res.end('PK\x03\x04archive');
+    } else {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end('{}');
+    }
+  });
+});
+await new Promise((resolve) => zipServer.listen(0, '127.0.0.1', resolve));
+const zipBase = `http://127.0.0.1:${zipServer.address().port}`;
+try {
+  const zc = new Client(runtime.developerToken('t'), { baseUrls: { api: zipBase } });
+  const archive = await zc.zipDownloads.downloadZip({ items: [{ type: 'file', id: '1' }] });
+  const text = new TextDecoder().decode(archive.data);
+  if (text !== 'PK\x03\x04archive') throw new Error(`downloadZip: ${JSON.stringify(text)}`);
+  if (JSON.stringify(zipSeen) !== JSON.stringify(['POST /zip_downloads', 'GET /opaque/archive.zip'])) {
+    throw new Error(`downloadZip requests: ${JSON.stringify(zipSeen)}`);
+  }
+} finally {
+  zipServer.closeAllConnections();
+  zipServer.close();
+}
+
 // The webhooks guide's verifier, reached through the package's `runtime`
 // namespace: a delivery signed in Box's own SDK tests verifies, and the same
 // delivery with an altered body does not.

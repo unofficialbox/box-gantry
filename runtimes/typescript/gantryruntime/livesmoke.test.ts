@@ -270,6 +270,10 @@ async function smokeUploadDownloadDelete(client: Client): Promise<void> {
   const download = await client.fetch(
     client.newRequest('GET', `${client.baseUrl('api')}/files/${fileId}/content`),
   );
+  const zip = await smokeZip(client, fileId, name).then(
+    (size) => ({ size }),
+    (err: unknown) => ({ err }),
+  );
   const events = await smokeEvents(client, fileId).then(
     () => undefined,
     (err: unknown) => err,
@@ -297,6 +301,10 @@ async function smokeUploadDownloadDelete(client: Client): Promise<void> {
   assert.deepEqual(responseBytes(download), content, 'download: content mismatch');
   console.error('download: content round-tripped');
 
+  if ('err' in zip) {
+    throw zip.err;
+  }
+  console.error(`zip: downloaded a ${zip.size}-byte archive holding ${name}`);
   if (etags !== undefined) {
     throw etags;
   }
@@ -318,6 +326,29 @@ async function smokeUploadDownloadDelete(client: Client): Promise<void> {
 
   assert.equal(statusCode(deleted), 204, 'delete: expected 204');
   console.error(`delete: cleaned up file ${fileId}`);
+}
+
+/// Pack the uploaded file into a zip the way the generated `downloadZip` does:
+/// create it, then fetch the `download_url` Box answers with, as returned. The
+/// archive must be a zip holding the file under its name. Runs before any step
+/// that renames the file. Resolves to the archive's size.
+async function smokeZip(client: Client, fileId: string, name: string): Promise<number> {
+  const request = new TextEncoder().encode(
+    JSON.stringify({ items: [{ type: 'file', id: fileId }], download_file_name: 'box-gantry-smoke' }),
+  );
+  const created = await fetchOk(
+    client,
+    withJsonBody(client.newRequest('POST', `${client.baseUrl('api')}/zip_downloads`), request),
+  );
+  const url = JSON.parse(new TextDecoder().decode(created)).download_url;
+  assert.ok(typeof url === 'string', `zip: no download_url in ${new TextDecoder().decode(created)}`);
+  const archive = await fetchOk(client, client.newRequest('GET', url));
+  const text = new TextDecoder('latin1').decode(archive);
+  assert.ok(
+    text.startsWith('PK\x03\x04') && text.includes(name),
+    `zip: ${archive.length} bytes, want a zip holding ${name}`,
+  );
+  return archive.length;
 }
 
 /// Fetch the uploaded file's extracted text through `representationContent` —

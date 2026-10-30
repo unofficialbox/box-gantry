@@ -447,6 +447,7 @@ import (
 	"github.com/unofficialbox/box-open-go-sdk/client"
 	"github.com/unofficialbox/box-open-go-sdk/gantryruntime"
 	"github.com/unofficialbox/box-open-go-sdk/managers"
+	"github.com/unofficialbox/box-open-go-sdk/schemas"
 )
 
 // boxError writes a Box error body, as Box sends with a 4xx.
@@ -618,6 +619,49 @@ func TestGeneratedDownscopeTokenExchangesTheSessionToken(t *testing.T) {
 	var apiErr *gantryruntime.APIError
 	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusBadRequest || apiErr.Code != "invalid_scope" {
 		t.Fatalf("DownscopeToken with no scope: err = %v, want a 400 invalid_scope APIError", err)
+	}
+}
+
+// DownloadZip creates the zip through the generated POST, then streams the
+// download_url Box answers with exactly as returned, with the session's auth.
+// Here that URL points back at this server under a path the content method
+// would never build, so the archive can only come from following it.
+func TestGeneratedDownloadZipFollowsTheDownloadURL(t *testing.T) {
+	var server *httptest.Server
+	var seen []string
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/zip_downloads":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			io.WriteString(w, `{"download_url":"`+server.URL+`/opaque/archive.zip","status_url":"`+server.URL+`/status"}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/opaque/archive.zip":
+			if r.Header.Get("Authorization") != "Bearer t" {
+				boxError(w, http.StatusUnauthorized, "unauthorized")
+				return
+			}
+			io.WriteString(w, "PK\x03\x04archive")
+		default:
+			boxError(w, http.StatusNotFound, "not_found")
+		}
+	}))
+	defer server.Close()
+	c := client.NewClient(auth.DeveloperToken("t"), gantryruntime.WithBaseURL("api", server.URL))
+
+	archive, err := c.ZipDownloads.DownloadZip(context.Background(), &schemas.ZipDownloadRequest{
+		Items: []schemas.ZipDownloadRequestItems{{Type: "file", Id: "1"}},
+	})
+	if err != nil {
+		t.Fatalf("DownloadZip: %v", err)
+	}
+	data, err := io.ReadAll(archive)
+	if err != nil || string(data) != "PK\x03\x04archive" {
+		t.Fatalf("archive = %q, err = %v", data, err)
+	}
+	want := []string{"POST /zip_downloads", "GET /opaque/archive.zip"}
+	if len(seen) != len(want) || seen[0] != want[0] || seen[1] != want[1] {
+		t.Fatalf("requests = %q, want %q", seen, want)
 	}
 }
 

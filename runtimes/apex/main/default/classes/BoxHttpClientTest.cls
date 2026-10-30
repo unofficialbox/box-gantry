@@ -448,4 +448,43 @@ private class BoxHttpClientTest {
         }
         Test.stopTest();
     }
+
+    @isTest
+    static void downloadZipFollowsTheReturnedDownloadUrl() {
+        // POST /zip_downloads answers with a download_url; the archive is then
+        // fetched from that URL exactly as returned.
+        String downloadUrl = 'https://dl.boxcloud.com/2.0/zip_downloads/Z1/content';
+        SequenceMock mock = new SequenceMock(
+            new List<Integer>{ 202, 200 },
+            new List<String>{ '{"download_url":"' + downloadUrl + '"}', 'PK-archive' }
+        );
+        Test.setMock(HttpCalloutMock.class, mock);
+        Box client = new Box(new BoxHttpClient(new CountingTokens()));
+
+        Test.startTest();
+        Blob archive = client.zipDownloads.downloadZip(new ZipDownloadRequest());
+        Test.stopTest();
+
+        System.assertEquals('PK-archive', archive.toString(), 'the archive bytes are returned');
+        System.assertEquals(2, mock.seen.size(), 'create, then fetch');
+        System.assertEquals('POST', mock.seen[0].getMethod(), 'the zip is created first');
+        System.assertEquals(downloadUrl, mock.seen[1].getEndpoint(), 'the download_url is fetched as is');
+        System.assertEquals('GET', mock.seen[1].getMethod(), 'the archive is fetched with GET');
+    }
+
+    @isTest
+    static void downloadZipWithoutADownloadUrlThrows() {
+        SequenceMock mock = new SequenceMock(new List<Integer>{ 202 }, new List<String>{ '{}' });
+        Test.setMock(HttpCalloutMock.class, mock);
+        Box client = new Box(new BoxHttpClient(new CountingTokens()));
+
+        Test.startTest();
+        try {
+            client.zipDownloads.downloadZip(new ZipDownloadRequest());
+            System.assert(false, 'a zip without a download_url must throw');
+        } catch (BoxApiException e) {
+            System.assert(e.getMessage().contains('download_url'), e.getMessage());
+        }
+        Test.stopTest();
+    }
 }

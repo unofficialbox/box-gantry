@@ -612,6 +612,7 @@ void uploadDownloadDelete(Runtime.Session session) {
                 + " bytes, want " + content.length + ")");
         }
         System.out.println("download: content round-tripped");
+        zip(session, fileId, name);
         etags(session, fileUrl);
         representation(session, fileUrl, "box-gantry live smoke");
         events(session, fileUrl, fileId);
@@ -623,6 +624,28 @@ void uploadDownloadDelete(Runtime.Session session) {
         }
         System.out.println("delete: cleaned up file " + fileId);
     }
+}
+
+// Pack the uploaded file into a zip the way the generated downloadZip does:
+// create it, then fetch the download_url Box answers with, as returned. The
+// archive must be a zip holding the file under its name. Runs before any step
+// that renames the file.
+void zip(Runtime.Session session, String fileId, String name) {
+    byte[] request = ("{\"items\":[{\"type\":\"file\",\"id\":\"" + fileId
+        + "\"}],\"download_file_name\":\"box-gantry-smoke\"}")
+        .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    Object created = parseJson(fetchOk(session, Runtime.withJsonBody(
+        session.newRequest("POST", session.baseUrl("api") + "/zip_downloads"), request)));
+    if (!(field(created, "download_url") instanceof String downloadUrl) || downloadUrl.isEmpty()) {
+        throw new IllegalStateException("zip: no download_url in the response");
+    }
+    byte[] archive = fetchOk(session, session.newRequest("GET", downloadUrl));
+    boolean zipped = archive.length >= 4 && archive[0] == 'P' && archive[1] == 'K'
+        && archive[2] == 3 && archive[3] == 4;
+    if (!zipped || !new String(archive, java.nio.charset.StandardCharsets.ISO_8859_1).contains(name)) {
+        throw new IllegalStateException("zip: " + archive.length + " bytes, want a zip holding " + name);
+    }
+    System.out.println("zip: downloaded a " + archive.length + "-byte archive holding " + name);
 }
 
 // Drive Box's etag flow on the uploaded file, as the generated `…IfModified`

@@ -72,11 +72,11 @@ public with sharing class BoxRepresentations {
         return result;
     }
 
-    /** A `GET` of a URL Box returned (`baseUrl` null: `path` is the whole URL). */
+    /** A `GET` of a URL Box returned, used as is. */
     private static BoxRequest absolute(String url) {
         BoxRequest request = new BoxRequest();
         request.method = 'GET';
-        request.path = url;
+        request.url = url;
         return request;
     }
 

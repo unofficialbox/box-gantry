@@ -24,6 +24,7 @@ use std::fmt::Write as _;
 use gantry_sema::Analysis;
 use gantry_synth::{
     detect_event_streams, detect_pagination, detect_representations, detect_token_exchanges,
+    detect_zip_downloads,
 };
 
 /// One generated file, decoupled from the backend's own type so the
@@ -87,6 +88,7 @@ pub struct TargetShape {
     pub count_event_streams: fn(&[GeneratedView]) -> usize,
     pub count_token_downscoping: fn(&[GeneratedView]) -> usize,
     pub count_representations: fn(&[GeneratedView]) -> usize,
+    pub count_zip_downloads: fn(&[GeneratedView]) -> usize,
     pub count_pagination: fn(&[GeneratedView]) -> usize,
     pub count_serialization: fn(&[GeneratedView]) -> usize,
     pub count_round_trip_tests: fn(&[GeneratedView]) -> usize,
@@ -223,6 +225,13 @@ pub fn conformance(
         ),
         capability(
             shape,
+            "zip-download",
+            detect_zip_downloads(analysis).len(),
+            (shape.count_zip_downloads)(files),
+            "zip-download endpoints → downloadZip methods",
+        ),
+        capability(
+            shape,
             "pagination",
             paged,
             (shape.count_pagination)(files),
@@ -345,6 +354,7 @@ pub fn go_shape() -> TargetShape {
         count_event_streams: go_event_streams,
         count_token_downscoping: go_token_downscoping,
         count_representations: go_representations,
+        count_zip_downloads: go_zip_downloads,
         count_pagination: go_pagination,
         count_serialization: go_serialization,
         count_round_trip_tests: go_round_trip_tests,
@@ -382,6 +392,7 @@ fn go_operations(files: &[GeneratedView]) -> usize {
             + go_conditional_reads(files)
             + go_event_streams(files)
             + go_token_downscoping(files)
+            + go_zip_downloads(files)
             + go_representations(files),
     )
 }
@@ -392,6 +403,15 @@ fn go_representations(files: &[GeneratedView]) -> usize {
         files,
         go_is_manager_file,
         "// GetRepresentationContent downloads a representation of the item",
+    )
+}
+
+fn go_zip_downloads(files: &[GeneratedView]) -> usize {
+    // Each `DownloadZip` method's doc comment.
+    count_marker(
+        files,
+        go_is_manager_file,
+        "// DownloadZip packs the items in body into one zip archive",
     )
 }
 
@@ -513,6 +533,7 @@ pub fn apex_shape() -> TargetShape {
         count_event_streams: apex_event_streams,
         count_token_downscoping: apex_token_downscoping,
         count_representations: apex_representations,
+        count_zip_downloads: apex_zip_downloads,
         count_pagination: apex_pagination,
         count_serialization: apex_serialization,
         count_round_trip_tests: apex_round_trip_tests,
@@ -606,6 +627,19 @@ fn apex_is_endpoint_doc(path: &str) -> bool {
         && path.ends_with(".md")
         && !path.ends_with("/README.md")
         && path["docs/".len()..].contains('/')
+}
+
+fn apex_zip_downloads(files: &[GeneratedView]) -> usize {
+    // Each `downloadZip` method's ApexDoc.
+    files
+        .iter()
+        .filter(|f| apex_is_manager_class(f))
+        .map(|f| {
+            f.content
+                .matches("* Pack the items in `body` into one zip archive")
+                .count()
+        })
+        .sum()
 }
 
 fn apex_representations(files: &[GeneratedView]) -> usize {
@@ -740,6 +774,7 @@ pub fn rust_shape() -> TargetShape {
         count_event_streams: rust_event_streams,
         count_token_downscoping: rust_token_downscoping,
         count_representations: rust_representations,
+        count_zip_downloads: rust_zip_downloads,
         count_pagination: rust_pagination,
         count_serialization: rust_serialization,
         count_round_trip_tests: rust_round_trip_tests,
@@ -800,6 +835,7 @@ fn rust_operations(files: &[GeneratedView]) -> usize {
             + rust_conditional_reads(files)
             + 2 * rust_event_streams(files)
             + rust_token_downscoping(files)
+            + rust_zip_downloads(files)
             + rust_representations(files),
     )
 }
@@ -810,6 +846,15 @@ fn rust_representations(files: &[GeneratedView]) -> usize {
         files,
         rust_is_manager_file,
         "/// Download a representation of the item",
+    )
+}
+
+fn rust_zip_downloads(files: &[GeneratedView]) -> usize {
+    // Each `download_zip` method's doc comment.
+    count_marker(
+        files,
+        rust_is_manager_file,
+        "/// Pack the items in `body` into one zip archive",
     )
 }
 
@@ -936,6 +981,7 @@ pub fn typescript_shape() -> TargetShape {
         count_event_streams: ts_event_streams,
         count_token_downscoping: ts_token_downscoping,
         count_representations: ts_representations,
+        count_zip_downloads: ts_zip_downloads,
         count_pagination: ts_pagination,
         count_serialization: ts_serialization,
         count_round_trip_tests: ts_round_trip_tests,
@@ -990,6 +1036,7 @@ fn ts_operations(files: &[GeneratedView]) -> usize {
         ts_pagination(files)
             + ts_conditional_reads(files)
             + ts_token_downscoping(files)
+            + ts_zip_downloads(files)
             + ts_representations(files),
     )
 }
@@ -1000,6 +1047,15 @@ fn ts_representations(files: &[GeneratedView]) -> usize {
         files,
         ts_is_manager_file,
         "/** Download a representation of the item",
+    )
+}
+
+fn ts_zip_downloads(files: &[GeneratedView]) -> usize {
+    // Each `downloadZip` method's doc comment.
+    count_marker(
+        files,
+        ts_is_manager_file,
+        "/** Pack the items in `body` into one zip archive",
     )
 }
 

@@ -372,13 +372,14 @@ fn the_real_spec_yields_one_class_per_manager_and_a_method_per_operation() {
         .count();
     assert_eq!(managers, 88, "one class per manager");
 
-    // One request per operation → 381 methods across all managers, plus the
-    // files manager's getRepresentationContent, which builds its item request.
+    // One request per operation → 381 methods across all managers, plus
+    // downloadZip's GET of the download URL Box answers with and the files
+    // manager's getRepresentationContent, which builds its item request.
     let methods: usize = files
         .iter()
         .map(|f| f.content.matches("new BoxRequest();").count())
         .sum();
-    assert_eq!(methods, 381 + 1, "one method per operation");
+    assert_eq!(methods, 381 + 2, "one method per operation");
 
     // Every method and class name obeys the 40-char identifier limit.
     let ModuleSystem::Flat { identifier_limit } = apex().modules else {
@@ -466,10 +467,10 @@ fn the_apex_live_smoke_calls_methods_the_sdk_generates() {
         calls += 1;
     }
     assert_eq!(
-        calls, 22,
+        calls, 23,
         "the smoke's SDK calls (getMe, listItems, then a scratch folder's and a scratch \
          web link's create, getIfModified ×2, update_r ×2, delete_r, the folder's \
-         downscopeToken and the narrow client's update_r and delete_r, then \
+         downloadZip and downscopeToken and the narrow client's update_r and delete_r, then \
          events.stream, then users.list_r for the as-user step, then a scratch \
          text file's uploadFile, getRepresentationContent and delete_r)"
     );

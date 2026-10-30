@@ -24,8 +24,13 @@ pub fn generate_docs(analysis: &Analysis<'_>, paged: &[PagedOperation]) -> Vec<G
 
     let mut files = Vec::new();
     files.push(index_page(analysis));
+    let zips = gantry_synth::detect_zip_downloads(analysis);
     for (manager, op_indices) in &analysis.managers {
-        files.push(manager_page(program, &paged_by_op, manager, op_indices));
+        let mut page = manager_page(program, &paged_by_op, manager, op_indices);
+        if zips.iter().any(|z| op_indices.contains(&z.create)) {
+            page.content.push_str(ZIP_DOWNLOAD_SECTION);
+        }
+        files.push(page);
     }
     files.push(guide("auth", AUTH_GUIDE));
     files.push(guide("pagination", PAGINATION_GUIDE));
@@ -541,3 +546,16 @@ if !verifier.verify(&body, pairs) {\n\
 \x20\x20minutes ago (`max_age`) or in the future fails, which blocks replays.\n\
 - **Header names match in any case**, and the comparison takes the same time\n\
 \x20\x20wherever a signature differs.\n";
+
+/// Appended to the docs page of the manager that holds a detected zip download
+/// (`gantry_synth::detect_zip_downloads`), so the page documents its
+/// one-call helper.
+const ZIP_DOWNLOAD_SECTION: &str = "\n## download_zip: downloading several items as a zip\n\n\
+`download_zip` packs files and folders into one zip archive (`create`) and\n\
+streams it from the `download_url` Box answers with, through the client's\n\
+session, so auth, retries, and As-User apply:\n\n\
+**Example**\n\n\
+```rust,ignore\n\
+let archive = client.zip_downloads.download_zip(body).await?; // body: ZipDownloadRequest\n\
+```\n\n\
+`get_status` reports progress and skipped items while the download runs.\n";

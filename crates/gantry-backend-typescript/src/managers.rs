@@ -19,7 +19,8 @@ use gantry_ir::naming::{append_without_repeating, pascal, snake};
 use gantry_sema::Analysis;
 use gantry_synth::{
     ACCESS_TOKEN_TYPE, EventStream, PageStyle, PagedOperation, PositionShape, TOKEN_EXCHANGE_GRANT,
-    TokenExchange, detect_event_streams, detect_pagination, detect_token_exchanges,
+    TokenExchange, ZipDownload, detect_event_streams, detect_pagination, detect_token_exchanges,
+    detect_zip_downloads,
 };
 
 use crate::models::{module_names, type_name};
@@ -122,6 +123,7 @@ pub fn generate_managers(analysis: &Analysis<'_>, _build: &BuildInfo) -> Vec<Gen
 
     let streams = detect_event_streams(analysis);
     let exchanges = detect_token_exchanges(analysis);
+    let zips = detect_zip_downloads(analysis);
     let representations = gantry_synth::detect_representations(analysis);
 
     // Allocate one collision-free base per manager (shared with the docs).
@@ -137,6 +139,7 @@ pub fn generate_managers(analysis: &Analysis<'_>, _build: &BuildInfo) -> Vec<Gen
             paged: &paged,
             streams: &streams,
             exchanges: &exchanges,
+            zips: &zips,
             representations: &representations,
             exact_json: false,
             body: String::new(),
@@ -278,6 +281,8 @@ struct Printer<'p> {
     streams: &'p [EventStream],
     /// Token exchanges, so an exchange's manager gains `downscopeToken`.
     exchanges: &'p [TokenExchange],
+    /// Zip downloads, so a zip's manager gains `downloadZip`.
+    zips: &'p [ZipDownload],
     /// Representation sources, so a source's manager gains
     /// `getRepresentationContent`.
     representations: &'p [gantry_synth::Representation],
@@ -376,6 +381,17 @@ impl Printer<'_> {
             );
             self.downscope_token(exchange, &camel(&bases[pos].base));
         }
+        for zip in self.zips.iter().filter(|z| indices.contains(&z.create)) {
+            let base = |op: usize| {
+                let pos = indices.iter().position(|&i| i == op).expect("same manager");
+                camel(&bases[pos].base)
+            };
+            assert!(
+                bases.iter().all(|b| camel(&b.base) != "downloadZip"),
+                "{key}: the manager already has a `downloadZip` method for the zip download"
+            );
+            self.download_zip(zip, &base(zip.create), &base(zip.content));
+        }
         for source in self
             .representations
             .iter()
@@ -425,6 +441,33 @@ impl Printer<'_> {
              \x20   req = runtime.withQuery(req, {fields:?}, {field:?});\n\
              \x20   req = runtime.withHeader(req, {hints:?}, repHints);\n\
              \x20   return runtime.representationContent(this.session, req, {field:?}, assetPath, options);\n\
+             \x20 }}"
+        );
+    }
+
+    /// `downloadZip`: create the archive with this manager's typed `POST`, then
+    /// stream the `download_url` Box answers with, as returned.
+    fn download_zip(&mut self, zip: &ZipDownload, create: &str, content: &str) {
+        let op = &self.program.operations[zip.create];
+        let request = op
+            .request
+            .as_ref()
+            .expect("synth: a zip download's POST has a body");
+        let body = self.ts_type(unwrap_optionality(&request.ty));
+        let url = &zip.download_url.wire_name;
+        let _ = writeln!(
+            self.body,
+            "\n  /** Pack the items in `body` into one zip archive (`{create}`) and stream it\n\
+             \x20  * from the download URL Box answers with, through this session (auth,\n\
+             \x20  * retries, As-User). `{content}` fetches the same archive by id. */\n\
+             \x20 async downloadZip(body: {body}): Promise<runtime.Stream> {{\n\
+             \x20   const zip = await this.{create}(body);\n\
+             \x20   const url = zip.{url};\n\
+             \x20   if (url === undefined) {{\n\
+             \x20     throw new runtime.BoxApiError('box: the zip download has no download_url');\n\
+             \x20   }}\n\
+             \x20   const resp = await this.session.fetch(this.session.newRequest('GET', url));\n\
+             \x20   return runtime.responseStream(resp);\n\
              \x20 }}"
         );
     }
@@ -1640,6 +1683,7 @@ mod tests {
             paged: &paged,
             streams: &[],
             exchanges: &[],
+            zips: &[],
             representations: &[],
             exact_json: false,
             body: String::new(),
@@ -1789,6 +1833,7 @@ mod tests {
             paged: &paged,
             streams: &[],
             exchanges: &[],
+            zips: &[],
             representations: &[],
             exact_json: false,
             body: String::new(),
@@ -1847,6 +1892,7 @@ mod tests {
             paged: &paged,
             streams: &[],
             exchanges: &[],
+            zips: &[],
             representations: &[],
             exact_json: false,
             body: String::new(),

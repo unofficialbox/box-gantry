@@ -9,7 +9,7 @@
 // live reads exercise, in one flow: auth (a real token mint), URL building, the
 // bearer header, native typed deserialization, the wire key-remap, and
 // pagination. A scratch folder and a scratch web link then carry Box's etag
-// flow (304 and 412), and the folder a downscoped token. The `${...}` placeholders are filled from repo secrets by
+// flow (304 and 412), and the folder a zip download and a downscoped token. The `${...}` placeholders are filled from repo secrets by
 // the workflow — this file never contains real credentials.
 BoxTokenProvider auth = new BoxCcgTokenProvider(
     '${BOX_CLIENT_ID}',
@@ -71,6 +71,22 @@ try {
     }
     client.folders.update_r(folder.id, null, etag, change);
     System.debug(LoggingLevel.ERROR, 'SMOKE etags folder=' + folder.id + ' etag=' + etag);
+
+    // One-call zip download: downloadZip creates the zip and fetches the
+    // download_url Box answers with, through this client. The scratch folder
+    // is empty, so the archive may hold no entries; it must still be a zip.
+    ZipDownloadRequestItems packed = new ZipDownloadRequestItems();
+    packed.type = 'folder';
+    packed.id = folder.id;
+    ZipDownloadRequest zipRequest = new ZipDownloadRequest();
+    zipRequest.items = new List<ZipDownloadRequestItems>{ packed };
+    zipRequest.download_file_name = 'box-gantry-smoke';
+    Blob archive = client.zipDownloads.downloadZip(zipRequest);
+    System.assert(
+        archive != null && EncodingUtil.convertToHex(archive).startsWith('504b'),
+        'downloadZip should answer a zip archive'
+    );
+    System.debug(LoggingLevel.ERROR, 'SMOKE zip bytes=' + archive.size());
 
     // Token downscoping: exchange the session's token for one limited to
     // renaming and previewing the scratch folder. The narrow token renames it

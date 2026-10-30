@@ -922,6 +922,44 @@ public final class Consistency {
             tokenServer.stop(0);
         }
 
+        // downloadZip creates the zip through the generated POST, then streams
+        // the download_url Box answers with exactly as returned, with the
+        // session's auth. The URL points back at this server under a path the
+        // content method would never build.
+        java.util.List<String> zipSeen = new java.util.ArrayList<>();
+        HttpServer zipServer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        String zipBase = "http://127.0.0.1:" + zipServer.getAddress().getPort();
+        zipServer.createContext("/", ex -> {
+            ex.getRequestBody().readAllBytes();
+            String target = ex.getRequestMethod() + " " + ex.getRequestURI().getPath();
+            zipSeen.add(target);
+            if (target.equals("POST /zip_downloads")) {
+                respond(ex, 202, "{\"download_url\":\"" + zipBase + "/opaque/archive.zip\"}");
+            } else if (target.equals("GET /opaque/archive.zip")
+                    && "Bearer t".equals(ex.getRequestHeaders().getFirst("Authorization"))) {
+                respond(ex, 200, "PK\u0003\u0004archive");
+            } else {
+                respond(ex, 404, boxError(404, "not_found"));
+            }
+        });
+        zipServer.start();
+        try {
+            Runtime.Session zipSession = Runtime.Session.builder(Runtime.developerToken("t"))
+                .baseUrl("api", zipBase)
+                .build();
+            Client zc = new Client(zipSession);
+            var body = dev.unofficialbox.model.schemas.ZipDownloadRequest.builder()
+                .items(java.util.List.of(new dev.unofficialbox.model.schemas.ZipDownloadRequestItems(
+                    dev.unofficialbox.model.schemas.EventSourceItemType.FILE, "1")))
+                .build();
+            String archive = new String(zc.zipDownloads.downloadZip(body).toBytes(), StandardCharsets.UTF_8);
+            check("PK\u0003\u0004archive".equals(archive), "downloadZip: " + archive);
+            check(zipSeen.equals(java.util.List.of("POST /zip_downloads", "GET /opaque/archive.zip")),
+                "downloadZip requests: " + zipSeen);
+        } finally {
+            zipServer.stop(0);
+        }
+
         // The webhooks guide's verifier, reached through the shipped runtime: a
         // delivery signed in Box's own SDK tests verifies, and the same
         // delivery with an altered body does not.

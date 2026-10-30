@@ -11,7 +11,7 @@ use gantry_ir::naming::{append_without_repeating, camel, pascal};
 use gantry_sema::Analysis;
 use gantry_synth::{
     ACCESS_TOKEN_TYPE, EventStream, PageStyle, PagedOperation, PositionShape, Representation,
-    TOKEN_EXCHANGE_GRANT, TokenExchange,
+    TOKEN_EXCHANGE_GRANT, TokenExchange, ZipDownload,
 };
 
 use crate::models::GeneratedFile;
@@ -53,6 +53,7 @@ pub fn generate_managers(
     let streams = gantry_synth::detect_event_streams(analysis);
     let exchanges = gantry_synth::detect_token_exchanges(analysis);
     let representations = gantry_synth::detect_representations(analysis);
+    let zips = gantry_synth::detect_zip_downloads(analysis);
     let mut files = Vec::new();
     for (manager, op_indices) in &analysis.managers {
         let mut printer = ManagerPrinter {
@@ -60,8 +61,9 @@ pub fn generate_managers(
             base_version: base_version.clone(),
             paged: &paged_by_op,
             streams: &streams,
-            exchanges: &exchanges,
             representations: &representations,
+            exchanges: &exchanges,
+            zips: &zips,
             body: String::new(),
             imports: BTreeSet::new(),
         };
@@ -128,11 +130,13 @@ struct ManagerPrinter<'a> {
     base_version: Option<ir::ApiVersion>,
     paged: &'a HashMap<usize, &'a PagedOperation>,
     streams: &'a [EventStream],
-    /// Token exchanges, so an exchange's manager gains `DownscopeToken`.
-    exchanges: &'a [TokenExchange],
     /// Representation sources, so a source's manager gains
     /// `GetRepresentationContent`.
     representations: &'a [Representation],
+    /// Token exchanges, so an exchange's manager gains `DownscopeToken`.
+    exchanges: &'a [TokenExchange],
+    /// Zip downloads, so a zip's manager gains `DownloadZip`.
+    zips: &'a [ZipDownload],
     body: String,
     imports: BTreeSet<String>,
 }
@@ -236,6 +240,15 @@ impl ManagerPrinter<'_> {
             }
             self.downscope_token(&type_name, exchange)?;
         }
+        for zip in self.zips.iter().filter(|z| op_indices.contains(&z.create)) {
+            if used.iter().any(|name| name == "DownloadZip") {
+                return Err(BackendError {
+                    context: format!("zip download of {manager}"),
+                    detail: "the manager already has a `DownloadZip` method".to_string(),
+                });
+            }
+            self.download_zip(&type_name, zip)?;
+        }
         for source in self
             .representations
             .iter()
@@ -295,6 +308,47 @@ impl ManagerPrinter<'_> {
             "\treq = gantryruntime.WithQuery(req, {fields:?}, {field:?})\n\
              \treq = gantryruntime.WithHeader(req, {hints:?}, repHints)\n\
              \treturn m.session.RepresentationContent(ctx, req, {field:?}, assetPath)\n\
+             }}\n"
+        );
+        Ok(())
+    }
+
+    /// `DownloadZip`: create the archive with this manager's typed `POST`, then
+    /// stream the `download_url` Box answers with, as returned.
+    fn download_zip(&mut self, manager_type: &str, zip: &ZipDownload) -> Result<(), BackendError> {
+        let program = &self.analysis.program;
+        let create = program.operations[zip.create].clone();
+        let create_method = self.method_name(&create);
+        let content_method = self.method_name(&program.operations[zip.content].clone());
+        let request = create
+            .request
+            .as_ref()
+            .expect("synth: a zip download's POST has a body");
+        let body = self.go_type(unwrap_optionality(&request.ty))?;
+        let body = if nilable(&body) {
+            body
+        } else {
+            format!("*{body}")
+        };
+        let url = pascal(zip.download_url.name.as_str());
+        for import in ["context", "errors", "io"] {
+            self.imports.insert(import.to_string());
+        }
+        let _ = writeln!(
+            self.body,
+            "// DownloadZip packs the items in body into one zip archive ({create_method})\n\
+             // and streams it from the download URL Box answers with, through this\n\
+             // session (auth, retries, As-User). {content_method} fetches the same\n\
+             // archive by id.\n\
+             func (m *{manager_type}) DownloadZip(ctx context.Context, body {body}) (io.Reader, error) {{\n\
+             \tzip, err := m.{create_method}(ctx, body)\n\
+             \tif err != nil {{\n\t\treturn nil, err\n\t}}\n\
+             \tif zip.{url} == nil {{\n\
+             \t\treturn nil, errors.New(\"box: the zip download has no download_url\")\n\
+             \t}}\n\
+             \tresp, err := m.session.Fetch(ctx, m.session.NewRequest(\"GET\", *zip.{url}))\n\
+             \tif err != nil {{\n\t\treturn nil, err\n\t}}\n\
+             \treturn gantryruntime.ResponseStream(resp), nil\n\
              }}\n"
         );
         Ok(())
@@ -1626,6 +1680,7 @@ mod tests {
             paged: &paged,
             streams: &[],
             exchanges: &[],
+            zips: &[],
             representations: &[],
             body: String::new(),
             imports: BTreeSet::new(),
