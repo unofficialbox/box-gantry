@@ -1,7 +1,8 @@
 // Package-level auth: the four Box auth flows, each a gantryruntime.TokenSource passed
 // to New. DeveloperToken is a fixed token; ClientCredentials (CCG), JWT,
 // and OAuth exchange credentials at Box's token endpoint and cache the
-// resulting access token until shortly before it expires (TR-Go.7).
+// resulting access token until shortly before it expires (TR-Go.7). Those
+// three also revoke their token on logout (RevokeToken).
 package auth
 
 import (
@@ -48,14 +49,43 @@ type developerToken string
 
 func (t developerToken) AccessToken(context.Context) (string, error) { return string(t), nil }
 
+// Revoker is a token source that can revoke the token it holds. The sources
+// ClientCredentials, JWTAuth, ExchangeCode, and OAuth return implement it; a
+// custom gantryruntime.TokenSource may too, to work with RevokeToken.
+type Revoker interface {
+	Revoke(ctx context.Context) error
+}
+
+// ErrRevoked is returned by an OAuth token source once its grant has been
+// revoked: the refresh token is dead, so the user must authorize the app again.
+var ErrRevoked = errors.New("auth: the OAuth grant was revoked; run the authorization-code flow again")
+
+// RevokeToken revokes the token ts holds at Box's revoke endpoint, with the
+// flow's own client credentials, and clears it from the cache — for logout and
+// uninstall. A CCG or JWT source then acquires a fresh token on its next use;
+// an OAuth source revokes the whole grant and fails with ErrRevoked after.
+//
+// A developer token has no client credentials to revoke itself with, so it
+// (like a custom source that doesn't implement Revoker) is an error here; revoke
+// one through the generated Authorization manager's RevokeOauth2 instead.
+func RevokeToken(ctx context.Context, ts gantryruntime.TokenSource) error {
+	r, ok := ts.(Revoker)
+	if !ok {
+		return fmt.Errorf("auth: %T can't revoke its token: it isn't an auth.Revoker (a developer token has no client credentials to revoke with)", ts)
+	}
+	return r.Revoke(ctx)
+}
+
 // cachedToken caches an access token behind a mutex and refreshes it via
 // refresh when it is missing or within refreshMargin of expiry. The three
-// exchange flows embed one and supply the flow-specific refresh.
+// exchange flows embed one and supply the flow-specific refresh; the CCG and
+// JWT flows also supply revoke.
 type cachedToken struct {
 	mu      sync.Mutex
 	token   string
 	expiry  time.Time
 	refresh func(ctx context.Context) (token string, ttl time.Duration, err error)
+	revoke  func(ctx context.Context, token string) error
 }
 
 func (c *cachedToken) AccessToken(ctx context.Context) (string, error) {
@@ -70,6 +100,21 @@ func (c *cachedToken) AccessToken(ctx context.Context) (string, error) {
 	}
 	c.token, c.expiry = token, time.Now().Add(ttl)
 	return c.token, nil
+}
+
+// Revoke revokes the cached access token and clears it, so the next
+// AccessToken acquires a fresh one. A token that is missing or already expired
+// is simply dropped; on a failed revoke it stays cached.
+func (c *cachedToken) Revoke(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.token != "" && time.Now().Before(c.expiry) {
+		if err := c.revoke(ctx, c.token); err != nil {
+			return err
+		}
+	}
+	c.token, c.expiry = "", time.Time{}
+	return nil
 }
 
 // tokenResponse is the subset of the token endpoint's JSON we consume.
@@ -111,6 +156,46 @@ func postTokenForm(ctx context.Context, httpc *http.Client, tokenURL string, for
 		return tokenResponse{}, errors.New("auth: token endpoint returned no access_token")
 	}
 	return tr, nil
+}
+
+// revokeURL derives the revoke endpoint from the token endpoint: Box serves
+// both under /oauth2, so a custom token URL ending in /token gets its sibling
+// /revoke. Any other token URL is an error, not a guess.
+func revokeURL(tokenURL string) (string, error) {
+	base, ok := strings.CutSuffix(tokenURL, "/token")
+	if !ok {
+		return "", fmt.Errorf("auth: can't derive a revoke endpoint from token URL %q (it doesn't end in /token)", tokenURL)
+	}
+	return base + "/revoke", nil
+}
+
+// postRevokeForm revokes token at the revoke endpoint beside tokenURL,
+// surfacing a non-2xx body as the error. Box answers a revoke with an empty 200.
+func postRevokeForm(ctx context.Context, httpc *http.Client, tokenURL, clientID, clientSecret, token string) error {
+	endpoint, err := revokeURL(tokenURL)
+	if err != nil {
+		return err
+	}
+	form := url.Values{"client_id": {clientID}, "client_secret": {clientSecret}, "token": {token}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("auth: revoke endpoint returned %d: %s",
+			resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
 }
 
 // authHTTPClient is the token-request client: the config's HTTPClient if set,
@@ -171,6 +256,9 @@ func ClientCredentials(cfg CCGConfig) gantryruntime.TokenSource {
 		}
 		return tr.AccessToken, tr.ttl(), nil
 	}
+	ct.revoke = func(ctx context.Context, token string) error {
+		return postRevokeForm(ctx, httpc, tokenURL, cfg.ClientID, cfg.ClientSecret, token)
+	}
 	return ct
 }
 
@@ -178,12 +266,28 @@ func ClientCredentials(cfg CCGConfig) gantryruntime.TokenSource {
 // grants a Box app access). Use AuthorizeURL to build the redirect,
 // ExchangeCode to turn the returned code into a gantryruntime.TokenSource, or OAuth to
 // resume from a stored refresh token.
+//
+// Box rotates the refresh token on every exchange and invalidates the old
+// one, so an app that outlives its process needs Store: without it the newest
+// refresh token lives only in memory, and a restart resumes from one Box has
+// already rejected.
 type OAuthConfig struct {
 	ClientID     string
 	ClientSecret string
-	TokenURL     string       // optional; defaults to Box's token endpoint
-	HTTPClient   *http.Client // optional
-	Proxy        *url.URL     // optional; overrides the HTTPS_PROXY environment (ignored with HTTPClient)
+	TokenURL     string            // optional; defaults to Box's token endpoint
+	HTTPClient   *http.Client      // optional
+	Proxy        *url.URL          // optional; overrides the HTTPS_PROXY environment (ignored with HTTPClient)
+	Store        RefreshTokenStore // optional; persists each new refresh token
+}
+
+// RefreshTokenStore durably persists the OAuth refresh token, so a restarted
+// app resumes (with OAuth) from the newest one. SaveRefreshToken runs before
+// a newly issued token is used: on the code exchange, and on each rotation.
+// If it fails on a rotation, the call that rotated returns its error, the new
+// token stays in memory, and the save is retried on every later call until
+// it succeeds — a rotation is never treated as durable when it isn't.
+type RefreshTokenStore interface {
+	SaveRefreshToken(ctx context.Context, refreshToken string) error
 }
 
 // AuthorizeURL builds the URL to redirect a user to so they can grant
@@ -199,7 +303,9 @@ func (cfg OAuthConfig) AuthorizeURL(redirectURI, state string) string {
 }
 
 // ExchangeCode exchanges an authorization code for a gantryruntime.TokenSource that
-// refreshes itself thereafter.
+// refreshes itself thereafter. With a Store, the refresh token Box issues is
+// saved before ExchangeCode returns; if that save fails ExchangeCode returns
+// the error and no source, and the user goes through consent again.
 func (cfg OAuthConfig) ExchangeCode(ctx context.Context, code, redirectURI string) (gantryruntime.TokenSource, error) {
 	httpc := authHTTPClient(cfg.HTTPClient, cfg.Proxy)
 	tokenURL := orDefault(cfg.TokenURL, defaultTokenURL)
@@ -216,19 +322,26 @@ func (cfg OAuthConfig) ExchangeCode(ctx context.Context, code, redirectURI strin
 	if tr.RefreshToken == "" {
 		return nil, errors.New("auth: authorization-code exchange returned no refresh_token")
 	}
+	if cfg.Store != nil {
+		if err := cfg.Store.SaveRefreshToken(ctx, tr.RefreshToken); err != nil {
+			return nil, fmt.Errorf("auth: saving the refresh token: %w", err)
+		}
+	}
 	s := newOAuthSource(cfg, httpc, tokenURL, tr.RefreshToken)
 	s.token, s.expiry = tr.AccessToken, time.Now().Add(tr.ttl())
 	return s, nil
 }
 
 // OAuth resumes the authorization-code flow from a previously stored
-// refresh token, exchanging it for access tokens as needed.
+// refresh token, exchanging it for access tokens as needed. Set cfg.Store to
+// persist each rotation; refreshToken itself is taken as already stored.
 func OAuth(cfg OAuthConfig, refreshToken string) gantryruntime.TokenSource {
 	return newOAuthSource(cfg, authHTTPClient(cfg.HTTPClient, cfg.Proxy), orDefault(cfg.TokenURL, defaultTokenURL), refreshToken)
 }
 
 // oauthSource refreshes access tokens with a refresh token and rotates the
-// refresh token Box returns (Box invalidates the old one each exchange).
+// refresh token Box returns (Box invalidates the old one each exchange). Once
+// revoked it refuses to refresh: the grant is gone.
 type oauthSource struct {
 	mu           sync.Mutex
 	httpc        *http.Client
@@ -238,6 +351,11 @@ type oauthSource struct {
 	token        string
 	expiry       time.Time
 	refreshToken string
+	revoked      bool
+	store        RefreshTokenStore
+	// unsaved is set while refreshToken is a rotation the store hasn't
+	// confirmed; every call retries the save until it does.
+	unsaved bool
 }
 
 func newOAuthSource(cfg OAuthConfig, httpc *http.Client, tokenURL, refreshToken string) *oauthSource {
@@ -247,12 +365,19 @@ func newOAuthSource(cfg OAuthConfig, httpc *http.Client, tokenURL, refreshToken 
 		clientID:     cfg.ClientID,
 		clientSecret: cfg.ClientSecret,
 		refreshToken: refreshToken,
+		store:        cfg.Store,
 	}
 }
 
 func (s *oauthSource) AccessToken(ctx context.Context) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.revoked {
+		return "", ErrRevoked
+	}
+	if s.unsaved && s.store.SaveRefreshToken(ctx, s.refreshToken) == nil {
+		s.unsaved = false
+	}
 	if s.token != "" && time.Until(s.expiry) > refreshMargin {
 		return s.token, nil
 	}
@@ -266,10 +391,43 @@ func (s *oauthSource) AccessToken(ctx context.Context) (string, error) {
 		return "", err
 	}
 	s.token, s.expiry = tr.AccessToken, time.Now().Add(tr.ttl())
-	if tr.RefreshToken != "" {
+	if tr.RefreshToken != "" && tr.RefreshToken != s.refreshToken {
+		// Box has already invalidated the old token, so keep the new one
+		// even if the store fails — but say so now.
 		s.refreshToken = tr.RefreshToken
+		if s.store != nil {
+			if err := s.store.SaveRefreshToken(ctx, s.refreshToken); err != nil {
+				s.unsaved = true
+				return "", fmt.Errorf("auth: saving the rotated refresh token: %w", err)
+			}
+			s.unsaved = false
+		}
 	}
 	return s.token, nil
+}
+
+// Revoke revokes the grant through its refresh token (or, without one, the
+// cached access token): Box accepts either and revokes the whole grant, so
+// this needs no fresh access token first. The source then fails every call
+// with ErrRevoked. Revoking twice is a no-op.
+func (s *oauthSource) Revoke(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.revoked {
+		return nil
+	}
+	token := s.refreshToken
+	if token == "" {
+		token = s.token
+	}
+	if token != "" {
+		if err := postRevokeForm(ctx, s.httpc, s.tokenURL, s.clientID, s.clientSecret, token); err != nil {
+			return err
+		}
+	}
+	s.revoked = true
+	s.token, s.expiry, s.refreshToken = "", time.Time{}, ""
+	return nil
 }
 
 // JWTConfig configures server auth with a signing key (Box's box_config.json
@@ -318,6 +476,9 @@ func JWTAuth(cfg JWTConfig) (gantryruntime.TokenSource, error) {
 			return "", 0, err
 		}
 		return tr.AccessToken, tr.ttl(), nil
+	}
+	ct.revoke = func(ctx context.Context, token string) error {
+		return postRevokeForm(ctx, httpc, tokenURL, cfg.ClientID, cfg.ClientSecret, token)
 	}
 	return ct, nil
 }

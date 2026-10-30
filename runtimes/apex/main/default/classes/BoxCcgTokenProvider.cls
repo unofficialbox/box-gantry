@@ -58,4 +58,9 @@ public with sharing class BoxCcgTokenProvider extends BoxCachingTokenProvider {
             '&box_subject_type=' + EncodingUtil.urlEncode(this.subjectType, 'UTF-8') +
             '&box_subject_id=' + EncodingUtil.urlEncode(this.subjectId, 'UTF-8');
     }
+
+    protected override String clientCredentialsForm() {
+        return 'client_id=' + EncodingUtil.urlEncode(this.clientId, 'UTF-8') +
+            '&client_secret=' + EncodingUtil.urlEncode(this.clientSecret, 'UTF-8');
+    }
 }

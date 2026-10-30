@@ -411,15 +411,33 @@ Runtime.JwtConfig config = Runtime.JwtConfig.enterprise(\n\
 Client client = new Client(Auth.jwt(config));\n\
 ```\n\n\
 ## OAuth 2.0 (authorization code)\n\n\
-Redirect the user to the consent URL, exchange the returned code, then reuse the\n\
-stored (rotated) refresh token on later runs:\n\n\
+Redirect the user to the consent URL and exchange the returned code. Box\n\
+rotates the refresh token on every refresh and rejects the old one, so pass a\n\
+`RefreshTokenStore` that writes it somewhere durable; it is called with the\n\
+token the exchange issues and with every rotation after. Later runs resume from\n\
+the newest saved token:\n\n\
 ```java\n\
 Runtime.OAuthConfig oauth = new Runtime.OAuthConfig(\"CLIENT_ID\", \"CLIENT_SECRET\");\n\
 // first run: redirect to oauth.authorizeUrl(redirectUri, state), then\n\
-// Auth auth = oauth.exchangeCode(code, redirectUri);\n\
-// later runs: rebuild from the stored refresh token.\n\
-Client client = new Client(Auth.oauth(oauth, storedRefreshToken));\n\
+// Auth auth = oauth.exchangeCode(code, redirectUri, tokenStore);\n\
+// later runs: resume from the newest saved refresh token.\n\
+Client client = new Client(Auth.oauthWithStore(oauth, newestSavedRefreshToken, tokenStore));\n\
 ```\n\n\
+## Revoking a token\n\n\
+For logout or uninstall, `revokeToken()` revokes the token a CCG, JWT, or OAuth\n\
+flow holds — with the flow's own client credentials, at the revoke endpoint\n\
+beside its token URL, through its proxy — and clears it from the cache:\n\n\
+```java\n\
+Runtime.Auth auth = Auth.oauth(oauth, storedRefreshToken);\n\
+Client client = new Client(auth);\n\
+// … on logout:\n\
+auth.revokeToken();\n\
+```\n\n\
+A CCG or JWT flow acquires a fresh token on its next use. OAuth revokes the\n\
+whole grant: every later call throws, so discard the stored refresh token and\n\
+run the authorization-code flow again. A developer token has no client\n\
+credentials to revoke with (`revokeToken()` throws) — pass them yourself to\n\
+`client.authorization.revokeOauth2`.\n\n\
 ## Acting as another user\n\n\
 An admin, or a service account whose app may *make API calls using the as-user\n\
 header*, can act as another user. `withAsUserHeader` returns a new client whose\n\

@@ -374,6 +374,20 @@ public final class Runtime {
          * returned instead of hitting the network (single-flight).
          */
         String forceRefresh(String stale);
+
+        /**
+         * Revoke the held token at Box's revoke endpoint, with the flow's own
+         * client credentials, and clear it from the cache — for logout and
+         * uninstall. CCG and JWT acquire a fresh token on their next use; OAuth
+         * revokes the whole grant, so every later call throws rather than
+         * refreshing a dead grant. A developer token has no client credentials
+         * to revoke with (revoke it through the generated {@code authorization}
+         * manager), so by default this throws.
+         */
+        default void revokeToken() {
+            throw new BoxApiException("gantryruntime: this auth flow can't revoke its token"
+                    + " (a developer token has no client credentials)");
+        }
     }
 
     // --------------------------------------------------------------- session
@@ -1187,7 +1201,8 @@ public final class Runtime {
 
     /** Client-credentials-grant (CCG) server auth, caching the token to expiry. */
     public static Auth clientCredentials(CcgConfig config) {
-        return new CachedToken(() -> postCcgToken(config));
+        return new CachedToken(() -> postCcgToken(config), token -> postRevokeForm(
+                config.tokenHttp, config.tokenUrl, config.clientId, config.clientSecret, token));
     }
 
     /** CCG configuration: client credentials + the enterprise/user subject. */
@@ -1282,8 +1297,20 @@ public final class Runtime {
                     + "&state=" + encode(state);
         }
 
-        /** Exchange an authorization code for auth (seeded with the returned refresh token). */
+        /** Exchange an authorization code for auth (seeded with the returned
+         * refresh token). The refresh token stays in memory; use {@link
+         * #exchangeCode(String, String, RefreshTokenStore)} to persist it and
+         * every rotation, so a restarted app can resume with {@link
+         * Runtime#oauthWithStore}. */
         public Auth exchangeCode(String code, String redirectUri) {
+            return exchangeCode(code, redirectUri, null);
+        }
+
+        /** Like {@link #exchangeCode(String, String)}, but saves the refresh
+         * token Box issues through {@code store} before returning, then each
+         * rotation as {@link Runtime#oauthWithStore} does. If that first save
+         * throws, so does this, and the user goes through consent again. */
+        public Auth exchangeCode(String code, String redirectUri, RefreshTokenStore store) {
             Map<String, String> form = new LinkedHashMap<>();
             form.put("grant_type", "authorization_code");
             form.put("code", code);
@@ -1294,7 +1321,10 @@ public final class Runtime {
             if (result.refreshToken() == null) {
                 throw new BoxApiException("gantryruntime: code exchange returned no refresh_token");
             }
-            return new OAuthSource(this, result.refreshToken(), null);
+            if (store != null) {
+                store.save(result.refreshToken());
+            }
+            return new OAuthSource(this, result.refreshToken(), store);
         }
     }
 
@@ -1302,7 +1332,8 @@ public final class Runtime {
     public static Auth jwt(JwtConfig config) {
         Signer signer = new Signer(config);
         String tokenUrl = config.tokenUrl == null ? DEFAULT_TOKEN_URL : config.tokenUrl;
-        return new CachedToken(() -> postJwtToken(signer, config, tokenUrl));
+        return new CachedToken(() -> postJwtToken(signer, config, tokenUrl), token -> postRevokeForm(
+                config.tokenHttp, tokenUrl, config.clientId, config.clientSecret, token));
     }
 
     /** JWT configuration — the fields Box's `box_config.json` carries. */
@@ -1392,12 +1423,30 @@ public final class Runtime {
 
     private static final class CachedToken implements Auth {
         private final Supplier<TokenResult> refresh;
+        private final Consumer<String> revoke;
         private final ReentrantLock lock = new ReentrantLock();
         private String token = "";
         private long expiryMillis;
 
-        CachedToken(Supplier<TokenResult> refresh) {
+        CachedToken(Supplier<TokenResult> refresh, Consumer<String> revoke) {
             this.refresh = refresh;
+            this.revoke = revoke;
+        }
+
+        /** A missing or already-expired token is simply dropped; on a failed
+         * revoke it stays cached. */
+        @Override
+        public void revokeToken() {
+            lock.lock();
+            try {
+                if (!token.isEmpty() && System.currentTimeMillis() < expiryMillis) {
+                    revoke.accept(token);
+                }
+                token = "";
+                expiryMillis = 0;
+            } finally {
+                lock.unlock();
+            }
         }
 
         @Override
@@ -1498,9 +1547,50 @@ public final class Runtime {
     }
 
     /**
+     * The revoke endpoint beside {@code tokenUrl}: Box serves both under
+     * {@code /oauth2}, so a custom token URL ending in {@code /token} gets its
+     * sibling {@code /revoke}. Any other token URL is an error, not a guess.
+     */
+    private static String revokeUrl(String tokenUrl) {
+        if (!tokenUrl.endsWith("/token")) {
+            throw new BoxApiException("gantryruntime: can't derive a revoke endpoint from token URL "
+                    + tokenUrl + " (it doesn't end in /token)");
+        }
+        return tokenUrl.substring(0, tokenUrl.length() - "/token".length()) + "/revoke";
+    }
+
+    /** POST {@code token} with the client credentials to the revoke endpoint
+     * beside {@code tokenUrl}; Box answers an empty 200. */
+    private static void postRevokeForm(HttpClient http, String tokenUrl, String clientId,
+            String clientSecret, String token) {
+        String body = "client_id=" + encode(clientId)
+                + "&client_secret=" + encode(clientSecret)
+                + "&token=" + encode(token);
+        HttpRequest request = HttpRequest.newBuilder(URI.create(revokeUrl(tokenUrl)))
+                .timeout(TOKEN_TIMEOUT)
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                .build();
+        HttpResponse<String> response;
+        try {
+            response = http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        } catch (IOException | InterruptedException err) {
+            if (err instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            throw new BoxApiException("gantryruntime: revoke request failed: " + err.getMessage(), err);
+        }
+        if (response.statusCode() / 100 != 2) {
+            throw new BoxApiException(
+                    "gantryruntime: revoke endpoint returned " + response.statusCode() + ": " + response.body().trim());
+        }
+    }
+
+    /**
      * The OAuth refresh-token source: caches the access token to expiry and
      * rotates the refresh token Box returns on every exchange, persisting each
-     * new one through the store so a restart never replays a dead token.
+     * new one through the store so a restart never replays a dead token. Once
+     * revoked it refuses to refresh: the grant is gone.
      */
     private static final class OAuthSource implements Auth {
         private final OAuthConfig config;
@@ -1511,6 +1601,7 @@ public final class Runtime {
         private String refreshToken;
         // The seed token is unpersisted until either saved or first successfully used.
         private boolean refreshTokenPersisted;
+        private boolean revoked;
 
         OAuthSource(OAuthConfig config, String refreshToken, RefreshTokenStore store) {
             this.config = config;
@@ -1545,7 +1636,36 @@ public final class Runtime {
             }
         }
 
+        /**
+         * Revoke the grant through its refresh token (or, without one, the
+         * cached access token): Box accepts either and revokes the whole grant,
+         * so no fresh access token is minted first. Revoking twice is a no-op.
+         */
+        @Override
+        public void revokeToken() {
+            lock.lock();
+            try {
+                if (revoked) {
+                    return;
+                }
+                String spent = refreshToken != null && !refreshToken.isEmpty() ? refreshToken : token;
+                if (!spent.isEmpty()) {
+                    postRevokeForm(config.tokenHttp, config.tokenUrl, config.clientId, config.clientSecret, spent);
+                }
+                revoked = true;
+                token = "";
+                expiryMillis = 0;
+                refreshToken = null;
+            } finally {
+                lock.unlock();
+            }
+        }
+
         private String exchange() {
+            if (revoked) {
+                throw new BoxApiException(
+                        "gantryruntime: the OAuth grant was revoked; run the authorization-code flow again");
+            }
             // Persist the current refresh token before spending it, so a crash
             // mid-exchange doesn't strand a token Box may already have rotated.
             if (!refreshTokenPersisted && store != null) {

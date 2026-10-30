@@ -388,6 +388,18 @@ import { auth } from '@unofficialbox/box-open-sdk';\n\
 const source = auth.oauth({ clientId: 'CLIENT_ID', clientSecret: 'CLIENT_SECRET' }, storedRefreshToken);\n\
 const client = new Client(source);\n\
 ```\n\n\
+## Revoking a token\n\n\
+For logout or uninstall, `revokeToken()` revokes the token a CCG, JWT, or OAuth\n\
+flow holds — with the flow's own client credentials, at the revoke endpoint\n\
+beside its token URL, through its `fetch` — and clears it from the cache:\n\n\
+```ts\n\
+await source.revokeToken();\n\
+```\n\n\
+A CCG or JWT flow acquires a fresh token on its next use. OAuth revokes the\n\
+whole grant: every later call rejects, so discard the stored refresh token and\n\
+run the authorization-code flow again. A developer token has no client\n\
+credentials to revoke with — pass them yourself to\n\
+`client.authorization.revokeOauth2`.\n\n\
 ## Acting as another user\n\n\
 An admin, or a service account whose app may *make API calls using the as-user\n\
 header*, can act as another user. `withAsUserHeader` returns a new client whose\n\

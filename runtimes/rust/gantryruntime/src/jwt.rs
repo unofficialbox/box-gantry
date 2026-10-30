@@ -143,12 +143,12 @@ fn jti() -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use rsa::RsaPublicKey;
 
     /// A throwaway 2048-bit RSA key (unencrypted PKCS#8) — test-only.
-    const TEST_KEY: &str = "-----BEGIN PRIVATE KEY-----\n\
+    pub(crate) const TEST_KEY: &str = "-----BEGIN PRIVATE KEY-----\n\
 MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCpfNlamR34EPS4\n\
 1LEhy+NZxgcHY4psPamsCqq+g7QLGltkhtzbeuAdq/25YLXov0OS2F3NitFIHHJP\n\
 MvypSeIURjDhhJeMsmtMaXy7k4sWvzZolPQlAcmh7OVX2FqF98pnMAk5C9GxFhwn\n\

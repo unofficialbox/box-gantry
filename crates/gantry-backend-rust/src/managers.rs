@@ -203,6 +203,13 @@ fn client_file(named: &[(&String, &Vec<usize>, ManagerName)]) -> String {
     );
     out.push_str("    pub fn with_as_user_header(&self, user_id: &str) -> Self {\n");
     out.push_str("        Self::from_session(self.session.with_as_user_header(user_id))\n");
+    out.push_str("    }\n\n");
+    out.push_str(
+        "    /// Revoke the auth flow's token at Box and clear it from the cache —\n    \
+         /// for logout and uninstall. See `runtime::Auth::revoke_token`.\n",
+    );
+    out.push_str("    pub async fn revoke_token(&self) -> Result<(), crate::runtime::Error> {\n");
+    out.push_str("        self.session.revoke_token().await\n");
     out.push_str("    }\n}\n");
     out
 }

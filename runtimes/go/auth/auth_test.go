@@ -10,18 +10,21 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 )
 
 // tokenServer is a stand-in Box token endpoint that records the last form
-// it received and replies with a scripted token response.
+// (and path) it received and replies with a scripted token response.
 type tokenServer struct {
 	server   *httptest.Server
 	lastForm url.Values
+	lastPath string
 	hits     int
 	reply    func(form url.Values) string
 }
@@ -36,6 +39,7 @@ func newTokenServer(t *testing.T, reply func(url.Values) string) *tokenServer {
 		}
 		ts.hits++
 		ts.lastForm = r.PostForm
+		ts.lastPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(ts.reply(r.PostForm)))
 	}))
@@ -110,6 +114,13 @@ func TestTokenRequestsUseTheConfiguredProxy(t *testing.T) {
 	if token != "proxied" || proxied != "http://box.invalid/oauth2/token" {
 		t.Fatalf("got token %q via %q", token, proxied)
 	}
+	// A revoke goes through the same client, so through the proxy too.
+	if err := RevokeToken(context.Background(), ts); err != nil {
+		t.Fatalf("revoke through the proxy: %v", err)
+	}
+	if proxied != "http://box.invalid/oauth2/revoke" {
+		t.Fatalf("revoke went via %q", proxied)
+	}
 }
 
 func TestClientCredentialsUserSubject(t *testing.T) {
@@ -138,6 +149,82 @@ func TestCachedTokenRefreshesOnExpiry(t *testing.T) {
 	}
 	if srv.hits != 3 {
 		t.Fatalf("expected a refresh on every call (3 hits), got %d", srv.hits)
+	}
+}
+
+// savedTokens is a RefreshTokenStore that records each save and fails while
+// failing is set.
+type savedTokens struct {
+	saved   []string
+	failing bool
+}
+
+func (st *savedTokens) SaveRefreshToken(_ context.Context, refreshToken string) error {
+	if st.failing {
+		return errors.New("store unavailable")
+	}
+	st.saved = append(st.saved, refreshToken)
+	return nil
+}
+
+// The code exchange saves the refresh token Box issues, and each rotation
+// saves the new one before its access token is handed out.
+func TestOAuthStoreSavesExchangedAndRotatedTokens(t *testing.T) {
+	srv := newTokenServer(t, func(form url.Values) string {
+		if form.Get("grant_type") == "authorization_code" {
+			return `{"access_token":"at-0","refresh_token":"rt-1","expires_in":1}`
+		}
+		return `{"access_token":"at-1","refresh_token":"rt-2","expires_in":3600}`
+	})
+	store := &savedTokens{}
+	cfg := OAuthConfig{ClientID: "c", ClientSecret: "s", TokenURL: srv.server.URL, Store: store}
+
+	src, err := cfg.ExchangeCode(context.Background(), "code", "https://app.example/callback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// at-0 expires inside the refresh margin, so this rotates rt-1 -> rt-2.
+	token, err := src.AccessToken(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != "at-1" || strings.Join(store.saved, ",") != "rt-1,rt-2" {
+		t.Fatalf("got %q, saved %q; want at-1 with rt-1,rt-2 saved", token, store.saved)
+	}
+}
+
+// A failed save on rotation surfaces on that call, keeps the new refresh
+// token, and is retried on the next call.
+func TestOAuthStoreFailureIsLoudAndRetried(t *testing.T) {
+	srv := newTokenServer(t, func(form url.Values) string {
+		return `{"access_token":"at-` + form.Get("refresh_token") + `","refresh_token":"rt-2","expires_in":3600}`
+	})
+	store := &savedTokens{failing: true}
+	src := OAuth(OAuthConfig{ClientID: "c", ClientSecret: "s", TokenURL: srv.server.URL, Store: store}, "rt-1")
+
+	if _, err := src.AccessToken(context.Background()); err == nil {
+		t.Fatal("a failed save should fail the rotating call")
+	}
+	store.failing = false
+	token, err := src.AccessToken(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The cached access token came from rt-1's exchange; no second exchange
+	// was needed, and the retried save stored rt-2.
+	if token != "at-rt-1" || srv.hits != 1 || strings.Join(store.saved, ",") != "rt-2" {
+		t.Fatalf("got %q after %d exchanges, saved %q", token, srv.hits, store.saved)
+	}
+}
+
+// With a Store, a failed save on the code exchange fails ExchangeCode.
+func TestOAuthExchangeFailsWhenTheStoreDoes(t *testing.T) {
+	srv := newTokenServer(t, func(url.Values) string {
+		return `{"access_token":"at","refresh_token":"rt","expires_in":3600}`
+	})
+	cfg := OAuthConfig{ClientID: "c", ClientSecret: "s", TokenURL: srv.server.URL, Store: &savedTokens{failing: true}}
+	if src, err := cfg.ExchangeCode(context.Background(), "code", "https://app.example/callback"); err == nil || src != nil {
+		t.Fatalf("want an error and no source, got %v, %v", src, err)
 	}
 }
 
@@ -417,5 +504,146 @@ func TestParseEncryptedPKCS8WrongPassphrase(t *testing.T) {
 func TestParseEncryptedPKCS8NoPassphrase(t *testing.T) {
 	if _, err := parseRSAPrivateKey([]byte(encPKCS8PBKDF2SHA256AES256), ""); err == nil {
 		t.Fatal("expected an encrypted key with no passphrase to fail")
+	}
+}
+
+// revokeServer is a token server whose /oauth2/revoke answers an empty 200 and
+// whose /oauth2/token mints tok-1, tok-2, … (with a rotating refresh token).
+func revokeServer(t *testing.T) *tokenServer {
+	t.Helper()
+	minted := 0
+	return newTokenServer(t, func(form url.Values) string {
+		if form.Has("token") {
+			return ""
+		}
+		minted++
+		n := strconv.Itoa(minted)
+		return `{"access_token":"tok-` + n + `","refresh_token":"rt-` + n + `","expires_in":3600}`
+	})
+}
+
+func expectRevoked(t *testing.T, srv *tokenServer, token string) {
+	t.Helper()
+	if srv.lastPath != "/oauth2/revoke" {
+		t.Fatalf("revoke posted to %q", srv.lastPath)
+	}
+	f := srv.lastForm
+	if f.Get("client_id") != "c" || f.Get("client_secret") != "s" || f.Get("token") != token {
+		t.Fatalf("revoke form wrong: %v", f)
+	}
+}
+
+// A CCG revoke posts the cached token with the flow's own credentials to the
+// revoke endpoint beside the token URL, and the next call mints a new token.
+func TestRevokeTokenClientCredentials(t *testing.T) {
+	srv := revokeServer(t)
+	cfg := CCGConfig{ClientID: "c", ClientSecret: "s", EnterpriseID: "1", TokenURL: srv.server.URL + "/oauth2/token"}
+	ts := ClientCredentials(cfg)
+	ctx := context.Background()
+	if tok, err := ts.AccessToken(ctx); err != nil || tok != "tok-1" {
+		t.Fatalf("first token: %q, %v", tok, err)
+	}
+	if err := RevokeToken(ctx, ts); err != nil {
+		t.Fatal(err)
+	}
+	expectRevoked(t, srv, "tok-1")
+	if tok, err := ts.AccessToken(ctx); err != nil || tok != "tok-2" {
+		t.Fatalf("after revoke, want a fresh token: %q, %v", tok, err)
+	}
+	// With nothing cached there is nothing to revoke: no request.
+	hits := srv.hits
+	if err := RevokeToken(ctx, ClientCredentials(cfg)); err != nil || srv.hits != hits {
+		t.Fatalf("empty revoke: err %v, %d new hits", err, srv.hits-hits)
+	}
+}
+
+// A failed revoke surfaces the endpoint's error and keeps the token cached.
+func TestRevokeTokenFailureKeepsTheToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/revoke" {
+			http.Error(w, `{"error":"invalid_client"}`, http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(`{"access_token":"kept","expires_in":3600}`))
+	}))
+	defer srv.Close()
+	ts := ClientCredentials(CCGConfig{ClientID: "c", ClientSecret: "bad", EnterpriseID: "1",
+		TokenURL: srv.URL + "/oauth2/token"})
+	ctx := context.Background()
+	if _, err := ts.AccessToken(ctx); err != nil {
+		t.Fatal(err)
+	}
+	err := RevokeToken(ctx, ts)
+	if err == nil || !strings.Contains(err.Error(), "400") || !strings.Contains(err.Error(), "invalid_client") {
+		t.Fatalf("want the 400 surfaced, got %v", err)
+	}
+	if tok, err := ts.AccessToken(ctx); err != nil || tok != "kept" {
+		t.Fatalf("token should stay cached: %q, %v", tok, err)
+	}
+}
+
+// An OAuth revoke spends the refresh token, then the source fails loudly with
+// ErrRevoked instead of trying to refresh a dead grant.
+func TestRevokeTokenOAuthRevokesTheGrant(t *testing.T) {
+	srv := revokeServer(t)
+	ts := OAuth(OAuthConfig{ClientID: "c", ClientSecret: "s", TokenURL: srv.server.URL + "/oauth2/token"}, "rt-0")
+	ctx := context.Background()
+	if tok, err := ts.AccessToken(ctx); err != nil || tok != "tok-1" {
+		t.Fatalf("first token: %q, %v", tok, err)
+	}
+	if err := RevokeToken(ctx, ts); err != nil {
+		t.Fatal(err)
+	}
+	expectRevoked(t, srv, "rt-1") // the rotated refresh token
+	hits := srv.hits
+	if _, err := ts.AccessToken(ctx); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("after revoke, want ErrRevoked, got %v", err)
+	}
+	if err := RevokeToken(ctx, ts); err != nil || srv.hits != hits {
+		t.Fatalf("a second revoke should be a no-op: err %v, %d new hits", err, srv.hits-hits)
+	}
+}
+
+func TestRevokeTokenJWT(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := revokeServer(t)
+	ts, err := JWTAuth(JWTConfig{
+		ClientID:      "c",
+		ClientSecret:  "s",
+		PublicKeyID:   "kid",
+		PrivateKeyPEM: pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}),
+		EnterpriseID:  "1",
+		TokenURL:      srv.server.URL + "/oauth2/token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := ts.AccessToken(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := RevokeToken(ctx, ts); err != nil {
+		t.Fatal(err)
+	}
+	expectRevoked(t, srv, "tok-1")
+}
+
+// A developer token has no credentials to revoke with, and a token URL with no
+// /token suffix has no derivable revoke URL: both are errors, not guesses.
+func TestRevokeTokenRefusals(t *testing.T) {
+	ctx := context.Background()
+	if err := RevokeToken(ctx, DeveloperToken("dev")); err == nil {
+		t.Fatal("a developer token should refuse to revoke")
+	}
+	srv := revokeServer(t)
+	ts := ClientCredentials(CCGConfig{ClientID: "c", ClientSecret: "s", EnterpriseID: "1", TokenURL: srv.server.URL})
+	if _, err := ts.AccessToken(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := RevokeToken(ctx, ts); err == nil || !strings.Contains(err.Error(), "revoke endpoint") {
+		t.Fatalf("want an underivable revoke URL to fail, got %v", err)
 	}
 }

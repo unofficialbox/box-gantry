@@ -381,13 +381,34 @@ let auth = auth::Auth::jwt(auth::JwtConfig {\n\
 let client = Client::new(auth);\n\
 ```\n\n\
 ## OAuth 2.0 (authorization code)\n\n\
-Redirect the user to the authorize URL, exchange the returned code, then\n\
-reuse the stored refresh token on later runs:\n\n\
-```rust\n\
-// later runs: rebuild from the stored refresh token.\n\
-let auth = auth::Auth::oauth(\"CLIENT_ID\", \"CLIENT_SECRET\", stored_refresh_token);\n\
+Redirect the user to `config.authorize_url(redirect_uri, state)` and exchange\n\
+the returned code. Box rotates the refresh token on every refresh and rejects\n\
+the old one, so pass a `RefreshTokenStore` that writes it somewhere durable; it\n\
+is called with the token the exchange issues and with every rotation after.\n\
+Later runs resume from the newest saved token:\n\n\
+```rust,ignore\n\
+let config = auth::OAuthConfig {\n\
+\x20   client_id: \"CLIENT_ID\".into(),\n\
+\x20   client_secret: \"CLIENT_SECRET\".into(),\n\
+\x20   token_url: None,\n\
+};\n\
+let auth = config.exchange_code_with_store(&code, redirect_uri, store.clone()).await?;\n\
+// later runs: resume from the newest saved refresh token.\n\
+let auth = auth::Auth::oauth_with_store(config, newest_saved_refresh_token, store);\n\
 let client = Client::new(auth);\n\
 ```\n\n\
+## Revoking a token\n\n\
+For logout or uninstall, `revoke_token` revokes the token a CCG, JWT, or OAuth\n\
+flow holds — with the flow's own client credentials, at the revoke endpoint\n\
+beside its token URL, through its proxy — and clears it from the cache:\n\n\
+```rust\n\
+client.revoke_token().await?;\n\
+```\n\n\
+A CCG or JWT flow acquires a fresh token on its next use. OAuth revokes the\n\
+whole grant: every later call fails, so discard the stored refresh token and\n\
+run the authorization-code flow again. A developer token has no client\n\
+credentials to revoke with — pass them yourself to\n\
+`client.authorization.revoke_oauth2`.\n\n\
 ## Acting as another user\n\n\
 An admin, or a service account whose app may *make API calls using the as-user\n\
 header*, can act as another user. `with_as_user_header` returns a new client\n\

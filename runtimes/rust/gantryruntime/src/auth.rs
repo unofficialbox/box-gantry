@@ -2,7 +2,8 @@
 //! [`Client::new`](crate::Client::new). `developer_token` is a fixed token;
 //! `client_credentials` (CCG) and `oauth` exchange credentials at Box's token
 //! endpoint and cache the resulting access token until shortly before it
-//! expires (TR-Rust.5).
+//! expires (TR-Rust.5). Those flows also revoke their token on logout
+//! ([`Auth::revoke_token`]).
 //!
 //! JWT server auth (signing-key assertions) lands in the next runtime slice;
 //! the three flows here cover fixed-token and both refresh-based exchanges.
@@ -82,8 +83,8 @@ impl Auth {
         };
         let form = vec![
             ("grant_type".to_string(), "client_credentials".to_string()),
-            ("client_id".to_string(), config.client_id),
-            ("client_secret".to_string(), config.client_secret),
+            ("client_id".to_string(), config.client_id.clone()),
+            ("client_secret".to_string(), config.client_secret.clone()),
             ("box_subject_type".to_string(), subject_type.to_string()),
             ("box_subject_id".to_string(), subject_id),
         ];
@@ -92,6 +93,8 @@ impl Auth {
                 http: auth_http_client(),
                 token_url: config.token_url.unwrap_or_else(default_token_url),
                 form,
+                client_id: config.client_id,
+                client_secret: config.client_secret,
                 cached: Mutex::new(Cached::empty()),
             }),
         }
@@ -166,6 +169,7 @@ impl Auth {
                     refresh_token,
                     // The caller-supplied token is already durable.
                     refresh_token_persisted: true,
+                    revoked: false,
                 }),
             }),
         }
@@ -196,6 +200,42 @@ impl Auth {
             Source::OAuth(source) => source.access_token().await,
             Source::Jwt(source) => source.access_token().await,
             Source::Custom(source) => source.access_token().await,
+        }
+    }
+
+    /// Revoke the token this flow holds at Box's revoke endpoint, with the
+    /// flow's own client credentials, and clear it from the cache — for logout
+    /// and uninstall. The endpoint sits beside the token URL (`…/oauth2/token`
+    /// → `…/oauth2/revoke`); token requests' proxy applies.
+    ///
+    /// CCG and JWT revoke the cached access token (if any) and acquire a fresh
+    /// one on their next use. OAuth revokes the whole grant through its refresh
+    /// token, so every later call fails with an error rather than refreshing a
+    /// dead grant — run the authorization-code flow again, and discard the
+    /// refresh token you stored. A developer token has no client credentials to
+    /// revoke with, and a custom source owns its own tokens, so both are errors
+    /// here; revoke those through the generated `authorization` manager.
+    pub async fn revoke_token(&self) -> Result<(), Error> {
+        match &self.source {
+            Source::Developer(_) => Err(Error::new(
+                "gantryruntime: a developer token has no client credentials to revoke it with",
+            )),
+            Source::Form(s) => {
+                let mut cached = s.cached.lock().await;
+                cached
+                    .revoke(&s.http, &s.token_url, &s.client_id, &s.client_secret)
+                    .await
+            }
+            Source::OAuth(source) => source.revoke().await,
+            Source::Jwt(s) => {
+                let mut cached = s.cached.lock().await;
+                cached
+                    .revoke(&s.http, &s.token_url, &s.client_id, &s.client_secret)
+                    .await
+            }
+            Source::Custom(_) => Err(Error::new(
+                "gantryruntime: a custom token source revokes its own tokens",
+            )),
         }
     }
 
@@ -264,6 +304,22 @@ impl Cached {
         self.expiry = Instant::now() + ttl;
         self.token = token;
     }
+
+    /// Revoke the cached token and clear it (CCG and JWT). A missing or
+    /// already-expired token is simply dropped; on a failed revoke it stays.
+    async fn revoke(
+        &mut self,
+        http: &reqwest::Client,
+        token_url: &str,
+        client_id: &str,
+        client_secret: &str,
+    ) -> Result<(), Error> {
+        if !self.token.is_empty() && Instant::now() < self.expiry {
+            post_revoke_form(http, token_url, client_id, client_secret, &self.token).await?;
+        }
+        *self = Cached::empty();
+        Ok(())
+    }
 }
 
 /// A token source that refreshes by re-posting a fixed grant form (CCG).
@@ -271,6 +327,9 @@ struct FormSource {
     http: reqwest::Client,
     token_url: String,
     form: Vec<(String, String)>,
+    /// The form's client credentials again, for a revoke.
+    client_id: String,
+    client_secret: String,
     cached: Mutex<Cached>,
 }
 
@@ -370,11 +429,16 @@ struct OAuthState {
     /// came from the caller (already stored); only later rotations start `false`
     /// until their `save` succeeds.
     refresh_token_persisted: bool,
+    /// Set once the grant is revoked: there is nothing left to refresh.
+    revoked: bool,
 }
 
 impl OAuthSource {
     async fn access_token(&self) -> Result<String, Error> {
         let mut state = self.state.lock().await;
+        if state.revoked {
+            return Err(revoked_grant());
+        }
         self.retry_persist(&mut state).await;
         if let Some(token) = fresh_token(&state.token, state.expiry) {
             return Ok(token);
@@ -384,6 +448,9 @@ impl OAuthSource {
 
     async fn force_refresh(&self, stale: &str) -> Result<String, Error> {
         let mut state = self.state.lock().await;
+        if state.revoked {
+            return Err(revoked_grant());
+        }
         self.retry_persist(&mut state).await;
         // Single-flight: a concurrent 401 may already have replaced the token.
         if let Some(token) = fresh_token(&state.token, state.expiry) {
@@ -392,6 +459,35 @@ impl OAuthSource {
             }
         }
         self.refresh_locked(&mut state).await
+    }
+
+    /// Revoke the grant through its refresh token (or, without one, the cached
+    /// access token): Box accepts either and revokes the whole grant, so no
+    /// fresh access token is minted first. Revoking twice is a no-op.
+    async fn revoke(&self) -> Result<(), Error> {
+        let mut state = self.state.lock().await;
+        if state.revoked {
+            return Ok(());
+        }
+        let token = if state.refresh_token.is_empty() {
+            state.token.clone()
+        } else {
+            state.refresh_token.clone()
+        };
+        if !token.is_empty() {
+            post_revoke_form(
+                &self.http,
+                &self.token_url,
+                &self.client_id,
+                &self.client_secret,
+                &token,
+            )
+            .await?;
+        }
+        state.revoked = true;
+        state.token.clear();
+        state.refresh_token.clear();
+        Ok(())
     }
 
     /// Best-effort retry of a rotation whose earlier `save` failed, so a
@@ -479,8 +575,32 @@ impl OAuthConfig {
     }
 
     /// Exchange an authorization code for an [`Auth`] that refreshes itself
-    /// thereafter.
+    /// thereafter. The refresh token stays in memory; use
+    /// [`OAuthConfig::exchange_code_with_store`] to persist it and every
+    /// rotation, so a restarted app can resume with [`Auth::oauth_with_store`].
     pub async fn exchange_code(&self, code: &str, redirect_uri: &str) -> Result<Auth, Error> {
+        self.exchange(code, redirect_uri, None).await
+    }
+
+    /// Like [`OAuthConfig::exchange_code`], but saves the refresh token Box
+    /// issues through `store` before returning, then each rotation as
+    /// [`Auth::oauth_with_store`] does. If that first save fails, this returns
+    /// the error and no `Auth`, and the user goes through consent again.
+    pub async fn exchange_code_with_store(
+        &self,
+        code: &str,
+        redirect_uri: &str,
+        store: Arc<dyn RefreshTokenStore>,
+    ) -> Result<Auth, Error> {
+        self.exchange(code, redirect_uri, Some(store)).await
+    }
+
+    async fn exchange(
+        &self,
+        code: &str,
+        redirect_uri: &str,
+        store: Option<Arc<dyn RefreshTokenStore>>,
+    ) -> Result<Auth, Error> {
         let http = auth_http_client();
         let token_url = self.token_url.clone().unwrap_or_else(default_token_url);
         let form = vec![
@@ -494,18 +614,22 @@ impl OAuthConfig {
         let refresh_token = response.refresh_token.clone().ok_or_else(|| {
             Error::new("gantryruntime: authorization-code exchange returned no refresh_token")
         })?;
+        if let Some(store) = &store {
+            store.save(&refresh_token).await?;
+        }
         let ttl = response.ttl();
         let source = OAuthSource {
             http,
             token_url,
             client_id: self.client_id.clone(),
             client_secret: self.client_secret.clone(),
-            store: None,
+            store,
             state: Mutex::new(OAuthState {
                 token: response.access_token,
                 expiry: Instant::now() + ttl,
                 refresh_token,
                 refresh_token_persisted: true,
+                revoked: false,
             }),
         };
         Ok(Auth {
@@ -569,6 +693,60 @@ async fn post_token_form(
             .map(|s| s.to_string()),
         expires_in: json.get("expires_in").and_then(|v| v.as_u64()).unwrap_or(0),
     })
+}
+
+/// The error every call on a revoked OAuth grant fails with.
+fn revoked_grant() -> Error {
+    Error::new("gantryruntime: the OAuth grant was revoked; run the authorization-code flow again")
+}
+
+/// The revoke endpoint beside `token_url`: Box serves both under `/oauth2`, so
+/// a custom token URL ending in `/token` gets its sibling `/revoke`. Any other
+/// token URL is an error, not a guess.
+fn revoke_url(token_url: &str) -> Result<String, Error> {
+    token_url
+        .strip_suffix("/token")
+        .map(|base| format!("{base}/revoke"))
+        .ok_or_else(|| {
+            Error::new(format!(
+                "gantryruntime: can't derive a revoke endpoint from token URL {token_url:?} \
+                 (it doesn't end in /token)"
+            ))
+        })
+}
+
+/// POST `token` with the client credentials to the revoke endpoint beside
+/// `token_url`, surfacing a non-2xx body as the error. Box answers an empty 200.
+async fn post_revoke_form(
+    http: &reqwest::Client,
+    token_url: &str,
+    client_id: &str,
+    client_secret: &str,
+    token: &str,
+) -> Result<(), Error> {
+    let endpoint = revoke_url(token_url)?;
+    let body = form_urlencode(&[
+        ("client_id", client_id),
+        ("client_secret", client_secret),
+        ("token", token),
+    ]);
+    let response = http
+        .post(endpoint)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(body)
+        .send()
+        .await?;
+    let status = response.status();
+    if !status.is_success() {
+        let bytes = response.bytes().await?;
+        let detail = String::from_utf8_lossy(&bytes);
+        return Err(Error::new(format!(
+            "gantryruntime: revoke endpoint returned {}: {}",
+            status.as_u16(),
+            detail.trim()
+        )));
+    }
+    Ok(())
 }
 
 /// The dedicated auth HTTP client (a shorter timeout than the API client).
@@ -691,6 +869,8 @@ mod tests {
             http: auth_http_client(),
             token_url: "http://127.0.0.1:1/never".to_string(),
             form: Vec::new(),
+            client_id: String::new(),
+            client_secret: String::new(),
             cached: Mutex::new(Cached::empty()),
         };
         source
@@ -790,6 +970,29 @@ mod tests {
         assert_eq!(auth.access_token().await.unwrap(), "proxied");
     }
 
+    #[tokio::test]
+    async fn exchange_code_with_store_saves_the_issued_refresh_token() {
+        let saved = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let store = Arc::new(Recorder {
+            saved: saved.clone(),
+            remaining_failures: std::sync::Mutex::new(0),
+        });
+        let url =
+            serve_one_token(r#"{"access_token":"at","refresh_token":"issued","expires_in":3600}"#)
+                .await;
+        let config = OAuthConfig {
+            client_id: "c".to_string(),
+            client_secret: "s".to_string(),
+            token_url: Some(url),
+        };
+        let auth = config
+            .exchange_code_with_store("code", "https://app.example/callback", store)
+            .await
+            .unwrap();
+        assert_eq!(auth.access_token().await.unwrap(), "at");
+        assert_eq!(saved.lock().unwrap().as_slice(), ["issued"]);
+    }
+
     /// A `TokenSource` that hands out a fixed token and records `force_refresh`
     /// calls, so a custom `Auth` can be verified without a network round-trip.
     struct FixedTokenSource {
@@ -825,6 +1028,202 @@ mod tests {
                 .load(std::sync::atomic::Ordering::SeqCst),
             1
         );
+    }
+
+    /// A local endpoint that answers one request per scripted `(status, body)`
+    /// in turn and records each as `"<request target> <form body>"`.
+    async fn serve_script(
+        script: Vec<(u16, &'static str)>,
+    ) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = seen.clone();
+        tokio::spawn(async move {
+            for (status, body) in script {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                // Read the head, then as much body as Content-Length declares.
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 2048];
+                loop {
+                    let n = sock.read(&mut buf).await.unwrap();
+                    raw.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&raw).to_string();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let length = text[..end]
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if raw.len() >= end + 4 + length || n == 0 {
+                            let target = text.split(' ').nth(1).unwrap_or("").to_string();
+                            record
+                                .lock()
+                                .unwrap()
+                                .push(format!("{target} {}", &text[end + 4..]));
+                            break;
+                        }
+                    }
+                }
+                let response = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(response.as_bytes()).await;
+                let _ = sock.flush().await;
+            }
+        });
+        (format!("http://{addr}"), seen)
+    }
+
+    fn ccg(token_url: String) -> Auth {
+        Auth::client_credentials(CcgConfig {
+            client_id: "c".to_string(),
+            client_secret: "s".to_string(),
+            enterprise_id: "1".to_string(),
+            token_url: Some(token_url),
+            ..Default::default()
+        })
+    }
+
+    #[tokio::test]
+    async fn ccg_revoke_posts_the_token_then_reacquires() {
+        let (base, seen) = serve_script(vec![
+            (200, r#"{"access_token":"tok-1","expires_in":3600}"#),
+            (200, ""),
+            (200, r#"{"access_token":"tok-2","expires_in":3600}"#),
+        ])
+        .await;
+        let auth = ccg(format!("{base}/oauth2/token"));
+        assert_eq!(auth.access_token().await.unwrap(), "tok-1");
+        auth.revoke_token().await.unwrap();
+        assert_eq!(
+            seen.lock().unwrap()[1],
+            "/oauth2/revoke client_id=c&client_secret=s&token=tok-1"
+        );
+        assert_eq!(auth.access_token().await.unwrap(), "tok-2");
+        // A fresh flow has nothing cached to revoke: no request at all.
+        ccg(format!("{base}/oauth2/token"))
+            .revoke_token()
+            .await
+            .unwrap();
+        assert_eq!(seen.lock().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_failed_revoke_surfaces_and_keeps_the_token() {
+        let (base, _) = serve_script(vec![
+            (200, r#"{"access_token":"kept","expires_in":3600}"#),
+            (400, r#"{"error":"invalid_client"}"#),
+        ])
+        .await;
+        let auth = ccg(format!("{base}/oauth2/token"));
+        auth.access_token().await.unwrap();
+        let err = auth.revoke_token().await.unwrap_err().to_string();
+        assert!(
+            err.contains("400") && err.contains("invalid_client"),
+            "{err}"
+        );
+        assert_eq!(auth.access_token().await.unwrap(), "kept");
+    }
+
+    #[tokio::test]
+    async fn oauth_revoke_revokes_the_grant_then_fails_loudly() {
+        let (base, seen) = serve_script(vec![
+            (
+                200,
+                r#"{"access_token":"at","refresh_token":"rt-1","expires_in":3600}"#,
+            ),
+            (200, ""),
+        ])
+        .await;
+        let auth = Auth::oauth(
+            OAuthConfig {
+                client_id: "c".to_string(),
+                client_secret: "s".to_string(),
+                token_url: Some(format!("{base}/oauth2/token")),
+            },
+            "rt-0",
+        );
+        assert_eq!(auth.access_token().await.unwrap(), "at");
+        auth.revoke_token().await.unwrap();
+        // The rotated refresh token is what gets revoked.
+        assert_eq!(
+            seen.lock().unwrap()[1],
+            "/oauth2/revoke client_id=c&client_secret=s&token=rt-1"
+        );
+        let err = auth.access_token().await.unwrap_err().to_string();
+        assert!(err.contains("revoked"), "{err}");
+        assert!(auth.force_refresh("at").await.is_err());
+        // Revoking again is a no-op: the script has no third answer.
+        auth.revoke_token().await.unwrap();
+        assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn jwt_revoke_posts_the_token() {
+        let (base, seen) = serve_script(vec![
+            (200, r#"{"access_token":"jwt-1","expires_in":3600}"#),
+            (200, ""),
+        ])
+        .await;
+        let auth = Auth::jwt(JwtConfig {
+            client_id: "c".to_string(),
+            client_secret: "s".to_string(),
+            public_key_id: "kid".to_string(),
+            private_key_pem: crate::jwt::tests::TEST_KEY.as_bytes().to_vec(),
+            passphrase: None,
+            enterprise_id: "1".to_string(),
+            user_id: None,
+            token_url: Some(format!("{base}/oauth2/token")),
+        })
+        .unwrap();
+        assert_eq!(auth.access_token().await.unwrap(), "jwt-1");
+        auth.revoke_token().await.unwrap();
+        assert_eq!(
+            seen.lock().unwrap()[1],
+            "/oauth2/revoke client_id=c&client_secret=s&token=jwt-1"
+        );
+    }
+
+    #[tokio::test]
+    async fn revoke_goes_through_the_token_proxy() {
+        // The token URL can't resolve; only the proxy can answer it.
+        let (proxy, seen) = serve_script(vec![
+            (200, r#"{"access_token":"proxied","expires_in":3600}"#),
+            (200, ""),
+        ])
+        .await;
+        let auth = ccg("http://box.invalid/oauth2/token".to_string())
+            .with_proxy(reqwest::Proxy::all(proxy).unwrap());
+        auth.access_token().await.unwrap();
+        auth.revoke_token().await.unwrap();
+        assert!(
+            seen.lock().unwrap()[1].starts_with("http://box.invalid/oauth2/revoke "),
+            "{:?}",
+            seen.lock().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn revoke_refuses_what_it_cannot_revoke() {
+        assert!(Auth::developer_token("t").revoke_token().await.is_err());
+        // A token URL without a /token suffix has no derivable revoke URL.
+        let auth = ccg("http://127.0.0.1:1/custom".to_string());
+        if let Source::Form(source) = &auth.source {
+            source
+                .cached
+                .lock()
+                .await
+                .store("tok".to_string(), Duration::from_secs(3600));
+        }
+        let err = auth.revoke_token().await.unwrap_err().to_string();
+        assert!(err.contains("revoke endpoint"), "{err}");
     }
 
     #[tokio::test]
