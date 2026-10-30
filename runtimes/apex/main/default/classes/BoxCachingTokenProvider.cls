@@ -4,11 +4,13 @@
 // they send to the token endpoint; the rest — caching the access token,
 // refreshing a minute before expiry, invalidating on demand, and normalizing
 // callout/parse failures to `BoxApiException` — is identical. This abstract base
-// owns all of that; a subclass supplies just `tokenRequestBody()`.
+// owns all of that, plus `revoke()`; a subclass supplies `tokenRequestBody()`
+// and, to revoke, `clientCredentialsForm()`.
 public abstract with sharing class BoxCachingTokenProvider implements BoxTokenProvider {
     // `public` (not `protected`): Apex forbids `protected static` fields, and a
     // subclass (JWT) reads this constant. A URL constant is safe to expose.
     public static final String TOKEN_URL = 'https://api.box.com/oauth2/token';
+    public static final String REVOKE_URL = 'https://api.box.com/oauth2/revoke';
     // Refresh this many seconds before the reported expiry, so a token never
     // lapses in flight.
     private static final Long EXPIRY_SKEW_SECONDS = 60;
@@ -39,6 +41,49 @@ public abstract with sharing class BoxCachingTokenProvider implements BoxTokenPr
     public void invalidate() {
         this.cachedToken = null;
         this.expiresAtMillis = null;
+    }
+
+    /**
+     * The `client_id=…&client_secret=…` form fields a revoke authenticates
+     * with. The built-in flows override this; the default refuses loudly.
+     */
+    protected virtual String clientCredentialsForm() {
+        throw new BoxApiException('This token provider cannot revoke its token.');
+    }
+
+    /**
+     * Revoke the cached access token at Box (`POST /oauth2/revoke`, with the
+     * app's own client credentials) and drop it, so the next
+     * `getAccessToken()` mints a fresh one — for logout and uninstall. With no
+     * token cached there is nothing to revoke and no callout is made. A failure
+     * throws `BoxApiException` and keeps the token cached.
+     */
+    public void revoke() {
+        if (this.cachedToken == null || this.expiresAtMillis == null) {
+            this.invalidate();
+            return;
+        }
+        HttpRequest req = new HttpRequest();
+        req.setEndpoint(REVOKE_URL);
+        req.setMethod('POST');
+        req.setTimeout(this.timeoutMillis());
+        req.setHeader('Content-Type', 'application/x-www-form-urlencoded');
+        req.setBody(
+            this.clientCredentialsForm() +
+            '&token=' + EncodingUtil.urlEncode(this.cachedToken, 'UTF-8')
+        );
+
+        HttpResponse res;
+        try {
+            res = new Http().send(req);
+        } catch (System.CalloutException e) {
+            throw new BoxApiException('The revoke request failed: ' + e.getMessage());
+        }
+        Integer status = res.getStatusCode();
+        if (status < 200 || status >= 300) {
+            throw BoxApiException.fromResponse(status, res.getBody());
+        }
+        this.invalidate();
     }
 
     // Exchange the request body for a token, caching it. Every failure mode —

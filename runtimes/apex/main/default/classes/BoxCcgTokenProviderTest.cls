@@ -10,8 +10,10 @@ private class BoxCcgTokenProviderTest {
         public Integer calls = 0;
         public Integer statusCode = 200;
         public String body = '{"access_token":"tok_abc","expires_in":3600,"token_type":"bearer"}';
+        public HttpRequest last;
         public HttpResponse respond(HttpRequest req) {
             this.calls++;
+            this.last = req;
             HttpResponse res = new HttpResponse();
             res.setStatusCode(this.statusCode);
             res.setBody(this.body);
@@ -49,6 +51,52 @@ private class BoxCcgTokenProviderTest {
         provider.getAccessToken();
         Test.stopTest();
         System.assertEquals(2, mock.calls, 'invalidate must force a fresh callout');
+    }
+
+    @isTest
+    static void revokePostsTheTokenThenReMints() {
+        TokenMock mock = new TokenMock();
+        Test.setMock(HttpCalloutMock.class, mock);
+        BoxCcgTokenProvider provider = new BoxCcgTokenProvider('id', 'secret', 'enterprise', '1');
+        Test.startTest();
+        provider.getAccessToken();
+        BoxAuth.revokeToken(provider);
+        System.assertEquals(BoxCachingTokenProvider.REVOKE_URL, mock.last.getEndpoint());
+        System.assertEquals('client_id=id&client_secret=secret&token=tok_abc', mock.last.getBody());
+        provider.getAccessToken();
+        Test.stopTest();
+        System.assertEquals(3, mock.calls, 'mint, revoke, then a fresh mint');
+    }
+
+    @isTest
+    static void revokeWithNothingCachedMakesNoCallout() {
+        TokenMock mock = new TokenMock();
+        Test.setMock(HttpCalloutMock.class, mock);
+        BoxCcgTokenProvider provider = new BoxCcgTokenProvider('id', 'secret', 'enterprise', '1');
+        Test.startTest();
+        provider.revoke();
+        Test.stopTest();
+        System.assertEquals(0, mock.calls, 'nothing to revoke');
+    }
+
+    @isTest
+    static void aFailedRevokeThrowsAndKeepsTheToken() {
+        TokenMock mock = new TokenMock();
+        Test.setMock(HttpCalloutMock.class, mock);
+        BoxCcgTokenProvider provider = new BoxCcgTokenProvider('id', 'bad', 'enterprise', '1');
+        Test.startTest();
+        provider.getAccessToken();
+        mock.statusCode = 400;
+        mock.body = '{"error":"invalid_client"}';
+        try {
+            provider.revoke();
+            System.assert(false, 'a non-2xx revoke must throw');
+        } catch (BoxApiException e) {
+            System.assertEquals(400, e.statusCode);
+        }
+        System.assertEquals('tok_abc', provider.getAccessToken(), 'the token stays cached');
+        Test.stopTest();
+        System.assertEquals(2, mock.calls, 'mint, failed revoke; the read after is cached');
     }
 
     @isTest

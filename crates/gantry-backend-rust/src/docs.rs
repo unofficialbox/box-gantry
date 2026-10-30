@@ -397,6 +397,18 @@ let auth = config.exchange_code_with_store(&code, redirect_uri, store.clone()).a
 let auth = auth::Auth::oauth_with_store(config, newest_saved_refresh_token, store);\n\
 let client = Client::new(auth);\n\
 ```\n\n\
+## Revoking a token\n\n\
+For logout or uninstall, `revoke_token` revokes the token a CCG, JWT, or OAuth\n\
+flow holds — with the flow's own client credentials, at the revoke endpoint\n\
+beside its token URL, through its proxy — and clears it from the cache:\n\n\
+```rust\n\
+client.revoke_token().await?;\n\
+```\n\n\
+A CCG or JWT flow acquires a fresh token on its next use. OAuth revokes the\n\
+whole grant: every later call fails, so discard the stored refresh token and\n\
+run the authorization-code flow again. A developer token has no client\n\
+credentials to revoke with — pass them yourself to\n\
+`client.authorization.revoke_oauth2`.\n\n\
 ## Acting as another user\n\n\
 An admin, or a service account whose app may *make API calls using the as-user\n\
 header*, can act as another user. `with_as_user_header` returns a new client\n\

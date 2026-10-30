@@ -400,6 +400,21 @@ src, err := cfg.ExchangeCode(ctx, code, redirectURI)\n\
 // later runs: src := auth.OAuth(cfg, newestSavedRefreshToken)\n\
 c := client.NewClient(src)\n\
 ```\n\n\
+## Revoking a token\n\n\
+For logout or uninstall, `auth.RevokeToken` revokes the token a CCG, JWT, or\n\
+OAuth source holds — with the flow's own client credentials, at the revoke\n\
+endpoint beside its token URL, through its proxy — and clears it from the\n\
+cache:\n\n\
+```go\n\
+if err := auth.RevokeToken(ctx, src); err != nil {\n\
+\treturn err\n\
+}\n\
+```\n\n\
+A CCG or JWT source acquires a fresh token on its next use. OAuth revokes the\n\
+whole grant: every later call fails with `auth.ErrRevoked`, so discard the\n\
+stored refresh token and run the authorization-code flow again. A developer\n\
+token has no client credentials to revoke with — pass them yourself to\n\
+`c.Authorization.RevokeOauth2`.\n\n\
 ## Acting as another user\n\n\
 An admin, or a service account whose app may *make API calls using the as-user\n\
 header*, can act as another user. `WithAsUserHeader` returns a new client whose\n\

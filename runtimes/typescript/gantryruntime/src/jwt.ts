@@ -7,7 +7,13 @@
 // Reach it via the package's `./jwt` export.
 
 import { BoxApiError } from './errors.js';
-import { type Auth, CachedToken, DEFAULT_TOKEN_URL, postTokenForm } from './tokens.js';
+import {
+  CachedToken,
+  DEFAULT_TOKEN_URL,
+  type RevocableAuth,
+  postRevokeForm,
+  postTokenForm,
+} from './tokens.js';
 
 // The `node:crypto` surface this flow uses is declared ambiently in
 // `node-crypto.d.ts` (kept local so the gate needs no `@types/node`).
@@ -40,7 +46,7 @@ export interface JwtConfig {
  * private key up front so a bad key fails loudly here rather than on the first
  * request. Returns a promise because it imports `node:crypto` on demand.
  */
-export async function jwtAuth(config: JwtConfig): Promise<Auth> {
+export async function jwtAuth(config: JwtConfig): Promise<RevocableAuth> {
   if (!config.userId && !config.enterpriseId) {
     throw new BoxApiError('jwtAuth requires a subject: enterpriseId or userId');
   }
@@ -66,20 +72,28 @@ export async function jwtAuth(config: JwtConfig): Promise<Auth> {
   const subject = config.userId
     ? { type: 'user', id: config.userId }
     : { type: 'enterprise', id: config.enterpriseId ?? '' };
-  return new CachedToken(async () => {
-    const assertion = signAssertion(crypto, config, privateKey, subject, tokenUrl);
-    return postTokenForm(
-      tokenUrl,
-      {
-        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-        assertion,
-        client_id: config.clientId,
-        client_secret: config.clientSecret,
-      },
-      undefined,
-      config.fetch,
-    );
-  });
+  return new CachedToken(
+    async () => {
+      const assertion = signAssertion(crypto, config, privateKey, subject, tokenUrl);
+      return postTokenForm(
+        tokenUrl,
+        {
+          grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+          assertion,
+          client_id: config.clientId,
+          client_secret: config.clientSecret,
+        },
+        undefined,
+        config.fetch,
+      );
+    },
+    async (token) => {
+      if (token) {
+        const form = { client_id: config.clientId, client_secret: config.clientSecret, token };
+        await postRevokeForm(tokenUrl, form, config.fetch);
+      }
+    },
+  );
 }
 
 /**

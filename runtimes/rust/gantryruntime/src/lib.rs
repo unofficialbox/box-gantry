@@ -338,6 +338,13 @@ impl Client {
         self.auth.access_token().await
     }
 
+    /// Revoke the auth flow's token and clear it from the cache (see
+    /// [`Auth::revoke_token`]). Clients derived with `with_as_user_header`
+    /// share the flow, so the revoke covers them too.
+    pub async fn revoke_token(&self) -> Result<(), Error> {
+        self.auth.revoke_token().await
+    }
+
     /// Create a request envelope for a method and fully built URL.
     pub fn new_request(&self, method: &str, url: &str) -> Request {
         Request {
