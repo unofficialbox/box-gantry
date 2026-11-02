@@ -226,6 +226,28 @@ try {
     client.files.delete_r(textFileId, null);
 }
 
+// Last, since it revokes a token at Box: a separate CCG provider's token is
+// revoked, then gets a 401, and the provider carries on with a new one. Its
+// own provider, so the token the checks above used is untouched.
+BoxTokenProvider revocable = new BoxCcgTokenProvider(
+    '${BOX_CLIENT_ID}',
+    '${BOX_CLIENT_SECRET}',
+    'enterprise',
+    '${BOX_ENTERPRISE_ID}'
+);
+String revoked = revocable.getAccessToken();
+BoxAuth.revokeToken(revocable);
+try {
+    new Box(new BoxHttpClient(BoxAuth.developerToken(revoked))).users.getMe(null);
+    System.assert(false, 'the revoked token should get a 401');
+} catch (BoxApiException e) {
+    System.assertEquals(401, e.statusCode, 'the revoked token should get a 401: ' + e.getMessage());
+}
+UserFull again = new Box(new BoxHttpClient(revocable)).users.getMe(null);
+System.assert(String.isNotBlank(again.id), 'the provider should carry on after a revoke');
+System.assertNotEquals(revoked, revocable.getAccessToken(), 'the provider should hold a new token');
+System.debug(LoggingLevel.ERROR, 'SMOKE revoke: the revoked token gets a 401; the provider carried on');
+
 // The sentinel the workflow greps for — reached only if every call above
 // succeeded and no assertion or callout threw.
 System.debug(LoggingLevel.ERROR, 'SMOKE OK');

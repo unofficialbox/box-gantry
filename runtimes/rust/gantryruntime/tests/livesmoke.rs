@@ -169,7 +169,62 @@ async fn live_smoke() {
     smoke_paginate(&client).await;
     smoke_upload_download_delete(&client).await;
     smoke_as_user(&client).await;
+    // Last: it revokes a token at Box.
+    smoke_revoke(&env).await;
     assert!(failed.is_empty(), "auth flow(s) failed: {failed:?}");
+}
+
+/// Revoke a CCG token at Box and check the result there: the old token now
+/// gets a 401 and the same session carries on with a new one. It uses its own
+/// CCG session, so no other check's token is touched. OAuth is left out on
+/// purpose: revoking it ends the stored grant, which only a person can renew.
+async fn smoke_revoke(env: &HashMap<String, String>) {
+    let (Some(client_id), Some(client_secret), Some(enterprise_id)) = (
+        nonempty(env, "BOX_CLIENT_ID"),
+        nonempty(env, "BOX_CLIENT_SECRET"),
+        nonempty(env, "BOX_ENTERPRISE_ID"),
+    ) else {
+        eprintln!("revoke: no CCG credentials; skipped");
+        return;
+    };
+    let client = Client::new(Auth::client_credentials(CcgConfig {
+        client_id,
+        client_secret,
+        enterprise_id,
+        user_id: None,
+        token_url: None,
+    }));
+    whoami(&client)
+        .await
+        .expect("revoke: /users/me before revoking");
+    let revoked = client
+        .access_token()
+        .await
+        .expect("revoke: token before revoking");
+    client.revoke_token().await.expect("revoke");
+
+    let stale = Client::new(Auth::developer_token(revoked.clone())).with_max_retries(0);
+    let url = format!("{}/users/me", stale.base_url("api"));
+    match stale.fetch(stale.new_request("GET", &url)).await {
+        Err(err) if err.status() == Some(401) => {}
+        other => panic!(
+            "revoke: the revoked token should get a 401, got {}",
+            describe(other)
+        ),
+    }
+
+    whoami(&client)
+        .await
+        .expect("revoke: /users/me after revoking");
+    let fresh = client
+        .access_token()
+        .await
+        .expect("revoke: token after revoking");
+    assert_ne!(
+        fresh, revoked,
+        "revoke: the session should carry on with a new token"
+    );
+    eprintln!("revoke: the revoked token gets a 401; the session carried on with a new one");
 }
 
 /// Act as a managed user through `with_as_user_header`: `/users/me` must
