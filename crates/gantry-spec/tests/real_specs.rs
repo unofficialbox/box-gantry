@@ -32,7 +32,7 @@ fn the_full_real_spec_set_ingests() {
     // If a spec refresh changes them, updating these numbers is the
     // deliberate, reviewed act the determinism rules want (FR-6.2, VR-6).
     assert_eq!(base.operations.len(), 297);
-    assert_eq!(base.schemas.len(), 316);
+    assert_eq!(base.schemas.len(), 317);
     assert_eq!(base.managers().len(), 73);
 
     assert_eq!(set.documents[1].operations.len(), 37);
@@ -77,12 +77,13 @@ fn the_full_real_spec_set_ingests() {
     // adds upload-session planning (4 structs) and the Japanese ZIP sign-input
     // validation (1 struct + its synthesized type enum): → 890. The 2026-10-28
     // refresh adds Shuttle (content migration) and Document Split to v2026.0
-    // and one-time passcodes on shared links: → 1017.
-    assert_eq!(lowering.program.decls.len(), 1017);
+    // and one-time passcodes on shared links: → 1017. The 2026-11-08 refresh adds
+    // metadata-template filters to legal hold assignments: → 1018.
+    assert_eq!(lowering.program.decls.len(), 1018);
     let stats = &lowering.stats;
     assert_eq!(
         (stats.structs, stats.unions, stats.discriminated_unions),
-        (685, 41, 29)
+        (686, 41, 29)
     );
     assert_eq!((stats.enums, stats.aliases), (287, 4));
     assert_eq!(stats.synthesized, 534);
