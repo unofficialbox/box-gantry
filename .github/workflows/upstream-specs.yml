@@ -26,6 +26,27 @@ env:
   LABEL: upstream-spec-update
 
 jobs:
+  # The weekly live smokes report their own failures (their `alert` job), but
+  # not a run that never happens: GitHub can drop a scheduled run. This daily
+  # job opens the same `live-smoke-failure` issue when either smoke hasn't
+  # passed on main for 8 days; the next passing run closes it.
+  live-smoke-staleness:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+      - name: Open an issue for a live smoke that has stopped passing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: scripts/live-smoke-staleness.sh
+
   watch:
     runs-on: ubuntu-latest
     steps:
