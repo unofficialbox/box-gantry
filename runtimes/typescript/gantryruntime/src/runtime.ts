@@ -361,8 +361,10 @@ export class Client {
 }
 
 /** The safety ceiling on a server-sent Retry-After, so a hostile one can't
- * stall the client indefinitely. */
-const MAX_RETRY_DELAY_MS = 30_000;
+ * stall the client indefinitely: five minutes, as in the other runtimes. Low
+ * enough to bound a stall, high enough that a real Box rate-limit window is
+ * waited out rather than retried early into another 429. */
+const MAX_RETRY_DELAY_MS = 300_000;
 
 /** `value`, if it is a finite, non-negative number of milliseconds. */
 function nonNegative(name: string, value: number): number {

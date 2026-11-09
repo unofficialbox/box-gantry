@@ -853,6 +853,35 @@ void smoke(String name, Runtime.Auth auth) {
     }
 }
 
+// Revoke a CCG token at Box and check the result there: the old token now gets
+// a 401 and the same auth carries on with a new one. It uses its own CCG auth,
+// so no other check's token is touched. OAuth is left out on purpose: revoking
+// it ends the stored grant, which only a person can renew.
+void revoke(Runtime.CcgConfig config) {
+    Runtime.Auth auth = Runtime.clientCredentials(config);
+    Runtime.Session session = new Runtime.Session(auth);
+    getJson(session, session.baseUrl("api") + "/users/me");
+    String revoked = auth.accessToken();
+    auth.revokeToken();
+
+    Runtime.Session stale = Runtime.Session.builder(Runtime.developerToken(revoked)).maxRetries(0).build();
+    int status = 0;
+    try {
+        stale.fetch(stale.newRequest("GET", stale.baseUrl("api") + "/users/me"));
+    } catch (Runtime.BoxApiException err) {
+        status = err.statusCode();
+    }
+    if (status != 401) {
+        throw new IllegalStateException("revoke: the revoked token should get a 401, got " + status);
+    }
+
+    getJson(session, session.baseUrl("api") + "/users/me");
+    if (auth.accessToken().equals(revoked)) {
+        throw new IllegalStateException("revoke: the auth should carry on with a new token");
+    }
+    System.out.println("revoke: the revoked token gets a 401; the auth carried on with a new one");
+}
+
 // Walk the root folder's items, following the marker cursor across pages just
 // like the generated paginators do.
 void paginate(Runtime.Session session) {
@@ -1313,6 +1342,12 @@ void main() throws Exception {
     paginate(primary);
     uploadDownloadDelete(primary);
     asUser(primary);
+    // Last: it revokes a token at Box.
+    if (!clientId.isEmpty() && !clientSecret.isEmpty() && !env("BOX_ENTERPRISE_ID").isEmpty()) {
+        revoke(Runtime.CcgConfig.enterprise(clientId, clientSecret, env("BOX_ENTERPRISE_ID")));
+    } else {
+        System.out.println("revoke: SKIPPED, no CCG credentials");
+    }
     if (!failed.isEmpty()) {
         System.out.println("LIVESMOKE_FAIL " + failed);
         System.exit(1);

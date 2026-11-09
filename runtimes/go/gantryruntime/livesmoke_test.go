@@ -189,6 +189,45 @@ func TestLiveSmoke(t *testing.T) {
 	smokePaginate(ctx, t, primary)
 	smokeUploadDownloadDelete(ctx, t, primary)
 	smokeAsUser(ctx, t, primary)
+	// Last: it revokes a token at Box.
+	smokeRevoke(ctx, t)
+}
+
+// smokeRevoke revokes a CCG token at Box and checks the result there: the old
+// token now gets a 401 and the same source carries on with a new one. It uses
+// its own CCG source, so no other check's token is touched. OAuth is left out
+// on purpose: revoking it ends the stored grant, which only a person can
+// renew.
+func smokeRevoke(ctx context.Context, t *testing.T) {
+	id, secret, ent := os.Getenv("BOX_CLIENT_ID"), os.Getenv("BOX_CLIENT_SECRET"), os.Getenv("BOX_ENTERPRISE_ID")
+	if id == "" || secret == "" || ent == "" {
+		t.Log("revoke: no CCG credentials; skipped")
+		return
+	}
+	src := auth.ClientCredentials(auth.CCGConfig{ClientID: id, ClientSecret: secret, EnterpriseID: ent})
+	client := gantryruntime.New(src)
+	getJSON(ctx, t, client, client.BaseUrl("api")+"/users/me")
+	revoked, err := src.AccessToken(ctx)
+	if err != nil {
+		t.Fatalf("revoke: token before revoking: %v", err)
+	}
+	if err := auth.RevokeToken(ctx, src); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	stale := gantryruntime.New(auth.DeveloperToken(revoked), gantryruntime.WithMaxRetries(0))
+	_, err = stale.Fetch(ctx, stale.NewRequest("GET", stale.BaseUrl("api")+"/users/me"))
+	var apiErr *gantryruntime.APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 401 {
+		t.Fatalf("revoke: the revoked token should get a 401, got %v", err)
+	}
+
+	getJSON(ctx, t, client, client.BaseUrl("api")+"/users/me")
+	fresh, err := src.AccessToken(ctx)
+	if err != nil || fresh == revoked {
+		t.Fatalf("revoke: the source should carry on with a new token (err %v, same token %v)", err, fresh == revoked)
+	}
+	t.Log("revoke: the revoked token gets a 401; the source carried on with a new one")
 }
 
 // smokeAsUser acts as a managed user through WithAsUserHeader: /users/me must

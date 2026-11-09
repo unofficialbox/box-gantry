@@ -156,8 +156,40 @@ test('VR-7 live smoke: per-flow auth + paginate + upload/download/delete', async
   await smokePaginate(primary);
   await smokeUploadDownloadDelete(primary);
   await smokeAsUser(primary);
+  // Last: it revokes a token at Box.
+  await smokeRevoke(e);
   assert.deepEqual(failed, [], `auth flow(s) failed: ${failed.join(', ')}`);
 });
+
+/// Revoke a CCG token at Box and check the result there: the old token now
+/// gets a 401 and the same auth carries on with a new one. It uses its own CCG
+/// auth, so no other check's token is touched. OAuth is left out on purpose:
+/// revoking it ends the stored grant, which only a person can renew.
+async function smokeRevoke(e: Record<string, string>): Promise<void> {
+  const clientId = nonempty(e, 'BOX_CLIENT_ID');
+  const clientSecret = nonempty(e, 'BOX_CLIENT_SECRET');
+  const enterpriseId = nonempty(e, 'BOX_ENTERPRISE_ID');
+  if (clientId === undefined || clientSecret === undefined || enterpriseId === undefined) {
+    console.error('revoke: no CCG credentials; skipped');
+    return;
+  }
+  const auth = clientCredentials({ clientId, clientSecret, enterpriseId });
+  const client = new Client(auth);
+  await getJson(client, `${client.baseUrl('api')}/users/me`);
+  const revoked = await auth.accessToken();
+  await auth.revokeToken();
+
+  const stale = new Client(developerToken(revoked), { maxRetries: 0 });
+  await assert.rejects(
+    stale.fetch(stale.newRequest('GET', `${stale.baseUrl('api')}/users/me`)),
+    (err: unknown) => err instanceof BoxApiError && err.status === 401,
+    'revoke: the revoked token should get a 401',
+  );
+
+  await getJson(client, `${client.baseUrl('api')}/users/me`);
+  assert.ok((await auth.accessToken()) !== revoked, 'revoke: the auth should carry on with a new token');
+  console.error('revoke: the revoked token gets a 401; the auth carried on with a new one');
+}
 
 /// Act as a managed user through `withAsUserHeader`: `/users/me` must answer
 /// as that user. It needs an admin token from an app allowed to "make API

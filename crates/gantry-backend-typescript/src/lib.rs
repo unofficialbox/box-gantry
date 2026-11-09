@@ -648,8 +648,8 @@ values whose names look secret (`token`, `secret`, `password`, `code`, …) read
 A 429 is retried for any request; a 5xx or a failed connection only for
 idempotent methods, since a `POST` may already have taken effect. Up to five
 retries wait with exponential backoff and full jitter — up to 500ms·2ⁿ before
-retry *n*, capped at 30s — raised to Box's `Retry-After` when it sends one. A
-401 refreshes the token once. Tune the budget and the backoff:
+retry *n*, capped at 30s — raised to Box's `Retry-After` (up to 5 minutes)
+when it sends one. A 401 refreshes the token once. Tune the budget and the backoff:
 
 ```ts
 const client = new Client(auth.developerToken('DEVELOPER_TOKEN'), {
