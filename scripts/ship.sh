@@ -140,14 +140,15 @@ fi
 
 if $DRY_RUN; then
   say "Plan (dry run: nothing changed)"
-  case "$stage" in
-    bump) echo "1. branch $BRANCH from main; SDK_VERSION $current -> $VERSION; open the PR" ;&
-    pr) echo "2. wait for the bump PR's CI; squash-merge it" ;&
-    release)
-      echo "3. wait for CI on main; Release workflow, dry run"
-      echo "4. after confirming: the live release; its verify job checks every tag and registry" ;;
-    verify) echo "1. Verify a fleet release for $VERSION: the five tags, crates.io, npm, Maven Central" ;;
-  esac
+  # (No `;&` fallthrough: macOS ships bash 3.2.)
+  if [ "$stage" = verify ]; then
+    echo "1. Verify a fleet release for $VERSION: the five tags, crates.io, npm, Maven Central"
+  else
+    [ "$stage" = bump ] && echo "1. branch $BRANCH from main; SDK_VERSION $current -> $VERSION; open the PR"
+    [ "$stage" = bump ] || [ "$stage" = pr ] && echo "2. wait for the bump PR's CI; squash-merge it"
+    echo "3. wait for CI on main; Release workflow, dry run"
+    echo "4. after confirming: the live release; its verify job checks every tag and registry"
+  fi
   exit 0
 fi
 
