@@ -156,7 +156,9 @@ fi
 if [ "$stage" = bump ]; then
   say "1. Bump SDK_VERSION to $VERSION"
   git switch -q -C "$BRANCH" origin/main
-  sed -i "s/^pub const SDK_VERSION: &str = \"$current\";$/pub const SDK_VERSION: \&str = \"$VERSION\";/" "$MANIFEST"
+  # -i.bak works on both GNU and BSD (macOS) sed.
+  sed -i.bak "s/^pub const SDK_VERSION: &str = \"$current\";$/pub const SDK_VERSION: \&str = \"$VERSION\";/" "$MANIFEST"
+  rm -f "$MANIFEST.bak"
   git diff --quiet -- "$MANIFEST" && fail "the SDK_VERSION line didn't change"
   cargo test -q -p gantry-manifest >/dev/null
   git commit -q -am "ship: bump SDK version to $VERSION"
