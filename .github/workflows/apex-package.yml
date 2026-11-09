@@ -44,7 +44,7 @@ jobs:
       subscriber_id: ${{ steps.build.outputs.subscriber_id }}
       skipped: ${{ steps.guard.outputs.skip == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Guard — a Dev Hub is required
@@ -59,7 +59,7 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
       - if: steps.guard.outputs.skip != 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           # The Salesforce CLI's bundled undici needs Node >= 22.
           node-version: '22'
