@@ -7,6 +7,10 @@
 #   failure  -> open a `live-smoke-failure` issue naming the failed jobs and
 #               steps with a log excerpt, or comment on the open one
 #   success  -> comment on the open issue, if any, and close it
+#   stale    -> open the same issue when the workflow hasn't passed on main
+#               for too long (scripts/live-smoke-staleness.sh decides), unless
+#               one is open already; <run id> is its last passing run, or
+#               `none`, and STALE_DAYS how long ago that was
 #   other    -> (cancelled, skipped) nothing
 #
 # The issue is matched by a marker naming the workflow, so the Go/Rust/TS/Java
@@ -45,6 +49,11 @@ write() {
   fi
 }
 
+ensure_label() {
+  write -X POST "repos/$REPO/labels" -f name="$LABEL" -f color=D93F0B \
+    -f description="A scheduled live smoke against real Box is failing" 2>/dev/null || true
+}
+
 existing=$(gh api "repos/$REPO/issues?state=open&labels=$LABEL&per_page=100" \
   --jq "[.[] | select((.body // \"\") | contains(\"$marker\"))][0].number // empty")
 
@@ -81,8 +90,7 @@ case "$OUTCOME" in
 $report"
     else
       echo "Live smoke failed; opening an issue"
-      write -X POST "repos/$REPO/labels" -f name="$LABEL" -f color=D93F0B \
-        -f description="A scheduled live smoke against real Box is failing" 2>/dev/null || true
+      ensure_label
       write -X POST "repos/$REPO/issues" -f title="Live smoke failing: $WORKFLOW" \
         -f "labels[]=$LABEL" -f body="The **$WORKFLOW** workflow failed against real Box in [run $RUN_ID]($run_url).
 
@@ -101,6 +109,25 @@ $marker"
       write -X PATCH "repos/$REPO/issues/$existing" -f state=closed -f state_reason=completed
     else
       echo "Live smoke passed; no open issue"
+    fi
+    ;;
+  stale)
+    if [ -n "$existing" ]; then
+      echo "Live smoke not passing lately; #$existing is already open"
+    else
+      if [ "$RUN_ID" = none ]; then
+        last="has never passed on \`main\`"
+      else
+        last="last passed on \`main\` ${STALE_DAYS:-?} days ago, in [run $RUN_ID]($run_url)"
+      fi
+      echo "Live smoke not passing lately; opening an issue"
+      ensure_label
+      write -X POST "repos/$REPO/issues" -f title="Live smoke not running: $WORKFLOW" \
+        -f "labels[]=$LABEL" -f body="The weekly **$WORKFLOW** workflow $last.
+
+It is scheduled every Monday, so this usually means GitHub dropped the scheduled run, or the runs since were cancelled or skipped. Run it by hand on \`main\` (Actions → $WORKFLOW → Run workflow); this issue closes itself when it passes.
+
+$marker"
     fi
     ;;
   *)
