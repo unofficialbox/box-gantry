@@ -1014,9 +1014,9 @@ fn the_real_spec_lowers_to_apex_classes() {
     // Insights release (16 new decls), and the 2026-10 refresh (6 new decls:
     // upload-session planning + Japanese ZIP validation), and the 2026-10-28
     // refresh (Shuttle, Document Split, shared-link one-time passcodes), the
-    // spec lowers to 1017 decls − 4 aliases = 1013 classes. Pinned so the count
+    // spec lowers to 1018 decls − 4 aliases = 1014 classes. Pinned so the count
     // only moves deliberately with the spec (VR-6 lineage).
-    assert_eq!(files.len(), 1013, "expected one class per non-alias decl");
+    assert_eq!(files.len(), 1014, "expected one class per non-alias decl");
 
     // Every class name obeys the platform identifier limit (TR-Apex.1) and
     // is globally unique (flat namespace), and every file carries the
@@ -1204,8 +1204,8 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     // D-196, needs the `deserialize` builder too — without crossing a chunk
     // boundary). The version merge (D-190) drops 21 model classes and the
     // box-version strip (D-191) drops 2 more. The 2026-10-28 spec refresh
-    // brings 1013 model classes and 88 managers (Shuttle, Document Split):
-    // 1013 + 88 + 1 + 3 + 14 = 1119, an @isTest suite of 88 + 2 = 90, and a
+    // brings 1014 model classes and 88 managers (Shuttle, Document Split):
+    // 1014 + 88 + 1 + 3 + 14 = 1120, an @isTest suite of 88 + 2 = 90, and a
     // fifth wire-hook chunk. The runtime's `BoxConsistencyTest` (Box's etag
     // flow through the generated `BoxFiles`) makes 15 runtime classes:
     // 1120 + 90 + 1 + 5 = 1216 total. `BoxWebhookVerifier` and its test,
@@ -1214,7 +1214,8 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     // decorator and its test (`BoxAsUserClient`, `BoxAsUserClientTest`) make
     // 21: 1126 + 90 + 1 + 5 = 1222. Representations and their test
     // (`BoxRepresentations`, `BoxRepresentationsTest`) make 23:
-    // 1128 + 90 + 1 + 5 = 1224.
+    // 1128 + 90 + 1 + 5 = 1224; the 2026-11-08 refresh adds one model class
+    // (legal hold filter field): 1129 + 90 + 1 + 5 = 1225.
     let classes: Vec<&str> = files
         .iter()
         .filter(|f| f.path.ends_with(".cls"))
@@ -1222,7 +1223,7 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         .collect();
     assert_eq!(
         classes.len(),
-        1128 + 90 + 1 + 5,
+        1129 + 90 + 1 + 5,
         "models + managers + client + stubs + runtime + @isTest suite + BoxBuildInfo + wire-hook suite"
     );
     // The generated test suite ships with the deployable tree.
@@ -1317,9 +1318,9 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         "endpoint + manager + top-index + guide docs"
     );
     // 7 base scaffolding (sfdx-project, scratch-def, .forceignore, package.xml,
-    // README, LICENSE, assets/banner.svg) + 4 Remote Site Settings + 1224
-    // classes + 1224 metas + 474 docs.
-    assert_eq!(files.len(), 7 + 4 + (1128 + 90 + 1 + 5) * 2 + 474);
+    // README, LICENSE, assets/banner.svg) + 4 Remote Site Settings + 1225
+    // classes + 1225 metas + 474 docs.
+    assert_eq!(files.len(), 7 + 4 + (1129 + 90 + 1 + 5) * 2 + 474);
 
     // Deterministic and path-sorted.
     let sorted: Vec<&String> = {
