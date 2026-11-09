@@ -24,7 +24,7 @@ jobs:
     env:
       SFDX_AUTH_URL: ${{ secrets.SFDX_AUTH_URL }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Guard — a target org is required
@@ -35,7 +35,7 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
       - if: steps.guard.outputs.skip != 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           # The Salesforce CLI's bundled undici needs Node >= 22
           # (webidl.util.markAsUncloneable); Node 20 crashes on first callout.
