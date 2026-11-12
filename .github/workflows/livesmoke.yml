@@ -25,7 +25,14 @@ jobs:
       BOX_CLIENT_ID: ${{ secrets.BOX_CLIENT_ID }}
       BOX_CLIENT_SECRET: ${{ secrets.BOX_CLIENT_SECRET }}
       BOX_ENTERPRISE_ID: ${{ secrets.BOX_ENTERPRISE_ID }}
-      BOX_OAUTH_REFRESH_TOKEN: ${{ secrets.BOX_OAUTH_REFRESH_TOKEN }}
+      BOX_OAUTH_CLIENT_ID: ${{ secrets.BOX_OAUTH_CLIENT_ID }}
+      BOX_OAUTH_CLIENT_SECRET: ${{ secrets.BOX_OAUTH_CLIENT_SECRET }}
+      # Box rotates the refresh token on every use, so the run is handed the
+      # stored one only when SMOKE_SECRETS_TOKEN (a fine-grained PAT with
+      # Secrets: write on this repo) can write the new one back; otherwise
+      # OAuth is skipped and the stored token stays valid.
+      BOX_OAUTH_REFRESH_TOKEN: ${{ secrets.SMOKE_SECRETS_TOKEN != '' && secrets.BOX_OAUTH_REFRESH_TOKEN || '' }}
+      SMOKE_SECRETS_TOKEN: ${{ secrets.SMOKE_SECRETS_TOKEN }}
       BOX_JWT_CONFIG_JSON: ${{ secrets.BOX_JWT_CONFIG }}
     steps:
       - uses: actions/checkout@v7
@@ -56,7 +63,26 @@ jobs:
       - name: Run the Go live smoke (one call per auth flow + upload/download/paginate + etags + events)
         if: ${{ !cancelled() }}
         working-directory: runtimes/go
+        env:
+          BOX_OAUTH_REFRESH_TOKEN_FILE: ${{ runner.temp }}/oauth_refresh_token
         run: go test -tags live -run TestLiveSmoke -v ./gantryruntime/...
+      # Runs even when the smoke failed: the token was rotated the moment Box
+      # issued the new one, so losing it here ends the grant. The file exists
+      # only if a rotation happened.
+      - name: Save the rotated OAuth refresh token back to the secret
+        if: ${{ always() && env.SMOKE_SECRETS_TOKEN != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.SMOKE_SECRETS_TOKEN }}
+          TOKEN_FILE: ${{ runner.temp }}/oauth_refresh_token
+        run: |
+          if [ ! -s "$TOKEN_FILE" ]; then
+            echo "No rotated refresh token to save."
+            exit 0
+          fi
+          if ! gh secret set BOX_OAUTH_REFRESH_TOKEN --repo "$GITHUB_REPOSITORY" < "$TOKEN_FILE"; then
+            echo "::error::Could not save the rotated OAuth refresh token; the stored one is spent. Run scripts/oauth-signin.sh to sign in again."
+            exit 1
+          fi
       - name: Run the Rust live smoke (same flows, the hand-written reqwest/tokio runtime)
         if: ${{ !cancelled() }}
         working-directory: runtimes/rust/gantryruntime
