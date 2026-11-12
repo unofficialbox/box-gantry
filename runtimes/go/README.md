@@ -35,7 +35,7 @@ test loads it automatically (real env vars still win). Recognized variables:
 |---|---|
 | `BOX_DEVELOPER_TOKEN` | Developer Token |
 | `BOX_CLIENT_ID` + `BOX_CLIENT_SECRET` + `BOX_ENTERPRISE_ID` | Client Credentials Grant |
-| `BOX_CLIENT_ID` + `BOX_CLIENT_SECRET` + `BOX_OAUTH_REFRESH_TOKEN` | OAuth 2.0 |
+| `BOX_OAUTH_CLIENT_ID` + `BOX_OAUTH_CLIENT_SECRET` + `BOX_OAUTH_REFRESH_TOKEN` + `BOX_OAUTH_REFRESH_TOKEN_FILE` | OAuth 2.0 (Box rotates the token on use; the new one is written to the file. `scripts/oauth-signin.sh` does the one-time sign-in) |
 | `BOX_JWT_CONFIG` (path to `box_config.json`) | JWT |
 
 In CI it runs only via the **Live smoke (VR-7)** workflow — weekly and on

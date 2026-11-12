@@ -101,10 +101,22 @@ func authSources(t *testing.T) map[string]gantryruntime.TokenSource {
 				EnterpriseID: ent,
 			})
 		}
-		if rt := os.Getenv("BOX_OAUTH_REFRESH_TOKEN"); rt != "" {
+	}
+	if rt := os.Getenv("BOX_OAUTH_REFRESH_TOKEN"); rt != "" {
+		oauthID, oauthSecret := os.Getenv("BOX_OAUTH_CLIENT_ID"), os.Getenv("BOX_OAUTH_CLIENT_SECRET")
+		out := os.Getenv("BOX_OAUTH_REFRESH_TOKEN_FILE")
+		switch {
+		case oauthID == "" || oauthSecret == "":
+			t.Log("oauth: no BOX_OAUTH_CLIENT_ID / BOX_OAUTH_CLIENT_SECRET; skipped")
+		case out == "":
+			// Box rotates the refresh token on use, so without somewhere to
+			// put the new one the run would burn the stored token.
+			t.Log("oauth: BOX_OAUTH_REFRESH_TOKEN_FILE is not set; skipped rather than use up the stored refresh token")
+		default:
 			sources["oauth"] = auth.OAuth(auth.OAuthConfig{
-				ClientID:     id,
-				ClientSecret: os.Getenv("BOX_CLIENT_SECRET"),
+				ClientID:     oauthID,
+				ClientSecret: oauthSecret,
+				Store:        fileTokenStore{path: out},
 			}, rt)
 		}
 	}
@@ -112,6 +124,19 @@ func authSources(t *testing.T) map[string]gantryruntime.TokenSource {
 		sources["jwt"] = jwtSource(t, path)
 	}
 	return sources
+}
+
+// fileTokenStore keeps the newest OAuth refresh token in a file (written
+// atomically, owner-only), so the workflow can write it back to the secret
+// after the run.
+type fileTokenStore struct{ path string }
+
+func (f fileTokenStore) SaveRefreshToken(_ context.Context, refreshToken string) error {
+	tmp := f.path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(refreshToken), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, f.path)
 }
 
 // jwtSource builds a JWT flow from a Box box_config.json file.
