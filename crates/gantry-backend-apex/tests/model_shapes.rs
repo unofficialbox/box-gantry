@@ -1014,9 +1014,11 @@ fn the_real_spec_lowers_to_apex_classes() {
     // Insights release (16 new decls), and the 2026-10 refresh (6 new decls:
     // upload-session planning + Japanese ZIP validation), and the 2026-10-28
     // refresh (Shuttle, Document Split, shared-link one-time passcodes), the
-    // spec lowers to 1018 decls − 4 aliases = 1014 classes. Pinned so the count
-    // only moves deliberately with the spec (VR-6 lineage).
-    assert_eq!(files.len(), 1014, "expected one class per non-alias decl");
+    // spec lowers to 1018 decls − 4 aliases = 1014 classes; the 2026-11-13
+    // refresh (BoxSign signer verification methods, invite auto roll-in) adds
+    // 11 more decls: 1025. Pinned so the count only moves deliberately with the
+    // spec (VR-6 lineage).
+    assert_eq!(files.len(), 1025, "expected one class per non-alias decl");
 
     // Every class name obeys the platform identifier limit (TR-Apex.1) and
     // is globally unique (flat namespace), and every file carries the
@@ -1044,7 +1046,7 @@ fn the_real_spec_lowers_to_apex_classes() {
     }
 
     // The generated deserializeUntyped dispatch appears for every
-    // discriminated union (29 in the real spec — matches the IR stats).
+    // discriminated union (31 in the real spec — matches the IR stats).
     let dispatch = files
         .iter()
         .filter(|f| {
@@ -1053,7 +1055,7 @@ fn the_real_spec_lowers_to_apex_classes() {
         })
         .count();
     assert_eq!(
-        dispatch, 29,
+        dispatch, 31,
         "expected one dispatch per discriminated union"
     );
 }
@@ -1215,7 +1217,8 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     // 21: 1126 + 90 + 1 + 5 = 1222. Representations and their test
     // (`BoxRepresentations`, `BoxRepresentationsTest`) make 23:
     // 1128 + 90 + 1 + 5 = 1224; the 2026-11-08 refresh adds one model class
-    // (legal hold filter field): 1129 + 90 + 1 + 5 = 1225.
+    // (legal hold filter field): 1129 + 90 + 1 + 5 = 1225; the 2026-11-13
+    // refresh adds 11 (BoxSign verification methods): 1140 + 90 + 1 + 5 = 1236.
     let classes: Vec<&str> = files
         .iter()
         .filter(|f| f.path.ends_with(".cls"))
@@ -1223,7 +1226,7 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
         .collect();
     assert_eq!(
         classes.len(),
-        1129 + 90 + 1 + 5,
+        1140 + 90 + 1 + 5,
         "models + managers + client + stubs + runtime + @isTest suite + BoxBuildInfo + wire-hook suite"
     );
     // The generated test suite ships with the deployable tree.
@@ -1320,7 +1323,7 @@ fn the_generated_tree_is_a_deployable_sfdx_project() {
     // 7 base scaffolding (sfdx-project, scratch-def, .forceignore, package.xml,
     // README, LICENSE, assets/banner.svg) + 4 Remote Site Settings + 1225
     // classes + 1225 metas + 474 docs.
-    assert_eq!(files.len(), 7 + 4 + (1129 + 90 + 1 + 5) * 2 + 474);
+    assert_eq!(files.len(), 7 + 4 + (1140 + 90 + 1 + 5) * 2 + 474);
 
     // Deterministic and path-sorted.
     let sorted: Vec<&String> = {

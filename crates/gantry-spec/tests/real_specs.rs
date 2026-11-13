@@ -32,7 +32,7 @@ fn the_full_real_spec_set_ingests() {
     // If a spec refresh changes them, updating these numbers is the
     // deliberate, reviewed act the determinism rules want (FR-6.2, VR-6).
     assert_eq!(base.operations.len(), 297);
-    assert_eq!(base.schemas.len(), 317);
+    assert_eq!(base.schemas.len(), 325);
     assert_eq!(base.managers().len(), 73);
 
     assert_eq!(set.documents[1].operations.len(), 37);
@@ -78,15 +78,17 @@ fn the_full_real_spec_set_ingests() {
     // validation (1 struct + its synthesized type enum): → 890. The 2026-10-28
     // refresh adds Shuttle (content migration) and Document Split to v2026.0
     // and one-time passcodes on shared links: → 1017. The 2026-11-08 refresh adds
-    // metadata-template filters to legal hold assignments: → 1018.
-    assert_eq!(lowering.program.decls.len(), 1018);
+    // metadata-template filters to legal hold assignments: → 1018. The 2026-11-13
+    // refresh adds BoxSign signer verification methods (two unions, their
+    // variants and type enums) and invite auto roll-in: → 1029.
+    assert_eq!(lowering.program.decls.len(), 1029);
     let stats = &lowering.stats;
     assert_eq!(
         (stats.structs, stats.unions, stats.discriminated_unions),
-        (686, 41, 29)
+        (692, 43, 31)
     );
-    assert_eq!((stats.enums, stats.aliases), (287, 4));
-    assert_eq!(stats.synthesized, 534);
+    assert_eq!((stats.enums, stats.aliases), (290, 4));
+    assert_eq!(stats.synthesized, 537);
     assert_eq!(stats.json_value_sites, 19);
 
     // Operations: every one lowered, with classified success shapes.
@@ -145,8 +147,9 @@ fn the_full_real_spec_set_ingests() {
     // The 2026-10 refresh: its 6 new decls are each sole-owned, and
     // `CollaborationItem` now references `WebLinkMini`, adopting a former
     // orphan into the shared set. The 2026-10-28 refresh adds 127 decls: 117
-    // sole-owned, 10 shared, no new orphans.
-    assert_eq!((sole, orphan), (778, 36));
+    // sole-owned, 10 shared, no new orphans. The 2026-11-13 refresh adds 11: 8
+    // sole-owned, 3 shared, no new orphans.
+    assert_eq!((sole, orphan), (786, 36));
 }
 
 /// Box's conditional reads (the "Ensure consistency" etag flow): exactly the
