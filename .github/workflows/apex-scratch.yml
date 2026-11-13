@@ -2,27 +2,42 @@
 # equivalent of the Go `go build` gate: it generates the Apex SDK and
 # check-only-deploys it, so the platform compiler is the oracle.
 #
-# It deploys against the org that SFDX_AUTH_URL authorizes (the Dev Hub) with
-# `--dry-run`, so the platform compiles every class and runs the SDK's Apex
-# tests but nothing is persisted —
-# and no scratch org is created, so the Dev Hub's daily scratch-org signup limit
-# is never a factor. Manual (workflow_dispatch); the auth comes from a repo
-# secret, never the repository. Without the secret the job skips, so a dry run
-# still passes.
+# Each run creates a one-day scratch org from the Dev Hub that SFDX_AUTH_URL
+# authorizes, deploys the generated SDK into it, runs the SDK's Apex tests
+# there, and deletes the org when done (always, even on failure). The Dev Hub
+# itself is never deployed to. Runs are serialized (one `apex-dev-hub` group,
+# shared with the live smoke) so they stay inside the Dev Hub's active
+# scratch-org cap (3) and its daily signup cap, and a run never overlaps the
+# live smoke. Manual (workflow_dispatch); the auth comes from a repo secret,
+# never the repository. Without the secret the job skips, so a dry run still
+# passes.
+#
+# Before creating anything the job checks that the org it logged into is the
+# one in the APEX_DEVHUB_ORG_ID repo variable, so a stale secret can't spend
+# scratch orgs on the wrong Dev Hub. The check prints only match or mismatch:
+# these logs are public.
 #
 # Set up: get the target org's Sfdx Auth Url —
 #   sf org display --verbose --target-org <org>   # copy "Sfdx Auth Url"
-# and store it as the SFDX_AUTH_URL repo secret.
+# and store it as the SFDX_AUTH_URL repo secret; store that org's Id (the
+# "Id" field, 00D...) as the APEX_DEVHUB_ORG_ID repo variable.
 name: Apex scratch-org validate (VR-1.3)
 
 on:
   workflow_dispatch:
+
+# Not cancelled: a queued run waits for the one in flight, whose scratch org
+# its cleanup step still has to delete.
+concurrency:
+  group: apex-dev-hub
+  cancel-in-progress: false
 
 jobs:
   validate:
     runs-on: ubuntu-latest
     env:
       SFDX_AUTH_URL: ${{ secrets.SFDX_AUTH_URL }}
+      EXPECTED_DEVHUB_ORG_ID: ${{ vars.APEX_DEVHUB_ORG_ID }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -53,28 +68,49 @@ jobs:
           fixtures/specs/openapi-v2025.0.json
           fixtures/specs/openapi-v2026.0.json
       - if: steps.guard.outputs.skip != 'true'
-        name: Deploy-validate against the configured org (check-only, nothing persists)
+        name: Log in to the Dev Hub and check it is the expected one
+        run: |
+          set -euo pipefail
+          # Through a file: the CLI's stdin flag takes an optional value and
+          # mis-parses the flags that follow it.
+          url_file="$RUNNER_TEMP/devhub_auth_url"
+          # Whitespace and quotes (from a pasted secret) are never part of the URL.
+          (umask 077; printf '%s' "$SFDX_AUTH_URL" | tr -d '[:space:]"'"'" > "$url_file")
+          sf org login sfdx-url --sfdx-url-file "$url_file" --alias devhub --set-default-dev-hub
+          rm -f "$url_file"
+          if [ -z "$EXPECTED_DEVHUB_ORG_ID" ]; then
+            echo "::error::The APEX_DEVHUB_ORG_ID repo variable is not set; no scratch org created."
+            exit 1
+          fi
+          actual=$(sf org display --target-org devhub --json | jq -r '.result.id')
+          if [ "${actual:0:15}" != "${EXPECTED_DEVHUB_ORG_ID:0:15}" ]; then
+            echo "::error::SFDX_AUTH_URL authorizes a different org than APEX_DEVHUB_ORG_ID; no scratch org created."
+            exit 1
+          fi
+          echo "Dev Hub matches APEX_DEVHUB_ORG_ID."
+      - if: steps.guard.outputs.skip != 'true'
+        id: create
+        name: Create a one-day scratch org
         working-directory: apex-sdk
         run: |
           set -euo pipefail
-          printf '%s' "$SFDX_AUTH_URL" | sf org login sfdx-url --sfdx-url-stdin --set-default --alias target
-          # Validate-only deploy (--dry-run): the platform compiles every class
-          # and runs the SDK's own Apex tests — the runtime's HttpCalloutMock
-          # suites included — but nothing is persisted. This is the VR-1.3
-          # signal; release builds run the same tests via `sf package version
-          # create --code-coverage`. RunSpecifiedTests, not RunLocalTests: the
-          # target is a shared Dev Hub, whose other code's tests aren't ours.
+          sf org create scratch --target-dev-hub devhub \
+            --definition-file config/project-scratch-def.json \
+            --alias scratch --duration-days 1 --wait 20 --no-track-source
+      - if: steps.guard.outputs.skip != 'true'
+        name: Deploy and test in the scratch org
+        working-directory: apex-sdk
+        run: |
+          set -euo pipefail
+          # Deploy the SDK and run its own Apex tests — the runtime's
+          # HttpCalloutMock suites included. RunSpecifiedTests names the SDK's
+          # test classes (the scratch org holds nothing else). The deploy exit
+          # code is judged by the result counts below, as before.
           mapfile -t tests < <(grep -li '^@isTest' force-app/main/default/classes/*.cls \
             | xargs -n1 basename | sed 's/\.cls$//')
           echo "Running ${#tests[@]} Apex test classes"
-          # The deploy itself always reports failure here: a validation deploy to
-          # a production-type org with RunSpecifiedTests also demands 75%
-          # coverage of every deployed class, which a generated SDK of ~1000
-          # model classes can't meet class by class. Package-level coverage is
-          # enforced where it applies — the release's `--code-coverage` build —
-          # so VR-1.3 judges what it owns: every class compiles, every test passes.
-          sf project deploy start --dry-run --test-level RunSpecifiedTests --tests "${tests[@]}" \
-            --wait 30 --ignore-conflicts --target-org target --json > deploy.json || true
+          sf project deploy start --test-level RunSpecifiedTests --tests "${tests[@]}" \
+            --wait 30 --ignore-conflicts --target-org scratch --json > deploy.json || true
           component_errors=$(jq '.result.numberComponentErrors // -1' deploy.json)
           tests_run=$(jq '.result.details.runTestResult.numTestsRun // 0' deploy.json)
           test_failures=$(jq '.result.details.runTestResult.numFailures // -1' deploy.json)
@@ -88,3 +124,8 @@ jobs:
                    (.message // empty)' deploy.json || head -c 6000 deploy.json
             exit 1
           fi
+      # Always, so a failed deploy doesn't leave an org counting against the
+      # Dev Hub's active cap (it would also expire on its own after a day).
+      - if: ${{ always() && steps.guard.outputs.skip != 'true' && steps.create.outcome != 'skipped' }}
+        name: Delete the scratch org
+        run: sf org delete scratch --target-org scratch --no-prompt
