@@ -74,7 +74,8 @@ jobs:
           # Through a file: the CLI's stdin flag takes an optional value and
           # mis-parses the flags that follow it.
           url_file="$RUNNER_TEMP/devhub_auth_url"
-          (umask 077; printf '%s' "$SFDX_AUTH_URL" > "$url_file")
+          # Whitespace and quotes (from a pasted secret) are never part of the URL.
+          (umask 077; printf '%s' "$SFDX_AUTH_URL" | tr -d '[:space:]"'"'" > "$url_file")
           sf org login sfdx-url --sfdx-url-file "$url_file" --alias devhub --set-default-dev-hub
           rm -f "$url_file"
           if [ -z "$EXPECTED_DEVHUB_ORG_ID" ]; then
